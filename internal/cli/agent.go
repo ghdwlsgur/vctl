@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/agent"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 func agentCmd() *cobra.Command {
@@ -40,7 +40,7 @@ func agentCmd() *cobra.Command {
 			if err := m.Run(ctx); err != nil {
 				return err
 			}
-			fmt.Fprintln(os.Stderr, "agent stopped cleanly.")
+			ui.Successf(os.Stderr, "agent stopped cleanly")
 			return nil
 		},
 	}

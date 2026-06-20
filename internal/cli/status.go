@@ -2,8 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 func statusCmd() *cobra.Command {
@@ -16,28 +19,34 @@ func statusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Vault      : %s\n", a.Cfg.VaultAddr)
-			fmt.Printf("Auth method : %s\n", a.Cfg.AuthMethod)
+			ui.Section(os.Stdout, "vctl status")
+			rows := []ui.KV{
+				{Key: "Vault", Value: a.Cfg.VaultAddr},
+				{Key: "Auth method", Value: a.Cfg.AuthMethod},
+			}
 			if a.Vault.HasValidToken() {
-				fmt.Println("Token       : valid (cached)")
+				rows = append(rows, ui.KV{Key: "Token", Value: "valid (cached)", State: ui.StateOK})
 			} else {
-				fmt.Println("Token       : missing; run 'vctl login'")
+				rows = append(rows, ui.KV{Key: "Token", Value: "missing; run 'vctl login'", State: ui.StateWarn})
+				ui.KVs(os.Stdout, rows)
 				return nil
 			}
 			ca, err := a.Vault.CAPublicKey(ctx)
 			if err != nil {
-				fmt.Printf("SSH CA      : read failed (%v)\n", err)
+				rows = append(rows, ui.KV{Key: "SSH CA", Value: "read failed (" + err.Error() + ")", State: ui.StateFail})
 			} else {
-				fmt.Printf("SSH CA     : OK (%.40s...)\n", ca)
+				rows = append(rows, ui.KV{Key: "SSH CA", Value: fmt.Sprintf("OK (%.40s...)", ca), State: ui.StateOK})
 			}
 			st, err := a.OpenStore(ctx, false)
 			if err != nil {
-				fmt.Printf("Inventory DB: connection failed (%v)\n", err)
+				rows = append(rows, ui.KV{Key: "Inventory DB", Value: "connection failed (" + err.Error() + ")", State: ui.StateFail})
+				ui.KVs(os.Stdout, rows)
 				return nil
 			}
 			defer st.Close()
 			servers, _ := st.List(ctx, "")
-			fmt.Printf("Inventory DB: OK (%d hosts)\n", len(servers))
+			rows = append(rows, ui.KV{Key: "Inventory DB", Value: fmt.Sprintf("OK (%d hosts)", len(servers)), State: ui.StateOK})
+			ui.KVs(os.Stdout, rows)
 			return nil
 		},
 	}

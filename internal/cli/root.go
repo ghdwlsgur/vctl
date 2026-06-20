@@ -31,7 +31,7 @@ SSH CA access:
 
 Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault issues a short-lived SSH certificate for each connection.`,
 		SilenceUsage:  true,
-		SilenceErrors: false,
+		SilenceErrors: true,
 	}
 	root.AddCommand(
 		loginCmd(), logoutCmd(), tokenCmd(), execCmd(), agentCmd(),
