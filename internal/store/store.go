@@ -145,6 +145,59 @@ func (s *Store) List(ctx context.Context, dc string) ([]Server, error) {
 	return out, rows.Err()
 }
 
+// AccessEntry is one row of the inventory-level SSH access audit.
+type AccessEntry struct {
+	VaultUser  string
+	Hostname   string
+	CertSerial string
+	SignedAt   time.Time
+	OK         bool
+}
+
+// LogAccess appends one SSH access record to access_log. It requires write
+// credentials and is meant to be called best-effort after a connection attempt.
+func (s *Store) LogAccess(ctx context.Context, vaultUser, hostname, certSerial string, ok bool) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO access_log (vault_user, hostname, cert_serial, ok) VALUES ($1,$2,$3,$4)`,
+		nullIfEmpty(vaultUser), nullIfEmpty(hostname), nullIfEmpty(certSerial), ok)
+	return err
+}
+
+// AccessLog returns recent access_log rows, newest first, optionally filtered by
+// hostname/vault_user substrings. limit<=0 defaults to 50.
+func (s *Store) AccessLog(ctx context.Context, limit int, hostFilter, userFilter string) ([]AccessEntry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT coalesce(vault_user,''), coalesce(hostname,''), coalesce(cert_serial,''), signed_at, coalesce(ok,false)
+		FROM access_log
+		WHERE ($1='' OR hostname ILIKE '%'||$1||'%')
+		  AND ($2='' OR vault_user ILIKE '%'||$2||'%')
+		ORDER BY signed_at DESC
+		LIMIT $3`, hostFilter, userFilter, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AccessEntry
+	for rows.Next() {
+		var e AccessEntry
+		if err := rows.Scan(&e.VaultUser, &e.Hostname, &e.CertSerial, &e.SignedAt, &e.OK); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // Upsert updates one host record during sync. It requires write credentials.
 func (s *Store) Upsert(ctx context.Context, sv Server) error {
 	var jump any

@@ -1,9 +1,11 @@
 package cli
 
 import (
-	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 func loginCmd() *cobra.Command {
@@ -39,7 +41,7 @@ func logoutCmd() *cobra.Command {
 			if err := a.Vault.Logout(); err != nil {
 				return err
 			}
-			fmt.Println("logged out.")
+			ui.Successf(os.Stdout, "logged out")
 			return nil
 		},
 	}
