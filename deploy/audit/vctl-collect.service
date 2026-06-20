@@ -1,0 +1,26 @@
+# Ship Tetragon kernel events to vctl's central audit store.
+# Privileged: holds Vault AppRole creds (the only place on the host with DB write).
+#
+# Install: /etc/systemd/system/vctl-collect.service ; systemctl enable --now vctl-collect
+# Creds:   /etc/vctl/role-id, /etc/vctl/secret-id (AppRole -> vctl-rw)
+#
+# Tetragon export here uses its gRPC stream via `tetra getevents`. Adjust the
+# socket/path to your Tetragon install.
+[Unit]
+Description=vctl kernel-audit collector (Tetragon -> central store)
+After=network-online.target tetragon.service
+Wants=network-online.target
+
+[Service]
+Environment=VCTL_AUTH_METHOD=approle
+Environment=VCTL_ROLE_ID_FILE=/etc/vctl/role-id
+Environment=VCTL_SECRET_ID_FILE=/etc/vctl/secret-id
+# Stream Tetragon JSON into vctl collect. Restart keeps the pipe alive.
+ExecStart=/bin/sh -c 'tetra getevents -o json | /usr/local/bin/vctl collect'
+Restart=always
+RestartSec=5
+DynamicUser=no
+User=root
+
+[Install]
+WantedBy=multi-user.target
