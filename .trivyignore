@@ -1,0 +1,9 @@
+# Accepted misconfigurations.
+#
+# AVD-KSV-0125 (untrusted registry): all prod images are pulled from
+# harbor.sre.local, the org's internal trusted registry. Trivy's built-in
+# trusted-registry list only knows public registries, so it flags our internal
+# one. Accepted org-wide.
+AVD-KSV-0125
+KSV0125
+KSV-0125
