@@ -1,0 +1,65 @@
+version: 2
+
+project_name: vctl
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: vctl
+    main: ./cmd/vctl
+    binary: vctl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: vctl
+    ids:
+      - vctl
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+brews:
+  - name: vctl
+    ids:
+      - vctl
+    repository:
+      owner: ghdwlsgur
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/ghdwlsgur/vctl
+    description: Vault-backed infrastructure access CLI
+    install: |
+      bin.install "vctl"
+    test: |
+      system "#{bin}/vctl", "--version"
+
