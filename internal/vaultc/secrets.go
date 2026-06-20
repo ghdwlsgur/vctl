@@ -9,20 +9,21 @@ import (
 
 // SignSSH signs a public key through ssh/sign/<role> and returns an OpenSSH cert.
 // The private key remains client-side and is never sent to Vault.
-func (c *Client) SignSSH(ctx context.Context, role, publicKey string, principals []string, ttl string) (string, error) {
-	sec, err := c.api.Logical().WriteWithContext(ctx, "ssh/sign/"+role, map[string]interface{}{
+func (c *Client) SignSSH(ctx context.Context, role, publicKey string, principals []string, ttl string, extensions []string) (string, error) {
+	payload := map[string]interface{}{
 		"public_key":       publicKey,
 		"valid_principals": strings.Join(principals, ","),
 		"ttl":              ttl,
-		// permit-pty for the interactive shell; permit-port-forwarding so a jump
-		// host can open the direct-tcpip channel to the next hop (ProxyJump).
-		// Without port-forwarding the jump sshd rejects with
-		// "administratively prohibited (open failed)".
-		"extensions": map[string]interface{}{
-			"permit-pty":             "",
-			"permit-port-forwarding": "",
-		},
-	})
+	}
+	if len(extensions) > 0 {
+		ext := make(map[string]interface{}, len(extensions))
+		for _, name := range extensions {
+			ext[name] = ""
+		}
+		payload["extensions"] = ext
+	}
+
+	sec, err := c.api.Logical().WriteWithContext(ctx, "ssh/sign/"+role, payload)
 	if err != nil {
 		return "", fmt.Errorf("ssh/sign/%s: %w", role, err)
 	}
