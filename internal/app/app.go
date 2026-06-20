@@ -1,4 +1,4 @@
-// Package app 은 config·Vault·Store 를 엮어 CLI 명령들이 공유하는 진입점을 만든다.
+// Package app wires config, Vault, and Store for CLI commands.
 package app
 
 import (
@@ -32,11 +32,11 @@ func New() (*App, error) {
 	return &App{Cfg: cfg, Vault: v}, nil
 }
 
-// EnsureLogin 은 에이전트처럼 토큰을 살린다:
-//  1. 유효하면 그대로 사용
-//  2. 갱신 가능하면 renew-self (자격 재입력 없음)
-//  3. approle 자격이 있으면 무인 재인증
-//  4. 그래도 안 되면 대화식 로그인
+// EnsureLogin keeps a token alive like an agent:
+//  1. Reuse a valid token.
+//  2. Renew it if possible.
+//  3. Re-authenticate with AppRole if credentials are available.
+//  4. Fall back to interactive login.
 func (a *App) EnsureLogin(ctx context.Context) error {
 	if a.Vault.HasValidToken() {
 		return nil
@@ -54,27 +54,27 @@ func (a *App) EnsureLogin(ctx context.Context) error {
 	return a.Login(ctx, a.Cfg.AuthMethod)
 }
 
-// Login 은 명시한 방식으로 로그인한다(userpass | oidc | approle).
+// Login authenticates with userpass, oidc, or approle.
 func (a *App) Login(ctx context.Context, method string) error {
 	switch strings.ToLower(method) {
 	case "oidc":
-		fmt.Fprintf(os.Stderr, "Vault OIDC SSO 로그인 (%s)...\n", a.Cfg.VaultAddr)
+		fmt.Fprintf(os.Stderr, "Vault OIDC SSO login (%s)...\n", a.Cfg.VaultAddr)
 		return a.Vault.LoginOIDC(ctx, a.Cfg.OIDCMount, a.Cfg.OIDCRole)
 	case "approle":
 		id, sec, ok := a.AppRoleCreds()
 		if !ok {
-			return fmt.Errorf("approle 자격이 없습니다 (VCTL_ROLE_ID/VCTL_SECRET_ID 또는 *_FILE)")
+			return fmt.Errorf("missing AppRole credentials (VCTL_ROLE_ID/VCTL_SECRET_ID or *_FILE)")
 		}
 		return a.Vault.LoginAppRole(ctx, a.Cfg.AppRoleMount, id, sec)
 	case "", "userpass":
 		return a.loginUserpass(ctx)
 	default:
-		return fmt.Errorf("알 수 없는 인증 방식: %s", method)
+		return fmt.Errorf("unknown auth method: %s", method)
 	}
 }
 
-// ReAuth 는 현재 토큰을 무시하고 새 토큰을 받는다(갱신 불가 시 호출).
-// approle 자격이 있으면 무인, 없으면 대화식.
+// ReAuth ignores the current token and obtains a new one.
+// It uses AppRole when possible and falls back to interactive auth.
 func (a *App) ReAuth(ctx context.Context) error {
 	if err := a.ReAuthNonInteractive(ctx); err == nil {
 		return nil
@@ -82,18 +82,17 @@ func (a *App) ReAuth(ctx context.Context) error {
 	return a.Login(ctx, a.Cfg.AuthMethod)
 }
 
-// ReAuthNonInteractive 는 대화식 프롬프트 없이 approle 로만 재인증한다.
-// exec 처럼 stdin 을 자식이 점유한 상황에서 쓴다(프롬프트 충돌 방지).
-// approle 자격이 없으면 에러를 돌려준다.
+// ReAuthNonInteractive re-authenticates with AppRole only.
+// It is used when stdin belongs to a child process and prompts would conflict.
 func (a *App) ReAuthNonInteractive(ctx context.Context) error {
 	id, sec, ok := a.AppRoleCreds()
 	if !ok {
-		return fmt.Errorf("approle 자격이 없어 무인 재인증 불가")
+		return fmt.Errorf("missing AppRole credentials for non-interactive re-auth")
 	}
 	return a.Vault.LoginAppRole(ctx, a.Cfg.AppRoleMount, id, sec)
 }
 
-// AppRoleCreds 는 설정값 또는 파일에서 role_id/secret_id 를 해석한다.
+// AppRoleCreds resolves role_id and secret_id from values or files.
 func (a *App) AppRoleCreds() (roleID, secretID string, ok bool) {
 	roleID = firstNonEmpty(a.Cfg.AppRoleID, readFileTrim(a.Cfg.AppRoleIDFile))
 	secretID = firstNonEmpty(a.Cfg.AppRoleSecretID, readFileTrim(a.Cfg.AppRoleSecretIDFile))
@@ -121,7 +120,7 @@ func firstNonEmpty(vals ...string) string {
 }
 
 func (a *App) loginUserpass(ctx context.Context) error {
-	fmt.Fprintf(os.Stderr, "Vault 로그인 (%s)\n", a.Cfg.VaultAddr)
+	fmt.Fprintf(os.Stderr, "Vault login (%s)\n", a.Cfg.VaultAddr)
 	reader := bufio.NewReader(os.Stdin)
 
 	def := os.Getenv("USER")
@@ -136,7 +135,7 @@ func (a *App) loginUserpass(ctx context.Context) error {
 		username = def
 	}
 	if username == "" {
-		return fmt.Errorf("username 이 필요합니다")
+		return fmt.Errorf("username is required")
 	}
 
 	fmt.Fprint(os.Stderr, "Password: ")
@@ -148,12 +147,12 @@ func (a *App) loginUserpass(ctx context.Context) error {
 	if err := a.Vault.LoginUserpass(ctx, username, string(pw)); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "로그인 성공.")
+	fmt.Fprintln(os.Stderr, "login succeeded.")
 	return nil
 }
 
-// OpenStore 는 로그인 보장 → Vault 동적 DB 자격 발급 → Postgres 연결을 수행한다.
-// rw=true 면 쓰기 role(sync/admin), 아니면 읽기 role.
+// OpenStore ensures login, requests dynamic DB credentials, and opens Postgres.
+// rw selects the write role for sync/admin paths; otherwise it uses the read role.
 func (a *App) OpenStore(ctx context.Context, rw bool) (*store.Store, error) {
 	role := a.Cfg.DBRoleRO
 	if rw {
@@ -162,7 +161,7 @@ func (a *App) OpenStore(ctx context.Context, rw bool) (*store.Store, error) {
 	return a.OpenStoreRole(ctx, role)
 }
 
-// OpenStoreRole 는 지정한 Vault database role 로 Postgres 연결을 연다.
+// OpenStoreRole opens Postgres with a specific Vault database role.
 func (a *App) OpenStoreRole(ctx context.Context, role string) (*store.Store, error) {
 	if err := a.EnsureLogin(ctx); err != nil {
 		return nil, err

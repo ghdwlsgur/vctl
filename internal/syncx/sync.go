@@ -1,7 +1,6 @@
-// Package syncx 는 로컬 ~/.ssh/config 를 파싱하고 도달성을 프로브해
-// 중앙 인벤토리로 upsert 할 store.Server 목록을 만든다.
+// Package syncx parses ~/.ssh/config and probes hosts to build inventory rows.
 //
-// 부트스트랩 용도다 — 최초에 중앙 DB 를 채울 때, 그리고 주기적 정합에 쓴다.
+// It is used for initial bootstrap and periodic inventory reconciliation.
 package syncx
 
 import (
@@ -51,7 +50,7 @@ type probeResult struct {
 	up    *time.Time
 }
 
-// Parse 는 ~/.ssh/config 에서 Host 블록을 읽는다(대소문자 무시).
+// Parse reads Host blocks from an ssh config file.
 func Parse(path string) ([]hostBlock, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -122,7 +121,7 @@ func splitKV(line string) (string, string, bool) {
 }
 
 func splitFields(line string) (string, []string, bool) {
-	// "Key Value" 또는 "Key=Value"
+	// Accept both "Key Value" and "Key=Value" formats.
 	if i := strings.IndexAny(line, " \t="); i > 0 {
 		key := line[:i]
 		val := strings.TrimSpace(strings.TrimLeft(line[i:], " \t="))
@@ -132,14 +131,14 @@ func splitFields(line string) (string, []string, bool) {
 	return "", nil, false
 }
 
-// DefaultConfigPath 는 ~/.ssh/config 경로다.
+// DefaultConfigPath returns ~/.ssh/config.
 func DefaultConfigPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".ssh", "config")
 }
 
-// Build 는 prefix(예: "sre")로 시작하는 alias 만 골라 프로브 후 Server 목록을 만든다.
-// alias→hostName 매핑으로 proxyJump 도 IP 가 아닌 인벤토리 hostname 으로 연결한다.
+// Build probes aliases with the selected prefix and returns inventory rows.
+// ProxyJump aliases are normalized to inventory hostnames.
 func Build(blocks []hostBlock, prefix string, probeTimeout time.Duration) []store.Server {
 	return BuildWithOptions(blocks, BuildOptions{Prefix: prefix, ProbeTimeout: probeTimeout})
 }
@@ -304,7 +303,7 @@ func probe(host string, port int, timeout time.Duration) bool {
 	return true
 }
 
-// classifyDC 는 IP 대역으로 DC 를 추정한다(SRE 환경 휴리스틱).
+// classifyDC estimates the DC from configured IP prefixes.
 func classifyDC(ip string) string {
 	return classifyDCWithRules(ip, DefaultDCRules())
 }

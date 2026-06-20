@@ -13,7 +13,7 @@ func lsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "접속 가능한 서버 목록",
+		Short:   "List accessible inventory hosts",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			a, err := newApp()
@@ -31,7 +31,7 @@ func lsCmd() *cobra.Command {
 				return err
 			}
 			if len(servers) == 0 {
-				fmt.Fprintln(os.Stderr, "인벤토리가 비어 있습니다. 'vctl sync' 를 먼저 실행하세요.")
+				fmt.Fprintln(os.Stderr, "inventory is empty. Run 'vctl sync' first.")
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
@@ -50,6 +50,6 @@ func lsCmd() *cobra.Command {
 			return w.Flush()
 		},
 	}
-	cmd.Flags().StringVar(&dc, "dc", "", "DC 필터 (incheon | seoul-onprem)")
+	cmd.Flags().StringVar(&dc, "dc", "", "DC filter, for example incheon or seoul-onprem")
 	return cmd
 }

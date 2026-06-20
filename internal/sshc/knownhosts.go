@@ -11,9 +11,8 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
-// hostKeyCallback 은 ~/.ssh/known_hosts 로 호스트 키를 검증하되,
-// 처음 보는 호스트는 TOFU(trust-on-first-use)로 등록한다.
-// 이미 등록된 키와 다르면(중간자 의심) 거부한다.
+// hostKeyCallback verifies host keys with ~/.ssh/known_hosts.
+// Unknown hosts are recorded with TOFU. Mismatched known keys are rejected.
 func hostKeyCallback() ssh.HostKeyCallback {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -37,10 +36,10 @@ func hostKeyCallback() ssh.HostKeyCallback {
 		}
 		var ke *knownhosts.KeyError
 		if errors.As(err, &ke) && len(ke.Want) == 0 {
-			// 처음 보는 호스트 → 등록(TOFU)
+			// Unknown host. Record it through TOFU.
 			return appendKnownHost(khPath, hostname, remote, key)
 		}
-		// 등록된 키와 불일치 등 → 그대로 거부
+		// Known-host mismatch or parser errors are rejected.
 		return err
 	}
 }
@@ -68,6 +67,6 @@ func appendKnownHost(path, hostname string, remote net.Addr, key ssh.PublicKey) 
 	if _, err := fmt.Fprintln(f, line); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "known_hosts 에 새 호스트 키 등록: %s\n", hostname)
+	fmt.Fprintf(os.Stderr, "added new host key to known_hosts: %s\n", hostname)
 	return nil
 }

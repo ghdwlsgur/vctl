@@ -122,7 +122,7 @@ func TestClassifyDC(t *testing.T) {
 	}
 }
 
-// trimLeftSpace 는 테스트 입력의 선행 공백만 제거(splitKV 는 trim 된 줄을 전제).
+// trimLeftSpace removes leading whitespace because splitKV expects trimmed input.
 func trimLeftSpace(s string) string {
 	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
 		s = s[1:]

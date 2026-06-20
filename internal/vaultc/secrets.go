@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// SignSSH 는 공개키를 ssh/sign/<role> 로 서명해 OpenSSH 인증서 문자열을 돌려준다.
-// 비밀(개인키)은 클라이언트에만 있고 Vault 로 가지 않는다.
+// SignSSH signs a public key through ssh/sign/<role> and returns an OpenSSH cert.
+// The private key remains client-side and is never sent to Vault.
 func (c *Client) SignSSH(ctx context.Context, role, publicKey string, principals []string, ttl string) (string, error) {
 	sec, err := c.api.Logical().WriteWithContext(ctx, "ssh/sign/"+role, map[string]interface{}{
 		"public_key":       publicKey,
@@ -19,44 +19,44 @@ func (c *Client) SignSSH(ctx context.Context, role, publicKey string, principals
 		return "", fmt.Errorf("ssh/sign/%s: %w", role, err)
 	}
 	if sec == nil || sec.Data == nil {
-		return "", fmt.Errorf("ssh/sign/%s: 빈 응답", role)
+		return "", fmt.Errorf("ssh/sign/%s: empty response", role)
 	}
 	signed, ok := sec.Data["signed_key"].(string)
 	if !ok || signed == "" {
-		return "", fmt.Errorf("ssh/sign/%s: 응답에 signed_key 없음", role)
+		return "", fmt.Errorf("ssh/sign/%s: missing signed_key in response", role)
 	}
 	return signed, nil
 }
 
-// DBCreds 는 database/creds/<role> 에서 단명 Postgres 자격을 발급받는다.
+// DBCreds requests short-lived Postgres credentials from database/creds/<role>.
 func (c *Client) DBCreds(ctx context.Context, role string) (user, pass string, ttl time.Duration, err error) {
 	sec, err := c.api.Logical().ReadWithContext(ctx, "database/creds/"+role)
 	if err != nil {
 		return "", "", 0, fmt.Errorf("database/creds/%s: %w", role, err)
 	}
 	if sec == nil || sec.Data == nil {
-		return "", "", 0, fmt.Errorf("database/creds/%s: 빈 응답", role)
+		return "", "", 0, fmt.Errorf("database/creds/%s: empty response", role)
 	}
 	user, _ = sec.Data["username"].(string)
 	pass, _ = sec.Data["password"].(string)
 	if user == "" || pass == "" {
-		return "", "", 0, fmt.Errorf("database/creds/%s: username/password 없음", role)
+		return "", "", 0, fmt.Errorf("database/creds/%s: missing username/password", role)
 	}
 	return user, pass, time.Duration(sec.LeaseDuration) * time.Second, nil
 }
 
-// CAPublicKey 는 ssh/config/ca 의 CA 공개키를 읽는다(배포·검증용).
+// CAPublicKey reads the CA public key from ssh/config/ca.
 func (c *Client) CAPublicKey(ctx context.Context) (string, error) {
 	sec, err := c.api.Logical().ReadWithContext(ctx, "ssh/config/ca")
 	if err != nil {
 		return "", fmt.Errorf("ssh/config/ca: %w", err)
 	}
 	if sec == nil || sec.Data == nil {
-		return "", fmt.Errorf("ssh/config/ca: 빈 응답")
+		return "", fmt.Errorf("ssh/config/ca: empty response")
 	}
 	pub, ok := sec.Data["public_key"].(string)
 	if !ok || pub == "" {
-		return "", fmt.Errorf("ssh/config/ca: public_key 없음")
+		return "", fmt.Errorf("ssh/config/ca: missing public_key")
 	}
 	return pub, nil
 }

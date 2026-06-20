@@ -1,8 +1,8 @@
 // Package config holds vctl runtime configuration.
 //
-// 온보딩 원칙: 신규 팀원은 아무것도 설정하지 않는다.
-// 모든 기본값은 바이너리에 baked-in 되어 있고(Defaults), 사설 CA 도 임베드된다.
-// 필요하면 레포의 .vctl/config.yaml 또는 VCTL_* / VAULT_ADDR 환경변수로만 덮어쓴다.
+// Onboarding principle: new teammates should not need local setup.
+// Defaults are compiled into the binary, and the private CA is embedded.
+// Override values with repo-local .vctl/config.yaml, VCTL_*, or VAULT_ADDR.
 package config
 
 import (
@@ -25,42 +25,42 @@ type Config struct {
 	DBHost           string `yaml:"db_host"`
 	DBPort           int    `yaml:"db_port"`
 	DBName           string `yaml:"db_name"`
-	DBRoleRO         string `yaml:"db_role_ro"`         // database/creds/<ro>  읽기 (ssh/ls)
-	DBRoleRW         string `yaml:"db_role_rw"`         // database/creds/<rw>  쓰기 (sync/admin)
-	DBRoleMigrate    string `yaml:"db_role_migrate"`    // database/creds/<migrator> 스키마 변경
-	DBMigrationOwner string `yaml:"db_migration_owner"` // 마이그레이션 객체의 stable owner role
+	DBRoleRO         string `yaml:"db_role_ro"`         // database/creds/<ro> for read paths
+	DBRoleRW         string `yaml:"db_role_rw"`         // database/creds/<rw> for sync/admin paths
+	DBRoleMigrate    string `yaml:"db_role_migrate"`    // database/creds/<migrator> for schema changes
+	DBMigrationOwner string `yaml:"db_migration_owner"` // stable owner role for migration objects
 
 	CARole  string `yaml:"ca_role"`  // ssh/sign/<role>
-	SSHSign string `yaml:"ssh_sign"` // 발급 cert TTL
+	SSHSign string `yaml:"ssh_sign"` // issued cert TTL
 
 	SSHDefaultUser       string         `yaml:"ssh_default_user"`
 	SyncProbeTimeout     string         `yaml:"sync_probe_timeout"`
 	SyncProbeConcurrency int            `yaml:"sync_probe_concurrency"`
 	DCRules              []syncx.DCRule `yaml:"dc_rules"`
 
-	// AppRole — 무인 auto-auth (agent/exec 재인증). 값 또는 파일 경로로 지정.
+	// AppRole supports non-interactive auto-auth for agent and exec re-auth.
 	AppRoleMount        string `yaml:"approle_mount"`
 	AppRoleID           string `yaml:"role_id"`
 	AppRoleSecretID     string `yaml:"secret_id"`
 	AppRoleIDFile       string `yaml:"role_id_file"`
 	AppRoleSecretIDFile string `yaml:"secret_id_file"`
 
-	// SinkPath — agent 모드가 유효 토큰을 떨궈두는 파일(다른 도구가 읽음).
+	// SinkPath is where agent mode writes a valid token for other tools.
 	SinkPath string `yaml:"sink_path"`
 
-	// 런타임 전용(직렬화 안 함)
+	// Runtime-only fields.
 	StateDir   string `yaml:"-"`
 	ConfigPath string `yaml:"-"`
 }
 
-// Defaults 는 SRE 환경에 맞춘 컴파일 내장 기본값이다.
+// Defaults returns compiled onboarding defaults for the SRE environment.
 func Defaults() *Config {
 	return &Config{
 		VaultAddr:            "https://vault.sre.local",
 		AuthMethod:           "userpass",
 		OIDCRole:             "vctl",
 		OIDCMount:            "oidc",
-		DBHost:               "vctl-postgres.sre.local", // cert dnsName 과 일치(verify-full)
+		DBHost:               "vctl-postgres.sre.local", // must match the certificate dnsName for verify-full
 		DBPort:               5432,
 		DBName:               "vctl",
 		DBRoleRO:             "vctl-ro",
@@ -77,7 +77,7 @@ func Defaults() *Config {
 	}
 }
 
-// Load 는 기본값 → 레포 로컬 config.yaml → 환경변수 순으로 병합한다.
+// Load merges defaults, repo-local config, and environment variables.
 func Load() (*Config, error) {
 	c := Defaults()
 	if err := c.initRuntimePaths(); err != nil {

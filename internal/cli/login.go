@@ -10,7 +10,7 @@ func loginCmd() *cobra.Command {
 	var method string
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Vault 에 로그인 (토큰을 ~/.vctl/token 에 캐시)",
+		Short: "Log in to Vault and cache the token in ~/.vctl/token",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := newApp()
 			if err != nil {
@@ -23,14 +23,14 @@ func loginCmd() *cobra.Command {
 			return a.Login(cmd.Context(), m)
 		},
 	}
-	cmd.Flags().StringVar(&method, "method", "", "인증 방식: userpass | oidc (기본: 설정값)")
+	cmd.Flags().StringVar(&method, "method", "", "auth method: userpass | oidc | approle")
 	return cmd
 }
 
 func logoutCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
-		Short: "캐시된 Vault 토큰 폐기",
+		Short: "Remove the cached Vault token",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := newApp()
 			if err != nil {
@@ -39,7 +39,7 @@ func logoutCmd() *cobra.Command {
 			if err := a.Vault.Logout(); err != nil {
 				return err
 			}
-			fmt.Println("로그아웃 완료.")
+			fmt.Println("logged out.")
 			return nil
 		},
 	}

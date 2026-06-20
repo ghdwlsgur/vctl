@@ -1,99 +1,109 @@
 # vctl
 
-**Vault Agent 없이** Vault 토큰을 "에이전트처럼" 직접 관리하는 CLI (+ SSH CA 서버 접속).
+`vctl` is a Vault-backed infrastructure access CLI. It manages Vault tokens directly, signs short-lived SSH certificates through Vault SSH CA, and reads host inventory from Postgres.
 
-- 데몬 0 — `vctl` 바이너리가 로그인·**자동 갱신**·재인증·서명을 직접 수행
-- 토큰 자동 유지 — 만료 전 `renew-self`, 갱신 불가 시 자동 재인증(approle)
-- 다른 도구 연동 — `vctl token` / `vctl exec` / `vctl agent`(싱크 파일)로 기존 `vault` CLI·terraform 등에 토큰 공급
-- 사설 CA 내장 — 별도 CA 설치 없이 Vault·Postgres TLS 검증
-- 정적 키 없음 — 서버 접속마다 단명 인증서(TTL 30분) 발급
-- 중앙 인벤토리(Postgres) — 호스트/IP/유저/점프를 한곳에서, 비밀은 0
+- No local daemon: the binary handles login, renewal, re-authentication, and SSH certificate signing.
+- Token lifecycle management: renew before expiry and re-authenticate with AppRole when renewal is no longer possible.
+- Tool integration: expose tokens through `vctl token`, `vctl exec`, and `vctl agent` sink files.
+- Embedded private CA: validate Vault and Postgres TLS without extra workstation setup.
+- No static SSH keys: generate an in-memory key per connection and request a short-lived certificate.
+- Central inventory: store host topology in Postgres while keeping secrets in Vault.
 
-## Vault Agent 처럼 쓰기 (데몬 없이)
+## Vault Agent Replacement
 
 ```bash
-# (A) 기존 vault CLI 에 토큰 공급 — 자동 갱신/재인증 포함
+# Provide a token to the existing vault CLI.
 export VAULT_TOKEN=$(vctl token)
 vault kv get kv/services/foo
 
-# (B) 자식 프로세스에 주입 — 실행 동안 토큰 안 끊김
+# Inject VAULT_TOKEN and VAULT_ADDR into a child process.
 vctl exec -- terraform apply
 vctl exec -- vault kv get kv/services/foo
-#   주의: 자식 env 의 VAULT_TOKEN 은 시작 시점 값으로 고정된다(env 는 런타임 변경 불가).
-#   renew-self 로 "같은 토큰"이 연장되는 동안은 유효하지만, max_ttl 을 넘겨
-#   토큰이 교체되면 자식은 못 따라간다. 초장수명 작업은 (C) 싱크 파일 소비를 권장.
 
-# (C) 상주 모드 — 토큰을 싱크 파일로 계속 갱신해 떨궈둠
+# The child process receives the token value from startup time.
+# Renewing the same token keeps it valid, but if max_ttl forces a new token,
+# the child process cannot receive the replacement through its environment.
+# For very long-running jobs, use the sink file mode below.
+
+# Keep a token sink file updated.
 vctl agent --sink /run/user/$(id -u)/vault-token
-#   다른 셸/도구:  VAULT_TOKEN=$(cat ~/.vctl/token-sink) vault ...
+VAULT_TOKEN=$(cat ~/.vctl/token-sink) vault kv get kv/services/foo
 ```
 
-무인 환경(CI 등)은 approle 자격을 주면 사람 개입 없이 재인증까지 자동:
+For non-interactive environments, provide AppRole credentials:
 
 ```bash
-export VCTL_ROLE_ID_FILE=/etc/vctl/role_id  VCTL_SECRET_ID_FILE=/etc/vctl/secret_id
-vctl agent          # auto-auth → renew → 만료 시 approle 재인증, 무한 유지
+export VCTL_ROLE_ID_FILE=/etc/vctl/role_id
+export VCTL_SECRET_ID_FILE=/etc/vctl/secret_id
+vctl agent
 ```
 
-### 동작 모델 (Vault Agent 대비)
+## Vault Agent Mapping
 
-| Vault Agent | vctl 대응 | 차이 |
+| Vault Agent concept | vctl command | Notes |
 |---|---|---|
-| auto-auth | `login` / approle env | 데몬 대신 CLI 1회 또는 `agent` |
-| token sink | `vctl agent --sink` | 동일 (파일에 토큰 기록) |
-| auto-renew | 모든 명령에 내장 + `agent` | 만료 전 자동 `renew-self` |
-| `agent exec` | `vctl exec --` | 자식 수명 동안 백그라운드 갱신 |
-| caching proxy | (미지원) | 토큰 공급에 집중, 프록시는 범위 밖 |
+| auto-auth | `login` or AppRole env | One CLI login or non-interactive AppRole auth |
+| token sink | `vctl agent --sink` | Writes a token file for other tools |
+| auto-renew | built into commands and `agent` | Renews before expiry |
+| `agent exec` | `vctl exec --` | Keeps the token alive while the child process runs |
+| caching proxy | not supported | vctl focuses on token supply and SSH access |
 
-## 신규 팀원 (3단계)
+## New User Flow
 
 ```bash
-# 1. 설치
+# Install
 brew install ghdwlsgur/tap/vctl
 
-# 2. 로그인 (유일한 설정)
+# Login
 vctl login
 
-# 3. 접속 — 이름을 몰라도 됨
-vctl ssh sre-srv-0047      # 정확히
-vctl ssh 0047              # 일부만 (퍼지 매칭)
-vctl ssh                   # 목록에서 고르기
-vctl list                  # 뭐가 있는지 보기
+# Connect
+vctl ssh sre-srv-0047
+vctl ssh 0047
+vctl ssh
+vctl list
 ```
 
-설정 파일 없이도 기본값으로 동작한다. 레포별 설정은 `.vctl/config.yaml` 에 두고, `~/.vctl/` 는 토큰 캐시 용도로 자동 생성된다.
+`vctl` works with compiled defaults. Repo-local configuration lives in `.vctl/config.yaml`, and runtime token cache files live under `~/.vctl/`.
 
-## 접속 흐름
+## SSH Flow
 
-```
+```text
 vctl ssh <host>
-  → Vault 로그인(캐시 토큰 재사용)
-  → database/creds/vctl-ro  : 단명 PG자격 → 인벤토리 조회
-  → ed25519 키 메모리 생성     : 디스크에 안 떨어짐
-  → ssh/sign/sre-core         : 30분 cert 서명
-  → 네이티브 SSH (점프 체인 + PTY)
+  -> reuse or refresh a Vault token
+  -> read database/creds/vctl-ro for short-lived Postgres credentials
+  -> resolve the host from inventory
+  -> generate an in-memory ed25519 key
+  -> request a short-lived certificate from ssh/sign/sre-core
+  -> open a native SSH session with jump-chain support
 ```
 
-## 명령
+## Commands
 
-| 명령 | 설명 |
+| Command | Description |
 |---|---|
-| `vctl login [--method userpass\|oidc\|approle]` | Vault 로그인, 토큰 캐시 |
-| `vctl token` | 유효 토큰 출력 (자동 갱신/재인증) |
-| `vctl exec -- <cmd>` | `VAULT_TOKEN`/`VAULT_ADDR` 주입해 자식 실행 (실행 동안 토큰 유지) |
-| `vctl agent [--sink <path>]` | 상주 모드 — 자동 갱신 + 토큰 싱크 기록 |
-| `vctl ssh [host]` | 접속 (정확/퍼지/피커) |
-| `vctl list [--dc <dc>]` | 인벤토리 목록 |
-| `vctl status` | 로그인·CA·DB 연결 점검 |
-| `vctl sync [--migrate] [--prefix sre]` | `~/.ssh/config`+프로브로 인벤토리 갱신 (관리자) |
-| `vctl logout` | 캐시 토큰 폐기 |
+| `vctl login [--method userpass\|oidc\|approle]` | Log in to Vault and cache the token |
+| `vctl token` | Print a valid Vault token after renewal or re-authentication |
+| `vctl exec -- <cmd>` | Run a child process with `VAULT_TOKEN` and `VAULT_ADDR` |
+| `vctl agent [--sink <path>]` | Keep a token alive and write it to sink files |
+| `vctl ssh [host]` | Connect by exact, fuzzy, or interactive host selection |
+| `vctl list [--dc <dc>]` | List inventory hosts |
+| `vctl status` | Check login, SSH CA, and inventory DB connectivity |
+| `vctl sync [--migrate] [--prefix sre]` | Sync inventory from `~/.ssh/config` and probes |
+| `vctl logout` | Remove the cached Vault token |
 
-### 환경변수
-`VAULT_ADDR`, `VCTL_AUTH_METHOD`, `VCTL_ROLE_ID(_FILE)`, `VCTL_SECRET_ID(_FILE)`, `VCTL_SINK`, `VCTL_DB_HOST`,
-`VCTL_CA_ROLE`, `VCTL_SSH_DEFAULT_USER`, `VCTL_SYNC_PROBE_TIMEOUT`, `VCTL_SYNC_PROBE_CONCURRENCY` 등으로
-baked-in 기본값을 덮어쓴다.
+## Configuration
 
-`.vctl/config.yaml` 예시:
+Environment variables such as `VAULT_ADDR`, `VCTL_AUTH_METHOD`, `VCTL_ROLE_ID_FILE`, `VCTL_SECRET_ID_FILE`, `VCTL_SINK`, `VCTL_DB_HOST`, `VCTL_CA_ROLE`, `VCTL_SSH_DEFAULT_USER`, `VCTL_SYNC_PROBE_TIMEOUT`, and `VCTL_SYNC_PROBE_CONCURRENCY` override the compiled defaults.
+
+Start from the sample config:
+
+```bash
+mkdir -p .vctl
+cp .vctl/config.example.yaml .vctl/config.yaml
+```
+
+Example:
 
 ```yaml
 vault_addr: https://vault.sre.local
@@ -109,67 +119,59 @@ dc_rules:
     prefixes: ["192.168.201.", "192.168.190.", "192.168.110."]
 ```
 
-초기 설정은 샘플을 복사해서 시작한다:
+## Admin Bootstrap
 
 ```bash
-mkdir -p .vctl
-cp .vctl/config.example.yaml .vctl/config.yaml
-```
+# Configure the Vault DB engine, roles, and policies.
+PG_ADMIN_PASS=<root-password> ./deploy/vault/setup.sh
 
-## 관리자 부트스트랩 (1회)
-
-```bash
-# Vault DB 엔진·role·정책 구성
-PG_ADMIN_PASS=<root비번> ./deploy/vault/setup.sh
-
-# 팀원 계정 (v1 userpass)
+# Create a userpass account for a teammate.
 vault write auth/userpass/users/<id> password=<once> policies=vctl-user
 
-# 인벤토리 최초 적재 (vctl-admin 토큰으로)
+# Initial inventory load with a vctl-admin token.
 vctl sync --migrate
 ```
 
-OIDC SSO 전환(팀원당 계정 0): [`deploy/vault/oidc-phase2.md`](deploy/vault/oidc-phase2.md).
+OIDC setup is documented in [deploy/vault/oidc-phase2.md](deploy/vault/oidc-phase2.md).
 
-## 빌드
+## Build
 
 ```bash
 make build
 ```
 
-## 릴리스
+## Release
 
-릴리스는 Git tag push 로 GoReleaser 가 수행한다. GitHub Release 아티팩트를 만들고,
-Homebrew tap(`ghdwlsgur/homebrew-tap`)의 `Formula/vctl.rb`를 갱신한다.
+Releases are published by pushing a Git tag. GoReleaser creates GitHub Release artifacts and updates `Formula/vctl.rb` in the `ghdwlsgur/homebrew-tap` repository.
 
-필요한 저장소 secret:
+Required repository secret:
 
 ```text
 HOMEBREW_TAP_GITHUB_TOKEN
 ```
 
-토큰에는 `ghdwlsgur/homebrew-tap`에 push 할 수 있는 권한이 필요하다.
+The token must be allowed to push to `ghdwlsgur/homebrew-tap`.
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-## 설계 메모
+## Design Notes
 
-- **인벤토리 ⟂ 비밀**: DB 엔 토폴로지만. cert·DB자격은 모두 Vault 가 단명 발급. DB 가 털려도 새는 건 "서버가 있다"는 사실뿐.
-- **로테이션 직교**: SSH CA 키 교체와 DB 자격 로테이션은 서로 안 엮인다. DB 가 추적하는 건 호스트별 `ca_key_version`(무중단 CA 교체 진행 상태)뿐.
-- **설정 가능한 기본값**: `internal/config/config.go`의 `Defaults()` 는 온보딩용 기본값만 담는다. Vault/DB/CA role/SSH 기본 유저/동기화 probe/DC 분류는 env 또는 레포의 `.vctl/config.yaml` 로 덮어쓴다.
+- Inventory contains topology only. Certificates and DB credentials are short-lived and issued by Vault.
+- SSH CA key rotation and DB credential rotation are independent.
+- Compiled defaults are onboarding defaults only. Override Vault, DB, CA role, SSH user, sync probing, and DC classification through env vars or `.vctl/config.yaml`.
 
-## 구조
+## Layout
 
-```
-cmd/vctl           진입점
-internal/config      기본값 + 임베드 CA
-internal/vaultc      Vault: 로그인(userpass/oidc)·서명·DB자격·CA
-internal/store       Postgres 인벤토리 (verify-full TLS)
-internal/sshc        네이티브 SSH: cert signer·점프 체인·PTY
-internal/syncx       ssh config 파싱 + 프로브
-internal/cli         cobra 명령
-deploy/vault         정책·DB엔진 부트스트랩·OIDC 가이드
+```text
+cmd/vctl              entrypoint
+internal/config       defaults and embedded CA
+internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
+internal/store        Postgres inventory with verify-full TLS
+internal/sshc         native SSH client with cert signer, jump chains, and PTY
+internal/syncx        ssh config parsing and host probing
+internal/cli          Cobra commands
+deploy/vault          policies, DB engine bootstrap, and OIDC guide
 ```
