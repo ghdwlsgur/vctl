@@ -33,5 +33,22 @@ CREATE TABLE IF NOT EXISTS access_log (
     hostname    TEXT,
     cert_serial TEXT,
     signed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    ok          BOOLEAN
+    ok          BOOLEAN,
+    source_ip   INET,
+    source_addr TEXT,
+    client_host TEXT,
+    client_user TEXT,
+    target_addr TEXT,
+    jump_via    TEXT,
+    error       TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_access_log_signed_at ON access_log (signed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_access_log_source_ip ON access_log (source_ip);
+
+ALTER TABLE access_log ADD COLUMN IF NOT EXISTS source_ip INET;
+ALTER TABLE access_log ADD COLUMN IF NOT EXISTS source_addr TEXT;
+ALTER TABLE access_log ADD COLUMN IF NOT EXISTS client_host TEXT;
+ALTER TABLE access_log ADD COLUMN IF NOT EXISTS client_user TEXT;
+ALTER TABLE access_log ADD COLUMN IF NOT EXISTS target_addr TEXT;
+ALTER TABLE access_log ADD COLUMN IF NOT EXISTS jump_via TEXT;
+ALTER TABLE access_log ADD COLUMN IF NOT EXISTS error TEXT;

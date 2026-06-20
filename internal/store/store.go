@@ -152,30 +152,44 @@ type AccessEntry struct {
 	CertSerial string
 	SignedAt   time.Time
 	OK         bool
+	SourceIP   string
+	SourceAddr string
+	ClientHost string
+	ClientUser string
+	TargetAddr string
+	JumpVia    string
+	Error      string
 }
 
 // LogAccess appends one SSH access record to access_log. It requires write
 // credentials and is meant to be called best-effort after a connection attempt.
-func (s *Store) LogAccess(ctx context.Context, vaultUser, hostname, certSerial string, ok bool) error {
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO access_log (vault_user, hostname, cert_serial, ok) VALUES ($1,$2,$3,$4)`,
-		nullIfEmpty(vaultUser), nullIfEmpty(hostname), nullIfEmpty(certSerial), ok)
+func (s *Store) LogAccess(ctx context.Context, e AccessEntry) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO access_log
+			(vault_user, hostname, cert_serial, ok, source_ip, source_addr, client_host, client_user, target_addr, jump_via, error)
+		VALUES ($1,$2,$3,$4,NULLIF($5,'')::inet,$6,$7,$8,$9,$10,$11)`,
+		nullIfEmpty(e.VaultUser), nullIfEmpty(e.Hostname), nullIfEmpty(e.CertSerial), e.OK, e.SourceIP,
+		nullIfEmpty(e.SourceAddr), nullIfEmpty(e.ClientHost), nullIfEmpty(e.ClientUser), nullIfEmpty(e.TargetAddr),
+		nullIfEmpty(e.JumpVia), nullIfEmpty(e.Error))
 	return err
 }
 
 // AccessLog returns recent access_log rows, newest first, optionally filtered by
 // hostname/vault_user substrings. limit<=0 defaults to 50.
-func (s *Store) AccessLog(ctx context.Context, limit int, hostFilter, userFilter string) ([]AccessEntry, error) {
+func (s *Store) AccessLog(ctx context.Context, limit int, hostFilter, userFilter, sourceIPFilter string) ([]AccessEntry, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT coalesce(vault_user,''), coalesce(hostname,''), coalesce(cert_serial,''), signed_at, coalesce(ok,false)
+		SELECT coalesce(vault_user,''), coalesce(hostname,''), coalesce(cert_serial,''), signed_at, coalesce(ok,false),
+		       coalesce(host(source_ip),''), coalesce(source_addr,''), coalesce(client_host,''), coalesce(client_user,''),
+		       coalesce(target_addr,''), coalesce(jump_via,''), coalesce(error,'')
 		FROM access_log
 		WHERE ($1='' OR hostname ILIKE '%'||$1||'%')
 		  AND ($2='' OR vault_user ILIKE '%'||$2||'%')
+		  AND ($3='' OR host(source_ip) = $3)
 		ORDER BY signed_at DESC
-		LIMIT $3`, hostFilter, userFilter, limit)
+		LIMIT $4`, hostFilter, userFilter, sourceIPFilter, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +197,7 @@ func (s *Store) AccessLog(ctx context.Context, limit int, hostFilter, userFilter
 	var out []AccessEntry
 	for rows.Next() {
 		var e AccessEntry
-		if err := rows.Scan(&e.VaultUser, &e.Hostname, &e.CertSerial, &e.SignedAt, &e.OK); err != nil {
+		if err := rows.Scan(&e.VaultUser, &e.Hostname, &e.CertSerial, &e.SignedAt, &e.OK, &e.SourceIP, &e.SourceAddr, &e.ClientHost, &e.ClientUser, &e.TargetAddr, &e.JumpVia, &e.Error); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
