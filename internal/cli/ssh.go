@@ -1,13 +1,11 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -65,7 +63,7 @@ func pick(ctx context.Context, st *store.Store, args []string) (*store.Server, e
 		if len(cands) == 0 {
 			return nil, fmt.Errorf("no server matches %q", args[0])
 		}
-		return chooseFrom(cands)
+		return selectServer(cands, fmt.Sprintf("%q 에 매칭되는 서버 선택:", args[0]))
 	}
 	// No argument: choose from the full list.
 	all, err := st.List(ctx, "")
@@ -75,25 +73,7 @@ func pick(ctx context.Context, st *store.Store, args []string) (*store.Server, e
 	if len(all) == 0 {
 		return nil, fmt.Errorf("inventory is empty. Run 'vctl sync' first")
 	}
-	return chooseFrom(all)
-}
-
-func chooseFrom(cands []store.Server) (*store.Server, error) {
-	fmt.Fprintln(os.Stderr, "multiple servers matched; choose a number:")
-	for i, c := range cands {
-		up := "·"
-		if c.LastSeenUp != nil {
-			up = "up"
-		}
-		fmt.Fprintf(os.Stderr, "  %2d) %-28s %-16s %-12s [%s]\n", i+1, c.Hostname, c.IP, c.DC, up)
-	}
-	fmt.Fprint(os.Stderr, "number: ")
-	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	n, err := strconv.Atoi(strings.TrimSpace(line))
-	if err != nil || n < 1 || n > len(cands) {
-		return nil, fmt.Errorf("invalid selection")
-	}
-	return &cands[n-1], nil
+	return selectServer(all, "접속할 서버 선택:")
 }
 
 // buildTarget converts a server and jump chain into sshc.Target values.
