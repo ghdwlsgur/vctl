@@ -36,7 +36,7 @@ func sshCmd() *cobra.Command {
 				return err
 			}
 
-			tgt, err := buildTarget(ctx, st, target)
+			tgt, err := buildTarget(ctx, st, target, a.Cfg.SSHDirectFirst)
 			if err != nil {
 				return err
 			}
@@ -97,28 +97,29 @@ func pick(ctx context.Context, st *store.Store, args []string) (*store.Server, e
 }
 
 // buildTarget converts a server and jump chain into sshc.Target values.
-func buildTarget(ctx context.Context, st *store.Store, sv *store.Server) (*sshc.Target, error) {
-	return buildTargetSeen(ctx, st, sv, map[string]bool{})
+func buildTarget(ctx context.Context, st *store.Store, sv *store.Server, directFirst bool) (*sshc.Target, error) {
+	return buildTargetSeen(ctx, st, sv, directFirst, map[string]bool{})
 }
 
-func buildTargetSeen(ctx context.Context, st *store.Store, sv *store.Server, seen map[string]bool) (*sshc.Target, error) {
+func buildTargetSeen(ctx context.Context, st *store.Store, sv *store.Server, directFirst bool, seen map[string]bool) (*sshc.Target, error) {
 	if seen[sv.Hostname] {
 		return nil, fmt.Errorf("jump host cycle detected: %s", sv.Hostname)
 	}
 	seen[sv.Hostname] = true
 
 	t := &sshc.Target{
-		Name: sv.Hostname,
-		Addr: net.JoinHostPort(sv.IP, strconv.Itoa(sv.Port)),
-		User: sv.User,
-		Role: sv.CARole,
+		Name:       sv.Hostname,
+		Addr:       net.JoinHostPort(sv.IP, strconv.Itoa(sv.Port)),
+		User:       sv.User,
+		Role:       sv.CARole,
+		SkipDirect: !directFirst,
 	}
 	if sv.JumpVia != "" {
 		jsv, err := st.Get(ctx, sv.JumpVia)
 		if err != nil {
 			return nil, fmt.Errorf("lookup jump host %q: %w", sv.JumpVia, err)
 		}
-		jt, err := buildTargetSeen(ctx, st, jsv, seen)
+		jt, err := buildTargetSeen(ctx, st, jsv, directFirst, seen)
 		if err != nil {
 			return nil, err
 		}
