@@ -160,6 +160,36 @@ func (s *Store) SessionTimeline(ctx context.Context, certSerial string, limit in
 	return sessions, byID, erows.Err()
 }
 
+// CountKernelEventsBefore returns how many kernel_event rows are older than t.
+// Used for prune dry-runs.
+func (s *Store) CountKernelEventsBefore(ctx context.Context, t time.Time) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM kernel_event WHERE ts < $1`, t).Scan(&n)
+	return n, err
+}
+
+// PruneKernelEvents deletes kernel_event rows older than t and returns the count.
+// Requires write credentials.
+func (s *Store) PruneKernelEvents(ctx context.Context, t time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM kernel_event WHERE ts < $1`, t)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// PruneSessions deletes audit_session rows started before t. Sessions are the
+// dataset index, so prune them with a longer horizon than raw events.
+// FK on kernel_event is ON DELETE SET NULL, so orphan events are harmless and
+// caught by their own retention.
+func (s *Store) PruneSessions(ctx context.Context, t time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM audit_session WHERE started_at < $1`, t)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ListSessions returns recent sessions, optionally filtered by host substring.
 func (s *Store) ListSessions(ctx context.Context, hostFilter string, limit int) ([]AuditSession, error) {
 	if limit <= 0 {
