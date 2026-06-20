@@ -1,0 +1,8 @@
+.git
+.github
+.vctl/config.yaml
+.vctl/*.local.yaml
+.cache
+bin
+dist
+Dockerfile
