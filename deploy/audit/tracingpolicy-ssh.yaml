@@ -1,0 +1,34 @@
+# Tetragon TracingPolicy: capture the SRE action timeline.
+#
+# process_exec / process_exit are emitted by Tetragon's base sensor (no policy
+# needed) — enable process events in the Tetragon config. This policy adds file
+# and network visibility for the richer dataset; tune the paths to cut noise.
+#
+# Apply:  kubectl apply -f tracingpolicy-ssh.yaml      (k8s nodes)
+#    or:  tetragon --tracing-policy tracingpolicy-ssh.yaml  (bare VM)
+#
+# Map new event kinds in vctl's mapTetra() before relying on file/net rows.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: vctl-sre-audit
+spec:
+  kprobes:
+    # Files opened (config/secrets touched during an operation).
+    - call: "security_file_open"
+      syscall: false
+      args:
+        - index: 0
+          type: "file"
+      selectors:
+        - matchActions:
+            - action: Post
+    # Outbound TCP connects (where an operation reached out to).
+    - call: "tcp_connect"
+      syscall: false
+      args:
+        - index: 0
+          type: "sock"
+      selectors:
+        - matchActions:
+            - action: Post
