@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -167,6 +168,21 @@ func certSigner(role, user string, sign SignFunc, extensions []string) (ssh.Sign
 		return nil, fmt.Errorf("signed result is not a certificate")
 	}
 	return ssh.NewCertSigner(cert, base)
+}
+
+// CertSerial parses an OpenSSH certificate string and returns its serial as a
+// decimal string. It returns "" when the input is not a parseable certificate.
+// Used for access audit logging so a signed access maps to a Vault-issued serial.
+func CertSerial(certStr string) string {
+	pk, _, _, _, err := ssh.ParseAuthorizedKey([]byte(certStr))
+	if err != nil {
+		return ""
+	}
+	cert, ok := pk.(*ssh.Certificate)
+	if !ok {
+		return ""
+	}
+	return strconv.FormatUint(cert.Serial, 10)
 }
 
 // shell opens an interactive remote PTY and handles SIGWINCH resize events.

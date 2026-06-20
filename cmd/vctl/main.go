@@ -1,10 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/ghdwlsgur/vctl/internal/cli"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // version is injected at build time with -ldflags "-X main.version=...".
@@ -13,7 +13,7 @@ var version = "dev"
 func main() {
 	cli.Version = version
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		ui.Errorf(os.Stderr, "%v", err)
 		os.Exit(1)
 	}
 }
