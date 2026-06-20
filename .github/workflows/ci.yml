@@ -48,6 +48,7 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          trivyignores: .trivyignore
           scanners: vuln,secret,misconfig
           severity: CRITICAL,HIGH,MEDIUM,LOW
           exit-code: "1"
