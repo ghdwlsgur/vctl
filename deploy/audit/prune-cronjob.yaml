@@ -19,9 +19,17 @@ spec:
       template:
         spec:
           restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: prune
-              image: ghcr.io/ghdwlsgur/vctl:latest # pin to a release tag in prod
+              # Pin to a release tag; pull from the internal trusted registry.
+              image: harbor.sre.local/sre/vctl:v0.1.9
               args: ["prune"]
               env:
                 - name: VCTL_AUTH_METHOD
@@ -30,11 +38,30 @@ spec:
                   value: /etc/vctl/role-id
                 - name: VCTL_SECRET_ID_FILE
                   value: /etc/vctl/secret-id
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 32Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
               volumeMounts:
                 - name: approle
                   mountPath: /etc/vctl
                   readOnly: true
+                - name: state
+                  mountPath: /home/nonroot/.vctl
           volumes:
             - name: approle
               secret:
                 secretName: vctl-prune-approle
+            - name: state
+              emptyDir: {}
