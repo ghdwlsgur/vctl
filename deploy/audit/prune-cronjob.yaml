@@ -1,0 +1,40 @@
+# Daily kernel-audit retention. Runs `vctl prune` with config defaults
+# (kernel_retention_days / session_retention_days). Mirrors Teleport's model:
+# structured rows live in the DB, a lifecycle job enforces retention.
+#
+# Needs: vctl image + AppRole creds (vctl-rw) in secret `vctl-prune-approle`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vctl-audit-prune
+  namespace: vctl
+spec:
+  schedule: "17 3 * * *" # daily 03:17
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: prune
+              image: ghcr.io/ghdwlsgur/vctl:latest # pin to a release tag in prod
+              args: ["prune"]
+              env:
+                - name: VCTL_AUTH_METHOD
+                  value: approle
+                - name: VCTL_ROLE_ID_FILE
+                  value: /etc/vctl/role-id
+                - name: VCTL_SECRET_ID_FILE
+                  value: /etc/vctl/secret-id
+              volumeMounts:
+                - name: approle
+                  mountPath: /etc/vctl
+                  readOnly: true
+          volumes:
+            - name: approle
+              secret:
+                secretName: vctl-prune-approle

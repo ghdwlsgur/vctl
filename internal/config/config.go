@@ -31,6 +31,12 @@ type Config struct {
 	DBRoleMigrate    string `yaml:"db_role_migrate"`    // database/creds/<migrator> for schema changes
 	DBMigrationOwner string `yaml:"db_migration_owner"` // stable owner role for migration objects
 
+	// Kernel-audit retention. Raw kernel_event rows are high-volume; sessions are
+	// small metadata kept much longer as the dataset index. Pruning is delegated
+	// to `vctl prune` (run by a CronJob), mirroring Teleport's storage-lifecycle model.
+	KernelRetentionDays  int `yaml:"kernel_retention_days"`  // prune kernel_event older than this
+	SessionRetentionDays int `yaml:"session_retention_days"` // prune audit_session older than this (0 = keep)
+
 	CARole         string `yaml:"ca_role"`          // ssh/sign/<role>
 	SSHSign        string `yaml:"ssh_sign"`         // issued cert TTL
 	SSHDirectFirst bool   `yaml:"ssh_direct_first"` // try target directly before falling back to jump hosts
@@ -69,6 +75,8 @@ func Defaults() *Config {
 		DBRoleRW:             "vctl-rw",
 		DBRoleMigrate:        "vctl-migrator",
 		DBMigrationOwner:     "vctl_owner",
+		KernelRetentionDays:  90,
+		SessionRetentionDays: 365,
 		CARole:               "sre-core",
 		SSHSign:              "30m",
 		SSHDirectFirst:       true,
@@ -141,6 +149,8 @@ func (c *Config) applyEnv() {
 	envStr(&c.DBRoleMigrate, "VCTL_DB_ROLE_MIGRATE")
 	envStr(&c.DBMigrationOwner, "VGO_DB_MIGRATION_OWNER")
 	envStr(&c.DBMigrationOwner, "VCTL_DB_MIGRATION_OWNER")
+	envInt(&c.KernelRetentionDays, "VCTL_KERNEL_RETENTION_DAYS")
+	envInt(&c.SessionRetentionDays, "VCTL_SESSION_RETENTION_DAYS")
 	envStr(&c.CARole, "VGO_CA_ROLE")
 	envStr(&c.CARole, "VCTL_CA_ROLE")
 	envBool(&c.SSHDirectFirst, "VCTL_SSH_DIRECT_FIRST")
