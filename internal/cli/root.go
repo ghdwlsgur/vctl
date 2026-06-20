@@ -28,6 +28,7 @@ SSH CA access:
   vctl ssh <name>       resolve inventory and connect with a short-lived cert
   vctl list             list accessible inventory hosts
   vctl sync             sync inventory from ~/.ssh/config and probes
+  vctl audit            show the central SSH access log
 
 Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault issues a short-lived SSH certificate for each connection.`,
 		SilenceUsage:  true,
@@ -35,7 +36,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 	}
 	root.AddCommand(
 		loginCmd(), logoutCmd(), tokenCmd(), execCmd(), agentCmd(),
-		sshCmd(), lsCmd(), syncCmd(), statusCmd(),
+		sshCmd(), lsCmd(), syncCmd(), statusCmd(), auditCmd(),
 	)
 	return root.Execute()
 }

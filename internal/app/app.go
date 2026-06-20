@@ -163,6 +163,18 @@ func (a *App) OpenStore(ctx context.Context, rw bool) (*store.Store, error) {
 	return a.OpenStoreRole(ctx, role)
 }
 
+// LogAccess records one SSH access attempt to the central audit table using
+// write credentials. It is best-effort: it opens a short-lived RW store, inserts
+// one row, and returns any error for the caller to log without failing the SSH.
+func (a *App) LogAccess(ctx context.Context, vaultUser, hostname, certSerial string, ok bool) error {
+	st, err := a.OpenStore(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	return st.LogAccess(ctx, vaultUser, hostname, certSerial, ok)
+}
+
 // OpenStoreRole opens Postgres with a specific Vault database role.
 func (a *App) OpenStoreRole(ctx context.Context, role string) (*store.Store, error) {
 	if err := a.EnsureLogin(ctx); err != nil {
