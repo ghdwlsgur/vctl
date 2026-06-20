@@ -148,6 +148,7 @@ func BuildWithOptions(blocks []hostBlock, opts BuildOptions) []store.Server {
 
 	byAlias := indexByAlias(blocks)
 	filtered := filterByPrefix(blocks, opts.Prefix)
+	filtered = includeJumpHosts(filtered, byAlias)
 	up := probeAll(filtered, opts.ProbeTimeout, opts.ProbeConcurrency)
 
 	var out []store.Server
@@ -163,6 +164,38 @@ func indexByAlias(blocks []hostBlock) map[string]hostBlock {
 		byAlias[b.alias] = b
 	}
 	return byAlias
+}
+
+// includeJumpHosts augments the selection with any blocks referenced as a
+// ProxyJump (transitively) by an already-included host, even if those jump
+// hosts don't match the prefix. Without this, ssh to a host whose jump host
+// was filtered out fails with "lookup jump host: no rows in result set".
+func includeJumpHosts(selected []hostBlock, byAlias map[string]hostBlock) []hostBlock {
+	in := make(map[string]bool, len(selected))
+	for _, b := range selected {
+		in[b.alias] = true
+	}
+	// BFS over jump references until no new jump host is added.
+	queue := append([]hostBlock(nil), selected...)
+	for len(queue) > 0 {
+		b := queue[0]
+		queue = queue[1:]
+		if b.proxyJump == "" {
+			continue
+		}
+		ja := normalizeJumpAlias(b.proxyJump)
+		if ja == "" || in[ja] {
+			continue
+		}
+		jb, ok := byAlias[ja]
+		if !ok {
+			continue // jump host not in ssh config; resolveJumpAlias keeps the raw alias
+		}
+		in[ja] = true
+		selected = append(selected, jb)
+		queue = append(queue, jb)
+	}
+	return selected
 }
 
 func filterByPrefix(blocks []hostBlock, prefix string) []hostBlock {

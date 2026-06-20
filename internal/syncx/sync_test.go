@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
 func TestSplitKV(t *testing.T) {
@@ -55,11 +57,20 @@ func TestBuildNormalizesProxyJump(t *testing.T) {
 		{alias: "sre-app", hostName: "10.40.0.20", user: "ubuntu", port: 22, proxyJump: "jumpuser@bastion:2222"},
 	}
 	servers := BuildWithOptions(blocks, BuildOptions{Prefix: "sre", ProbeTimeout: time.Nanosecond})
-	if len(servers) != 1 {
-		t.Fatalf("len(Build) = %d, want 1", len(servers))
+	// sre-app matches the prefix; bastion is pulled in as its jump host even
+	// though it doesn't match the prefix (includeJumpHosts).
+	byName := map[string]store.Server{}
+	for _, s := range servers {
+		byName[s.Hostname] = s
 	}
-	if servers[0].JumpVia != "bastion" {
-		t.Fatalf("JumpVia = %q, want bastion", servers[0].JumpVia)
+	if len(servers) != 2 {
+		t.Fatalf("len(Build) = %d, want 2 (sre-app + jump host bastion)", len(servers))
+	}
+	if _, ok := byName["bastion"]; !ok {
+		t.Fatalf("jump host bastion not included; got %v", servers)
+	}
+	if byName["sre-app"].JumpVia != "bastion" {
+		t.Fatalf("JumpVia = %q, want bastion", byName["sre-app"].JumpVia)
 	}
 }
 
