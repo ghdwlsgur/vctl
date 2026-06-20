@@ -12,6 +12,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
 )
 
@@ -58,7 +59,7 @@ func (a *App) EnsureLogin(ctx context.Context) error {
 func (a *App) Login(ctx context.Context, method string) error {
 	switch strings.ToLower(method) {
 	case "oidc":
-		fmt.Fprintf(os.Stderr, "Vault OIDC SSO login (%s)...\n", a.Cfg.VaultAddr)
+		ui.Infof(os.Stderr, "Vault OIDC SSO login (%s)", a.Cfg.VaultAddr)
 		return a.Vault.LoginOIDC(ctx, a.Cfg.OIDCMount, a.Cfg.OIDCRole)
 	case "approle":
 		id, sec, ok := a.AppRoleCreds()
@@ -120,7 +121,8 @@ func firstNonEmpty(vals ...string) string {
 }
 
 func (a *App) loginUserpass(ctx context.Context) error {
-	fmt.Fprintf(os.Stderr, "Vault login (%s)\n", a.Cfg.VaultAddr)
+	ui.Section(os.Stderr, "Vault login")
+	ui.Infof(os.Stderr, "%s", a.Cfg.VaultAddr)
 	reader := bufio.NewReader(os.Stdin)
 
 	def := os.Getenv("USER")
@@ -147,7 +149,7 @@ func (a *App) loginUserpass(ctx context.Context) error {
 	if err := a.Vault.LoginUserpass(ctx, username, string(pw)); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "login succeeded.")
+	ui.Successf(os.Stderr, "login succeeded")
 	return nil
 }
 
@@ -159,6 +161,18 @@ func (a *App) OpenStore(ctx context.Context, rw bool) (*store.Store, error) {
 		role = a.Cfg.DBRoleRW
 	}
 	return a.OpenStoreRole(ctx, role)
+}
+
+// LogAccess records one SSH access attempt to the central audit table using
+// write credentials. It is best-effort: it opens a short-lived RW store, inserts
+// one row, and returns any error for the caller to log without failing the SSH.
+func (a *App) LogAccess(ctx context.Context, vaultUser, hostname, certSerial string, ok bool) error {
+	st, err := a.OpenStore(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	return st.LogAccess(ctx, vaultUser, hostname, certSerial, ok)
 }
 
 // OpenStoreRole opens Postgres with a specific Vault database role.

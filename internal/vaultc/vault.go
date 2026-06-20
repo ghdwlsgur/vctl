@@ -123,6 +123,23 @@ func (c *Client) Renew(ctx context.Context) error {
 	return c.applyAuth(sec)
 }
 
+// Identity returns a human-readable identity for the current token
+// (display_name from token lookup-self), used for access audit logging.
+// It returns "" when the lookup fails so callers can degrade gracefully.
+func (c *Client) Identity(ctx context.Context) string {
+	if c.api.Token() == "" {
+		return ""
+	}
+	sec, err := c.api.Auth().Token().LookupSelfWithContext(ctx)
+	if err != nil || sec == nil || sec.Data == nil {
+		return ""
+	}
+	if dn, ok := sec.Data["display_name"].(string); ok && dn != "" {
+		return dn
+	}
+	return ""
+}
+
 // Logout clears the cached token.
 func (c *Client) Logout() error {
 	c.api.ClearToken()

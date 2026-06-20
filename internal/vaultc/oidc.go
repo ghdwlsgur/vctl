@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"time"
+
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // oidcRedirect matches the standard Vault CLI helper callback URL.
@@ -75,8 +78,8 @@ func (c *Client) LoginOIDC(ctx context.Context, mount, role string) error {
 	defer srv.Close()
 
 	// 3. Open the browser.
-	fmt.Println("Complete SSO login in your browser. If it does not open, use this URL:")
-	fmt.Println("  " + authURL)
+	ui.Infof(os.Stdout, "complete SSO login in your browser")
+	ui.Infof(os.Stdout, "if it does not open, use this URL: %s", authURL)
 	_ = openBrowser(authURL)
 
 	// 4. Wait for the callback.
