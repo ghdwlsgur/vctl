@@ -2,7 +2,7 @@
 
 ARG GO_VERSION=1.26.4
 
-FROM golang:${GO_VERSION}-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
