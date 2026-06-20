@@ -30,11 +30,12 @@ var (
 
 // Target describes one SSH hop. Jump is dialed first when set.
 type Target struct {
-	Name string
-	Addr string // host:port
-	User string
-	Role string // ssh/sign/<role>
-	Jump *Target
+	Name       string
+	Addr       string // host:port
+	User       string
+	Role       string // ssh/sign/<role>
+	SkipDirect bool   // connect through Jump without first trying the target directly
+	Jump       *Target
 }
 
 // Connect opens an interactive PTY shell and blocks until it exits.
@@ -49,14 +50,22 @@ func Connect(ctx context.Context, t *Target, sign SignFunc) error {
 
 // dialTarget prefers direct SSH, then falls back to the configured jump chain.
 func dialTarget(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), error) {
-	client, cleanup, directErr := dialSingle(t, sign, ptyExtensions)
-	if directErr == nil || t.Jump == nil {
-		return client, cleanup, directErr
+	if !t.SkipDirect || t.Jump == nil {
+		client, cleanup, directErr := dialSingle(t, sign, ptyExtensions)
+		if directErr == nil || t.Jump == nil {
+			return client, cleanup, directErr
+		}
+
+		client, cleanup, jumpErr := dialViaJump(ctx, t, sign)
+		if jumpErr != nil {
+			return nil, nil, fmt.Errorf("direct connection failed: %v; jump connection failed: %w", directErr, jumpErr)
+		}
+		return client, cleanup, nil
 	}
 
 	client, cleanup, jumpErr := dialViaJump(ctx, t, sign)
 	if jumpErr != nil {
-		return nil, nil, fmt.Errorf("direct connection failed: %v; jump connection failed: %w", directErr, jumpErr)
+		return nil, nil, jumpErr
 	}
 	return client, cleanup, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -37,6 +38,10 @@ func (c *Client) LoginOIDC(ctx context.Context, mount, role string) error {
 	if authURL == "" {
 		return fmt.Errorf("oidc: auth_url is empty; Vault OIDC may not be configured")
 	}
+	expectedState, err := oidcState(authURL)
+	if err != nil {
+		return err
+	}
 
 	// 2. Start a local callback server.
 	type result struct {
@@ -44,11 +49,13 @@ func (c *Client) LoginOIDC(ctx context.Context, mount, role string) error {
 		err    error
 	}
 	resCh := make(chan result, 1)
-	ln, err := net.Listen("tcp", "localhost:8250")
+	ln, err := net.Listen("tcp", "127.0.0.1:8250")
 	if err != nil {
 		return fmt.Errorf("oidc callback port 8250 bind failed: %w", err)
 	}
-	srv := &http.Server{}
+	srv := &http.Server{
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oidc/callback", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -61,7 +68,7 @@ func (c *Client) LoginOIDC(ctx context.Context, mount, role string) error {
 			"code":     q.Get("code"),
 			"id_token": q.Get("id_token"),
 		}
-		if params["state"] == "" || (params["code"] == "" && params["id_token"] == "") {
+		if params["state"] == "" || params["state"] != expectedState || (params["code"] == "" && params["id_token"] == "") {
 			http.Error(w, "invalid OIDC callback", http.StatusBadRequest)
 			return
 		}
@@ -105,6 +112,18 @@ func (c *Client) LoginOIDC(ctx context.Context, mount, role string) error {
 		return fmt.Errorf("oidc callback exchange: %w", err)
 	}
 	return c.applyAuth(cb)
+}
+
+func oidcState(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("oidc auth_url parse: %w", err)
+	}
+	state := u.Query().Get("state")
+	if state == "" {
+		return "", fmt.Errorf("oidc auth_url has no state")
+	}
+	return state, nil
 }
 
 func openBrowser(url string) error {
