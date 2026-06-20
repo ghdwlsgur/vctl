@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -93,7 +94,10 @@ func buildTargetSeen(ctx context.Context, st *store.Store, sv *store.Server, see
 		User: sv.User,
 		Role: sv.CARole,
 	}
-	if sv.JumpVia != "" {
+	// Prefer a direct connection: jump_via comes from ssh_config's ProxyJump,
+	// which is only needed when the target isn't routable (no VPN). If we can
+	// reach the target directly (e.g. VPN up), skip the jump entirely.
+	if sv.JumpVia != "" && !directlyReachable(t.Addr) {
 		jsv, err := st.Get(ctx, sv.JumpVia)
 		if err != nil {
 			return nil, fmt.Errorf("lookup jump host %q: %w", sv.JumpVia, err)
@@ -105,4 +109,15 @@ func buildTargetSeen(ctx context.Context, st *store.Store, sv *store.Server, see
 		t.Jump = jt
 	}
 	return t, nil
+}
+
+// directlyReachable reports whether addr accepts a TCP connection quickly.
+// Used to bypass the configured jump host when the target is directly routable.
+func directlyReachable(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, 1500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
