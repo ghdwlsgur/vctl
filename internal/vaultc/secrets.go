@@ -14,6 +14,14 @@ func (c *Client) SignSSH(ctx context.Context, role, publicKey string, principals
 		"public_key":       publicKey,
 		"valid_principals": strings.Join(principals, ","),
 		"ttl":              ttl,
+		// permit-pty for the interactive shell; permit-port-forwarding so a jump
+		// host can open the direct-tcpip channel to the next hop (ProxyJump).
+		// Without port-forwarding the jump sshd rejects with
+		// "administratively prohibited (open failed)".
+		"extensions": map[string]interface{}{
+			"permit-pty":             "",
+			"permit-port-forwarding": "",
+		},
 	})
 	if err != nil {
 		return "", fmt.Errorf("ssh/sign/%s: %w", role, err)
