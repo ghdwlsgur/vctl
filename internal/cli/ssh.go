@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -58,16 +59,52 @@ func sshCmd() *cobra.Command {
 			vaultUser := a.Vault.Identity(ctx)
 
 			ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
-			connErr := sshc.Connect(ctx, tgt, sign)
+			connInfo, connErr := sshc.Connect(ctx, tgt, sign)
 
 			// Best-effort central access log. Never fails the SSH: audit
 			// loss is logged to stderr but the connection result is returned as-is.
-			if logErr := a.LogAccess(ctx, vaultUser, tgt.Name, lastSerial, connErr == nil); logErr != nil {
+			entry := accessEntry(vaultUser, tgt, connInfo, lastSerial, connErr)
+			if logErr := a.LogAccess(ctx, entry); logErr != nil {
 				ui.Warnf(os.Stderr, "access log not recorded: %v", logErr)
 			}
 			return connErr
 		},
 	}
+}
+
+func accessEntry(vaultUser string, tgt *sshc.Target, connInfo sshc.ConnectionInfo, certSerial string, connErr error) store.AccessEntry {
+	clientUser := ""
+	if u, err := user.Current(); err == nil && u != nil {
+		clientUser = u.Username
+	}
+	if clientUser == "" {
+		clientUser = os.Getenv("USER")
+	}
+	clientHost, _ := os.Hostname()
+	entry := store.AccessEntry{
+		VaultUser:  vaultUser,
+		Hostname:   tgt.Name,
+		CertSerial: certSerial,
+		OK:         connErr == nil,
+		SourceIP:   connInfo.SourceIP,
+		SourceAddr: connInfo.SourceAddr,
+		ClientHost: clientHost,
+		ClientUser: clientUser,
+		TargetAddr: firstNonEmpty(connInfo.TargetAddr, tgt.Addr),
+		JumpVia:    connInfo.JumpHost,
+	}
+	if connErr != nil {
+		entry.Error = truncateAuditError(connErr.Error())
+	}
+	return entry
+}
+
+func truncateAuditError(s string) string {
+	const max = 500
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }
 
 // pick selects one server by argument, fuzzy match, or interactive picker.
@@ -97,6 +134,15 @@ func pick(ctx context.Context, st *store.Store, args []string) (*store.Server, e
 }
 
 // buildTarget converts a server and jump chain into sshc.Target values.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func buildTarget(ctx context.Context, st *store.Store, sv *store.Server, directFirst bool) (*sshc.Target, error) {
 	return buildTargetSeen(ctx, st, sv, directFirst, map[string]bool{})
 }

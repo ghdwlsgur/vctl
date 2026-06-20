@@ -82,3 +82,21 @@ func testSignedCert(t *testing.T, publicKey string, principals []string, extensi
 	}
 	return string(ssh.MarshalAuthorizedKey(cert))
 }
+
+type testAddr string
+
+func (a testAddr) Network() string { return "test" }
+func (a testAddr) String() string  { return string(a) }
+
+func TestAddrIP(t *testing.T) {
+	cases := map[string]string{
+		"192.0.2.10:54321":      "192.0.2.10",
+		"[2001:db8::1]:54321":   "2001:db8::1",
+		"not-a-network-address": "",
+	}
+	for in, want := range cases {
+		if got := addrIP(testAddr(in)); got != want {
+			t.Fatalf("addrIP(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

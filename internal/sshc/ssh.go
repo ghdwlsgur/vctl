@@ -10,6 +10,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -38,36 +39,74 @@ type Target struct {
 	Jump       *Target
 }
 
+// ConnectionInfo describes the client-side network path used for an SSH session.
+type ConnectionInfo struct {
+	SourceAddr string
+	SourceIP   string
+	TargetAddr string
+	ViaJump    bool
+	JumpHost   string
+}
+
 // Connect opens an interactive PTY shell and blocks until it exits.
-func Connect(ctx context.Context, t *Target, sign SignFunc) error {
-	client, cleanup, err := dialTarget(ctx, t, sign)
+func Connect(ctx context.Context, t *Target, sign SignFunc) (ConnectionInfo, error) {
+	client, cleanup, info, err := dialTarget(ctx, t, sign)
 	if err != nil {
-		return err
+		return info, err
 	}
 	defer cleanup()
-	return shell(client)
+	return info, shell(client)
 }
 
 // dialTarget prefers direct SSH, then falls back to the configured jump chain.
-func dialTarget(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), error) {
+func dialTarget(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), ConnectionInfo, error) {
 	if !t.SkipDirect || t.Jump == nil {
 		client, cleanup, directErr := dialSingle(t, sign, ptyExtensions)
 		if directErr == nil || t.Jump == nil {
-			return client, cleanup, directErr
+			return client, cleanup, connectionInfo(client, t, false), directErr
 		}
 
 		client, cleanup, jumpErr := dialViaJump(ctx, t, sign)
 		if jumpErr != nil {
-			return nil, nil, fmt.Errorf("direct connection failed: %v; jump connection failed: %w", directErr, jumpErr)
+			return nil, nil, ConnectionInfo{TargetAddr: t.Addr, ViaJump: true, JumpHost: t.Jump.Name}, fmt.Errorf("direct connection failed: %v; jump connection failed: %w", directErr, jumpErr)
 		}
-		return client, cleanup, nil
+		return client, cleanup, connectionInfo(client, t, true), nil
 	}
 
 	client, cleanup, jumpErr := dialViaJump(ctx, t, sign)
 	if jumpErr != nil {
-		return nil, nil, jumpErr
+		return nil, nil, ConnectionInfo{TargetAddr: t.Addr, ViaJump: true, JumpHost: t.Jump.Name}, jumpErr
 	}
-	return client, cleanup, nil
+	return client, cleanup, connectionInfo(client, t, true), nil
+}
+
+func connectionInfo(client *ssh.Client, t *Target, viaJump bool) ConnectionInfo {
+	info := ConnectionInfo{TargetAddr: t.Addr, ViaJump: viaJump}
+	if t.Jump != nil && viaJump {
+		info.JumpHost = t.Jump.Name
+	}
+	if client == nil {
+		return info
+	}
+	if addr := client.LocalAddr(); addr != nil {
+		info.SourceAddr = addr.String()
+		info.SourceIP = addrIP(addr)
+	}
+	return info
+}
+
+func addrIP(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return host
+	}
+	return ""
 }
 
 func dialSingle(t *Target, sign SignFunc, extensions []string) (*ssh.Client, func(), error) {
