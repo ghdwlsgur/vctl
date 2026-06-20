@@ -29,6 +29,9 @@ spec:
           containers:
             - name: prune
               # Pin to a release tag; pull from the internal trusted registry.
+              # harbor.sre.local is the org's trusted registry; Trivy only knows
+              # public ones. Inline-ignore the untrusted-registry check.
+              # trivy:ignore:AVD-KSV-0125
               image: harbor.sre.local/sre/vctl:v0.1.9
               args: ["prune"]
               env:
