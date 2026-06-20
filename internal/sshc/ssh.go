@@ -20,7 +20,12 @@ import (
 )
 
 // SignFunc signs an authorized-key public key and returns an OpenSSH cert.
-type SignFunc func(role, publicKey string, principals []string) (cert string, err error)
+type SignFunc func(role, publicKey string, principals []string, extensions []string) (cert string, err error)
+
+var (
+	ptyExtensions         = []string{"permit-pty"}
+	portForwardExtensions = []string{"permit-port-forwarding"}
+)
 
 // Target describes one SSH hop. Jump is dialed first when set.
 type Target struct {
@@ -33,7 +38,7 @@ type Target struct {
 
 // Connect opens an interactive PTY shell and blocks until it exits.
 func Connect(ctx context.Context, t *Target, sign SignFunc) error {
-	client, cleanup, err := dial(ctx, t, sign)
+	client, cleanup, err := dialTarget(ctx, t, sign)
 	if err != nil {
 		return err
 	}
@@ -41,29 +46,34 @@ func Connect(ctx context.Context, t *Target, sign SignFunc) error {
 	return shell(client)
 }
 
-// dial returns a target client and cleanup function for the full jump chain.
-func dial(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), error) {
-	signer, err := certSigner(t.Role, t.User, sign)
+// dialTarget prefers direct SSH, then falls back to the configured jump chain.
+func dialTarget(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), error) {
+	client, cleanup, directErr := dialSingle(t, sign, ptyExtensions)
+	if directErr == nil || t.Jump == nil {
+		return client, cleanup, directErr
+	}
+
+	client, cleanup, jumpErr := dialViaJump(ctx, t, sign)
+	if jumpErr != nil {
+		return nil, nil, fmt.Errorf("direct connection failed: %v; jump connection failed: %w", directErr, jumpErr)
+	}
+	return client, cleanup, nil
+}
+
+func dialSingle(t *Target, sign SignFunc, extensions []string) (*ssh.Client, func(), error) {
+	cfg, err := clientConfig(t, sign, extensions)
 	if err != nil {
 		return nil, nil, err
 	}
-	cfg := &ssh.ClientConfig{
-		User:            t.User,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: hostKeyCallback(),
-		Timeout:         15 * time.Second,
+	client, err := ssh.Dial("tcp", t.Addr, cfg)
+	if err != nil {
+		return nil, nil, err
 	}
+	return client, func() { client.Close() }, nil
+}
 
-	if t.Jump == nil {
-		client, err := ssh.Dial("tcp", t.Addr, cfg)
-		if err != nil {
-			return nil, nil, err
-		}
-		return client, func() { client.Close() }, nil
-	}
-
-	// Connect the jump hop first, then tunnel to the target.
-	jclient, jcleanup, err := dial(ctx, t.Jump, sign)
+func dialViaJump(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), error) {
+	jclient, jcleanup, err := dialJump(ctx, t.Jump, sign)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jump %s connection: %w", t.Jump.Name, err)
 	}
@@ -71,6 +81,11 @@ func dial(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), e
 	if err != nil {
 		jcleanup()
 		return nil, nil, fmt.Errorf("connect through jump to %s: %w", t.Addr, err)
+	}
+	cfg, err := clientConfig(t, sign, ptyExtensions)
+	if err != nil {
+		jcleanup()
+		return nil, nil, err
 	}
 	ncc, chans, reqs, err := ssh.NewClientConn(conn, t.Addr, cfg)
 	if err != nil {
@@ -82,8 +97,49 @@ func dial(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), e
 	return client, func() { client.Close(); jcleanup() }, nil
 }
 
+func dialJump(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), error) {
+	if t.Jump == nil {
+		return dialSingle(t, sign, portForwardExtensions)
+	}
+
+	jclient, jcleanup, err := dialJump(ctx, t.Jump, sign)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jump %s connection: %w", t.Jump.Name, err)
+	}
+	conn, err := jclient.Dial("tcp", t.Addr)
+	if err != nil {
+		jcleanup()
+		return nil, nil, fmt.Errorf("connect through jump to %s: %w", t.Addr, err)
+	}
+	cfg, err := clientConfig(t, sign, portForwardExtensions)
+	if err != nil {
+		jcleanup()
+		return nil, nil, err
+	}
+	ncc, chans, reqs, err := ssh.NewClientConn(conn, t.Addr, cfg)
+	if err != nil {
+		jcleanup()
+		return nil, nil, fmt.Errorf("%s handshake: %w", t.Name, err)
+	}
+	client := ssh.NewClient(ncc, chans, reqs)
+	return client, func() { client.Close(); jcleanup() }, nil
+}
+
+func clientConfig(t *Target, sign SignFunc, extensions []string) (*ssh.ClientConfig, error) {
+	signer, err := certSigner(t.Role, t.User, sign, extensions)
+	if err != nil {
+		return nil, err
+	}
+	return &ssh.ClientConfig{
+		User:            t.User,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: hostKeyCallback(),
+		Timeout:         15 * time.Second,
+	}, nil
+}
+
 // certSigner creates an in-memory keypair and wraps it with a Vault cert.
-func certSigner(role, user string, sign SignFunc) (ssh.Signer, error) {
+func certSigner(role, user string, sign SignFunc, extensions []string) (ssh.Signer, error) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -98,7 +154,7 @@ func certSigner(role, user string, sign SignFunc) (ssh.Signer, error) {
 	}
 	authKey := string(ssh.MarshalAuthorizedKey(sshPub))
 
-	certStr, err := sign(role, authKey, []string{user})
+	certStr, err := sign(role, authKey, []string{user}, extensions)
 	if err != nil {
 		return nil, err
 	}
