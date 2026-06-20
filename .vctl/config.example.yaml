@@ -1,0 +1,24 @@
+vault_addr: https://vault.sre.local
+auth_method: userpass
+oidc_role: vctl
+oidc_mount: oidc
+
+db_host: vctl-postgres.sre.local
+db_port: 5432
+db_name: vctl
+db_role_ro: vctl-ro
+db_role_rw: vctl-rw
+db_role_migrate: vctl-migrator
+db_migration_owner: vctl_owner
+
+ca_role: sre-core
+ssh_sign: 30m
+ssh_default_user: ubuntu
+
+sync_probe_timeout: 3s
+sync_probe_concurrency: 32
+dc_rules:
+  - name: incheon
+    prefixes: ["10.40.0.", "192.168.10."]
+  - name: seoul-onprem
+    prefixes: ["192.168.201.", "192.168.190.", "192.168.110."]
