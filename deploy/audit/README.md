@@ -45,8 +45,15 @@ a local marker; one privileged daemon (AppRole) does all central writes.
    ```
 3. **Tetragon** — install (DaemonSet on k8s nodes, or systemd on bare VMs) with
    `tracingpolicy-ssh.yaml`.
-4. **Collector** — install `vctl-collect.service` (+ AppRole creds in
-   `/etc/vctl/`), enable it.
+4. **Collector + session registrar** — install `vctl-collect.service` (Tetragon
+   → events) and `vctl-watch-sessions.service` (PAM markers → sessions), with
+   AppRole creds in `/etc/vctl/` (role → `vctl-rw`), enable both.
+5. **Log rotation** — both daemons log to journald; install
+   `journald-vctl-audit.conf` → `/etc/systemd/journald.conf.d/` to cap journal
+   growth, and `logrotate-vctl-audit.conf` → `/etc/logrotate.d/` for any
+   file-based logs (Tetragon export buffer, etc.). Kernel events live in central
+   Postgres and are pruned by `vctl prune` (CronJob) — host logs are bounded
+   separately so a busy host can't fill its disk.
 
 For OpenStack VMs: bake steps 1–4 into the golden image. New VMs then audit
 themselves with zero per-host onboarding — same pattern as the SSH CA trust
@@ -59,5 +66,6 @@ themselves with zero per-host onboarding — same pattern as the SSH CA trust
 - Session linking uses cgroup id when present, else cert serial. Populating
   `cgroup_id` from Tetragon (and into the marker) makes linking exact under
   concurrent sessions from the same user.
-- The marker→`session-start` loop is the collector daemon's job; a
-  `vctl collect --watch-sessions <dir>` mode is the natural home for it.
+- The marker→session loop is `vctl watch-sessions` (vctl-watch-sessions.service);
+  it derives the cgroup id from `/proc/<pid>/cgroup` so Tetragon events link by
+  cgroup, falling back to cert serial.
