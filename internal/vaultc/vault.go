@@ -1,8 +1,7 @@
-// Package vaultc 는 vctl 가 Vault 와 주고받는 모든 것을 담는다.
+// Package vaultc contains all Vault interactions used by vctl.
 //
-// Vault Agent 를 쓰지 않는다 — 이 클라이언트가 직접 로그인하고, 토큰을 캐시하고,
-// 만료 전 자동 갱신(renew-self)하며, SSH cert 서명과 동적 DB 자격 발급을 수행한다.
-// 즉 별도 데몬 없이 "에이전트처럼" 토큰 수명을 관리한다.
+// It logs in directly, caches tokens, renews before expiry, signs SSH
+// certificates, and requests dynamic DB credentials without Vault Agent.
 package vaultc
 
 import (
@@ -29,8 +28,8 @@ type cachedToken struct {
 	Renewable bool      `json:"renewable"`
 }
 
-// New 는 임베드된 사설 CA 로 TLS 를 구성한 Vault 클라이언트를 만들고,
-// 캐시된 토큰이 있으면 즉시 적용한다.
+// New creates a Vault client configured with the embedded private CA.
+// Cached tokens are loaded immediately when present.
 func New(addr string, caPEM []byte, stateDir string) (*Client, error) {
 	cfg := vault.DefaultConfig()
 	cfg.Address = addr
@@ -48,7 +47,7 @@ func New(addr string, caPEM []byte, stateDir string) (*Client, error) {
 	return c, nil
 }
 
-// HasValidToken 은 캐시 토큰이 살아있는지(만료 60초 여유) 반환한다.
+// HasValidToken reports whether the cached token is valid with 60s of margin.
 func (c *Client) HasValidToken() bool {
 	return c.api.Token() != "" && c.tokenExp.After(time.Now().Add(60*time.Second))
 }
@@ -78,10 +77,10 @@ func (c *Client) saveToken(token string, ttl time.Duration, renewable bool) erro
 	return os.WriteFile(c.tokenPath, b, 0o600)
 }
 
-// applyAuth 는 로그인/갱신 응답의 토큰을 적용·캐시한다.
+// applyAuth applies and caches a token from a login or renewal response.
 func (c *Client) applyAuth(sec *vault.Secret) error {
 	if sec == nil || sec.Auth == nil || sec.Auth.ClientToken == "" {
-		return fmt.Errorf("vault: 인증 응답에 토큰이 없습니다")
+		return fmt.Errorf("vault auth response has no token")
 	}
 	ttl := time.Duration(sec.Auth.LeaseDuration) * time.Second
 	if ttl <= 0 {
@@ -90,16 +89,16 @@ func (c *Client) applyAuth(sec *vault.Secret) error {
 	return c.saveToken(sec.Auth.ClientToken, ttl, sec.Auth.Renewable)
 }
 
-// Token 은 현재 토큰 문자열을 반환한다(sink/exec 주입용).
+// Token returns the current token for sink files and exec injection.
 func (c *Client) Token() string { return c.api.Token() }
 
-// Renewable 은 현재 토큰이 갱신 가능한지 반환한다.
+// Renewable reports whether the current token can be renewed.
 func (c *Client) Renewable() bool { return c.renewable }
 
-// Expiry 는 캐시 토큰의 만료 시각을 반환한다.
+// Expiry returns the cached token expiry time.
 func (c *Client) Expiry() time.Time { return c.tokenExp }
 
-// TTL 은 남은 토큰 수명을 반환한다(없으면 0).
+// TTL returns the remaining token lifetime.
 func (c *Client) TTL() time.Duration {
 	if c.tokenExp.IsZero() {
 		return 0
@@ -111,11 +110,11 @@ func (c *Client) TTL() time.Duration {
 	return d
 }
 
-// Renew 는 renew-self 로 토큰 수명을 연장한다(자격 재입력 불필요).
-// max_ttl 도달 등으로 더 못 늘리면 에러를 돌려준다 → 호출부가 재인증 결정.
+// Renew extends the current token with renew-self.
+// When max_ttl prevents renewal, callers decide whether to re-authenticate.
 func (c *Client) Renew(ctx context.Context) error {
 	if c.api.Token() == "" {
-		return fmt.Errorf("토큰 없음")
+		return fmt.Errorf("missing token")
 	}
 	sec, err := c.api.Auth().Token().RenewSelfWithContext(ctx, 0)
 	if err != nil {
@@ -124,7 +123,7 @@ func (c *Client) Renew(ctx context.Context) error {
 	return c.applyAuth(sec)
 }
 
-// Logout 은 캐시된 토큰을 폐기한다.
+// Logout clears the cached token.
 func (c *Client) Logout() error {
 	c.api.ClearToken()
 	c.tokenExp = time.Time{}

@@ -17,7 +17,7 @@ func syncCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "~/.ssh/config + 프로브로 중앙 인벤토리 갱신 (관리자, 쓰기 자격 필요)",
+		Short: "Sync central inventory from ~/.ssh/config and probes",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			a, err := newApp()
@@ -35,10 +35,10 @@ func syncCmd() *cobra.Command {
 					return err
 				}
 				mst.Close()
-				fmt.Fprintln(os.Stderr, "스키마 마이그레이션 완료.")
+				fmt.Fprintln(os.Stderr, "schema migration complete.")
 			}
 
-			st, err := a.OpenStore(ctx, true) // 쓰기 role
+			st, err := a.OpenStore(ctx, true) // write role
 			if err != nil {
 				return err
 			}
@@ -64,12 +64,12 @@ func syncCmd() *cobra.Command {
 					up++
 				}
 			}
-			fmt.Fprintf(os.Stderr, "동기화 완료: %d대 upsert (도달 %d / 미도달 %d)\n", ok, up, ok-up)
+			fmt.Fprintf(os.Stderr, "sync complete: %d upserted (reachable %d / unreachable %d)\n", ok, up, ok-up)
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&prefix, "prefix", "sre", "이 prefix 로 시작하는 ssh config alias 만 대상")
-	cmd.Flags().StringVar(&path, "config", "", "ssh config 경로 (기본: ~/.ssh/config)")
-	cmd.Flags().BoolVar(&doMigrate, "migrate", false, "실행 전 스키마 마이그레이션 수행")
+	cmd.Flags().StringVar(&prefix, "prefix", "sre", "only include ssh config aliases with this prefix")
+	cmd.Flags().StringVar(&path, "config", "", "ssh config path; defaults to ~/.ssh/config")
+	cmd.Flags().BoolVar(&doMigrate, "migrate", false, "run schema migrations before sync")
 	return cmd
 }

@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
-# vctl 스모크 테스트 — 현재 Vault(VAULT_ADDR)에 실제 연결해 핵심 경로를 검증한다.
+# Smoke test against the current Vault endpoint.
 #
-# 비파괴: 기존 ~/.vault-token 을 격리된 임시 HOME 의 vctl 캐시로 복사해 쓴다.
-# (Vault 에 쓰기 작업 없음 — renew-self 는 자기 토큰 연장이라 안전.)
+# Non-destructive: copies the existing ~/.vault-token into an isolated temporary
+# HOME and uses vctl's cache there. renew-self only renews the caller's token.
 set -uo pipefail
 
 VCTL_BIN="${VCTL_BIN:-bin/vctl}"
-[ -x "$VCTL_BIN" ] || { echo "먼저 빌드: make build"; exit 1; }
+[ -x "$VCTL_BIN" ] || { echo "Build first: make build"; exit 1; }
 VCTL_BIN="$(cd "$(dirname "$VCTL_BIN")" && pwd)/$(basename "$VCTL_BIN")"
 
 REAL_HOME="$HOME"
 TOKFILE="$REAL_HOME/.vault-token"
-[ -f "$TOKFILE" ] || { echo "~/.vault-token 없음 — 'vault login' 먼저"; exit 1; }
+[ -f "$TOKFILE" ] || { echo "Missing ~/.vault-token. Run vault login first."; exit 1; }
 TOKEN="$(tr -d '\r\n' < "$TOKFILE")"
 export VAULT_ADDR="${VAULT_ADDR:-https://vault.sre.local}"
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/.vctl"
-export HOME="$TMP"   # vctl StateDir = $TMP/.vctl (격리)
-export VCTL_CONFIG="$TMP/.vctl/config.yaml" # 레포 로컬 설정과 분리
+export HOME="$TMP"
+export VCTL_CONFIG="$TMP/.vctl/config.yaml"
 
-# 토큰 캐시 주입 헬퍼: $1=만료초 $2=renewable
 inject() {
   python3 - "$TMP/.vctl/token" "$TOKEN" "$1" "$2" <<'PY'
 import sys, json, datetime
@@ -31,50 +30,79 @@ PY
   chmod 600 "$TMP/.vctl/token"
 }
 
-P=0; F=0
-ok(){ echo "  ✅ $*"; P=$((P+1)); }
-no(){ echo "  ❌ $*"; F=$((F+1)); }
+P=0
+F=0
+ok(){ echo "  PASS $*"; P=$((P+1)); }
+no(){ echo "  FAIL $*"; F=$((F+1)); }
+indent() {
+  local text="${1//$'\n'/$'\n'    }"
+  printf '    %s\n' "$text"
+}
 
-echo "════ vctl 스모크 ($VAULT_ADDR) ════"
+echo "==== vctl smoke ($VAULT_ADDR) ===="
 
 echo "[1] --version"
-V="$("$VCTL_BIN" --version </dev/null 2>&1)" && ok "$V" || no "version: $V"
-
-echo "[2] status — 임베드 CA 로 TLS + ssh/config/ca 읽기 (DB는 graceful fail 예상)"
-inject 28800 true
-STATUS_OUT="$("$VCTL_BIN" status </dev/null 2>&1)"
-echo "$STATUS_OUT" | sed 's/^/    /'
-if echo "$STATUS_OUT" | grep -q "SSH CA" && echo "$STATUS_OUT" | grep -q "OK (ssh-"; then
-  ok "Vault TLS + CA 읽기 성공 (임베드 CA 검증 통과)"
+if V="$("$VCTL_BIN" --version </dev/null 2>&1)"; then
+  ok "$V"
 else
-  no "CA 읽기 실패 — 임베드 CA 가 vault.sre.local 을 검증 못 했을 수 있음"
+  no "version: $V"
 fi
 
-echo "[3] token — 유효 캐시 재사용"
-T="$("$VCTL_BIN" token </dev/null 2>/dev/null)"
-[ "${T:0:6}" = "${TOKEN:0:6}" ] && ok "토큰 출력 (${T:0:14}...)" || no "token 불일치: ${T:0:14}"
+echo "[2] status: embedded CA, Vault TLS, SSH CA read"
+inject 28800 true
+STATUS_OUT="$("$VCTL_BIN" status </dev/null 2>&1)"
+indent "$STATUS_OUT"
+if echo "$STATUS_OUT" | grep -q "SSH CA" && echo "$STATUS_OUT" | grep -q "OK (ssh-"; then
+  ok "Vault TLS and CA read succeeded"
+else
+  no "CA read failed. The embedded CA may not validate vault.sre.local."
+fi
 
-echo "[4] token — renew 경로 (만료 30s + renewable → renew-self)"
+echo "[3] token: reuse valid cache"
+T="$("$VCTL_BIN" token </dev/null 2>/dev/null)"
+if [ "${T:0:6}" = "${TOKEN:0:6}" ]; then
+  ok "token output (${T:0:14}...)"
+else
+  no "token mismatch: ${T:0:14}"
+fi
+
+echo "[4] token: renew path"
 inject 30 true
 RT="$("$VCTL_BIN" token </dev/null 2>/tmp/vctl_renew.err)"
-if [ -n "$RT" ]; then ok "renew-self 후 토큰 발급 (${RT:0:14}...)"; else no "renew 실패: $(cat /tmp/vctl_renew.err)"; fi
+if [ -n "$RT" ]; then
+  ok "renew-self returned token (${RT:0:14}...)"
+else
+  RENEW_ERR="$(< /tmp/vctl_renew.err)"
+  no "renew failed: $RENEW_ERR"
+fi
 
-echo "[5] exec — 자식에 VAULT_TOKEN 주입"
+echo "[5] exec: inject VAULT_TOKEN into child"
 inject 28800 true
-INJ="$("$VCTL_BIN" exec -- sh -c 'echo $VAULT_TOKEN' </dev/null 2>/dev/null)"
-[ "${INJ:0:6}" = "${TOKEN:0:6}" ] && ok "자식 env VAULT_TOKEN 확인 (${INJ:0:10}...)" || no "주입 실패: ${INJ:0:10}"
+# shellcheck disable=SC2016
+INJ="$("$VCTL_BIN" exec -- sh -c 'printf "%s\n" "$VAULT_TOKEN"' </dev/null 2>/dev/null)"
+if [ "${INJ:0:6}" = "${TOKEN:0:6}" ]; then
+  ok "child VAULT_TOKEN present (${INJ:0:10}...)"
+else
+  no "injection failed: ${INJ:0:10}"
+fi
 
-echo "[6] agent — 토큰 싱크 파일 기록 (3초 구동 후 SIGINT)"
+echo "[6] agent: write token sink"
 inject 28800 true
 "$VCTL_BIN" agent </dev/null >/tmp/vctl_agent.log 2>&1 &
 AP=$!
-for i in 1 2 3 4 5 6; do [ -s "$TMP/.vctl/token-sink" ] && break; sleep 0.5; done
+for _ in 1 2 3 4 5 6; do
+  [ -s "$TMP/.vctl/token-sink" ] && break
+  sleep 0.5
+done
 if [ -s "$TMP/.vctl/token-sink" ] && [ "$(cut -c1-6 "$TMP/.vctl/token-sink")" = "${TOKEN:0:6}" ]; then
-  ok "싱크 파일에 유효 토큰 기록됨"
+  ok "sink file contains the valid token"
 else
-  no "싱크 미기록"; cat /tmp/vctl_agent.log | sed 's/^/    /'
+  no "sink file was not written"
+  AGENT_LOG="$(< /tmp/vctl_agent.log)"
+  indent "$AGENT_LOG"
 fi
-kill -INT "$AP" 2>/dev/null; wait "$AP" 2>/dev/null
+kill -INT "$AP" 2>/dev/null
+wait "$AP" 2>/dev/null
 
-echo "════ 결과: PASS=$P FAIL=$F ════"
+echo "==== result: PASS=$P FAIL=$F ===="
 [ "$F" -eq 0 ]

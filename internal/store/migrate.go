@@ -12,13 +12,13 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// Migrate 는 embed 된 마이그레이션을 순서대로 실행한다(멱등 — IF NOT EXISTS).
+// Migrate runs embedded migrations in sorted order.
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.MigrateAsOwner(ctx, "")
 }
 
-// MigrateAsOwner 는 트랜잭션 안에서 stable owner role 로 전환한 뒤 마이그레이션을 실행한다.
-// Vault 동적 DB role 이 영구 테이블 owner 가 되지 않도록 하기 위한 경로다.
+// MigrateAsOwner switches to a stable owner role inside a transaction.
+// This prevents Vault dynamic DB roles from owning permanent tables.
 func (s *Store) MigrateAsOwner(ctx context.Context, owner string) error {
 	entries, err := migrations.ReadDir("migrations")
 	if err != nil {

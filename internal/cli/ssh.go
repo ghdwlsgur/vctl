@@ -18,7 +18,7 @@ import (
 func sshCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "ssh [host]",
-		Short: "서버에 접속 (이름 일부만 알아도, 몰라도 OK)",
+		Short: "Connect to an inventory host",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -46,13 +46,13 @@ func sshCmd() *cobra.Command {
 				return a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign)
 			}
 
-			fmt.Fprintf(os.Stderr, "→ %s (%s@%s) 접속 중...\n", tgt.Name, tgt.User, tgt.Addr)
+			fmt.Fprintf(os.Stderr, "connecting to %s (%s@%s)...\n", tgt.Name, tgt.User, tgt.Addr)
 			return sshc.Connect(ctx, tgt, sign)
 		},
 	}
 }
 
-// pick 은 인자/퍼지매칭/인터랙티브 피커로 서버 1대를 고른다.
+// pick selects one server by argument, fuzzy match, or interactive picker.
 func pick(ctx context.Context, st *store.Store, args []string) (*store.Server, error) {
 	if len(args) == 1 {
 		sv, cands, err := st.Resolve(ctx, args[0])
@@ -63,23 +63,23 @@ func pick(ctx context.Context, st *store.Store, args []string) (*store.Server, e
 			return sv, nil
 		}
 		if len(cands) == 0 {
-			return nil, fmt.Errorf("%q 와 일치하는 서버가 없습니다", args[0])
+			return nil, fmt.Errorf("no server matches %q", args[0])
 		}
 		return chooseFrom(cands)
 	}
-	// 인자 없음 → 전체 목록에서 고르기
+	// No argument: choose from the full list.
 	all, err := st.List(ctx, "")
 	if err != nil {
 		return nil, err
 	}
 	if len(all) == 0 {
-		return nil, fmt.Errorf("인벤토리가 비어 있습니다. 먼저 'vctl sync' 를 실행하세요")
+		return nil, fmt.Errorf("inventory is empty. Run 'vctl sync' first")
 	}
 	return chooseFrom(all)
 }
 
 func chooseFrom(cands []store.Server) (*store.Server, error) {
-	fmt.Fprintln(os.Stderr, "여러 서버가 매칭됩니다 — 번호를 고르세요:")
+	fmt.Fprintln(os.Stderr, "multiple servers matched; choose a number:")
 	for i, c := range cands {
 		up := "·"
 		if c.LastSeenUp != nil {
@@ -87,23 +87,23 @@ func chooseFrom(cands []store.Server) (*store.Server, error) {
 		}
 		fmt.Fprintf(os.Stderr, "  %2d) %-28s %-16s %-12s [%s]\n", i+1, c.Hostname, c.IP, c.DC, up)
 	}
-	fmt.Fprint(os.Stderr, "번호: ")
+	fmt.Fprint(os.Stderr, "number: ")
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	n, err := strconv.Atoi(strings.TrimSpace(line))
 	if err != nil || n < 1 || n > len(cands) {
-		return nil, fmt.Errorf("잘못된 선택")
+		return nil, fmt.Errorf("invalid selection")
 	}
 	return &cands[n-1], nil
 }
 
-// buildTarget 은 서버와 점프 체인을 sshc.Target 으로 변환한다(점프는 재귀 조회).
+// buildTarget converts a server and jump chain into sshc.Target values.
 func buildTarget(ctx context.Context, st *store.Store, sv *store.Server) (*sshc.Target, error) {
 	return buildTargetSeen(ctx, st, sv, map[string]bool{})
 }
 
 func buildTargetSeen(ctx context.Context, st *store.Store, sv *store.Server, seen map[string]bool) (*sshc.Target, error) {
 	if seen[sv.Hostname] {
-		return nil, fmt.Errorf("점프 호스트 순환 참조: %s", sv.Hostname)
+		return nil, fmt.Errorf("jump host cycle detected: %s", sv.Hostname)
 	}
 	seen[sv.Hostname] = true
 
@@ -116,7 +116,7 @@ func buildTargetSeen(ctx context.Context, st *store.Store, sv *store.Server, see
 	if sv.JumpVia != "" {
 		jsv, err := st.Get(ctx, sv.JumpVia)
 		if err != nil {
-			return nil, fmt.Errorf("점프 호스트 %q 조회 실패: %w", sv.JumpVia, err)
+			return nil, fmt.Errorf("lookup jump host %q: %w", sv.JumpVia, err)
 		}
 		jt, err := buildTargetSeen(ctx, st, jsv, seen)
 		if err != nil {

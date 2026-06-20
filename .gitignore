@@ -1,5 +1,5 @@
 .vctl/config.yaml
 .vctl/*.local.yaml
-vctl
+/vctl
 dist/
 bin/

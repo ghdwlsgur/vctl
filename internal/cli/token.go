@@ -9,10 +9,10 @@ import (
 func tokenCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "token",
-		Short: "유효한 Vault 토큰을 출력 (필요 시 자동 갱신/재인증)",
-		Long: `유효 토큰을 보장한 뒤 표준출력으로 인쇄한다.
+		Short: "Print a valid Vault token after renewal or re-authentication",
+		Long: `Ensures a valid token and prints it to stdout.
 
-  export VAULT_TOKEN=$(vctl token)   # 기존 vault CLI 와 연동`,
+  export VAULT_TOKEN=$(vctl token)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := newApp()
 			if err != nil {

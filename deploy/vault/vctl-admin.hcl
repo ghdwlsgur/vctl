@@ -1,5 +1,5 @@
-# vctl-admin — 관리자 정책 (sync/인벤토리 쓰기 + CA 운영)
-# vctl-user 의 모든 권한 + 쓰기 자격 + CA 로테이션.
+# vctl-admin policy for inventory sync, writes, and CA operations.
+# Includes vctl-user permissions plus write credentials and CA rotation access.
 
 path "ssh/sign/sre-core" {
   capabilities = ["update"]
@@ -9,7 +9,7 @@ path "ssh/config/ca" {
   capabilities = ["read", "update"]
 }
 
-# 인벤토리 읽기/쓰기 자격
+# Inventory read/write credentials.
 path "database/creds/vctl-ro" {
   capabilities = ["read"]
 }
@@ -20,7 +20,7 @@ path "database/creds/vctl-migrator" {
   capabilities = ["read"]
 }
 
-# DB 엔진 root 자격 로테이션
+# DB engine root credential rotation.
 path "database/rotate-root/vctl-pg" {
   capabilities = ["update"]
 }
