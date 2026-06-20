@@ -18,25 +18,24 @@ echo "==> 1) database secrets engine"
 vault secrets enable -path=database database 2>/dev/null || echo "   (already enabled)"
 
 echo "==> 1.5) stable migration owner role"
-command -v psql >/dev/null || { echo "psql is required to create role ${PG_MIGRATION_OWNER}"; exit 1; }
-PGPASSWORD="${PG_ADMIN_PASS}" psql "host=${PG_HOST} port=${PG_PORT} dbname=${PG_DB} user=${PG_ADMIN_USER} sslmode=require" <<SQL
-DO \$\$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${PG_MIGRATION_OWNER}') THEN
-    CREATE ROLE ${PG_MIGRATION_OWNER} NOLOGIN;
-  END IF;
-END
-\$\$;
-GRANT CONNECT ON DATABASE ${PG_DB} TO ${PG_MIGRATION_OWNER};
-GRANT USAGE,CREATE ON SCHEMA public TO ${PG_MIGRATION_OWNER};
-ALTER SCHEMA public OWNER TO ${PG_MIGRATION_OWNER};
-SQL
+# k8s 배포에서는 pod 안에서 psql 실행 → 노트북에서 svc DNS 가 안 닿아도 동작.
+# 직접 psql(레거시/베어메탈)로 쓰려면 PG_EXEC_POD="" 로 비운다.
+PG_EXEC_POD="${PG_EXEC_POD:-vctl-postgres-0}"
+PG_EXEC_NS="${PG_EXEC_NS:-vctl}"
+OWNER_SQL="DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${PG_MIGRATION_OWNER}') THEN CREATE ROLE ${PG_MIGRATION_OWNER} NOLOGIN; END IF; END \$\$; GRANT CONNECT ON DATABASE ${PG_DB} TO ${PG_MIGRATION_OWNER}; GRANT USAGE,CREATE ON SCHEMA public TO ${PG_MIGRATION_OWNER}; ALTER SCHEMA public OWNER TO ${PG_MIGRATION_OWNER};"
+if [ -n "${PG_EXEC_POD}" ]; then
+  kubectl exec -n "${PG_EXEC_NS}" "${PG_EXEC_POD}" -- \
+    env PGPASSWORD="${PG_ADMIN_PASS}" psql -h 127.0.0.1 -U "${PG_ADMIN_USER}" -d "${PG_DB}" -v ON_ERROR_STOP=1 -c "${OWNER_SQL}"
+else
+  command -v psql >/dev/null || { echo "psql is required to create role ${PG_MIGRATION_OWNER}"; exit 1; }
+  PGPASSWORD="${PG_ADMIN_PASS}" psql "host=${PG_HOST} port=${PG_PORT} dbname=${PG_DB} user=${PG_ADMIN_USER} sslmode=require" -v ON_ERROR_STOP=1 -c "${OWNER_SQL}"
+fi
 
 echo "==> 2) Postgres connection registration (TLS verify-full)"
 vault write database/config/vctl-pg \
   plugin_name=postgresql-database-plugin \
   allowed_roles="vctl-ro,vctl-rw,vctl-migrator" \
-  connection_url="postgresql://{{username}}:{{password}}@${PG_HOST}:${PG_PORT}/${PG_DB}?sslmode=verify-full" \
+  connection_url="postgresql://{{username}}:{{password}}@${PG_HOST}:${PG_PORT}/${PG_DB}?sslmode=${PG_SSLMODE:-verify-full}" \
   username="${PG_ADMIN_USER}" \
   password="${PG_ADMIN_PASS}"
 

@@ -32,7 +32,10 @@ type Store struct {
 }
 
 // Open creates a Postgres pool with short-lived credentials and caPEM TLS roots.
-func Open(ctx context.Context, host string, port int, dbname, user, pass string, caPEM []byte) (*Store, error) {
+// serverName overrides the TLS SNI/verification name; when empty it defaults to host.
+// Use serverName when dialing through a port-forward/proxy where the dial host
+// (e.g. 127.0.0.1) differs from the certificate's DNS name.
+func Open(ctx context.Context, host string, port int, dbname, user, pass, serverName string, caPEM []byte) (*Store, error) {
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s",
 		url.QueryEscape(user), url.QueryEscape(pass), host, port, dbname)
 
@@ -44,9 +47,12 @@ func Open(ctx context.Context, host string, port int, dbname, user, pass string,
 	if len(caPEM) > 0 && !pool.AppendCertsFromPEM(caPEM) {
 		return nil, fmt.Errorf("parse embedded CA")
 	}
+	if serverName == "" {
+		serverName = host
+	}
 	cfg.ConnConfig.TLSConfig = &tls.Config{
 		RootCAs:    pool,
-		ServerName: host,
+		ServerName: serverName,
 		MinVersion: tls.VersionTLS12,
 	}
 	cfg.MaxConns = 4

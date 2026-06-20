@@ -170,5 +170,5 @@ func (a *App) OpenStoreRole(ctx context.Context, role string) (*store.Store, err
 	if err != nil {
 		return nil, err
 	}
-	return store.Open(ctx, a.Cfg.DBHost, a.Cfg.DBPort, a.Cfg.DBName, user, pass, config.SRERootCA)
+	return store.Open(ctx, a.Cfg.DBHost, a.Cfg.DBPort, a.Cfg.DBName, user, pass, a.Cfg.DBServerName, config.SRERootCA)
 }

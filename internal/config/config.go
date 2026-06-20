@@ -23,6 +23,7 @@ type Config struct {
 	OIDCMount  string `yaml:"oidc_mount"`  // Vault OIDC auth mount path
 
 	DBHost           string `yaml:"db_host"`
+	DBServerName     string `yaml:"db_server_name"` // TLS SNI override; defaults to DBHost. Use for port-forward/proxy where dial host != cert name.
 	DBPort           int    `yaml:"db_port"`
 	DBName           string `yaml:"db_name"`
 	DBRoleRO         string `yaml:"db_role_ro"`         // database/creds/<ro> for read paths
@@ -125,6 +126,7 @@ func (c *Config) applyEnv() {
 	envStr(&c.AuthMethod, "VCTL_AUTH_METHOD")
 	envStr(&c.DBHost, "VGO_DB_HOST")
 	envStr(&c.DBHost, "VCTL_DB_HOST")
+	envStr(&c.DBServerName, "VCTL_DB_SERVERNAME")
 	envInt(&c.DBPort, "VGO_DB_PORT")
 	envInt(&c.DBPort, "VCTL_DB_PORT")
 	envStr(&c.DBName, "VGO_DB_NAME")
