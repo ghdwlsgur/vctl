@@ -41,12 +41,31 @@ func sshCmd() *cobra.Command {
 				return err
 			}
 
+			// Capture the most recent Vault-signed cert serial so the access
+			// audit row maps to a specific issued certificate. On a jump chain
+			// the target is signed last, so this ends up holding its serial.
+			var lastSerial string
 			sign := func(role, pub string, principals []string, extensions []string) (string, error) {
-				return a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign, extensions)
+				cert, err := a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign, extensions)
+				if err == nil {
+					if s := sshc.CertSerial(cert); s != "" {
+						lastSerial = s
+					}
+				}
+				return cert, err
 			}
 
+			vaultUser := a.Vault.Identity(ctx)
+
 			ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
-			return sshc.Connect(ctx, tgt, sign)
+			connErr := sshc.Connect(ctx, tgt, sign)
+
+			// Best-effort central access log. Never fails the SSH: audit
+			// loss is logged to stderr but the connection result is returned as-is.
+			if logErr := a.LogAccess(ctx, vaultUser, tgt.Name, lastSerial, connErr == nil); logErr != nil {
+				ui.Warnf(os.Stderr, "access log not recorded: %v", logErr)
+			}
+			return connErr
 		},
 	}
 }
