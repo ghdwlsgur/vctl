@@ -11,6 +11,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 func sshCmd() *cobra.Command {
@@ -40,12 +41,31 @@ func sshCmd() *cobra.Command {
 				return err
 			}
 
+			// Capture the most recent Vault-signed cert serial so the access
+			// audit row maps to a specific issued certificate. On a jump chain
+			// the target is signed last, so this ends up holding its serial.
+			var lastSerial string
 			sign := func(role, pub string, principals []string, extensions []string) (string, error) {
-				return a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign, extensions)
+				cert, err := a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign, extensions)
+				if err == nil {
+					if s := sshc.CertSerial(cert); s != "" {
+						lastSerial = s
+					}
+				}
+				return cert, err
 			}
 
-			fmt.Fprintf(os.Stderr, "connecting to %s (%s@%s)...\n", tgt.Name, tgt.User, tgt.Addr)
-			return sshc.Connect(ctx, tgt, sign)
+			vaultUser := a.Vault.Identity(ctx)
+
+			ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
+			connErr := sshc.Connect(ctx, tgt, sign)
+
+			// Best-effort central access log (④). Never fails the SSH: audit
+			// loss is logged to stderr but the connection result is returned as-is.
+			if logErr := a.LogAccess(ctx, vaultUser, tgt.Name, lastSerial, connErr == nil); logErr != nil {
+				ui.Warnf(os.Stderr, "access log not recorded: %v", logErr)
+			}
+			return connErr
 		},
 	}
 }
@@ -63,7 +83,7 @@ func pick(ctx context.Context, st *store.Store, args []string) (*store.Server, e
 		if len(cands) == 0 {
 			return nil, fmt.Errorf("no server matches %q", args[0])
 		}
-		return selectServer(cands, fmt.Sprintf("%q 에 매칭되는 서버 선택:", args[0]))
+		return selectServer(cands, fmt.Sprintf("Select a server matching %q", args[0]))
 	}
 	// No argument: choose from the full list.
 	all, err := st.List(ctx, "")
@@ -73,7 +93,7 @@ func pick(ctx context.Context, st *store.Store, args []string) (*store.Server, e
 	if len(all) == 0 {
 		return nil, fmt.Errorf("inventory is empty. Run 'vctl sync' first")
 	}
-	return selectServer(all, "접속할 서버 선택:")
+	return selectServer(all, "Select a server")
 }
 
 // buildTarget converts a server and jump chain into sshc.Target values.

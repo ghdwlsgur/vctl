@@ -9,6 +9,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
+
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // hostKeyCallback verifies host keys with ~/.ssh/known_hosts.
@@ -67,6 +69,6 @@ func appendKnownHost(path, hostname string, remote net.Addr, key ssh.PublicKey) 
 	if _, err := fmt.Fprintln(f, line); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "added new host key to known_hosts: %s\n", hostname)
+	ui.Successf(os.Stderr, "added new host key to known_hosts: %s", hostname)
 	return nil
 }

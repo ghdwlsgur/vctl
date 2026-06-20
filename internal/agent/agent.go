@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // renewWait schedules renewal after roughly two thirds of the remaining TTL.
@@ -46,8 +47,8 @@ func Keepalive(ctx context.Context, a *app.App) {
 		}
 		// Renewal failed; try non-interactive re-auth only.
 		if err := a.ReAuthNonInteractive(ctx); err != nil {
-			fmt.Fprintf(os.Stderr,
-				"vctl exec: token keepalive failed (%v). The child process can use only the current token until it expires.\n", err)
+			ui.Errorf(os.Stderr, "token keepalive failed: %v", err)
+			ui.Infof(os.Stderr, "the child process can use only the current token until it expires")
 			return
 		}
 	}
@@ -67,21 +68,24 @@ func (m *Manager) Run(ctx context.Context) error {
 	if err := m.writeSinks(); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "vctl agent: token management started (TTL %s, sinks %v)\n",
-		m.App.Vault.TTL().Round(time.Second), m.Sinks)
+	ui.Successf(os.Stderr, "agent token management started")
+	ui.KVs(os.Stderr, []ui.KV{
+		{Key: "TTL", Value: m.App.Vault.TTL().Round(time.Second).String()},
+		{Key: "Sinks", Value: fmt.Sprintf("%v", m.Sinks)},
+	})
 
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Fprintln(os.Stderr, "vctl agent: stopped")
+			ui.Infof(os.Stderr, "agent stopped")
 			return nil
 		case <-time.After(renewWait(m.App.Vault.TTL())):
 		}
 
 		if err := m.App.Vault.Renew(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "vctl agent: renewal failed (%v); trying re-auth\n", err)
+			ui.Warnf(os.Stderr, "renewal failed (%v); trying re-auth", err)
 			if err := m.App.ReAuth(ctx); err != nil {
-				fmt.Fprintf(os.Stderr, "vctl agent: re-auth failed (%v), retrying in 10s\n", err)
+				ui.Errorf(os.Stderr, "re-auth failed (%v), retrying in 10s", err)
 				select {
 				case <-ctx.Done():
 					return nil
@@ -91,7 +95,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			}
 		}
 		if err := m.writeSinks(); err != nil {
-			fmt.Fprintf(os.Stderr, "vctl agent: sink write failed: %v\n", err)
+			ui.Errorf(os.Stderr, "sink write failed: %v", err)
 		}
 	}
 }
