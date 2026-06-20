@@ -114,6 +114,10 @@ func (m *Manager) writeSinks() error {
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if err := ensureRegularSink(path); err != nil {
+		return err
+	}
+
 	dir := filepath.Dir(path)
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -140,4 +144,18 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmpName, path)
+}
+
+func ensureRegularSink(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to overwrite non-regular sink file: %s", path)
+	}
+	return nil
 }

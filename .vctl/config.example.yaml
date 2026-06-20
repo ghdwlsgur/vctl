@@ -13,6 +13,7 @@ db_migration_owner: vctl_owner
 
 ca_role: sre-core
 ssh_sign: 30m
+ssh_direct_first: true
 ssh_default_user: ubuntu
 
 sync_probe_timeout: 3s

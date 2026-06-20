@@ -31,8 +31,9 @@ type Config struct {
 	DBRoleMigrate    string `yaml:"db_role_migrate"`    // database/creds/<migrator> for schema changes
 	DBMigrationOwner string `yaml:"db_migration_owner"` // stable owner role for migration objects
 
-	CARole  string `yaml:"ca_role"`  // ssh/sign/<role>
-	SSHSign string `yaml:"ssh_sign"` // issued cert TTL
+	CARole         string `yaml:"ca_role"`          // ssh/sign/<role>
+	SSHSign        string `yaml:"ssh_sign"`         // issued cert TTL
+	SSHDirectFirst bool   `yaml:"ssh_direct_first"` // try target directly before falling back to jump hosts
 
 	SSHDefaultUser       string         `yaml:"ssh_default_user"`
 	SyncProbeTimeout     string         `yaml:"sync_probe_timeout"`
@@ -70,6 +71,7 @@ func Defaults() *Config {
 		DBMigrationOwner:     "vctl_owner",
 		CARole:               "sre-core",
 		SSHSign:              "30m",
+		SSHDirectFirst:       true,
 		SSHDefaultUser:       "ubuntu",
 		SyncProbeTimeout:     "3s",
 		SyncProbeConcurrency: 32,
@@ -141,6 +143,7 @@ func (c *Config) applyEnv() {
 	envStr(&c.DBMigrationOwner, "VCTL_DB_MIGRATION_OWNER")
 	envStr(&c.CARole, "VGO_CA_ROLE")
 	envStr(&c.CARole, "VCTL_CA_ROLE")
+	envBool(&c.SSHDirectFirst, "VCTL_SSH_DIRECT_FIRST")
 	envStr(&c.SSHDefaultUser, "VGO_SSH_DEFAULT_USER")
 	envStr(&c.SSHDefaultUser, "VCTL_SSH_DEFAULT_USER")
 	envStr(&c.SyncProbeTimeout, "VGO_SYNC_PROBE_TIMEOUT")
@@ -204,6 +207,14 @@ func envInt(dst *int, key string) {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			*dst = n
+		}
+	}
+}
+
+func envBool(dst *bool, key string) {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			*dst = b
 		}
 	}
 }

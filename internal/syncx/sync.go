@@ -21,6 +21,7 @@ const (
 	defaultCARole           = "sre-core"
 	defaultProbeTimeout     = 3 * time.Second
 	defaultProbeConcurrency = 32
+	maxProbeConcurrency     = 128
 )
 
 type DCRule struct {
@@ -248,6 +249,9 @@ func (o BuildOptions) withDefaults() BuildOptions {
 	}
 	if o.ProbeConcurrency <= 0 {
 		o.ProbeConcurrency = defaultProbeConcurrency
+	}
+	if o.ProbeConcurrency > maxProbeConcurrency {
+		o.ProbeConcurrency = maxProbeConcurrency
 	}
 	if len(o.DCRules) == 0 {
 		o.DCRules = DefaultDCRules()
