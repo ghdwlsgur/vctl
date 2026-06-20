@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/syncx"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 func syncCmd() *cobra.Command {
@@ -35,7 +36,7 @@ func syncCmd() *cobra.Command {
 					return err
 				}
 				mst.Close()
-				fmt.Fprintln(os.Stderr, "schema migration complete.")
+				ui.Successf(os.Stderr, "schema migration complete")
 			}
 
 			st, err := a.OpenStore(ctx, true) // write role
@@ -56,7 +57,7 @@ func syncCmd() *cobra.Command {
 			var ok, up int
 			for _, s := range servers {
 				if err := st.Upsert(ctx, s); err != nil {
-					fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", s.Hostname, err)
+					ui.Errorf(os.Stderr, "%s: %v", s.Hostname, err)
 					continue
 				}
 				ok++
@@ -64,7 +65,11 @@ func syncCmd() *cobra.Command {
 					up++
 				}
 			}
-			fmt.Fprintf(os.Stderr, "sync complete: %d upserted (reachable %d / unreachable %d)\n", ok, up, ok-up)
+			ui.Successf(os.Stderr, "sync complete: %d upserted", ok)
+			ui.KVs(os.Stderr, []ui.KV{
+				{Key: "Reachable", Value: fmt.Sprintf("%d", up), State: ui.StateOK},
+				{Key: "Unreachable", Value: fmt.Sprintf("%d", ok-up), State: ui.StateWarn},
+			})
 			return nil
 		},
 	}

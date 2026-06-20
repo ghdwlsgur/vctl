@@ -11,6 +11,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // selectServer shows a pretty, arrow-key driven picker (charmbracelet/huh) with
@@ -25,7 +26,7 @@ func selectServer(cands []store.Server, title string) (*store.Server, error) {
 
 	options := make([]huh.Option[int], len(cands))
 	for i, c := range cands {
-		status := "·"
+		status := "down"
 		if c.LastSeenUp != nil {
 			status = "up"
 		}
@@ -49,15 +50,15 @@ func selectServer(cands []store.Server, title string) (*store.Server, error) {
 
 // numberPick is the non-TTY fallback (pipes/CI): a plain numbered prompt.
 func numberPick(cands []store.Server, title string) (*store.Server, error) {
-	fmt.Fprintln(os.Stderr, title)
+	ui.Section(os.Stderr, title)
 	for i, c := range cands {
-		up := "·"
+		up := ui.Muted("down")
 		if c.LastSeenUp != nil {
-			up = "up"
+			up = ui.OK("up")
 		}
-		fmt.Fprintf(os.Stderr, "  %2d) %-28s %-16s %-12s [%s]\n", i+1, c.Hostname, c.IP, c.DC, up)
+		fmt.Fprintf(os.Stderr, "  %2d  %-28s %-16s %-12s %s\n", i+1, c.Hostname, c.IP, c.DC, up)
 	}
-	fmt.Fprint(os.Stderr, "number: ")
+	fmt.Fprint(os.Stderr, ui.Muted("number: "))
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	n, err := strconv.Atoi(strings.TrimSpace(line))
 	if err != nil || n < 1 || n > len(cands) {

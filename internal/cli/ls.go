@@ -1,11 +1,11 @@
 package cli
 
 import (
-	"fmt"
 	"os"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 func lsCmd() *cobra.Command {
@@ -31,23 +31,23 @@ func lsCmd() *cobra.Command {
 				return err
 			}
 			if len(servers) == 0 {
-				fmt.Fprintln(os.Stderr, "inventory is empty. Run 'vctl sync' first.")
+				ui.Warnf(os.Stderr, "inventory is empty. Run 'vctl sync' first.")
 				return nil
 			}
-			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-			fmt.Fprintln(w, "HOST\tIP\tUSER\tDC\tJUMP\tSTATUS")
+			rows := make([][]string, 0, len(servers))
 			for _, s := range servers {
-				status := "-"
+				status := ui.Muted("down")
 				if s.LastSeenUp != nil {
-					status = "up"
+					status = ui.OK("up")
 				}
 				jump := s.JumpVia
 				if jump == "" {
-					jump = "-"
+					jump = ui.Muted("direct")
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Hostname, s.IP, s.User, s.DC, jump, status)
+				rows = append(rows, []string{s.Hostname, s.IP, s.User, s.DC, jump, status})
 			}
-			return w.Flush()
+			ui.Section(os.Stdout, "inventory")
+			return ui.Table(os.Stdout, []string{"host", "ip", "user", "dc", "jump", "status"}, rows)
 		},
 	}
 	cmd.Flags().StringVar(&dc, "dc", "", "DC filter, for example incheon or seoul-onprem")
