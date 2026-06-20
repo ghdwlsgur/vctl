@@ -42,9 +42,10 @@ CREATE TABLE IF NOT EXISTS access_log (
     jump_via    TEXT,
     error       TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_access_log_signed_at ON access_log (signed_at DESC);
-CREATE INDEX IF NOT EXISTS idx_access_log_source_ip ON access_log (source_ip);
-
+-- Backfill enriched columns for access_log tables created before this schema.
+-- These MUST run before any index that references the new columns, because on a
+-- pre-existing table CREATE TABLE IF NOT EXISTS above is a no-op and would leave
+-- the columns missing.
 ALTER TABLE access_log ADD COLUMN IF NOT EXISTS source_ip INET;
 ALTER TABLE access_log ADD COLUMN IF NOT EXISTS source_addr TEXT;
 ALTER TABLE access_log ADD COLUMN IF NOT EXISTS client_host TEXT;
@@ -52,3 +53,6 @@ ALTER TABLE access_log ADD COLUMN IF NOT EXISTS client_user TEXT;
 ALTER TABLE access_log ADD COLUMN IF NOT EXISTS target_addr TEXT;
 ALTER TABLE access_log ADD COLUMN IF NOT EXISTS jump_via TEXT;
 ALTER TABLE access_log ADD COLUMN IF NOT EXISTS error TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_access_log_signed_at ON access_log (signed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_access_log_source_ip ON access_log (source_ip);
