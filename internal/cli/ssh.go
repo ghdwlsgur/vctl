@@ -60,7 +60,7 @@ func sshCmd() *cobra.Command {
 			ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
 			connErr := sshc.Connect(ctx, tgt, sign)
 
-			// Best-effort central access log (④). Never fails the SSH: audit
+			// Best-effort central access log. Never fails the SSH: audit
 			// loss is logged to stderr but the connection result is returned as-is.
 			if logErr := a.LogAccess(ctx, vaultUser, tgt.Name, lastSerial, connErr == nil); logErr != nil {
 				ui.Warnf(os.Stderr, "access log not recorded: %v", logErr)
