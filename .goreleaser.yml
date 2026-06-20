@@ -52,7 +52,7 @@ brews:
       - vctl
     repository:
       owner: ghdwlsgur
-      name: homebrew-tap
+      name: homebrew-vctl
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
@@ -62,4 +62,3 @@ brews:
       bin.install "vctl"
     test: |
       system "#{bin}/vctl", "--version"
-

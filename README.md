@@ -52,7 +52,7 @@ vctl agent
 
 ```bash
 # Install
-brew install ghdwlsgur/tap/vctl
+brew install ghdwlsgur/vctl/vctl
 
 # Login
 vctl login
@@ -142,7 +142,7 @@ make build
 
 ## Release
 
-Releases are published by pushing a Git tag. GoReleaser creates GitHub Release artifacts and updates `Formula/vctl.rb` in the `ghdwlsgur/homebrew-tap` repository.
+Releases are published by pushing a Git tag. GoReleaser creates GitHub Release artifacts and updates `Formula/vctl.rb` in the `ghdwlsgur/homebrew-vctl` repository.
 
 Required repository secret:
 
@@ -150,7 +150,7 @@ Required repository secret:
 HOMEBREW_TAP_GITHUB_TOKEN
 ```
 
-The token must be allowed to push to `ghdwlsgur/homebrew-tap`.
+The token must be allowed to push to `ghdwlsgur/homebrew-vctl`.
 
 ```bash
 git tag v0.1.0
