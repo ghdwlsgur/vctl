@@ -1,0 +1,20 @@
+# Register SSH sessions from PAM login markers (cert serial -> human).
+# Privileged: holds Vault AppRole creds. Pairs with vctl-collect.service.
+#
+# Install: /etc/systemd/system/vctl-watch-sessions.service ; enable --now
+[Unit]
+Description=vctl session registrar (PAM markers -> audit_session)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=VCTL_AUTH_METHOD=approle
+Environment=VCTL_ROLE_ID_FILE=/etc/vctl/role-id
+Environment=VCTL_SECRET_ID_FILE=/etc/vctl/secret-id
+ExecStart=/usr/local/bin/vctl watch-sessions /run/vctl/sessions --interval 5s
+Restart=always
+RestartSec=5
+User=root
+# Logs go to journald; capped per-unit (see journald drop-in).
+[Install]
+WantedBy=multi-user.target
