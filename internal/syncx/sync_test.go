@@ -102,6 +102,13 @@ func TestBuildUsesConfigurableDefaults(t *testing.T) {
 	}
 }
 
+func TestBuildOptionsClampProbeConcurrency(t *testing.T) {
+	opts := BuildOptions{ProbeConcurrency: maxProbeConcurrency + 1}.withDefaults()
+	if opts.ProbeConcurrency != maxProbeConcurrency {
+		t.Fatalf("ProbeConcurrency = %d, want %d", opts.ProbeConcurrency, maxProbeConcurrency)
+	}
+}
+
 func TestNormalizeJumpAlias(t *testing.T) {
 	cases := map[string]string{
 		"bastion":                  "bastion",

@@ -28,3 +28,33 @@ func TestWriteFileAtomicWrites0600(t *testing.T) {
 		t.Fatalf("perm = %o, want 600", got)
 	}
 }
+
+func TestWriteFileAtomicRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "token-sink")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeFileAtomic(link, []byte("token"), 0o600); err == nil {
+		t.Fatal("writeFileAtomic accepted a symlink sink")
+	}
+
+	b, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "old" {
+		t.Fatalf("target content = %q", string(b))
+	}
+}
+
+func TestWriteFileAtomicRejectsDirectory(t *testing.T) {
+	if err := writeFileAtomic(t.TempDir(), []byte("token"), 0o600); err == nil {
+		t.Fatal("writeFileAtomic accepted a directory sink")
+	}
+}
