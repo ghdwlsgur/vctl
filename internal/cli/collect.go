@@ -43,10 +43,11 @@ type tetraEvent struct {
 
 func collectCmd() *cobra.Command {
 	var (
-		from   string
-		host   string
-		serial string
-		batch  int
+		from          string
+		host          string
+		serial        string
+		batch         int
+		flushInterval time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "collect",
@@ -81,11 +82,21 @@ Events link to a session by cgroup when the login stamper recorded one; pass
 				r = f
 			}
 
-			sc := bufio.NewScanner(r)
-			sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+			// Scan lines in a goroutine so we can flush on a timer too — a live
+			// `tetra getevents` stream never hits EOF, and on a quiet host events
+			// would otherwise sit in the buffer until a full batch accumulates.
+			lines := make(chan string, 4096)
+			go func() {
+				sc := bufio.NewScanner(r)
+				sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+				for sc.Scan() {
+					lines <- sc.Text()
+				}
+				close(lines)
+			}()
+
 			buf := make([]store.KernelEvent, 0, batch)
 			total, skipped := 0, 0
-
 			flush := func() error {
 				if len(buf) == 0 {
 					return nil
@@ -96,42 +107,54 @@ Events link to a session by cgroup when the login stamper recorded one; pass
 				return err
 			}
 
-			for sc.Scan() {
-				line := strings.TrimSpace(sc.Text())
-				if line == "" {
-					continue
-				}
-				var te tetraEvent
-				if err := json.Unmarshal([]byte(line), &te); err != nil {
-					skipped++
-					continue
-				}
-				ev, ok := mapTetra(te, host, serial)
-				if !ok {
-					skipped++
-					continue
-				}
-				buf = append(buf, ev)
-				if len(buf) >= batch {
+			ticker := time.NewTicker(flushInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					_ = flush()
+					return ctx.Err()
+				case <-ticker.C:
 					if err := flush(); err != nil {
-						return err
+						ui.Warnf(os.Stderr, "flush: %v", err)
+					}
+				case line, ok := <-lines:
+					if !ok {
+						if err := flush(); err != nil {
+							return err
+						}
+						ui.Successf(os.Stderr, "ingested %d kernel events (%d skipped)", total, skipped)
+						return nil
+					}
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+					var te tetraEvent
+					if err := json.Unmarshal([]byte(line), &te); err != nil {
+						skipped++
+						continue
+					}
+					ev, ok := mapTetra(te, host, serial)
+					if !ok {
+						skipped++
+						continue
+					}
+					buf = append(buf, ev)
+					if len(buf) >= batch {
+						if err := flush(); err != nil {
+							ui.Warnf(os.Stderr, "flush: %v", err)
+						}
 					}
 				}
 			}
-			if err := sc.Err(); err != nil {
-				return err
-			}
-			if err := flush(); err != nil {
-				return err
-			}
-			ui.Successf(os.Stderr, "ingested %d kernel events (%d skipped)", total, skipped)
-			return nil
 		},
 	}
 	cmd.Flags().StringVar(&from, "from", "", "read events from a file instead of stdin")
 	cmd.Flags().StringVar(&host, "host", "", "override hostname (default: event node_name)")
 	cmd.Flags().StringVar(&serial, "serial", "", "attach events to a known cert serial")
 	cmd.Flags().IntVar(&batch, "batch", 200, "insert batch size")
+	cmd.Flags().DurationVar(&flushInterval, "flush-interval", 3*time.Second, "max time before flushing buffered events")
 	return cmd
 }
 
