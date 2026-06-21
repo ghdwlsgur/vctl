@@ -133,31 +133,39 @@ func (s *Store) SessionTimeline(ctx context.Context, certSerial string, limit in
 		return nil, nil, err
 	}
 	byID := map[int64][]KernelEvent{}
-	if len(ids) == 0 {
-		return sessions, byID, nil
-	}
-	erows, err := s.pool.Query(ctx, `
-		SELECT coalesce(session_id,0), coalesce(cert_serial,''), hostname, ts, kind,
-		       coalesce(pid,0), coalesce(ppid,0), coalesce(cgroup_id,0),
-		       coalesce(exe,''), coalesce(args,''), coalesce(cwd,''), coalesce(uid,0),
-		       coalesce(filename,''), coalesce(dest_addr,''), exit_code
-		FROM kernel_event
-		WHERE session_id = ANY($1)
-		ORDER BY ts ASC`, ids)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer erows.Close()
-	for erows.Next() {
-		var e KernelEvent
-		var sid int64
-		if err := erows.Scan(&sid, &e.CertSerial, &e.Hostname, &e.TS, &e.Kind, &e.PID, &e.PPID,
-			&e.CgroupID, &e.Binary, &e.Args, &e.CWD, &e.UID, &e.Filename, &e.DestAddr, &e.ExitCode); err != nil {
+	_ = ids
+	// Link events by host + time window. The collector doesn't stamp session_id
+	// (kernel events carry no cert serial, and cgroup linking needs Tetragon
+	// cgroup ids), so correlate on hostname and the session's [start,end] window.
+	// Note: concurrent sessions on one host in overlapping windows share events.
+	for _, sess := range sessions {
+		erows, err := s.pool.Query(ctx, `
+			SELECT coalesce(cert_serial,''), hostname, ts, kind,
+			       coalesce(pid,0), coalesce(ppid,0), coalesce(cgroup_id,0),
+			       coalesce(exe,''), coalesce(args,''), coalesce(cwd,''), coalesce(uid,0),
+			       coalesce(filename,''), coalesce(dest_addr,''), exit_code
+			FROM kernel_event
+			WHERE hostname = $1
+			  AND ts >= $2 AND ts <= coalesce($3, now())
+			ORDER BY ts ASC`, sess.Hostname, sess.StartedAt, sess.EndedAt)
+		if err != nil {
 			return nil, nil, err
 		}
-		byID[sid] = append(byID[sid], e)
+		for erows.Next() {
+			var e KernelEvent
+			if err := erows.Scan(&e.CertSerial, &e.Hostname, &e.TS, &e.Kind, &e.PID, &e.PPID,
+				&e.CgroupID, &e.Binary, &e.Args, &e.CWD, &e.UID, &e.Filename, &e.DestAddr, &e.ExitCode); err != nil {
+				erows.Close()
+				return nil, nil, err
+			}
+			byID[sess.ID] = append(byID[sess.ID], e)
+		}
+		erows.Close()
+		if err := erows.Err(); err != nil {
+			return nil, nil, err
+		}
 	}
-	return sessions, byID, erows.Err()
+	return sessions, byID, nil
 }
 
 // CountKernelEventsBefore returns how many kernel_event rows are older than t.
