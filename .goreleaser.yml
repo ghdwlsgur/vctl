@@ -33,6 +33,63 @@ archives:
       {{- .Os }}_
       {{- .Arch }}
 
+nfpms:
+  - id: vctl
+    package_name: vctl
+    ids:
+      - vctl
+    vendor: Innogrid SRE Team
+    homepage: https://github.com/ghdwlsgur/vctl
+    maintainer: Innogrid SRE Team <albert@innogrid.com>
+    description: |
+      Vault-backed infrastructure access CLI and host audit/status agents.
+      Includes the kernel-audit collector, SSH session registrar, and node
+      status agent as systemd units (disabled until an operator supplies
+      AppRole credentials).
+    license: Proprietary
+    formats:
+      - deb
+      - rpm
+    # Units reference /usr/local/bin/vctl; install the binary there so the
+    # packaged units and the existing canary layout stay consistent.
+    bindir: /usr/local/bin
+    contents:
+      - src: ./deploy/audit/vctl-collect.service
+        dst: /usr/lib/systemd/system/vctl-collect.service
+      - src: ./deploy/audit/vctl-watch-sessions.service
+        dst: /usr/lib/systemd/system/vctl-watch-sessions.service
+      - src: ./deploy/node/vctl-node-agent.service
+        dst: /usr/lib/systemd/system/vctl-node-agent.service
+      - src: ./deploy/audit/pam-session-stamp.sh
+        dst: /usr/local/sbin/pam-session-stamp.sh
+        file_info:
+          mode: 0755
+      - src: ./deploy/audit/sshd/10-expose-authinfo.conf
+        dst: /etc/ssh/sshd_config.d/10-expose-authinfo.conf
+        type: "config|noreplace"
+      - src: ./deploy/audit/journald-vctl-audit.conf
+        dst: /etc/systemd/journald.conf.d/journald-vctl-audit.conf
+        type: "config|noreplace"
+      - src: ./deploy/audit/logrotate-vctl-audit.conf
+        dst: /etc/logrotate.d/vctl-audit
+        type: "config|noreplace"
+      - src: ./deploy/audit/tracingpolicy-ssh.yaml
+        dst: /usr/share/vctl/tracingpolicy-ssh.yaml
+      - src: ./deploy/audit/prune-cronjob.yaml
+        dst: /usr/share/vctl/prune-cronjob.yaml
+      - src: ./deploy/audit/README.md
+        dst: /usr/share/doc/vctl/audit-README.md
+      - src: ./deploy/node/README.md
+        dst: /usr/share/doc/vctl/node-README.md
+    scripts:
+      postinstall: ./deploy/packaging/postinstall.sh
+      postremove: ./deploy/packaging/postremove.sh
+    deb:
+      lintian_overrides:
+        - dir-or-file-in-usr-local
+    rpm:
+      group: Applications/System
+
 checksum:
   name_template: checksums.txt
 
