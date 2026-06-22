@@ -109,8 +109,8 @@ vctl agent
 # Install
 brew install ghdwlsgur/vctl/vctl
 
-# Login
-vctl login
+# Login (people: GitLab SSO — per-person identity)
+vctl login --method oidc
 
 # Connect
 vctl ssh sre-srv-0047
@@ -132,6 +132,38 @@ docker run --rm ghcr.io/ghdwlsgur/vctl:latest --version
 ```
 
 `vctl` works with compiled defaults. Repo-local configuration lives in `.vctl/config.yaml`, and runtime token cache files live under `~/.vctl/`.
+
+## Authentication
+
+Pick the method by who is logging in. Identity must stay per-person — the audit
+trail (access_log, SSH cert key-id, Vault audit) attributes to whoever Vault
+authenticated, so people should never share one identity.
+
+| Method | Who | Notes |
+|---|---|---|
+| **`oidc` (GitLab SSO)** | **People (recommended)** | Each user logs in as themselves via `gitlab.sre.local`. Per-person identity flows to every audit record. Browser session makes re-auth light. |
+| `approle` | Services / automation | Non-interactive (role_id + secret_id). A shared approle is one identity — fine for a daemon (e.g. the audit collector), **not** for multiple people. |
+| `userpass` | Fallback / bootstrap | Per-person, but a manual password each time. |
+
+### GitLab SSO (OIDC)
+
+```bash
+# One-off, or set auth_method: oidc in ~/.vctl/config.yaml to make it the default.
+vctl login --method oidc        # opens a browser -> GitLab SSO -> done
+vctl ssh sre-srv-0047
+vctl audit -n 3                 # VAULT USER column shows your GitLab username
+```
+
+Vault's `oidc` auth backend trusts GitLab as the identity provider; the role
+maps the GitLab `preferred_username` claim into the token so `vctl audit` and
+the Vault audit device record the actual person (not a role name). Token expiry
+is re-satisfied by a quick SSO round-trip rather than re-typing a password.
+
+> Vault/IaC side (one-time, by an operator): a GitLab application (Confidential,
+> `openid profile email`, redirect URIs `http://localhost:8250/oidc/callback` and
+> the Vault UI callback) provides the client_id/secret, stored in
+> `kv/services/vault-oidc-gitlab`; the OIDC backend + role live in the `vault-iac`
+> repo (`enable_gitlab_oidc=true`).
 
 ## SSH Flow
 
@@ -210,7 +242,7 @@ Example:
 
 ```yaml
 vault_addr: https://vault.sre.local
-auth_method: userpass
+auth_method: oidc # people: GitLab SSO (per-person). userpass/approle also supported.
 oidc_role: vctl
 oidc_mount: oidc
 
