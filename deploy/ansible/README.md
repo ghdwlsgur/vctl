@@ -47,3 +47,18 @@ watch-sessions do **not** need Tetragon; only the collector does.
 
 > Keep real inventories and `files/` (binary, secret_id, CA pubkey) out of git —
 > see `.gitignore`. Only `inventory.example.ini` is committed.
+
+## Security notes
+
+- **`/etc/hosts` pinning is not the security boundary.** The play points
+  `vault.sre.local` / `vctl-postgres.sre.local` at `sre_lb_ip` for resolution
+  only. Confidentiality/authenticity come from **verify-full TLS with the
+  embedded private CA** — a wrong or spoofed IP fails the handshake, so no
+  secret leaks. Override `sre_lb_ip` freely per network without weakening trust.
+- **Tetragon tarball is digest-pinned.** Set `tetragon_sha256` per release; once
+  a mirror (harbor) fronts the download URL the checksum makes a swapped tarball
+  fail closed. The tarball is staged root-only under `/opt/vctl/tetragon-stage`.
+- **Session marker dir stays `root:root 0700`.** Never loosen it — group/world
+  write lets a non-root user forge or delete another session's marker and break
+  audit attribution. Non-root-login hosts use the watch-sessions journal-tail
+  path instead.

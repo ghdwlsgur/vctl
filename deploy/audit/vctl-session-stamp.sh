@@ -9,8 +9,9 @@
 # 여기서 cert 를 읽어 serial 을 뽑아 /run/vctl/sessions/<pid>.json 마커를 남기고,
 # vctl-watch-sessions 데몬이 이를 audit_session 으로 등록한다.
 #
-# 마커 디렉터리는 root 소유(0700) → root 로그인(seoul fleet)에서 동작. 비-root 로그인
-# 호스트는 watch-sessions 의 journal-tail 방식(후속) 또는 디렉터리 권한 조정 필요.
+# 마커 디렉터리는 root:root 0700 고정 — 절대 그룹/전역 쓰기로 풀지 말 것.
+# (풀면 비-root 사용자가 타 세션 마커를 위조/삭제할 수 있어 감사 귀속이 깨진다.)
+# 비-root 로그인 호스트는 watch-sessions 의 journal-tail 경로를 쓸 것(권한 완화 금지).
 [ -n "${SSH_USER_AUTH:-}" ] && [ -r "$SSH_USER_AUTH" ] || return 0 2>/dev/null
 
 _vctl_serial=""

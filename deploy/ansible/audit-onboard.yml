@@ -39,6 +39,9 @@
     install_tetragon: true
     tetragon_version: v1.1.2
     tetragon_url: "https://github.com/cilium/tetragon/releases/download/{{ tetragon_version }}/tetragon-{{ tetragon_version }}-amd64.tar.gz"
+    # Pin the release digest per version (e.g. "sha256:…"). Empty = no verification
+    # (acceptable only for the public HTTPS URL; set it before fronting a mirror).
+    tetragon_sha256: ""
     # 감사 데몬이 Vault/Postgres 에 닿으려면 호스트가 *.sre.local 을 풀어야 한다.
     # 서버엔 sre.local 리졸버가 없어 /etc/hosts 로 sre-lb(haproxy 프론트)를 가리킨다.
     # incheon 등 다른 망에선 -e sre_lb_ip=<해당 망 LB> 로 덮어쓸 것.
@@ -228,20 +231,32 @@
     - name: Install Tetragon (bare VM)
       when: state == 'present' and install_tetragon | bool
       block:
+        # Root-only stage dir (not /tmp) — no multiuser race on the tarball we run as root.
+        - name: Stage dir for Tetragon
+          ansible.builtin.file:
+            path: /opt/vctl/tetragon-stage
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
         - name: Download Tetragon tarball
           ansible.builtin.get_url:
             url: "{{ tetragon_url }}"
-            dest: /tmp/tetragon.tar.gz
-            mode: "0644"
+            dest: /opt/vctl/tetragon-stage/tetragon.tar.gz
+            mode: "0600"
+            # Pin the release digest (tetragon_sha256, e.g. "sha256:abc…"). Once a
+            # mirror (harbor) fronts the URL, the mirror becomes a trust point —
+            # the checksum makes a swapped tarball fail closed. Omitted when empty.
+            checksum: "{{ tetragon_sha256 | default(omit, true) }}"
         - name: Extract Tetragon
           ansible.builtin.unarchive:
-            src: /tmp/tetragon.tar.gz
-            dest: /tmp
+            src: /opt/vctl/tetragon-stage/tetragon.tar.gz
+            dest: /opt/vctl/tetragon-stage
             remote_src: true
         - name: Run Tetragon installer (systemd)
           ansible.builtin.command: ./install.sh
           args:
-            chdir: "/tmp/tetragon-{{ tetragon_version }}-amd64"
+            chdir: "/opt/vctl/tetragon-stage/tetragon-{{ tetragon_version }}-amd64"
             creates: /usr/lib/systemd/system/tetragon.service
         - name: Ensure tracingpolicy dir
           ansible.builtin.file:
