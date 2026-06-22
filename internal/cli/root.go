@@ -37,7 +37,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 	}
 	root.AddCommand(
 		loginCmd(), logoutCmd(), tokenCmd(), execCmd(), agentCmd(),
-		sshCmd(), lsCmd(), syncCmd(), statusCmd(), auditCmd(),
+		sshCmd(), lsCmd(), syncCmd(), statusCmd(), auditCmd(), trustCACmd(),
 		sessionCmd(), sessionStartCmd(), collectCmd(), pruneCmd(), watchSessionsCmd(), nodeAgentCmd(),
 	)
 	return root.Execute()

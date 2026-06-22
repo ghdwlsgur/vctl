@@ -187,6 +187,19 @@ vctl ssh <host>
   -> write a best-effort access_log row with source/client/target metadata
 ```
 
+A host only accepts those certificates once it trusts the Vault SSH CA. Onboard
+a new host once with `vctl trust-ca` (it installs the CA public key as
+`TrustedUserCAKeys` over an ordinary SSH connection and reloads sshd):
+
+```bash
+vctl trust-ca rnd-gitlab             # resolve user/addr from inventory
+vctl trust-ca root@192.168.110.250   # or an explicit, not-yet-registered host
+```
+
+Without this, `vctl ssh` fails the handshake (`no supported methods remain`)
+because the host rejects the unknown CA. Golden images can bake the CA key in
+to skip per-host onboarding.
+
 ## Access Audit
 
 `vctl ssh` writes a best-effort inventory-level audit row after each connection attempt. The row includes:
@@ -257,6 +270,7 @@ Resource limits, journald caps, and the golden-image bake guidance live in `depl
 | `vctl ssh [host]` | Connect by exact, fuzzy, or interactive host selection |
 | `vctl list [--dc <dc>]` | List inventory hosts |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | Show central SSH access audit rows |
+| `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | Install Vault SSH CA trust on a host so vctl ssh works (one-time onboarding) |
 | `vctl node-agent [--interval 5m]` | Report lightweight host runtime status for already registered inventory |
 | `vctl session [<serial>\|--list\|--json]` | Show what a person did inside an SSH session (host kernel-audit timeline) |
 | `vctl status` | Check login, SSH CA, and inventory DB connectivity |
