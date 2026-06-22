@@ -278,6 +278,30 @@
         label: "{{ item.name }}"
       notify: daemon-reload # 기동은 아래 게이트 태스크에서만 — 설치만으로 start 금지
 
+    # node-agent reports under the INVENTORY hostname, not the OS hostname
+    # (OS hostnames like k8s-all-01 don't match inventory names like sre-srv-0023,
+    # and UpsertServerStatus drops reports for unregistered names). The ansible
+    # inventory_hostname must equal the vctl inventory hostname for this to match.
+    - name: Ensure node-agent drop-in dir
+      when: state == 'present'
+      ansible.builtin.file:
+        path: /etc/systemd/system/vctl-node-agent.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Pin node-agent to the inventory hostname (drop-in)
+      when: state == 'present'
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/vctl-node-agent.service.d/10-hostname.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=/usr/local/bin/vctl node-agent --hostname {{ inventory_hostname }} --interval 5m
+      notify: daemon-reload
+
     - name: Enable audit services (only with secret_id present)
       when: state == 'present' and enable_services | bool and vctl_secret_id.stat.exists | default(false)
       ansible.builtin.systemd:
@@ -326,6 +350,7 @@
         - /etc/systemd/system/vctl-collect.service
         - /etc/systemd/system/vctl-watch-sessions.service
         - /etc/systemd/system/vctl-node-agent.service
+        - /etc/systemd/system/vctl-node-agent.service.d/10-hostname.conf
         - /etc/logrotate.d/vctl-audit
         - /etc/systemd/journald.conf.d/vctl-audit.conf
         - /usr/local/sbin/pam-session-stamp.sh
