@@ -60,6 +60,37 @@ tidy: ## go mod tidy
 smoke: build ## Run Vault-backed smoke tests
 	@VCTL_BIN=$(BIN) ./scripts/smoke.sh
 
+# --- Fleet onboarding (Ansible) — see deploy/ansible/README.md ---
+# Needs ansible + a control-node Vault token (VAULT_TOKEN) for vctl-host secret_id.
+#   make onboard LIMIT=sre-srv-0023                 # one canary
+#   make onboard LIMIT=seoul_wave1                  # a wave
+#   make onboard LIMIT=k8s_nodes EXTRA="-e install_tetragon=false"
+ANSIBLE_DIR := deploy/ansible
+INVENTORY   ?= inventory.ini
+LIMIT       ?=
+EXTRA       ?=
+_ANSIBLE     = cd $(ANSIBLE_DIR) && ansible-playbook -i $(INVENTORY) $(if $(LIMIT),-l $(LIMIT),) $(EXTRA)
+
+.PHONY: onboard-syntax
+onboard-syntax: ## Syntax-check the onboarding playbooks
+	cd $(ANSIBLE_DIR) && ansible-playbook --syntax-check audit-onboard.yml trust-vault-ssh-ca.yml
+
+.PHONY: trust-ca-fleet
+trust-ca-fleet: ## Install Vault SSH CA trust on hosts: make trust-ca-fleet LIMIT=<host|group>
+	$(_ANSIBLE) trust-vault-ssh-ca.yml
+
+.PHONY: onboard-check
+onboard-check: ## Dry-run the full host-stack install: make onboard-check LIMIT=<host>
+	$(_ANSIBLE) audit-onboard.yml --check --diff
+
+.PHONY: onboard
+onboard: ## Install full host stack (collector+watch+node-agent): make onboard LIMIT=<host|group>
+	$(_ANSIBLE) audit-onboard.yml
+
+.PHONY: onboard-rollback
+onboard-rollback: ## Remove the host stack: make onboard-rollback LIMIT=<host>
+	$(_ANSIBLE) audit-onboard.yml -e state=absent
+
 .PHONY: clean
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR)

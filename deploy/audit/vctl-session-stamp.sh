@@ -1,5 +1,8 @@
+# shellcheck shell=sh
 # /etc/profile.d/vctl-session-stamp.sh
 # SSH 로그인 셸에서 cert serial→세션 마커 기록. (sourced; 실행권한 불필요)
+# (sourced 스크립트라 셰뱅/실행 없음 — 위 지시어가 ShellCheck 에 sh 방언을 알려
+#  1행을 깨진 셰뱅으로 오인하지 않게 한다)
 #
 # 왜 PAM 이 아니라 profile.d 인가: sshd ExposeAuthInfo 의 $SSH_USER_AUTH 는 "세션 셸"
 # 환경에만 들어가고 pam_exec 세션 훅은 받지 못한다(검증 완료). 로그인 셸에선 존재하므로
