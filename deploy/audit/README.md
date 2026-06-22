@@ -19,7 +19,7 @@ ssh login ──▶ sshd (ExposeAuthInfo) ──▶ $SSH_USER_AUTH file (cert of
                      ▼
            /run/vctl/sessions/<pid>.json   (serial, login, rhost, leader pid)
 
-Tetragon (eBPF) ──exec/exit/open/connect──▶ JSON stream
+Tetragon (eBPF) ──exec/exit──▶ JSON stream
                      │
         vctl-collect.service:  tetra getevents -o json | vctl collect
                      │  (privileged: holds Vault AppRole creds)
@@ -43,12 +43,16 @@ a local marker; one privileged daemon (AppRole) does all central writes.
    ```
    session optional pam_exec.so /usr/local/sbin/pam-session-stamp.sh
    ```
-3. **Tetragon** — install (DaemonSet on k8s nodes, or systemd on bare VMs) with
-   `tracingpolicy-ssh.yaml`.
+3. **Tetragon** — install as a DaemonSet on k8s nodes, or systemd on bare VMs.
+   Start with process exec/exit events only. `tracingpolicy-ssh.yaml` is an
+   optional verbose policy for canary hosts; it adds file/network probes and
+   should not be enabled fleet-wide until event volume is measured.
 4. **Collector + session registrar** — install `vctl-collect.service` (Tetragon
    → events) and `vctl-watch-sessions.service` (PAM markers → sessions), with
    AppRole creds in `/etc/vctl/` (role → `vctl-rw`), enable both.
-5. **Log rotation** — both daemons log to journald; install
+5. **Resource and log limits** — the systemd units include CPU, memory, task,
+   IO weight, restart, and per-unit log rate limits. Both daemons log to
+   journald; install
    `journald-vctl-audit.conf` → `/etc/systemd/journald.conf.d/` to cap journal
    growth, and `logrotate-vctl-audit.conf` → `/etc/logrotate.d/` for any
    file-based logs (Tetragon export buffer, etc.). Kernel events live in central
@@ -58,6 +62,35 @@ a local marker; one privileged daemon (AppRole) does all central writes.
 For OpenStack VMs: bake steps 1–4 into the golden image. New VMs then audit
 themselves with zero per-host onboarding — same pattern as the SSH CA trust
 (only the CA public key / AppRole role-id are baked; secret-id delivered at boot).
+
+## Low-resource defaults
+
+The checked-in deployment files are conservative by default:
+
+- `vctl-collect.service`: `CPUQuota=20%`, `MemoryMax=128M`, batch `500`, flush
+  interval `10s`, per-unit journal burst `1000/30s`.
+- `vctl-watch-sessions.service`: `CPUQuota=5%`, `MemoryMax=64M`, scan interval
+  `10s`, per-unit journal burst `500/30s`.
+- `journald-vctl-audit.conf`: total persistent journal cap `100M`, retention
+  `7day`, global burst `2000/30s`.
+- `logrotate-vctl-audit.conf`: vctl file logs rotate at `25M`, Tetragon file
+  logs at `50M`.
+- `prune-cronjob.yaml`: `concurrencyPolicy: Forbid`, one retained success/fail
+  job, `activeDeadlineSeconds: 1800`, and `200m/128Mi` upper limits.
+
+Canary sizing checklist:
+
+```bash
+systemctl status vctl-collect vctl-watch-sessions
+journalctl -u vctl-collect -u vctl-watch-sessions --since -1h --no-pager
+systemd-cgtop
+vctl prune --dry-run
+```
+
+If the collector drops events or falls behind, first raise `VCTL_COLLECT_BATCH`
+or `VCTL_COLLECT_FLUSH_INTERVAL` before increasing CPU. If the DB is under load,
+lower retention or increase the flush interval rather than enabling verbose
+file/network probes.
 
 ## Notes / TODO
 - `vctl collect` currently ingests `process_exec` / `process_exit`. File

@@ -6,15 +6,40 @@
 Description=vctl session registrar (PAM markers -> audit_session)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=6
 
 [Service]
 Environment=VCTL_AUTH_METHOD=approle
 Environment=VCTL_ROLE_ID_FILE=/etc/vctl/role-id
 Environment=VCTL_SECRET_ID_FILE=/etc/vctl/secret-id
-ExecStart=/usr/local/bin/vctl watch-sessions /run/vctl/sessions --interval 5s
+Environment=HOME=/var/lib/vctl
+ExecStart=/usr/local/bin/vctl watch-sessions /run/vctl/sessions --interval 10s
 Restart=always
-RestartSec=5
+RestartSec=10
 User=root
-# Logs go to journald; capped per-unit (see journald drop-in).
+StateDirectory=vctl
+StateDirectoryMode=0700
+RuntimeDirectory=vctl/sessions
+RuntimeDirectoryMode=0755
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/vctl /proc /sys/fs/cgroup
+ReadWritePaths=/var/lib/vctl /run/vctl/sessions
+CPUQuota=5%
+MemoryHigh=48M
+MemoryMax=64M
+TasksMax=32
+IOWeight=50
+Nice=10
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=500
+# Logs go to journald; capped per-unit here and globally by the journald drop-in.
 [Install]
 WantedBy=multi-user.target
