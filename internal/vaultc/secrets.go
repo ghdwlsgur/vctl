@@ -54,6 +54,40 @@ func (c *Client) DBCreds(ctx context.Context, role string) (user, pass string, t
 	return user, pass, time.Duration(sec.LeaseDuration) * time.Second, nil
 }
 
+// AppRoleRoleID reads the role_id for an approle role (not a secret).
+func (c *Client) AppRoleRoleID(ctx context.Context, mount, role string) (string, error) {
+	p := fmt.Sprintf("auth/%s/role/%s/role-id", mount, role)
+	sec, err := c.api.Logical().ReadWithContext(ctx, p)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", p, err)
+	}
+	if sec == nil || sec.Data == nil {
+		return "", fmt.Errorf("%s: empty response", p)
+	}
+	id, _ := sec.Data["role_id"].(string)
+	if id == "" {
+		return "", fmt.Errorf("%s: missing role_id", p)
+	}
+	return id, nil
+}
+
+// GenerateSecretID issues a fresh secret_id for an approle role.
+func (c *Client) GenerateSecretID(ctx context.Context, mount, role string) (string, error) {
+	p := fmt.Sprintf("auth/%s/role/%s/secret-id", mount, role)
+	sec, err := c.api.Logical().WriteWithContext(ctx, p, nil)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", p, err)
+	}
+	if sec == nil || sec.Data == nil {
+		return "", fmt.Errorf("%s: empty response", p)
+	}
+	sid, _ := sec.Data["secret_id"].(string)
+	if sid == "" {
+		return "", fmt.Errorf("%s: missing secret_id", p)
+	}
+	return sid, nil
+}
+
 // CAPublicKey reads the CA public key from ssh/config/ca.
 func (c *Client) CAPublicKey(ctx context.Context) (string, error) {
 	sec, err := c.api.Logical().ReadWithContext(ctx, "ssh/config/ca")

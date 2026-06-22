@@ -100,6 +100,39 @@ func (a *App) AppRoleCreds() (roleID, secretID string, ok bool) {
 	return roleID, secretID, roleID != "" && secretID != ""
 }
 
+// RegisterAgent makes vctl self-sufficient after the first interactive login:
+// it fetches the configured approle's role_id and a fresh secret_id and stores
+// them, so later runs auto-authenticate without prompting. Best-effort — if the
+// login token may not generate a secret_id, it returns an error the caller can
+// surface without failing the login. No-op when approle creds already exist.
+func (a *App) RegisterAgent(ctx context.Context) error {
+	if _, _, ok := a.AppRoleCreds(); ok {
+		return nil // already registered
+	}
+	role := a.Cfg.AppRoleSelfRole
+	if role == "" {
+		return fmt.Errorf("no approle_self_role configured")
+	}
+	rid, err := a.Vault.AppRoleRoleID(ctx, a.Cfg.AppRoleMount, role)
+	if err != nil {
+		return err
+	}
+	sid, err := a.Vault.GenerateSecretID(ctx, a.Cfg.AppRoleMount, role)
+	if err != nil {
+		return err
+	}
+	if a.Cfg.AppRoleIDFile == "" || a.Cfg.AppRoleSecretIDFile == "" {
+		return fmt.Errorf("approle credential file paths not set")
+	}
+	if err := os.WriteFile(a.Cfg.AppRoleIDFile, []byte(rid+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(a.Cfg.AppRoleSecretIDFile, []byte(sid+"\n"), 0o600); err != nil {
+		return err
+	}
+	return nil
+}
+
 func readFileTrim(path string) string {
 	if path == "" {
 		return ""
