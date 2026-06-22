@@ -34,6 +34,29 @@ Tetragon (eBPF) ──exec/exit──▶ JSON stream
 no Vault creds, and you don't want creds on every login. The PAM hook only drops
 a local marker; one privileged daemon (AppRole) does all central writes.
 
+## Install via package (recommended)
+
+The release pipeline ships `.deb` and `.rpm` packages that carry the `vctl`
+binary plus all three host units, the PAM stamper, and the sshd/journald/logrotate
+drop-ins. The agents are **not** enabled on install — they need AppRole creds and
+`*.sre.local` resolution first.
+
+```bash
+# Ubuntu/Debian
+apt install ./vctl_<version>_linux_amd64.deb
+# Rocky/RHEL
+dnf install ./vctl_<version>_linux_amd64.rpm
+
+# then, per host:
+install -m 0600 role-id   /etc/vctl/role-id      # AppRole -> vctl-rw (audit) / vctl-status (node)
+install -m 0600 secret-id /etc/vctl/secret-id
+systemctl enable --now vctl-watch-sessions       # SSH session registrar
+systemctl enable --now vctl-collect              # kernel audit (requires tetragon)
+```
+
+The manual file-by-file steps below remain valid for hosts not yet on the package
+(and document exactly what the package places where).
+
 ## Install (per host, or bake into the golden image)
 
 1. **sshd** — expose the offered cert to the session:
