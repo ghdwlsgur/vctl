@@ -231,14 +231,17 @@ This audit table is operational metadata. The Vault audit device remains the aut
 
 Environment variables such as `VAULT_ADDR`, `VCTL_AUTH_METHOD`, `VCTL_ROLE_ID_FILE`, `VCTL_SECRET_ID_FILE`, `VCTL_SINK`, `VCTL_DB_HOST`, `VCTL_CA_ROLE`, `VCTL_SSH_DEFAULT_USER`, `VCTL_SSH_DIRECT_FIRST`, `VCTL_SYNC_PROBE_TIMEOUT`, and `VCTL_SYNC_PROBE_CONCURRENCY` override the compiled defaults.
 
-Start from the sample config:
+The config file is **optional** — vctl runs on compiled defaults and the file is
+not created at login. Copy the sample only when you need to override a value
+(e.g. set `auth_method: oidc`); keep just the keys you change. No secrets go in
+it — Vault issues tokens and DB credentials at runtime.
 
 ```bash
 mkdir -p .vctl
-cp .vctl/config.example.yaml .vctl/config.yaml
+cp .vctl/config.example.yaml .vctl/config.yaml   # then trim to what you override
 ```
 
-Example:
+All keys and their compiled defaults:
 
 ```yaml
 vault_addr: https://vault.sre.local
