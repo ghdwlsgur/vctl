@@ -19,6 +19,7 @@
 # (e.g. dialing through a port-forward where the dial host != the cert name).
 # db_host: vctl-postgres.sre.local
 # db_server_name: vctl-postgres.sre.local
+# db_role_status: vctl-status
 
 # Workstation auto-auth (skip repeated logins): point at approle credential
 # files. Usually `vctl login --method oidc` is simpler.

@@ -9,11 +9,17 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"net/url"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// CredsFunc returns fresh database credentials. It is invoked before every new
+// physical connection (including the first), so a long-running pool survives
+// the short TTL of Vault dynamic credentials without a Vault Agent: connections
+// are recycled before their lease expires and re-fetch live credentials here.
+type CredsFunc func(context.Context) (user, pass string, err error)
 
 type Server struct {
 	Hostname     string
@@ -35,9 +41,10 @@ type Store struct {
 // serverName overrides the TLS SNI/verification name; when empty it defaults to host.
 // Use serverName when dialing through a port-forward/proxy where the dial host
 // (e.g. 127.0.0.1) differs from the certificate's DNS name.
-func Open(ctx context.Context, host string, port int, dbname, user, pass, serverName string, caPEM []byte) (*Store, error) {
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s",
-		url.QueryEscape(user), url.QueryEscape(pass), host, port, dbname)
+func Open(ctx context.Context, host string, port int, dbname string, getCreds CredsFunc, serverName string, caPEM []byte) (*Store, error) {
+	// No userinfo in the DSN: credentials are injected per-connection by
+	// BeforeConnect so the pool can refresh them as dynamic leases roll over.
+	dsn := fmt.Sprintf("postgres://%s:%d/%s", host, port, dbname)
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -56,6 +63,22 @@ func Open(ctx context.Context, host string, port int, dbname, user, pass, server
 		MinVersion: tls.VersionTLS12,
 	}
 	cfg.MaxConns = 4
+	// Vault dynamic DB creds default to a 1h TTL (max 4h). Recycle connections
+	// well inside that window so each physical connection re-fetches a live
+	// credential via BeforeConnect; an expired lease is never reused. This is
+	// what lets the long-running collector/watch daemons run without a restart.
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnLifetimeJitter = 5 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.BeforeConnect = func(ctx context.Context, cc *pgx.ConnConfig) error {
+		user, pass, err := getCreds(ctx)
+		if err != nil {
+			return fmt.Errorf("fetch db creds: %w", err)
+		}
+		cc.User = user
+		cc.Password = pass
+		return nil
+	}
 
 	p, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

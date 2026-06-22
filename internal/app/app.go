@@ -196,6 +196,11 @@ func (a *App) OpenStore(ctx context.Context, rw bool) (*store.Store, error) {
 	return a.OpenStoreRole(ctx, role)
 }
 
+// OpenStatusStore opens Postgres with the narrow node-agent status role.
+func (a *App) OpenStatusStore(ctx context.Context) (*store.Store, error) {
+	return a.OpenStoreRole(ctx, a.Cfg.DBRoleStatus)
+}
+
 // LogAccess records one SSH access attempt to the central audit table using
 // write credentials. It is best-effort: it opens a short-lived RW store, inserts
 // one row, and returns any error for the caller to log without failing the SSH.
@@ -210,12 +215,15 @@ func (a *App) LogAccess(ctx context.Context, entry store.AccessEntry) error {
 
 // OpenStoreRole opens Postgres with a specific Vault database role.
 func (a *App) OpenStoreRole(ctx context.Context, role string) (*store.Store, error) {
-	if err := a.EnsureLogin(ctx); err != nil {
-		return nil, err
+	// getCreds runs before each new pool connection. It re-establishes the Vault
+	// session if the token lapsed, then issues a fresh dynamic DB credential, so
+	// a daemon holding the pool for hours never outlives a credential lease.
+	getCreds := func(ctx context.Context) (string, string, error) {
+		if err := a.EnsureLogin(ctx); err != nil {
+			return "", "", err
+		}
+		user, pass, _, err := a.Vault.DBCreds(ctx, role)
+		return user, pass, err
 	}
-	user, pass, _, err := a.Vault.DBCreds(ctx, role)
-	if err != nil {
-		return nil, err
-	}
-	return store.Open(ctx, a.Cfg.DBHost, a.Cfg.DBPort, a.Cfg.DBName, user, pass, a.Cfg.DBServerName, config.SRERootCA)
+	return store.Open(ctx, a.Cfg.DBHost, a.Cfg.DBPort, a.Cfg.DBName, getCreds, a.Cfg.DBServerName, config.SRERootCA)
 }
