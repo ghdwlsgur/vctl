@@ -109,8 +109,8 @@ vctl agent
 # Install
 brew install ghdwlsgur/vctl/vctl
 
-# Login (people: GitLab SSO — per-person identity)
-vctl login --method oidc
+# Login — GitLab SSO by default (per-person identity), zero config needed
+vctl login
 
 # Connect
 vctl ssh sre-srv-0047
@@ -141,18 +141,19 @@ authenticated, so people should never share one identity.
 
 | Method | Who | Notes |
 |---|---|---|
-| **`oidc` (GitLab SSO)** | **People (recommended)** | Each user logs in as themselves via `gitlab.sre.local`. Per-person identity flows to every audit record. Browser session makes re-auth light. |
+| **`oidc` (GitLab SSO)** | **People (default)** | Each user logs in as themselves via `gitlab.sre.local`. Per-person identity flows to every audit record. Browser session makes re-auth light. `vctl login` uses this with no flag or config. |
 | `approle` | Services / automation | Non-interactive (role_id + secret_id). A shared approle is one identity — fine for a daemon (e.g. the audit collector), **not** for multiple people. |
 | `userpass` | Fallback / bootstrap | Per-person, but a manual password each time. |
 
 ### GitLab SSO (OIDC)
 
 ```bash
-# One-off, or set auth_method: oidc in ~/.vctl/config.yaml to make it the default.
-vctl login --method oidc        # opens a browser -> GitLab SSO -> done
+vctl login                      # OIDC is the default -> opens a browser -> GitLab SSO
 vctl ssh sre-srv-0047
 vctl audit -n 3                 # VAULT USER column shows your GitLab username
 ```
+
+(`vctl login --method userpass` for bootstrap, or set `auth_method: userpass` to override.)
 
 Vault's `oidc` auth backend trusts GitLab as the identity provider; the role
 maps the GitLab `preferred_username` claim into the token so `vctl audit` and
@@ -233,8 +234,8 @@ Environment variables such as `VAULT_ADDR`, `VCTL_AUTH_METHOD`, `VCTL_ROLE_ID_FI
 
 The config file is **optional** — vctl runs on compiled defaults and the file is
 not created at login. Copy the sample only when you need to override a value
-(e.g. set `auth_method: oidc`); keep just the keys you change. No secrets go in
-it — Vault issues tokens and DB credentials at runtime.
+(e.g. `auth_method: userpass` to override the OIDC default); keep just the keys
+you change. No secrets go in it — Vault issues tokens and DB credentials at runtime.
 
 ```bash
 mkdir -p .vctl
