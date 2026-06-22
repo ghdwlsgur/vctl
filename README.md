@@ -10,6 +10,7 @@
 - Embedded private CA: validate Vault and Postgres TLS without extra workstation setup.
 - No static SSH keys: generate an in-memory key per connection and request a short-lived certificate.
 - Central inventory: store host topology and access audit metadata in Postgres while keeping secrets in Vault.
+- Host agents (optional): low-resource daemons report per-person kernel session activity and runtime host status into Postgres, attributed to whoever logged in — the agent-less Vault pattern applied server-side.
 - Hardened release path: CI runs tests, Trivy scans, distroless image scans, GoReleaser, Homebrew updates, and GHCR publishing.
 
 ## Architecture
@@ -31,6 +32,11 @@ flowchart LR
   dbcreds --> pg
   pg --> inv[servers\nhost topology]
   pg --> audit[access_log\nSSH audit metadata]
+  pg --> status[server_status\nruntime host state]
+  pg --> sess[audit_session + kernel_event\nper-person session activity]
+
+  agents[Host agents\nnode-agent / kernel-audit collector] --> vault
+  agents --> pg
 
   cli --> ssh[Native SSH client]
   sshca --> ssh
@@ -215,6 +221,31 @@ vctl audit --source-ip 192.0.2.10
 
 This audit table is operational metadata. The Vault audit device remains the authoritative record for certificate signing requests.
 
+## Host Agents
+
+Two optional daemons run *on* the servers (not the workstation). Both authenticate non-interactively with AppRole, hold a narrow Vault policy, and write through short-lived dynamic DB credentials — the same agent-less pattern as the CLI, applied server-side.
+
+| Daemon | Unit / docs | Vault policy → DB role | Writes |
+|---|---|---|---|
+| Kernel-audit collector + session registrar | `deploy/audit/` (`vctl-collect`, `vctl-watch-sessions`) | `vctl-collector` → `vctl-rw` | `audit_session`, `kernel_event` |
+| Node status agent | `deploy/node/` (`vctl-node-agent`) | `vctl-node` → `vctl-status` | `server_status` |
+
+**Per-person session audit.** A login-time stamper records the offered SSH certificate serial, so Tetragon-captured process activity links back to the human who logged in — not just the shared OS login user. Read the joined timeline with:
+
+```bash
+vctl session --list                 # recent sessions (who, where, when)
+vctl session <cert-serial>          # full kernel timeline for one access
+vctl session <cert-serial> --json   # machine-readable export (e.g. for an agent)
+```
+
+The collector ingests `process_exec`/`process_exit` from Tetragon; events link to sessions by cgroup id, falling back to cert serial. Retention is enforced by `vctl prune` (a CronJob), mirroring Teleport's storage-lifecycle model — high-volume `kernel_event` rows expire sooner than the small `audit_session` index.
+
+**Runtime host status.** `vctl node-agent` reports a lightweight heartbeat (load, memory, disk, and service health for sshd/kubelet/cri-o/docker/audit-collector) into `server_status` *only for hosts already present in `servers`* — it never creates inventory. `vctl list` and `vctl status` surface this freshness alongside topology.
+
+**Long-running credential renewal.** These daemons hold a Postgres pool for days, but Vault dynamic DB creds are short-lived (1h default, 4h max). The pool recycles each physical connection well inside that window and re-fetches a live credential before connecting, re-authenticating the Vault session if the token lapsed. A daemon never outlives its credential lease and needs no Vault Agent.
+
+Resource limits, journald caps, and the golden-image bake guidance live in `deploy/audit/README.md` and `deploy/node/README.md`.
+
 ## Commands
 
 | Command | Description |
@@ -227,6 +258,7 @@ This audit table is operational metadata. The Vault audit device remains the aut
 | `vctl list [--dc <dc>]` | List inventory hosts |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | Show central SSH access audit rows |
 | `vctl node-agent [--interval 5m]` | Report lightweight host runtime status for already registered inventory |
+| `vctl session [<serial>\|--list\|--json]` | Show what a person did inside an SSH session (host kernel-audit timeline) |
 | `vctl status` | Check login, SSH CA, and inventory DB connectivity |
 | `vctl sync [--migrate] [--prefix sre]` | Sync inventory from `~/.ssh/config` and probes |
 | `vctl logout` | Remove the cached Vault token |
@@ -343,6 +375,7 @@ The release workflow uses pinned GitHub Actions, runs tests and Trivy, scans the
 - Vault is the source of truth for auth, token renewal, SSH certificate signing, dynamic DB credentials, and signing audit logs.
 - Postgres stores central inventory and operational access audit metadata.
 - SSH CA key rotation and DB credential rotation are independent.
+- Long-running connection pools recycle within the dynamic credential lease window and re-fetch credentials per connection, so host daemons never reuse an expired lease.
 - Compiled defaults are onboarding defaults only. Override Vault, DB, CA role, SSH user, direct-first behavior, sync probing, and DC classification through env vars or `.vctl/config.yaml`.
 
 ## Layout
@@ -351,9 +384,11 @@ The release workflow uses pinned GitHub Actions, runs tests and Trivy, scans the
 cmd/vctl              entrypoint
 internal/config       defaults and embedded CA
 internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
-internal/store        Postgres inventory and access audit with verify-full TLS
+internal/store        Postgres inventory, access/session/kernel audit, and host status with verify-full TLS
 internal/sshc         native SSH client with cert signer, jump chains, PTY, and connection metadata
 internal/syncx        ssh config parsing and host probing
 internal/cli          Cobra commands
 deploy/vault          policies, DB engine bootstrap, and OIDC guide
+deploy/audit          host kernel-audit stack: collector, session registrar, Tetragon, retention
+deploy/node           host node-agent systemd unit and install notes
 ```
