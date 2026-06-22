@@ -1,0 +1,5 @@
+# Operator-supplied / sensitive — never commit:
+files/            # release binary, CA pubkey, any fetched artifacts
+inventory.ini     # real fleet inventory (commit inventory.example.ini only)
+*.secret-id
+*.retry

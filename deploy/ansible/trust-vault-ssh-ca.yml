@@ -1,0 +1,55 @@
+---
+# 기존 서버(fleet)가 Vault SSH CA 서명 인증서를 신뢰하게 한다 (TrustedUserCAKeys).
+# 신규 VM 의 cloud-init(trust-vault-ssh-ca.yaml)과 동일 효과의 "기존 서버" 버전.
+#
+# 멱등 + 안전:
+#   - CA '공개키'만 배포(비밀 아님). 기존 authorized_keys/키 접근은 그대로 보존(추가만).
+#   - sshd_config 변경은 'sshd -t' 로 검증 후에만 reload → 잘못된 설정으로 sshd 깨지지 않음.
+#
+# 실행:
+#   ansible-playbook -i inventory.ini trust-vault-ssh-ca.yml            # 전체
+#   ansible-playbook -i inventory.ini trust-vault-ssh-ca.yml -l <host>  # 1대 검증
+#   (롤백: --extra-vars "state=absent")
+- name: Trust Vault SSH CA on existing fleet
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    ca_pub_src: files/vault_ssh_ca.pub
+    ca_pub_dest: /etc/ssh/vault_ssh_ca.pub
+    state: present # absent 로 롤백
+  tasks:
+    - name: Install Vault SSH CA public key
+      when: state == 'present'
+      ansible.builtin.copy:
+        src: "{{ ca_pub_src }}"
+        dest: "{{ ca_pub_dest }}"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: reload sshd
+
+    - name: Ensure TrustedUserCAKeys in sshd_config (validated)
+      when: state == 'present'
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\s*TrustedUserCAKeys'
+        line: "TrustedUserCAKeys {{ ca_pub_dest }}"
+        validate: "sshd -t -f %s"
+      notify: reload sshd
+
+    # --- 롤백 ---
+    - name: Remove TrustedUserCAKeys (rollback)
+      when: state == 'absent'
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^TrustedUserCAKeys\s+{{ ca_pub_dest }}'
+        state: absent
+        validate: "sshd -t -f %s"
+      notify: reload sshd
+
+  handlers:
+    - name: reload sshd
+      ansible.builtin.service:
+        name: "{{ 'sshd' if ansible_os_family == 'RedHat' else 'ssh' }}"
+        state: reloaded
