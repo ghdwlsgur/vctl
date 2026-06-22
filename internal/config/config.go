@@ -70,7 +70,7 @@ type Config struct {
 func Defaults() *Config {
 	return &Config{
 		VaultAddr:            "https://vault.sre.local",
-		AuthMethod:           "userpass",
+		AuthMethod:           "oidc", // people: GitLab SSO by default; --method userpass for bootstrap
 		OIDCRole:             "vctl",
 		OIDCMount:            "oidc",
 		DBHost:               "vctl-postgres.sre.local", // must match the certificate dnsName for verify-full

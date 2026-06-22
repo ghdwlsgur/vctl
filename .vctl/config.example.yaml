@@ -8,9 +8,9 @@
 #
 # Full key list + their defaults: see the README "Configuration" section.
 
-# People log in with GitLab SSO (per-person identity). Compiled default is
-# userpass; set this so `vctl login` uses OIDC without --method.
-auth_method: oidc
+# Auth method. The compiled default is already `oidc` (GitLab SSO, per-person),
+# so `vctl login` needs nothing here. Uncomment only to override (e.g. bootstrap).
+# auth_method: userpass
 
 # Default SSH login user when an inventory host doesn't specify one.
 # ssh_default_user: ubuntu
