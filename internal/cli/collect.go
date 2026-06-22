@@ -3,8 +3,10 @@ package cli
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +24,14 @@ type tetraProcess struct {
 	CWD       string `json:"cwd"`
 	Binary    string `json:"binary"`
 	Arguments string `json:"arguments"`
+	// protojson renders uint64 as a string; parsed best-effort. Lets kernel
+	// events link to a session by cgroup so concurrent sessions don't mix.
+	CgroupID string `json:"cgroup_id"`
+}
+
+func (p tetraProcess) cgroup() int64 {
+	n, _ := strconv.ParseInt(p.CgroupID, 10, 64)
+	return n
 }
 
 type tetraExec struct {
@@ -86,12 +96,14 @@ Events link to a session by cgroup when the login stamper recorded one; pass
 			// `tetra getevents` stream never hits EOF, and on a quiet host events
 			// would otherwise sit in the buffer until a full batch accumulates.
 			lines := make(chan string, 4096)
+			var scanErr error // read after lines closes (close happens-after assignment)
 			go func() {
 				sc := bufio.NewScanner(r)
 				sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
 				for sc.Scan() {
 					lines <- sc.Text()
 				}
+				scanErr = sc.Err()
 				close(lines)
 			}()
 
@@ -122,6 +134,12 @@ Events link to a session by cgroup when the login stamper recorded one; pass
 					if !ok {
 						if err := flush(); err != nil {
 							return err
+						}
+						// Don't report success if the input stream errored (read
+						// failure, or a line over the 8MiB buffer) — that would
+						// silently mask dropped audit events.
+						if scanErr != nil {
+							return fmt.Errorf("input scan aborted after %d events: %w", total, scanErr)
 						}
 						ui.Successf(os.Stderr, "ingested %d kernel events (%d skipped)", total, skipped)
 						return nil
@@ -173,14 +191,14 @@ func mapTetra(te tetraEvent, hostOverride, serial string) (store.KernelEvent, bo
 		return store.KernelEvent{
 			CertSerial: serial, Hostname: host, TS: ts, Kind: "exec",
 			PID: p.PID, PPID: te.ProcessExec.Parent.PID, Binary: p.Binary,
-			Args: p.Arguments, CWD: p.CWD, UID: p.UID,
+			Args: p.Arguments, CWD: p.CWD, UID: p.UID, CgroupID: p.cgroup(),
 		}, host != "" && p.Binary != ""
 	case te.ProcessExit != nil:
 		p := te.ProcessExit.Process
 		code := te.ProcessExit.Status
 		return store.KernelEvent{
 			CertSerial: serial, Hostname: host, TS: ts, Kind: "exit",
-			PID: p.PID, Binary: p.Binary, UID: p.UID, ExitCode: &code,
+			PID: p.PID, Binary: p.Binary, UID: p.UID, ExitCode: &code, CgroupID: p.cgroup(),
 		}, host != ""
 	default:
 		return store.KernelEvent{}, false

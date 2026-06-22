@@ -40,22 +40,50 @@ type KernelEvent struct {
 	ExitCode   *int
 }
 
-// RecordSession upserts a session row (keyed by host + leader pid + start) and
-// returns its id. Requires write credentials. Used by the login-time stamper.
+// RecordSession upserts a session row and returns its id. Requires write
+// credentials. The conflict key is (hostname, session_leader_pid, started_at),
+// so started_at MUST be the stable login time from the marker — not now() — or a
+// watch-sessions restart would re-insert the same session as a new row and leave
+// the old one un-ended. When StartedAt is zero we fall back to now() (legacy).
 func (s *Store) RecordSession(ctx context.Context, a AuditSession) (int64, error) {
+	var started any
+	if !a.StartedAt.IsZero() {
+		started = a.StartedAt
+	}
 	var id int64
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO audit_session
-			(cert_serial, vault_user, hostname, login_user, source_ip, session_leader_pid, cgroup_id, summary)
-		VALUES ($1,$2,$3,$4,NULLIF($5,'')::inet,$6,$7,$8)
+			(cert_serial, vault_user, hostname, login_user, source_ip, session_leader_pid, cgroup_id, summary, started_at)
+		VALUES ($1,$2,$3,$4,NULLIF($5,'')::inet,$6,$7,$8, COALESCE($9, now()))
 		ON CONFLICT (hostname, session_leader_pid, started_at) DO UPDATE SET
 			cert_serial=EXCLUDED.cert_serial, vault_user=EXCLUDED.vault_user,
 			login_user=EXCLUDED.login_user, source_ip=EXCLUDED.source_ip,
 			cgroup_id=EXCLUDED.cgroup_id
 		RETURNING id`,
 		nullIfEmpty(a.CertSerial), nullIfEmpty(a.VaultUser), nullIfEmpty(a.Hostname),
-		nullIfEmpty(a.LoginUser), a.SourceIP, a.LeaderPID, a.CgroupID, nullIfEmpty(a.Summary)).Scan(&id)
+		nullIfEmpty(a.LoginUser), a.SourceIP, a.LeaderPID, a.CgroupID, nullIfEmpty(a.Summary), started).Scan(&id)
 	return id, err
+}
+
+// UnendedSessions returns sessions on a host without an ended_at, for restart
+// reconciliation (end the ones whose leader process is gone).
+func (s *Store) UnendedSessions(ctx context.Context, host string) ([]AuditSession, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, coalesce(session_leader_pid,0)
+		FROM audit_session WHERE hostname=$1 AND ended_at IS NULL`, host)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AuditSession
+	for rows.Next() {
+		var a AuditSession
+		if err := rows.Scan(&a.ID, &a.LeaderPID); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // EndSession stamps ended_at and an optional summary for a session.
@@ -139,6 +167,10 @@ func (s *Store) SessionTimeline(ctx context.Context, certSerial string, limit in
 	// cgroup ids), so correlate on hostname and the session's [start,end] window.
 	// Note: concurrent sessions on one host in overlapping windows share events.
 	for _, sess := range sessions {
+		// Link by host + session time window; when both the session and the
+		// event carry a cgroup id, require it to match so concurrent sessions on
+		// one host don't bleed into each other. cgroup 0 on either side = fall
+		// back to time-window only.
 		erows, err := s.pool.Query(ctx, `
 			SELECT coalesce(cert_serial,''), hostname, ts, kind,
 			       coalesce(pid,0), coalesce(ppid,0), coalesce(cgroup_id,0),
@@ -147,7 +179,8 @@ func (s *Store) SessionTimeline(ctx context.Context, certSerial string, limit in
 			FROM kernel_event
 			WHERE hostname = $1
 			  AND ts >= $2 AND ts <= coalesce($3, now())
-			ORDER BY ts ASC`, sess.Hostname, sess.StartedAt, sess.EndedAt)
+			  AND ($4 = 0 OR coalesce(cgroup_id,0) = 0 OR cgroup_id = $4)
+			ORDER BY ts ASC`, sess.Hostname, sess.StartedAt, sess.EndedAt, sess.CgroupID)
 		if err != nil {
 			return nil, nil, err
 		}
