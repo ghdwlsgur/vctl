@@ -27,6 +27,7 @@ Token lifecycle:
 SSH CA access:
   vctl ssh <name>       resolve inventory and connect with a short-lived cert
   vctl list             list accessible inventory hosts
+  vctl node-agent       report host runtime status for registered inventory
   vctl sync             sync inventory from ~/.ssh/config and probes
   vctl audit            show the central SSH access log
 
@@ -37,7 +38,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 	root.AddCommand(
 		loginCmd(), logoutCmd(), tokenCmd(), execCmd(), agentCmd(),
 		sshCmd(), lsCmd(), syncCmd(), statusCmd(), auditCmd(),
-		sessionCmd(), sessionStartCmd(), collectCmd(), pruneCmd(), watchSessionsCmd(),
+		sessionCmd(), sessionStartCmd(), collectCmd(), pruneCmd(), watchSessionsCmd(), nodeAgentCmd(),
 	)
 	return root.Execute()
 }
