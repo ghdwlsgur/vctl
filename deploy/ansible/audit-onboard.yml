@@ -1,0 +1,389 @@
+---
+# 기존 fleet(sshc/vctl 로 접속하는 서버)에 세션 기록을 설치한다.
+# trust-vault-ssh-ca.yml 의 자매편 — CA 신뢰가 "들어올 수 있게"라면 이건 "들어와서
+# 한 일을 기록"한다.
+#
+# 무엇을 깔까:
+#   - sshd ExposeAuthInfo (세션에 제시된 cert 노출 → 로그인 스탬퍼가 serial 추출)
+#   - PAM 세션 스탬퍼 (마커만 떨굼, 자격증명 없음)
+#   - vctl 바이너리 + collector/watch-sessions systemd 유닛 (AppRole 자격으로 중앙 DB 기록)
+#   - 로그로테이션 (journald 캡 + logrotate) — 호스트 디스크 안 채우게
+#
+# Tetragon(커널 이벤트 수집기)은 환경별이라 이 플레이북 범위 밖:
+#   - k8s 노드: Tetragon DaemonSet
+#   - bare VM: Tetragon systemd (배포 후 tracingpolicy-ssh.yaml 적용)
+#   설치 후 vctl-collect 가 `tetra getevents -o json | vctl collect` 로 받는다.
+#
+# 멱등 + 안전: sshd/PAM 변경은 검증(sshd -t) 후에만 reload. AppRole secret-id 는
+# 절대 베이크하지 않음(별도 전달). state=absent 로 롤백.
+#
+# 실행:
+#   ansible-playbook -i inventory.ini audit-onboard.yml -l <canary-host>   # 먼저 1대
+#   ansible-playbook -i inventory.ini audit-onboard.yml                    # 전체
+#   ansible-playbook -i inventory.ini audit-onboard.yml -e state=absent    # 롤백
+- name: Onboard host session auditing (vctl)
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    state: present
+    # linux/amd64 릴리스 바이너리를 여기 둔다 (gitignore — 커밋 안 함).
+    # GH 릴리스에서 받아 배치: gh release download vX -p 'vctl_*_linux_amd64.tar.gz'
+    # (또는 deb/rpm 설치로 대체 가능)
+    vctl_bin_src: files/vctl
+    vctl_bin_dest: /usr/local/bin/vctl
+    enable_services: true # AppRole 자격(/etc/vctl) 준비된 뒤 true 로
+    # secret_id 자동 발급: 컨트롤 노드의 Vault 토큰(VAULT_ADDR/VAULT_TOKEN)으로 호스트당 1개.
+    provision_secret_id: true
+    # Tetragon 설치(bare VM, systemd). 호스트가 download URL 에 닿아야 함(인터넷/하버 미러).
+    install_tetragon: true
+    tetragon_version: v1.1.2
+    tetragon_url: "https://github.com/cilium/tetragon/releases/download/{{ tetragon_version }}/tetragon-{{ tetragon_version }}-amd64.tar.gz"
+    # Pin the release digest per version (e.g. "sha256:…"). Empty = no verification
+    # (acceptable only for the public HTTPS URL; set it before fronting a mirror).
+    tetragon_sha256: ""
+    # 감사 데몬이 Vault/Postgres 에 닿으려면 호스트가 *.sre.local 을 풀어야 한다.
+    # 서버엔 sre.local 리졸버가 없어 /etc/hosts 로 sre-lb(haproxy 프론트)를 가리킨다.
+    # incheon 등 다른 망에선 -e sre_lb_ip=<해당 망 LB> 로 덮어쓸 것.
+    sre_lb_ip: 192.168.201.12
+  handlers:
+    - name: reload sshd
+      # 서비스명이 배포판마다 sshd(RHEL) / ssh(Debian·Ubuntu) 로 갈림 → 둘 다 시도.
+      ansible.builtin.shell: systemctl reload sshd 2>/dev/null || systemctl reload ssh
+      changed_when: true
+    - name: daemon-reload
+      ansible.builtin.systemd:
+        daemon_reload: true
+    - name: restart journald
+      ansible.builtin.service:
+        name: systemd-journald
+        state: restarted
+    - name: restart vctl-collect
+      ansible.builtin.service:
+        name: vctl-collect
+        state: restarted
+    - name: restart vctl-watch-sessions
+      ansible.builtin.service:
+        name: vctl-watch-sessions
+        state: restarted
+
+  tasks:
+    # --- vctl binary ---
+    - name: Install vctl binary
+      when: state == 'present'
+      ansible.builtin.copy:
+        src: "{{ vctl_bin_src }}"
+        dest: "{{ vctl_bin_dest }}"
+        owner: root
+        group: root
+        mode: "0755"
+
+    # --- DNS: 호스트가 vault/vctl-postgres .sre.local 을 풀게 (/etc/hosts) ---
+    - name: Resolve *.sre.local to the SRE LB (audit daemons reach Vault/Postgres)
+      when: state == 'present'
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} VCTL AUDIT (vault/postgres)"
+        block: |
+          {{ sre_lb_ip }} vault.sre.local
+          {{ sre_lb_ip }} vctl-postgres.sre.local
+
+    # --- sshd: expose the offered cert to the session ---
+    - name: Enable sshd ExposeAuthInfo (validated)
+      when: state == 'present'
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\s*ExposeAuthInfo'
+        line: "ExposeAuthInfo yes"
+        validate: "sshd -t -f %s"
+      notify: reload sshd
+
+    # --- PAM session stamper (drops markers, no creds) ---
+    - name: Install PAM session stamper
+      when: state == 'present'
+      ansible.builtin.copy:
+        src: ../audit/pam-session-stamp.sh
+        dest: /usr/local/sbin/pam-session-stamp.sh
+        owner: root
+        group: root
+        mode: "0755"
+
+    # profile.d 스탬퍼 — SSH 로그인 셸에서 마커 기록(여기엔 $SSH_USER_AUTH 존재).
+    # pam_exec 는 SSH_USER_AUTH 를 못 받아 동작 안 함(검증). 이게 실동작 경로.
+    - name: Install login-shell session stamper (profile.d)
+      when: state == 'present'
+      ansible.builtin.copy:
+        src: ../audit/vctl-session-stamp.sh
+        dest: /etc/profile.d/vctl-session-stamp.sh
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Ensure marker dir exists
+      when: state == 'present'
+      ansible.builtin.file:
+        path: /run/vctl/sessions
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # --- AppRole creds (role_id is not secret; secret_id delivered out of band) ---
+    - name: Ensure vctl creds dir
+      when: state == 'present'
+      ansible.builtin.file:
+        path: /etc/vctl
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # role_id is not secret, but fetch it from the control-node Vault token so the
+    # baked file can't drift from the live vctl-host AppRole. vctl-host grants both
+    # vctl-rw (collector/watch) and vctl-status (node-agent) — one cred for the stack.
+    - name: Fetch vctl-host role_id (control node Vault)
+      when: state == 'present'
+      delegate_to: localhost
+      become: false
+      run_once: true
+      ansible.builtin.command: vault read -field=role_id auth/approle/role/vctl-host/role-id
+      register: vctl_roleid
+      changed_when: false
+
+    - name: Install AppRole role_id (vctl-host — not secret)
+      when: state == 'present'
+      ansible.builtin.copy:
+        content: "{{ vctl_roleid.stdout }}"
+        dest: /etc/vctl/role-id
+        owner: root
+        group: root
+        mode: "0600"
+
+    # secret_id is NOT delivered here (it's the secret). It is generated per host
+    # from the control-node Vault token below:
+    #   vault write -f auth/approle/role/vctl-host/secret-id   → /etc/vctl/secret-id (0600)
+    # (or via cloud-init / boot-time secret delivery). enable_services stays false
+    # until it's present.
+    - name: Check whether secret_id is present
+      when: state == 'present'
+      ansible.builtin.stat:
+        path: /etc/vctl/secret-id
+      register: vctl_secret_id
+
+    # secret_id 자동 발급: 컨트롤 노드의 Vault 토큰으로 호스트당 1개 생성→주입.
+    # 이미 있으면 건너뜀(재발급 방지). no_log 로 secret_id 노출 차단.
+    - name: Generate AppRole secret_id (control node Vault)
+      when: state == 'present' and provision_secret_id | bool and not vctl_secret_id.stat.exists
+      delegate_to: localhost
+      become: false
+      ansible.builtin.command: vault write -f -field=secret_id auth/approle/role/vctl-host/secret-id
+      register: vctl_sid
+      changed_when: true
+      no_log: true
+
+    - name: Install secret_id on host
+      when: state == 'present' and provision_secret_id | bool and not vctl_secret_id.stat.exists
+      ansible.builtin.copy:
+        content: "{{ vctl_sid.stdout }}"
+        dest: /etc/vctl/secret-id
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Re-check secret_id after provisioning
+      when: state == 'present'
+      ansible.builtin.stat:
+        path: /etc/vctl/secret-id
+      register: vctl_secret_id
+
+    # --- log rotation: cap journald + rotate file logs ---
+    - name: Ensure journald drop-in dir exists
+      when: state == 'present'
+      ansible.builtin.file:
+        path: /etc/systemd/journald.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Cap journald usage for audit daemons
+      when: state == 'present'
+      ansible.builtin.copy:
+        src: ../audit/journald-vctl-audit.conf
+        dest: /etc/systemd/journald.conf.d/vctl-audit.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: restart journald
+
+    - name: Install logrotate config for file logs
+      when: state == 'present'
+      ansible.builtin.copy:
+        src: ../audit/logrotate-vctl-audit.conf
+        dest: /etc/logrotate.d/vctl-audit
+        owner: root
+        group: root
+        mode: "0644"
+
+    # --- Tetragon (bare VM, systemd) — 커널 이벤트 수집기 ---
+    # k8s 노드는 install_tetragon=false 로 두고 DaemonSet 으로 배포할 것.
+    - name: Install Tetragon (bare VM)
+      when: state == 'present' and install_tetragon | bool
+      block:
+        # Root-only stage dir (not /tmp) — no multiuser race on the tarball we run as root.
+        - name: Stage dir for Tetragon
+          ansible.builtin.file:
+            path: /opt/vctl/tetragon-stage
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+        - name: Download Tetragon tarball
+          ansible.builtin.get_url:
+            url: "{{ tetragon_url }}"
+            dest: /opt/vctl/tetragon-stage/tetragon.tar.gz
+            mode: "0600"
+            # Pin the release digest (tetragon_sha256, e.g. "sha256:abc…"). Once a
+            # mirror (harbor) fronts the URL, the mirror becomes a trust point —
+            # the checksum makes a swapped tarball fail closed. Omitted when empty.
+            checksum: "{{ tetragon_sha256 | default(omit, true) }}"
+        - name: Extract Tetragon
+          ansible.builtin.unarchive:
+            src: /opt/vctl/tetragon-stage/tetragon.tar.gz
+            dest: /opt/vctl/tetragon-stage
+            remote_src: true
+        - name: Run Tetragon installer (systemd)
+          ansible.builtin.command: ./install.sh
+          args:
+            chdir: "/opt/vctl/tetragon-stage/tetragon-{{ tetragon_version }}-amd64"
+            creates: /usr/lib/systemd/system/tetragon.service
+        - name: Ensure tracingpolicy dir
+          ansible.builtin.file:
+            path: /etc/tetragon/tetragon.tp.d
+            state: directory
+            mode: "0755"
+        - name: Install SRE audit tracingpolicy
+          ansible.builtin.copy:
+            src: ../audit/tracingpolicy-ssh.yaml
+            dest: /etc/tetragon/tetragon.tp.d/sre-audit.yaml
+            mode: "0644"
+        - name: Enable Tetragon
+          ansible.builtin.systemd:
+            name: tetragon
+            enabled: true
+            state: started
+            daemon_reload: true
+
+    # --- systemd units (start only once AppRole creds + Tetragon are present) ---
+    # collector/watch units live in ../audit, node-agent unit in ../node (canonical).
+    - name: Install audit systemd units
+      when: state == 'present'
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "/etc/systemd/system/{{ item.name }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - { src: ../audit/vctl-collect.service, name: vctl-collect.service }
+        - { src: ../audit/vctl-watch-sessions.service, name: vctl-watch-sessions.service }
+        - { src: ../node/vctl-node-agent.service, name: vctl-node-agent.service }
+      loop_control:
+        label: "{{ item.name }}"
+      notify: daemon-reload # 기동은 아래 게이트 태스크에서만 — 설치만으로 start 금지
+
+    # node-agent reports under the INVENTORY hostname, not the OS hostname
+    # (OS hostnames like k8s-all-01 don't match inventory names like sre-srv-0023,
+    # and UpsertServerStatus drops reports for unregistered names). The ansible
+    # inventory_hostname must equal the vctl inventory hostname for this to match.
+    - name: Ensure node-agent drop-in dir
+      when: state == 'present'
+      ansible.builtin.file:
+        path: /etc/systemd/system/vctl-node-agent.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Pin node-agent to the inventory hostname (drop-in)
+      when: state == 'present'
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/vctl-node-agent.service.d/10-hostname.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=/usr/local/bin/vctl node-agent --hostname {{ inventory_hostname }} --interval 5m
+      notify: daemon-reload
+
+    - name: Enable audit services (only with secret_id present)
+      when: state == 'present' and enable_services | bool and vctl_secret_id.stat.exists | default(false)
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+      loop:
+        - vctl-watch-sessions
+        - vctl-collect
+        - vctl-node-agent
+
+    # secret_id/Tetragon 준비 전(enable_services=false 또는 secret_id 없음)에는 확실히 정지
+    # — 설치 단계에서 실수로 크래시 루프 도는 일 방지.
+    - name: Keep audit services stopped until enabled
+      when: state == 'present' and not (enable_services | bool and vctl_secret_id.stat.exists | default(false))
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+      loop:
+        - vctl-collect
+        - vctl-watch-sessions
+        - vctl-node-agent
+      failed_when: false
+
+    # --- rollback (state=absent) ---
+    - name: Disable audit services
+      when: state == 'absent'
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+      loop:
+        - vctl-collect
+        - vctl-watch-sessions
+        - vctl-node-agent
+      failed_when: false
+
+    - name: Remove audit files
+      when: state == 'absent'
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/vctl-collect.service
+        - /etc/systemd/system/vctl-watch-sessions.service
+        - /etc/systemd/system/vctl-node-agent.service
+        - /etc/systemd/system/vctl-node-agent.service.d/10-hostname.conf
+        - /etc/logrotate.d/vctl-audit
+        - /etc/systemd/journald.conf.d/vctl-audit.conf
+        - /usr/local/sbin/pam-session-stamp.sh
+        - /etc/profile.d/vctl-session-stamp.sh
+      notify: daemon-reload
+
+    - name: Remove ExposeAuthInfo (rollback)
+      when: state == 'absent'
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^ExposeAuthInfo'
+        state: absent
+        validate: "sshd -t -f %s"
+      notify: reload sshd
+
+    - name: Remove PAM stamper hook (rollback)
+      when: state == 'absent'
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/sshd
+        regexp: 'pam-session-stamp\.sh'
+        state: absent
