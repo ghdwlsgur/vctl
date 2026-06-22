@@ -1,5 +1,12 @@
-# Operator-supplied / sensitive — never commit:
-files/            # release binary, CA pubkey, any fetched artifacts
-inventory.ini     # real fleet inventory (commit inventory.example.ini only)
+# Operator-supplied / sensitive — never commit.
+# (.gitignore does not support trailing comments on a pattern line — keep them
+#  on their own lines or the spaces+text become part of the pattern.)
+
+# release binary, CA pubkey, any fetched artifacts
+files/
+
+# real fleet inventory (commit inventory.example.ini only)
+inventory.ini
+
 *.secret-id
 *.retry
