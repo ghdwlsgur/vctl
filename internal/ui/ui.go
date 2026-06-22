@@ -152,3 +152,18 @@ func padRight(s string, width int) string {
 	}
 	return s + strings.Repeat(" ", pad)
 }
+
+// Truncate shortens s to at most max columns, eliding the middle with "…" so the
+// head and tail both stay visible. Long hostnames (e.g.
+// incheon-vm-[surromind]-…-worker-gpu-new) keep their common prefix and the
+// distinguishing suffix instead of overflowing the column and wrapping the row.
+func Truncate(s string, max int) string {
+	if max <= 1 || lipgloss.Width(s) <= max {
+		return s
+	}
+	r := []rune(s)
+	keep := max - 1 // room for the ellipsis
+	head := (keep + 1) / 2
+	tail := keep - head
+	return string(r[:head]) + "…" + string(r[len(r)-tail:])
+}

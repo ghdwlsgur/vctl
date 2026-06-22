@@ -30,16 +30,31 @@ func selectServer(cands []store.Server, title string) (*store.Server, error) {
 		if c.LastSeenUp != nil {
 			status = "up"
 		}
-		label := fmt.Sprintf("%-30s %-16s %-12s %s", c.Hostname, c.IP, c.DC, status)
+		label := fmt.Sprintf("%-40s %-16s %-12s %s", ui.Truncate(c.Hostname, 40), c.IP, c.DC, status)
 		options[i] = huh.NewOption(label, i)
 	}
 
+	// The list shows truncated labels (long VM names would wrap and break the
+	// layout). DescriptionFunc re-evaluates as the cursor moves — huh updates the
+	// bound idx on every up/down — so the focused row's FULL name and details show
+	// below the list without widening every row.
 	var idx int
 	err := huh.NewSelect[int]().
 		Title(title).
 		Options(options...).
 		Height(18).      // viewport; longer lists scroll
 		Filtering(true). // type to filter
+		DescriptionFunc(func() string {
+			if idx < 0 || idx >= len(cands) {
+				return ""
+			}
+			c := cands[idx]
+			st := "down"
+			if c.LastSeenUp != nil {
+				st = "up"
+			}
+			return fmt.Sprintf("%s  (%s@%s · %s · %s)", c.Hostname, c.User, c.IP, c.DC, st)
+		}, &idx).
 		Value(&idx).
 		Run()
 	if err != nil {
