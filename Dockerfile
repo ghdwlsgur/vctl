@@ -22,7 +22,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 LABEL org.opencontainers.image.title="vctl"
 LABEL org.opencontainers.image.description="Vault-backed infrastructure access CLI"
 LABEL org.opencontainers.image.source="https://github.com/ghdwlsgur/vctl"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=build /out/vctl /usr/local/bin/vctl
 
