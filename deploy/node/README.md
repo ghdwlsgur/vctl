@@ -9,6 +9,12 @@ the authority split clear:
 
 ## Install
 
+The `vctl` `.deb`/`.rpm` package already places the binary and
+`vctl-node-agent.service` (see `deploy/audit/README.md` → *Install via package*).
+With the package installed, only steps 1–3 below remain, then
+`systemctl enable --now vctl-node-agent`. The numbered steps document the manual
+path and what the package provides.
+
 1. Run DB migrations with an admin token:
 
    ```bash
