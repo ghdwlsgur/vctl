@@ -44,10 +44,27 @@ func statusCmd() *cobra.Command {
 				return nil
 			}
 			defer st.Close()
-			servers, _ := st.List(ctx, "")
+			servers, _ := st.ListWithStatus(ctx, "")
+			var withAgent int
+			for _, server := range servers {
+				if server.Status != nil {
+					withAgent++
+				}
+			}
 			rows = append(rows, ui.KV{Key: "Inventory DB", Value: fmt.Sprintf("OK (%d hosts)", len(servers)), State: ui.StateOK})
+			rows = append(rows, ui.KV{Key: "Node agents", Value: fmt.Sprintf("%d reporting", withAgent), State: agentCoverageState(len(servers), withAgent)})
 			ui.KVs(os.Stdout, rows)
 			return nil
 		},
 	}
+}
+
+func agentCoverageState(total, reporting int) ui.State {
+	if total == 0 || reporting == 0 {
+		return ui.StateWarn
+	}
+	if reporting == total {
+		return ui.StateOK
+	}
+	return ui.StateWarn
 }

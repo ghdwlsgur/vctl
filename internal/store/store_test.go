@@ -95,3 +95,58 @@ func TestSessionEventRoundTrip(t *testing.T) {
 		t.Fatalf("PruneSessions: %v", err)
 	}
 }
+
+func TestServerStatusDoesNotCreateInventory(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	host := "status-host-" + time.Now().Format("150405.000000")
+
+	ok, err := st.UpsertServerStatus(ctx, ServerStatus{Hostname: host, AgentVersion: "test"})
+	if err != nil {
+		t.Fatalf("UpsertServerStatus absent host: %v", err)
+	}
+	if ok {
+		t.Fatal("UpsertServerStatus reported success for absent inventory host")
+	}
+
+	if err := st.Upsert(ctx, Server{
+		Hostname: host,
+		IP:       "192.0.2.10",
+		Port:     22,
+		User:     "ubuntu",
+		DC:       "test",
+		CARole:   "sre-core",
+	}); err != nil {
+		t.Fatalf("Upsert server: %v", err)
+	}
+	load := 0.25
+	sshd := true
+	ok, err = st.UpsertServerStatus(ctx, ServerStatus{
+		Hostname:     host,
+		AgentVersion: "test",
+		OS:           "linux",
+		Load1:        &load,
+		SSHDOK:       &sshd,
+	})
+	if err != nil || !ok {
+		t.Fatalf("UpsertServerStatus registered host = (%v,%v), want (true,nil)", ok, err)
+	}
+
+	servers, err := st.ListWithStatus(ctx, "test")
+	if err != nil {
+		t.Fatalf("ListWithStatus: %v", err)
+	}
+	var found *ServerWithStatus
+	for i := range servers {
+		if servers[i].Hostname == host {
+			found = &servers[i]
+			break
+		}
+	}
+	if found == nil || found.Status == nil {
+		t.Fatalf("status for %s not found in %+v", host, servers)
+	}
+	if found.Status.AgentVersion != "test" || found.Status.Load1 == nil || *found.Status.Load1 != load {
+		t.Fatalf("status = %+v, want agent version and load", found.Status)
+	}
+}

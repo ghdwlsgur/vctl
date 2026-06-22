@@ -28,6 +28,7 @@ type Config struct {
 	DBName           string `yaml:"db_name"`
 	DBRoleRO         string `yaml:"db_role_ro"`         // database/creds/<ro> for read paths
 	DBRoleRW         string `yaml:"db_role_rw"`         // database/creds/<rw> for sync/admin paths
+	DBRoleStatus     string `yaml:"db_role_status"`     // database/creds/<status> for node-agent status updates
 	DBRoleMigrate    string `yaml:"db_role_migrate"`    // database/creds/<migrator> for schema changes
 	DBMigrationOwner string `yaml:"db_migration_owner"` // stable owner role for migration objects
 
@@ -78,6 +79,7 @@ func Defaults() *Config {
 		DBName:               "vctl",
 		DBRoleRO:             "vctl-ro",
 		DBRoleRW:             "vctl-rw",
+		DBRoleStatus:         "vctl-status",
 		DBRoleMigrate:        "vctl-migrator",
 		DBMigrationOwner:     "vctl_owner",
 		KernelRetentionDays:  90,
@@ -151,6 +153,7 @@ func (c *Config) applyEnv() {
 	envStr(&c.DBRoleRO, "VCTL_DB_ROLE_RO")
 	envStr(&c.DBRoleRW, "VGO_DB_ROLE_RW")
 	envStr(&c.DBRoleRW, "VCTL_DB_ROLE_RW")
+	envStr(&c.DBRoleStatus, "VCTL_DB_ROLE_STATUS")
 	envStr(&c.DBRoleMigrate, "VGO_DB_ROLE_MIGRATE")
 	envStr(&c.DBRoleMigrate, "VCTL_DB_ROLE_MIGRATE")
 	envStr(&c.DBMigrationOwner, "VGO_DB_MIGRATION_OWNER")

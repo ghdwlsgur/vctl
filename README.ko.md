@@ -216,6 +216,7 @@ vctl audit --source-ip 192.0.2.10
 | `vctl ssh [host]` | exact, fuzzy, interactive host 선택으로 접속합니다 |
 | `vctl list [--dc <dc>]` | 인벤토리 호스트를 나열합니다 |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | 중앙 SSH 접근 감사 row를 보여줍니다 |
+| `vctl node-agent [--interval 5m]` | 이미 등록된 인벤토리 호스트의 가벼운 런타임 상태를 보고합니다 |
 | `vctl status` | 로그인, SSH CA, inventory DB 연결 상태를 확인합니다 |
 | `vctl sync [--migrate] [--prefix sre]` | `~/.ssh/config`와 probe 결과에서 인벤토리를 동기화합니다 |
 | `vctl logout` | 캐시된 Vault 토큰을 제거합니다 |
@@ -244,6 +245,7 @@ db_port: 5432
 db_name: vctl
 db_role_ro: vctl-ro
 db_role_rw: vctl-rw
+db_role_status: vctl-status
 db_role_migrate: vctl-migrator
 db_migration_owner: vctl_owner
 
@@ -262,6 +264,12 @@ dc_rules:
 ```
 
 jump-only 환경에서는 `.vctl/config.yaml`에 `ssh_direct_first: false`를 설정하세요. 그러면 direct SSH 연결 timeout을 기다리지 않고 설정된 jump chain을 바로 사용합니다.
+
+`vctl node-agent`는 선택 사항입니다. 이미 `servers`에 등록된 host의 관측
+상태만 `server_status`에 보고하며, 인벤토리 row를 새로 만들지 않습니다.
+서버에 설치할 때는 `deploy/vault/`의 별도 `vctl-node` Vault policy와
+`vctl-status` DB role을 사용하세요. 저리소스 systemd unit은 `deploy/node/`에
+있습니다.
 
 ## Admin Bootstrap
 
