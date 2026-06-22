@@ -46,7 +46,7 @@ nfpms:
       Includes the kernel-audit collector, SSH session registrar, and node
       status agent as systemd units (disabled until an operator supplies
       AppRole credentials).
-    license: Proprietary
+    license: Apache-2.0
     formats:
       - deb
       - rpm
