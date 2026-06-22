@@ -14,10 +14,12 @@ import (
 
 func sessionCmd() *cobra.Command {
 	var (
-		list   bool
-		host   string
-		asJSON bool
-		limit  int
+		list        bool
+		host        string
+		asJSON      bool
+		full        bool
+		limit       int
+		detailWidth int
 	)
 	cmd := &cobra.Command{
 		Use:   "session [cert-serial]",
@@ -70,12 +72,14 @@ Two uses:
 			if asJSON {
 				return writeJSON(timelineExport(sessions, events))
 			}
-			return printTimeline(sessions, events)
+			return printTimeline(sessions, events, sessionDetailOptions{Full: full, Width: detailWidth})
 		},
 	}
 	cmd.Flags().BoolVar(&list, "list", false, "list recent sessions instead of one timeline")
 	cmd.Flags().StringVar(&host, "host", "", "filter by hostname substring (with --list)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
+	cmd.Flags().BoolVar(&full, "full", false, "show full command details without truncating table cells")
+	cmd.Flags().IntVar(&detailWidth, "detail-width", 120, "max visible width for the detail column; use --full to disable")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "max sessions to show")
 	return cmd
 }
@@ -136,7 +140,12 @@ func printSessions(sessions []store.AuditSession) error {
 	return ui.Table(os.Stdout, []string{"started", "vault user", "host", "login", "serial", "dur"}, rows)
 }
 
-func printTimeline(sessions []store.AuditSession, events map[int64][]store.KernelEvent) error {
+type sessionDetailOptions struct {
+	Full  bool
+	Width int
+}
+
+func printTimeline(sessions []store.AuditSession, events map[int64][]store.KernelEvent, opts sessionDetailOptions) error {
 	for _, s := range sessions {
 		ui.Section(os.Stdout, fmt.Sprintf("%s on %s (%s)", orDash(s.VaultUser), s.Hostname, s.CertSerial))
 		ui.Infof(os.Stdout, "login=%s source=%s started=%s dur=%s",
@@ -153,7 +162,7 @@ func printTimeline(sessions []store.AuditSession, events map[int64][]store.Kerne
 		rows := make([][]string, 0, len(evs))
 		for _, e := range evs {
 			rows = append(rows, []string{
-				e.TS.Local().Format("15:04:05"), e.Kind, detail(e),
+				e.TS.Local().Format("15:04:05"), e.Kind, detail(e, opts),
 			})
 		}
 		if err := ui.Table(os.Stdout, []string{"time", "kind", "detail"}, rows); err != nil {
@@ -163,7 +172,11 @@ func printTimeline(sessions []store.AuditSession, events map[int64][]store.Kerne
 	return nil
 }
 
-func detail(e store.KernelEvent) string {
+func detail(e store.KernelEvent, opts sessionDetailOptions) string {
+	return maybeTruncateDetail(rawDetail(e), opts)
+}
+
+func rawDetail(e store.KernelEvent) string {
 	switch e.Kind {
 	case "exec":
 		if e.Args != "" {
@@ -182,6 +195,25 @@ func detail(e store.KernelEvent) string {
 	default:
 		return e.Binary
 	}
+}
+
+func maybeTruncateDetail(s string, opts sessionDetailOptions) string {
+	if opts.Full {
+		return s
+	}
+	width := opts.Width
+	if width <= 0 {
+		width = 120
+	}
+	const suffix = "..."
+	r := []rune(s)
+	if len(r) <= width {
+		return s
+	}
+	if width <= len(suffix) {
+		return string(r[:width])
+	}
+	return string(r[:width-len(suffix)]) + suffix
 }
 
 // timelineExport builds the JSON shape for dataset/agent consumption.
