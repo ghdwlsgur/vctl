@@ -52,6 +52,11 @@ type Config struct {
 	AppRoleSecretID     string `yaml:"secret_id"`
 	AppRoleIDFile       string `yaml:"role_id_file"`
 	AppRoleSecretIDFile string `yaml:"secret_id_file"`
+	// AppRoleSelfRole is the approle that `vctl login` self-registers against:
+	// after interactive auth it fetches role_id + a fresh secret_id and stores
+	// them, so future runs auto-authenticate without prompting ("register the
+	// agent on first login"). Requires the login token to permit secret-id gen.
+	AppRoleSelfRole string `yaml:"approle_self_role"`
 
 	// SinkPath is where agent mode writes a valid token for other tools.
 	SinkPath string `yaml:"sink_path"`
@@ -85,6 +90,7 @@ func Defaults() *Config {
 		SyncProbeConcurrency: 32,
 		DCRules:              syncx.DefaultDCRules(),
 		AppRoleMount:         "approle",
+		AppRoleSelfRole:      "vctl-user",
 	}
 }
 
@@ -168,6 +174,7 @@ func (c *Config) applyEnv() {
 	envStr(&c.AppRoleIDFile, "VCTL_ROLE_ID_FILE")
 	envStr(&c.AppRoleSecretIDFile, "VGO_SECRET_ID_FILE")
 	envStr(&c.AppRoleSecretIDFile, "VCTL_SECRET_ID_FILE")
+	envStr(&c.AppRoleSelfRole, "VCTL_APPROLE_SELF_ROLE")
 	envStr(&c.SinkPath, "VGO_SINK")
 	envStr(&c.SinkPath, "VCTL_SINK")
 }
@@ -175,6 +182,12 @@ func (c *Config) applyEnv() {
 func (c *Config) setDerivedDefaults() {
 	if c.SinkPath == "" {
 		c.SinkPath = filepath.Join(c.StateDir, "token-sink")
+	}
+	if c.AppRoleIDFile == "" {
+		c.AppRoleIDFile = filepath.Join(c.StateDir, "role-id")
+	}
+	if c.AppRoleSecretIDFile == "" {
+		c.AppRoleSecretIDFile = filepath.Join(c.StateDir, "secret-id")
 	}
 }
 
