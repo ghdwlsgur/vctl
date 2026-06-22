@@ -1,25 +1,26 @@
-vault_addr: https://vault.sre.local
-auth_method: userpass
-oidc_role: vctl
-oidc_mount: oidc
+# vctl optional overrides.
+#
+# vctl ships with compiled defaults for this environment and WORKS WITHOUT THIS
+# FILE. Copy to .vctl/config.yaml only to change something below; omit the rest
+# and the defaults apply. No secrets here — Vault issues tokens and DB
+# credentials at runtime; nothing is stored in this file, and it is not
+# auto-generated at login.
+#
+# Full key list + their defaults: see the README "Configuration" section.
 
-db_host: vctl-postgres.sre.local
-db_port: 5432
-db_name: vctl
-db_role_ro: vctl-ro
-db_role_rw: vctl-rw
-db_role_migrate: vctl-migrator
-db_migration_owner: vctl_owner
+# People log in with GitLab SSO (per-person identity). Compiled default is
+# userpass; set this so `vctl login` uses OIDC without --method.
+auth_method: oidc
 
-ca_role: sre-core
-ssh_sign: 30m
-ssh_direct_first: true
-ssh_default_user: ubuntu
+# Default SSH login user when an inventory host doesn't specify one.
+# ssh_default_user: ubuntu
 
-sync_probe_timeout: 3s
-sync_probe_concurrency: 32
-dc_rules:
-  - name: incheon
-    prefixes: ["10.40.0.", "192.168.10."]
-  - name: seoul-onprem
-    prefixes: ["192.168.201.", "192.168.190.", "192.168.110."]
+# Override ONLY if your workstation can't resolve/reach the default DB endpoint
+# (e.g. dialing through a port-forward where the dial host != the cert name).
+# db_host: vctl-postgres.sre.local
+# db_server_name: vctl-postgres.sre.local
+
+# Workstation auto-auth (skip repeated logins): point at approle credential
+# files. Usually `vctl login --method oidc` is simpler.
+# role_id_file: /home/you/.vctl/role-id
+# secret_id_file: /home/you/.vctl/secret-id
