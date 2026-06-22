@@ -226,6 +226,7 @@ This audit table is operational metadata. The Vault audit device remains the aut
 | `vctl ssh [host]` | Connect by exact, fuzzy, or interactive host selection |
 | `vctl list [--dc <dc>]` | List inventory hosts |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | Show central SSH access audit rows |
+| `vctl node-agent [--interval 5m]` | Report lightweight host runtime status for already registered inventory |
 | `vctl status` | Check login, SSH CA, and inventory DB connectivity |
 | `vctl sync [--migrate] [--prefix sre]` | Sync inventory from `~/.ssh/config` and probes |
 | `vctl logout` | Remove the cached Vault token |
@@ -257,6 +258,7 @@ db_port: 5432
 db_name: vctl
 db_role_ro: vctl-ro
 db_role_rw: vctl-rw
+db_role_status: vctl-status
 db_role_migrate: vctl-migrator
 db_migration_owner: vctl_owner
 
@@ -275,6 +277,12 @@ dc_rules:
 ```
 
 Set `ssh_direct_first: false` in jump-only environments to skip direct SSH connection attempts and avoid waiting for direct-connect timeouts before using the configured jump chain.
+
+`vctl node-agent` is optional. It reports observed host state into `server_status`
+for hosts already present in `servers`; it never creates inventory rows. Use the
+separate `vctl-node` Vault policy and `vctl-status` DB role from `deploy/vault/`
+when installing it on servers. A low-resource systemd unit is provided under
+`deploy/node/`.
 
 ## Admin Bootstrap
 

@@ -34,7 +34,7 @@ fi
 echo "==> 2) Postgres connection registration (TLS verify-full)"
 vault write database/config/vctl-pg \
   plugin_name=postgresql-database-plugin \
-  allowed_roles="vctl-ro,vctl-rw,vctl-migrator" \
+  allowed_roles="vctl-ro,vctl-rw,vctl-status,vctl-migrator" \
   connection_url="postgresql://{{username}}:{{password}}@${PG_HOST}:${PG_PORT}/${PG_DB}?sslmode=${PG_SSLMODE:-verify-full}" \
   username="${PG_ADMIN_USER}" \
   password="${PG_ADMIN_PASS}"
@@ -63,7 +63,17 @@ GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO \"{{name}}\"
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO \"{{name}}\"; \
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO \"{{name}}\";"
 
-echo "==> 5.5) migration role (SET ROLE to stable owner)"
+echo "==> 5.5) node status role (TTL 1h)"
+vault write database/roles/vctl-status \
+  db_name=vctl-pg \
+  default_ttl=1h max_ttl=4h \
+  creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; \
+GRANT CONNECT ON DATABASE ${PG_DB} TO \"{{name}}\"; \
+GRANT USAGE ON SCHEMA public TO \"{{name}}\"; \
+GRANT SELECT ON servers TO \"{{name}}\"; \
+GRANT SELECT,INSERT,UPDATE ON server_status TO \"{{name}}\";"
+
+echo "==> 5.6) migration role (SET ROLE to stable owner)"
 vault write database/roles/vctl-migrator \
   db_name=vctl-pg \
   default_ttl=1h max_ttl=4h \
@@ -73,6 +83,7 @@ GRANT ${PG_MIGRATION_OWNER} TO \"{{name}}\";"
 echo "==> 6) policies"
 vault policy write vctl-user  "${DIR}/vctl-user.hcl"
 vault policy write vctl-admin "${DIR}/vctl-admin.hcl"
+vault policy write vctl-node  "${DIR}/vctl-node.hcl"
 
 echo "==> 7) userpass account example"
 echo "   vault write auth/userpass/users/albert password=<once> policies=vctl-user"

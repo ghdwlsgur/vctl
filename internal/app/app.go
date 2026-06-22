@@ -196,6 +196,11 @@ func (a *App) OpenStore(ctx context.Context, rw bool) (*store.Store, error) {
 	return a.OpenStoreRole(ctx, role)
 }
 
+// OpenStatusStore opens Postgres with the narrow node-agent status role.
+func (a *App) OpenStatusStore(ctx context.Context) (*store.Store, error) {
+	return a.OpenStoreRole(ctx, a.Cfg.DBRoleStatus)
+}
+
 // LogAccess records one SSH access attempt to the central audit table using
 // write credentials. It is best-effort: it opens a short-lived RW store, inserts
 // one row, and returns any error for the caller to log without failing the SSH.

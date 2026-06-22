@@ -1,0 +1,43 @@
+# Report lightweight host state to vctl's central server_status table.
+#
+# Install: /etc/systemd/system/vctl-node-agent.service ; systemctl enable --now vctl-node-agent
+# Creds:   /etc/vctl/role-id, /etc/vctl/secret-id (AppRole -> vctl-node policy -> vctl-status DB role)
+[Unit]
+Description=vctl node status agent
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=6
+
+[Service]
+Environment=VCTL_AUTH_METHOD=approle
+Environment=VCTL_ROLE_ID_FILE=/etc/vctl/role-id
+Environment=VCTL_SECRET_ID_FILE=/etc/vctl/secret-id
+Environment=HOME=/var/lib/vctl
+ExecStart=/usr/local/bin/vctl node-agent --interval 5m
+Restart=always
+RestartSec=30
+User=root
+StateDirectory=vctl
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/vctl /proc /sys/fs/cgroup /run/systemd
+ReadWritePaths=/var/lib/vctl
+CPUQuota=2%
+MemoryHigh=32M
+MemoryMax=48M
+TasksMax=24
+IOWeight=25
+Nice=10
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+
+[Install]
+WantedBy=multi-user.target
