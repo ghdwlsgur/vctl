@@ -123,9 +123,11 @@ func (c *Client) Renew(ctx context.Context) error {
 	return c.applyAuth(sec)
 }
 
-// Identity returns a human-readable identity for the current token
-// (display_name from token lookup-self), used for access audit logging.
-// It returns "" when the lookup fails so callers can degrade gracefully.
+// Identity returns a human-readable per-person identity for the current token,
+// used for access audit logging. It prefers the username from token metadata
+// (userpass sets meta.username; OIDC sets it via the role's claim_mappings), so
+// SSO logins record the actual person rather than the role-based display_name
+// (e.g. "oidc-vctl"). Falls back to display_name, then "".
 func (c *Client) Identity(ctx context.Context) string {
 	if c.api.Token() == "" {
 		return ""
@@ -133,6 +135,13 @@ func (c *Client) Identity(ctx context.Context) string {
 	sec, err := c.api.Auth().Token().LookupSelfWithContext(ctx)
 	if err != nil || sec == nil || sec.Data == nil {
 		return ""
+	}
+	if meta, ok := sec.Data["meta"].(map[string]interface{}); ok {
+		for _, k := range []string{"username", "preferred_username", "email"} {
+			if v, ok := meta[k].(string); ok && v != "" {
+				return v
+			}
+		}
 	}
 	if dn, ok := sec.Data["display_name"].(string); ok && dn != "" {
 		return dn
