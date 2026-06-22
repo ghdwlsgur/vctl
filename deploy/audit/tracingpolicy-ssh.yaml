@@ -1,34 +1,68 @@
-# Tetragon TracingPolicy: capture the SRE action timeline.
+# Tetragon TracingPolicy: optional verbose capture for SRE action timelines.
 #
 # process_exec / process_exit are emitted by Tetragon's base sensor (no policy
-# needed) — enable process events in the Tetragon config. This policy adds file
-# and network visibility for the richer dataset; tune the paths to cut noise.
+# needed) — enable process events in the Tetragon config for the low-resource
+# default. Apply this policy only on canary hosts when you need richer file and
+# network visibility. Keep the binary allowlist narrow; broad file/network
+# probes are expensive on busy hosts.
 #
 # Apply:  kubectl apply -f tracingpolicy-ssh.yaml      (k8s nodes)
 #    or:  tetragon --tracing-policy tracingpolicy-ssh.yaml  (bare VM)
 #
-# Map new event kinds in vctl's mapTetra() before relying on file/net rows.
+# vctl currently stores exec/exit events. Map open/connect in collect.go before
+# relying on file/net rows as authoritative audit data.
 apiVersion: cilium.io/v1alpha1
 kind: TracingPolicy
 metadata:
-  name: vctl-sre-audit
+  name: vctl-sre-audit-verbose
 spec:
   kprobes:
-    # Files opened (config/secrets touched during an operation).
+    # Files opened by common interactive/admin tools. Keep this allowlist small.
     - call: "security_file_open"
       syscall: false
       args:
         - index: 0
           type: "file"
       selectors:
-        - matchActions:
+        - matchBinaries:
+            - operator: In
+              values:
+                - /bin/bash
+                - /usr/bin/bash
+                - /bin/sh
+                - /usr/bin/sh
+                - /usr/bin/sudo
+                - /usr/bin/vim
+                - /usr/bin/vi
+                - /usr/bin/nano
+                - /usr/bin/curl
+                - /usr/bin/wget
+                - /usr/bin/ssh
+                - /usr/bin/scp
+                - /usr/bin/rsync
+                - /usr/bin/python3
+          matchActions:
             - action: Post
-    # Outbound TCP connects (where an operation reached out to).
+    # Outbound TCP connects by the same narrow command set.
     - call: "tcp_connect"
       syscall: false
       args:
         - index: 0
           type: "sock"
       selectors:
-        - matchActions:
+        - matchBinaries:
+            - operator: In
+              values:
+                - /bin/bash
+                - /usr/bin/bash
+                - /bin/sh
+                - /usr/bin/sh
+                - /usr/bin/sudo
+                - /usr/bin/curl
+                - /usr/bin/wget
+                - /usr/bin/ssh
+                - /usr/bin/scp
+                - /usr/bin/rsync
+                - /usr/bin/python3
+          matchActions:
             - action: Post

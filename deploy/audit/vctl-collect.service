@@ -10,17 +10,43 @@
 Description=vctl kernel-audit collector (Tetragon -> central store)
 After=network-online.target tetragon.service
 Wants=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=6
 
 [Service]
 Environment=VCTL_AUTH_METHOD=approle
 Environment=VCTL_ROLE_ID_FILE=/etc/vctl/role-id
 Environment=VCTL_SECRET_ID_FILE=/etc/vctl/secret-id
+Environment=HOME=/var/lib/vctl
+# Keep DB writes bounded on busy hosts. Raise these only after canary sizing.
+Environment=VCTL_COLLECT_BATCH=500
+Environment=VCTL_COLLECT_FLUSH_INTERVAL=10s
 # Stream Tetragon JSON into vctl collect. Restart keeps the pipe alive.
-ExecStart=/bin/sh -c 'tetra getevents -o json | /usr/local/bin/vctl collect'
+ExecStart=/bin/sh -c 'tetra getevents -o json | /usr/local/bin/vctl collect --batch "$VCTL_COLLECT_BATCH" --flush-interval "$VCTL_COLLECT_FLUSH_INTERVAL"'
 Restart=always
-RestartSec=5
+RestartSec=10
 DynamicUser=no
 User=root
+StateDirectory=vctl
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/vctl
+ReadWritePaths=/var/lib/vctl
+CPUQuota=20%
+MemoryHigh=96M
+MemoryMax=128M
+TasksMax=64
+IOWeight=100
+Nice=5
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
 
 [Install]
 WantedBy=multi-user.target
