@@ -23,6 +23,7 @@ type sessionMarker struct {
 	RHost     string `json:"rhost"`
 	LeaderPID int    `json:"leader_pid"`
 	Host      string `json:"host"`
+	Started   string `json:"started"` // RFC3339 login time — stable session key across restarts
 }
 
 func watchSessionsCmd() *cobra.Command {
@@ -57,6 +58,21 @@ itself stays credential-free.
 			}
 			defer st.Close()
 
+			// Restart reconcile: the in-memory seen map is lost on restart, so
+			// end any session this host left un-ended whose leader process is
+			// gone (otherwise stale "live" sessions accumulate).
+			if hn, err := os.Hostname(); err == nil {
+				if stale, err := st.UnendedSessions(ctx, hn); err == nil {
+					for _, sess := range stale {
+						if !processAlive(sess.LeaderPID) {
+							if err := st.EndSession(ctx, sess.ID, ""); err != nil {
+								ui.Warnf(os.Stderr, "end stale session %d: %v", sess.ID, err)
+							}
+						}
+					}
+				}
+			}
+
 			seen := map[string]int64{} // marker path -> session id
 			scan := func() {
 				entries, err := os.ReadDir(dir)
@@ -76,10 +92,11 @@ itself stays credential-free.
 					if err != nil {
 						continue
 					}
+					started, _ := time.Parse(time.RFC3339, m.Started)
 					id, err := st.RecordSession(ctx, store.AuditSession{
 						CertSerial: m.Serial, Hostname: m.Host, LoginUser: m.Login,
 						SourceIP: stripPort(m.RHost), LeaderPID: m.LeaderPID,
-						CgroupID: cgroupID(m.LeaderPID),
+						CgroupID: cgroupID(m.LeaderPID), StartedAt: started,
 					})
 					if err != nil {
 						ui.Warnf(os.Stderr, "record session %s: %v", e.Name(), err)
