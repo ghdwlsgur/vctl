@@ -48,7 +48,7 @@ func lsCmd() *cobra.Command {
 				if jump == "" {
 					jump = ui.Muted("direct")
 				}
-				rows = append(rows, []string{s.Hostname, s.IP, s.User, s.DC, jump, status, agentStatus(s.Status), serviceSummary(s.Status)})
+				rows = append(rows, []string{ui.Truncate(s.Hostname, 40), s.IP, s.User, s.DC, jump, status, agentStatus(s.Status), serviceSummary(s.Status)})
 			}
 			ui.Section(os.Stdout, "inventory")
 			return ui.Table(os.Stdout, []string{"host", "ip", "user", "dc", "jump", "probe", "agent", "services"}, rows)
