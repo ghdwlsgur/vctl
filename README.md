@@ -1,5 +1,7 @@
 # vctl
 
+[한국어 README](README.ko.md)
+
 `vctl` is a Vault-backed infrastructure access CLI. It manages Vault tokens directly, signs short-lived SSH certificates through Vault SSH CA, reads host inventory from Postgres, and records central SSH access audit metadata.
 
 - No local daemon: the binary handles login, renewal, re-authentication, and SSH certificate signing.
