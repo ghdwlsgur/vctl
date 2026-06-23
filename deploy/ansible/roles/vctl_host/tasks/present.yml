@@ -7,6 +7,7 @@
     owner: root
     group: root
     mode: "0755"
+  notify: restart vctl services # new binary only applies after a restart
 
 # --- DNS: host resolves vault/vctl-postgres .sre.local via the network's LB ---
 - name: Resolve *.sre.local to the LB (audit daemons reach Vault/Postgres)
@@ -171,11 +172,20 @@
         path: /etc/tetragon/tetragon.tp.d
         state: directory
         mode: "0755"
-    - name: Install SRE audit tracingpolicy
+    # Verbose policy (open/connect) is opt-in; exec/exit come from the base sensor.
+    - name: Install verbose SRE audit tracingpolicy (open/connect)
+      when: install_verbose_tracingpolicy | bool
       ansible.builtin.copy:
         src: "{{ vctl_audit_src }}/tracingpolicy-ssh.yaml"
         dest: /etc/tetragon/tetragon.tp.d/sre-audit.yaml
         mode: "0644"
+      notify: restart tetragon
+    - name: Remove verbose SRE audit tracingpolicy when disabled
+      when: not (install_verbose_tracingpolicy | bool)
+      ansible.builtin.file:
+        path: /etc/tetragon/tetragon.tp.d/sre-audit.yaml
+        state: absent
+      notify: restart tetragon
     - name: Enable Tetragon
       ansible.builtin.systemd:
         name: tetragon
@@ -197,7 +207,9 @@
     - { src: "{{ vctl_node_src }}/vctl-node-agent.service", name: vctl-node-agent.service }
   loop_control:
     label: "{{ item.name }}"
-  notify: daemon-reload
+  notify:
+    - daemon-reload
+    - restart vctl services
 
 - name: Ensure node-agent drop-in dir
   ansible.builtin.file:
@@ -212,7 +224,9 @@
     owner: root
     group: root
     mode: "0644"
-  notify: daemon-reload
+  notify:
+    - daemon-reload
+    - restart vctl services
 
 # Enable watch + node-agent always; collector only when requested (it needs Tetragon).
 - name: Enable services (only with secret_id present)

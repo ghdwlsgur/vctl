@@ -8,7 +8,27 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+# Restart the services that SHOULD be running so a new binary / unit / drop-in
+# actually takes effect (state: started alone never restarts a live service, so
+# a deploy could otherwise leave the old process running). Only the should-run
+# set is restarted — collector is included only when install_collect, so a
+# node-only host never gets collector started here. Defined after daemon-reload
+# so the reloaded unit is in effect before the restart (handlers run in file order).
+- name: restart vctl services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+  loop: "{{ ['vctl-watch-sessions', 'vctl-node-agent'] + (['vctl-collect'] if install_collect | bool else []) }}"
+  when: enable_services | bool and (vctl_secret_id.stat.exists | default(false))
+
 - name: restart journald
   ansible.builtin.service:
     name: systemd-journald
     state: restarted
+
+# Tetragon reloads tracingpolicies from /etc/tetragon/tetragon.tp.d on restart.
+- name: restart tetragon
+  ansible.builtin.systemd:
+    name: tetragon
+    state: restarted
+  failed_when: false # absent on k8s nodes (DaemonSet) / when Tetragon not installed
