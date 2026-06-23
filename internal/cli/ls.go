@@ -54,6 +54,14 @@ func lsCmd() *cobra.Command {
 // printDCTotals prints a per-DC count summary (hosts + reachable) under the
 // inventory table so the fleet size per datacenter is visible at a glance.
 func printDCTotals(servers []store.ServerWithStatus) {
+	ui.Section(os.Stdout, "by dc")
+	_ = ui.Table(os.Stdout, []string{"dc", "hosts", "up"}, dcTotalsRows(servers))
+}
+
+// dcTotalsRows aggregates servers into sorted [dc, hosts, up] rows with a
+// trailing [total, …] row. Pure (no I/O) so it can be unit-tested; "up" counts
+// agent-fresh and probe ("up~") hosts via the shared liveStatusText.
+func dcTotalsRows(servers []store.ServerWithStatus) [][]string {
 	type agg struct{ total, up int }
 	byDC := map[string]*agg{}
 	order := make([]string, 0)
@@ -78,10 +86,14 @@ func printDCTotals(servers []store.ServerWithStatus) {
 		a := byDC[dc]
 		rows = append(rows, []string{dc, strconv.Itoa(a.total), strconv.Itoa(a.up)})
 	}
-	rows = append(rows, []string{ui.Muted("total"), strconv.Itoa(total), strconv.Itoa(totalUp)})
-	ui.Section(os.Stdout, "by dc")
-	_ = ui.Table(os.Stdout, []string{"dc", "hosts", "up"}, rows)
+	rows = append(rows, []string{"total", strconv.Itoa(total), strconv.Itoa(totalUp)})
+	return rows
 }
+
+// statusFreshnessWindow is how recently a node-agent must have reported for a
+// host to count as live "up" (in both `vctl list` and the `vctl ssh` picker).
+// Past it, the agent reads as "stale". One place to tune the operational SLA.
+const statusFreshnessWindow = 10 * time.Minute
 
 // liveStatus prefers the node-agent's live report over the sync-time probe.
 // An agent that reported within the freshness window means the host is up right
@@ -105,7 +117,7 @@ func liveStatus(s store.ServerWithStatus) string {
 // freshness wins; otherwise the sync-time probe; otherwise down.
 func liveStatusText(s store.ServerWithStatus) string {
 	if s.Status != nil {
-		if time.Since(s.Status.LastSeenAt) <= 10*time.Minute {
+		if time.Since(s.Status.LastSeenAt) <= statusFreshnessWindow {
 			return "up"
 		}
 		return "stale"
@@ -122,7 +134,7 @@ func agentStatus(st *store.ServerStatus) string {
 	}
 	age := time.Since(st.LastSeenAt)
 	text := fmt.Sprintf("seen %s", compactDuration(age))
-	if age <= 10*time.Minute {
+	if age <= statusFreshnessWindow {
 		return ui.OK(text)
 	}
 	if age <= time.Hour {
