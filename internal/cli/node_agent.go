@@ -183,4 +183,3 @@ func diskUsedPct(path string) *float64 {
 	used := float64(st.Blocks-st.Bavail) / float64(st.Blocks) * 100
 	return &used
 }
-
