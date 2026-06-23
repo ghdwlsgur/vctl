@@ -336,11 +336,12 @@ git push origin v0.1.7
 
 ```text
 cmd/vctl              entrypoint
-internal/config       defaults and embedded CA
+internal/config       generic loader (config.go) + org-specific defaults (defaults_sre.go) + embedded CA
 internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
 internal/store        Postgres inventory and access audit with verify-full TLS
 internal/sshc         native SSH client with cert signer, jump chains, PTY, and connection metadata
 internal/syncx        ssh config parsing and host probing
+internal/hoststatus   node-agent host metrics collection (/proc, syscall) with pure, testable parsers
 internal/cli          Cobra commands
 deploy/vault          policies, DB engine bootstrap, and OIDC guide
 ```

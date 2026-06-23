@@ -67,35 +67,6 @@ type Config struct {
 	ConfigPath string `yaml:"-"`
 }
 
-// Defaults returns compiled onboarding defaults for the SRE environment.
-func Defaults() *Config {
-	return &Config{
-		VaultAddr:            "https://vault.sre.local",
-		AuthMethod:           "oidc", // people: GitLab SSO by default; --method userpass for bootstrap
-		OIDCRole:             "vctl",
-		OIDCMount:            "oidc",
-		DBHost:               "vctl-postgres.sre.local", // must match the certificate dnsName for verify-full
-		DBPort:               5432,
-		DBName:               "vctl",
-		DBRoleRO:             "vctl-ro",
-		DBRoleRW:             "vctl-rw",
-		DBRoleStatus:         "vctl-status",
-		DBRoleMigrate:        "vctl-migrator",
-		DBMigrationOwner:     "vctl_owner",
-		KernelRetentionDays:  90,
-		SessionRetentionDays: 365,
-		CARole:               "sre-core",
-		SSHSign:              "30m",
-		SSHDirectFirst:       true,
-		SSHDefaultUser:       "ubuntu",
-		SyncProbeTimeout:     "3s",
-		SyncProbeConcurrency: 32,
-		DCRules:              syncx.DefaultDCRules(),
-		AppRoleMount:         "approle",
-		AppRoleSelfRole:      "vctl-user",
-	}
-}
-
 // Load merges defaults, repo-local config, and environment variables.
 func Load() (*Config, error) {
 	c := Defaults()
