@@ -5,6 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -27,52 +29,43 @@ This is the inventory-level audit. The authoritative record of every signing
 request lives in the Vault file audit device on the Vault pod
 (/vault/audit/vault_audit.log) - use it for forensic / tamper-evident review.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			a, err := newApp()
-			if err != nil {
-				return err
-			}
-			st, err := a.OpenStore(ctx, false)
-			if err != nil {
-				return err
-			}
-			defer st.Close()
-
-			entries, err := st.AccessLog(ctx, limit, host, user, sourceIP)
-			if err != nil {
-				return err
-			}
-			if len(entries) == 0 {
-				ui.Warnf(os.Stderr, "no access records yet")
-				return nil
-			}
-			rows := make([][]string, 0, len(entries))
-			for _, e := range entries {
-				result := ui.Fail("fail")
-				if e.OK {
-					result = ui.OK("ok")
+			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+				entries, err := st.AccessLog(cmd.Context(), limit, host, user, sourceIP)
+				if err != nil {
+					return err
 				}
-				row := []string{
-					e.SignedAt.Local().Format("2006-01-02 15:04:05"),
-					valueOrDash(e.VaultUser),
-					e.Hostname,
-					valueOrDash(e.SourceIP),
-					valueOrDash(e.ClientUser),
-					valueOrDash(e.TargetAddr),
-					valueOrDash(e.JumpVia),
-					result,
+				if len(entries) == 0 {
+					ui.Warnf(os.Stderr, "no access records yet")
+					return nil
 				}
+				rows := make([][]string, 0, len(entries))
+				for _, e := range entries {
+					result := ui.Fail("fail")
+					if e.OK {
+						result = ui.OK("ok")
+					}
+					row := []string{
+						e.SignedAt.Local().Format("2006-01-02 15:04:05"),
+						valueOrDash(e.VaultUser),
+						e.Hostname,
+						valueOrDash(e.SourceIP),
+						valueOrDash(e.ClientUser),
+						valueOrDash(e.TargetAddr),
+						valueOrDash(e.JumpVia),
+						result,
+					}
+					if detail {
+						row = append(row, valueOrDash(e.ClientHost), valueOrDash(e.SourceAddr), valueOrDash(e.CertSerial), valueOrDash(e.Error))
+					}
+					rows = append(rows, row)
+				}
+				ui.Section(os.Stdout, "access log")
+				headers := []string{"time", "vault user", "host", "source ip", "client user", "target", "jump", "result"}
 				if detail {
-					row = append(row, valueOrDash(e.ClientHost), valueOrDash(e.SourceAddr), valueOrDash(e.CertSerial), valueOrDash(e.Error))
+					headers = append(headers, "client host", "source addr", "serial", "error")
 				}
-				rows = append(rows, row)
-			}
-			ui.Section(os.Stdout, "access log")
-			headers := []string{"time", "vault user", "host", "source ip", "client user", "target", "jump", "result"}
-			if detail {
-				headers = append(headers, "client host", "source addr", "serial", "error")
-			}
-			return ui.Table(os.Stdout, headers, rows)
+				return ui.Table(os.Stdout, headers, rows)
+			})
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "filter by hostname substring")
