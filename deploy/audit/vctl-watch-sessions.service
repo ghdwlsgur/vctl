@@ -21,7 +21,10 @@ User=root
 StateDirectory=vctl
 StateDirectoryMode=0700
 RuntimeDirectory=vctl/sessions
-RuntimeDirectoryMode=0755
+# Root-only: markers are written by root logins' stamper and read by this root
+# daemon. Non-root login hosts use the journal-tail path, not a loosened dir
+# (the profile.d stamper documents "권한 완화 금지"). Matches the ansible 0700.
+RuntimeDirectoryMode=0700
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

@@ -25,6 +25,11 @@ tetragon_url: "https://github.com/cilium/tetragon/releases/download/{{ tetragon_
 # (acceptable only for the public HTTPS URL; set before fronting an internal mirror).
 tetragon_sha256: ""
 
+# Verbose SRE tracingpolicy (security_file_open + tcp_connect for a narrow command
+# set) is high-volume — opt-in, "canary only". When false, exec/exit still flow
+# from Tetragon's base sensor (no policy needed); the verbose policy is removed.
+install_verbose_tracingpolicy: false
+
 # REQUIRED (no default — internal IPs are not baked into the repo): the LB that
 # fronts *.sre.local for this host's network. Set per group in group_vars or with
 # -e sre_lb_ip=<ip>. Asserted non-empty before use.
