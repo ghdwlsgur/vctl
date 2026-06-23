@@ -9,20 +9,15 @@ import (
 // ServerStatus is runtime state reported by vctl node-agent. It is observation,
 // not inventory authority.
 type ServerStatus struct {
-	Hostname         string
-	LastSeenAt       time.Time
-	AgentVersion     string
-	OS               string
-	Kernel           string
-	UptimeSeconds    int64
-	Load1            *float64
-	MemoryUsedPct    *float64
-	DiskRootUsedPct  *float64
-	SSHDOK           *bool
-	KubeletOK        *bool
-	CRIOOK           *bool
-	DockerOK         *bool
-	AuditCollectorOK *bool
+	Hostname        string
+	LastSeenAt      time.Time
+	AgentVersion    string
+	OS              string
+	Kernel          string
+	UptimeSeconds   int64
+	Load1           *float64
+	MemoryUsedPct   *float64
+	DiskRootUsedPct *float64
 }
 
 // ServerWithStatus combines operator-managed inventory with observed runtime state.
@@ -37,9 +32,9 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO server_status
 			(hostname, last_seen_at, agent_version, os, kernel, uptime_seconds, load1,
-			 memory_used_pct, disk_root_used_pct, sshd_ok, kubelet_ok, crio_ok, docker_ok, audit_collector_ok, updated_at)
+			 memory_used_pct, disk_root_used_pct, updated_at)
 		SELECT $1, now(), NULLIF($2,''), NULLIF($3,''), NULLIF($4,''), NULLIF($5::bigint,0), $6,
-		       $7, $8, $9, $10, $11, $12, $13, now()
+		       $7, $8, now()
 		WHERE EXISTS (SELECT 1 FROM servers WHERE hostname=$1)
 		ON CONFLICT (hostname) DO UPDATE SET
 			last_seen_at=EXCLUDED.last_seen_at,
@@ -50,14 +45,9 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 			load1=EXCLUDED.load1,
 			memory_used_pct=EXCLUDED.memory_used_pct,
 			disk_root_used_pct=EXCLUDED.disk_root_used_pct,
-			sshd_ok=EXCLUDED.sshd_ok,
-			kubelet_ok=EXCLUDED.kubelet_ok,
-			crio_ok=EXCLUDED.crio_ok,
-			docker_ok=EXCLUDED.docker_ok,
-			audit_collector_ok=EXCLUDED.audit_collector_ok,
 			updated_at=now()`,
 		st.Hostname, st.AgentVersion, st.OS, st.Kernel, st.UptimeSeconds, st.Load1,
-		st.MemoryUsedPct, st.DiskRootUsedPct, st.SSHDOK, st.KubeletOK, st.CRIOOK, st.DockerOK, st.AuditCollectorOK)
+		st.MemoryUsedPct, st.DiskRootUsedPct)
 	if err != nil {
 		return false, err
 	}
@@ -68,8 +58,7 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStatus, error) {
 	q := `SELECT ` + prefixedSelectCols("srv") + `,
 		       coalesce(ss.hostname,''), ss.last_seen_at, coalesce(ss.agent_version,''), coalesce(ss.os,''), coalesce(ss.kernel,''),
-		       coalesce(ss.uptime_seconds,0), ss.load1, ss.memory_used_pct, ss.disk_root_used_pct,
-		       ss.sshd_ok, ss.kubelet_ok, ss.crio_ok, ss.docker_ok, ss.audit_collector_ok
+		       coalesce(ss.uptime_seconds,0), ss.load1, ss.memory_used_pct, ss.disk_root_used_pct
 		FROM servers srv
 		LEFT JOIN server_status ss ON ss.hostname = srv.hostname`
 	var args []any
@@ -92,10 +81,9 @@ func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStat
 		var st ServerStatus
 		var lastSeen sql.NullTime
 		var load1, memoryUsed, diskUsed sql.NullFloat64
-		var sshdOK, kubeletOK, crioOK, dockerOK, auditCollectorOK sql.NullBool
 		err := rows.Scan(&item.Hostname, &item.IP, &item.Port, &item.User, &item.JumpVia, &item.DC, &item.CARole,
 			&item.CAKeyVersion, &item.LastSeenUp, &statusHost, &lastSeen, &st.AgentVersion, &st.OS, &st.Kernel,
-			&st.UptimeSeconds, &load1, &memoryUsed, &diskUsed, &sshdOK, &kubeletOK, &crioOK, &dockerOK, &auditCollectorOK)
+			&st.UptimeSeconds, &load1, &memoryUsed, &diskUsed)
 		if err != nil {
 			return nil, err
 		}
@@ -107,11 +95,6 @@ func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStat
 			st.Load1 = nullFloatPtr(load1)
 			st.MemoryUsedPct = nullFloatPtr(memoryUsed)
 			st.DiskRootUsedPct = nullFloatPtr(diskUsed)
-			st.SSHDOK = nullBoolPtr(sshdOK)
-			st.KubeletOK = nullBoolPtr(kubeletOK)
-			st.CRIOOK = nullBoolPtr(crioOK)
-			st.DockerOK = nullBoolPtr(dockerOK)
-			st.AuditCollectorOK = nullBoolPtr(auditCollectorOK)
 			item.Status = &st
 		}
 		out = append(out, item)
@@ -124,13 +107,6 @@ func nullFloatPtr(v sql.NullFloat64) *float64 {
 		return nil
 	}
 	return &v.Float64
-}
-
-func nullBoolPtr(v sql.NullBool) *bool {
-	if !v.Valid {
-		return nil
-	}
-	return &v.Bool
 }
 
 func prefixedSelectCols(alias string) string {

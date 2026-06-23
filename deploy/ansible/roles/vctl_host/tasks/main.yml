@@ -2,14 +2,16 @@
 # Onboard a host to the vctl audit/status stack. Idempotent and safe:
 # sshd/PAM changes validate (sshd -t) before reload; the AppRole secret_id is
 # never baked (minted per host from the control node); state=absent rolls back.
-- name: Assert sre_lb_ip is provided
+- name: Assert Vault/Postgres LB IPs are provided
   when: state == 'present'
   ansible.builtin.assert:
     that:
-      - sre_lb_ip | length > 0
+      - vault_lb_ip | length > 0
+      - pg_lb_ip | length > 0
     fail_msg: >-
-      sre_lb_ip is required (the LB fronting *.sre.local for this network).
-      Set it in inventory/group_vars or pass -e sre_lb_ip=<ip>.
+      An LB fronting *.sre.local is required. Set sre_lb_ip (covers both Vault
+      and Postgres) in inventory/group_vars or -e sre_lb_ip=<ip>; or set
+      vault_lb_ip and pg_lb_ip separately when they differ (e.g. incheon).
 
 - name: Install / onboard
   when: state == 'present'

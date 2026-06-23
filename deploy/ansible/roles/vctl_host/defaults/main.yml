@@ -30,6 +30,13 @@ tetragon_sha256: ""
 # -e sre_lb_ip=<ip>. Asserted non-empty before use.
 sre_lb_ip: ""
 
+# Vault and Postgres may sit behind different LBs on some networks (e.g. incheon
+# reaches Vault via the local ingress but Postgres via a WireGuard-gateway proxy).
+# Both default to sre_lb_ip, so single-LB networks (seoul) need only sre_lb_ip.
+# Override per group when the two endpoints differ.
+vault_lb_ip: "{{ sre_lb_ip }}"
+pg_lb_ip: "{{ sre_lb_ip }}"
+
 # Canonical unit/script sources live in deploy/audit and deploy/node (one source
 # of truth — not duplicated into the role).
 vctl_audit_src: "{{ playbook_dir }}/../audit"

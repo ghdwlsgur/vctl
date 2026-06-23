@@ -14,8 +14,8 @@
     path: /etc/hosts
     marker: "# {mark} VCTL AUDIT (vault/postgres)"
     block: |
-      {{ sre_lb_ip }} vault.sre.local
-      {{ sre_lb_ip }} vctl-postgres.sre.local
+      {{ vault_lb_ip }} vault.sre.local
+      {{ pg_lb_ip }} vctl-postgres.sre.local
 
 # --- sshd: expose the offered cert to the session ---
 - name: Enable sshd ExposeAuthInfo (validated)
