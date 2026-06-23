@@ -183,7 +183,16 @@ func clientConfig(t *Target, sign SignFunc, extensions []string) (*ssh.ClientCon
 		User:            t.User,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: hostKeyCallback(),
-		Timeout:         15 * time.Second,
+		// Prefer ed25519 to match OpenSSH's default host-key order. x/crypto's
+		// default prefers ECDSA/RSA, so vctl would negotiate a different host
+		// key type than `ssh` and trip a false "knownhosts: key mismatch" when
+		// known_hosts only has the ed25519 entry that `ssh` recorded.
+		HostKeyAlgorithms: []string{
+			ssh.KeyAlgoED25519,
+			ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521,
+			ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSA,
+		},
+		Timeout: 15 * time.Second,
 	}, nil
 }
 
