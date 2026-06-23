@@ -2,9 +2,12 @@
 package cli
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
 // Version is injected by main for --version output.
@@ -45,4 +48,21 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 
 func newApp() (*app.App, error) {
 	return app.New()
+}
+
+// withStore builds the app, opens the inventory store (rw=true for write roles),
+// and runs fn with both — closing the store afterward. It collapses the
+// new-app + open-store + defer-close preamble repeated by every store-backed
+// command into one call.
+func withStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) error) error {
+	a, err := newApp()
+	if err != nil {
+		return err
+	}
+	st, err := a.OpenStore(ctx, rw)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	return fn(a, st)
 }

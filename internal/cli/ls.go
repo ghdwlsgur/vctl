@@ -3,10 +3,13 @@ package cli
 import (
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -18,39 +21,66 @@ func lsCmd() *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List accessible inventory hosts",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			a, err := newApp()
-			if err != nil {
-				return err
-			}
-			st, err := a.OpenStore(ctx, false)
-			if err != nil {
-				return err
-			}
-			defer st.Close()
-
-			servers, err := st.ListWithStatus(ctx, dc)
-			if err != nil {
-				return err
-			}
-			if len(servers) == 0 {
-				ui.Warnf(os.Stderr, "inventory is empty. Run 'vctl sync' first.")
-				return nil
-			}
-			rows := make([][]string, 0, len(servers))
-			for _, s := range servers {
-				jump := s.JumpVia
-				if jump == "" {
-					jump = ui.Muted("direct")
+			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+				servers, err := st.ListWithStatus(cmd.Context(), dc)
+				if err != nil {
+					return err
 				}
-				rows = append(rows, []string{ui.Truncate(s.Hostname, 40), s.IP, s.User, s.DC, jump, liveStatus(s), agentStatus(s.Status)})
-			}
-			ui.Section(os.Stdout, "inventory")
-			return ui.Table(os.Stdout, []string{"host", "ip", "user", "dc", "jump", "status", "agent"}, rows)
+				if len(servers) == 0 {
+					ui.Warnf(os.Stderr, "inventory is empty. Run 'vctl sync' first.")
+					return nil
+				}
+				rows := make([][]string, 0, len(servers))
+				for _, s := range servers {
+					jump := s.JumpVia
+					if jump == "" {
+						jump = ui.Muted("direct")
+					}
+					rows = append(rows, []string{ui.Truncate(s.Hostname, 40), s.IP, s.User, s.DC, jump, liveStatus(s), agentStatus(s.Status)})
+				}
+				ui.Section(os.Stdout, "inventory")
+				if err := ui.Table(os.Stdout, []string{"host", "ip", "user", "dc", "jump", "status", "agent"}, rows); err != nil {
+					return err
+				}
+				printDCTotals(servers)
+				return nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&dc, "dc", "", "DC filter, for example incheon or seoul-onprem")
 	return cmd
+}
+
+// printDCTotals prints a per-DC count summary (hosts + reachable) under the
+// inventory table so the fleet size per datacenter is visible at a glance.
+func printDCTotals(servers []store.ServerWithStatus) {
+	type agg struct{ total, up int }
+	byDC := map[string]*agg{}
+	order := make([]string, 0)
+	var total, totalUp int
+	for _, s := range servers {
+		a := byDC[s.DC]
+		if a == nil {
+			a = &agg{}
+			byDC[s.DC] = a
+			order = append(order, s.DC)
+		}
+		a.total++
+		total++
+		if t := liveStatusText(s); t == "up" || t == "up~" {
+			a.up++
+			totalUp++
+		}
+	}
+	sort.Strings(order)
+	rows := make([][]string, 0, len(order)+1)
+	for _, dc := range order {
+		a := byDC[dc]
+		rows = append(rows, []string{dc, strconv.Itoa(a.total), strconv.Itoa(a.up)})
+	}
+	rows = append(rows, []string{ui.Muted("total"), strconv.Itoa(total), strconv.Itoa(totalUp)})
+	ui.Section(os.Stdout, "by dc")
+	_ = ui.Table(os.Stdout, []string{"dc", "hosts", "up"}, rows)
 }
 
 // liveStatus prefers the node-agent's live report over the sync-time probe.
