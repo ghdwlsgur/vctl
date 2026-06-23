@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -67,10 +68,10 @@ itself stays credential-free.
 				}
 
 				seen := map[string]int64{} // marker path -> session id
-				scan := func() {
+				scan := func() error {
 					entries, err := os.ReadDir(dir)
 					if err != nil {
-						return
+						return err
 					}
 					for _, e := range entries {
 						if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
@@ -98,21 +99,34 @@ itself stays credential-free.
 						seen[path] = id
 						ui.Infof(os.Stderr, "session %d started: %s on %s (serial %s)", id, m.Login, m.Host, m.Serial)
 					}
+					return nil
 				}
 
 				if once {
-					scan()
-					return nil
+					return scan()
+				}
+				if interval <= 0 {
+					interval = 5 * time.Second // guard: NewTicker panics on <= 0
+				}
+				// Fail fast if the marker dir is unreadable at startup (misconfig):
+				// a silently-idle daemon would record no sessions forever.
+				if err := scan(); err != nil {
+					return fmt.Errorf("watch %s: %w", dir, err)
 				}
 				t := time.NewTicker(interval)
 				defer t.Stop()
-				scan()
+				var lastWarn time.Time
 				for {
 					select {
 					case <-ctx.Done():
 						return nil
 					case <-t.C:
-						scan()
+						// In the loop the dir may transiently vanish; warn (rate-limited)
+						// instead of crashing the daemon.
+						if err := scan(); err != nil && time.Since(lastWarn) > time.Minute {
+							ui.Warnf(os.Stderr, "watch %s: %v (retrying)", dir, err)
+							lastWarn = time.Now()
+						}
 					}
 				}
 			})
