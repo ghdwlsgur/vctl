@@ -16,7 +16,7 @@ import (
 
 // selectServer shows a pretty, arrow-key driven picker (charmbracelet/huh) with
 // type-to-filter. Falls back to a numbered prompt when stdin isn't a TTY (pipes, CI).
-func selectServer(cands []store.Server, title string) (*store.Server, error) {
+func selectServer(cands []store.ServerWithStatus, title string) (*store.ServerWithStatus, error) {
 	if len(cands) == 0 {
 		return nil, fmt.Errorf("no servers to choose from")
 	}
@@ -26,11 +26,8 @@ func selectServer(cands []store.Server, title string) (*store.Server, error) {
 
 	options := make([]huh.Option[int], len(cands))
 	for i, c := range cands {
-		status := "down"
-		if c.LastSeenUp != nil {
-			status = "up"
-		}
-		label := fmt.Sprintf("%-40s %-16s %-12s %s", ui.Truncate(c.Hostname, 40), c.IP, c.DC, status)
+		// liveStatusText (not LastSeenUp alone) so the picker agrees with `vctl list`.
+		label := fmt.Sprintf("%-40s %-16s %-12s %s", ui.Truncate(c.Hostname, 40), c.IP, c.DC, liveStatusText(c))
 		options[i] = huh.NewOption(label, i)
 	}
 
@@ -49,11 +46,7 @@ func selectServer(cands []store.Server, title string) (*store.Server, error) {
 				return ""
 			}
 			c := cands[idx]
-			st := "down"
-			if c.LastSeenUp != nil {
-				st = "up"
-			}
-			return fmt.Sprintf("%s  (%s@%s · %s · %s)", c.Hostname, c.User, c.IP, c.DC, st)
+			return fmt.Sprintf("%s  (%s@%s · %s · %s)", c.Hostname, c.User, c.IP, c.DC, liveStatusText(c))
 		}, &idx).
 		Value(&idx).
 		Run()
@@ -64,14 +57,10 @@ func selectServer(cands []store.Server, title string) (*store.Server, error) {
 }
 
 // numberPick is the non-TTY fallback (pipes/CI): a plain numbered prompt.
-func numberPick(cands []store.Server, title string) (*store.Server, error) {
+func numberPick(cands []store.ServerWithStatus, title string) (*store.ServerWithStatus, error) {
 	ui.Section(os.Stderr, title)
 	for i, c := range cands {
-		up := ui.Muted("down")
-		if c.LastSeenUp != nil {
-			up = ui.OK("up")
-		}
-		fmt.Fprintf(os.Stderr, "  %2d  %-28s %-16s %-12s %s\n", i+1, c.Hostname, c.IP, c.DC, up)
+		fmt.Fprintf(os.Stderr, "  %2d  %-28s %-16s %-12s %s\n", i+1, c.Hostname, c.IP, c.DC, liveStatus(c))
 	}
 	fmt.Fprint(os.Stderr, ui.Muted("number: "))
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
