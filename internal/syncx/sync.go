@@ -113,14 +113,6 @@ func Parse(path string) ([]hostBlock, error) {
 	return blocks, sc.Err()
 }
 
-func splitKV(line string) (string, string, bool) {
-	key, vals, ok := splitFields(line)
-	if !ok {
-		return "", "", false
-	}
-	return key, vals[0], true
-}
-
 func splitFields(line string) (string, []string, bool) {
 	// Accept both "Key Value" and "Key=Value" formats.
 	if i := strings.IndexAny(line, " \t="); i > 0 {
@@ -138,12 +130,8 @@ func DefaultConfigPath() string {
 	return filepath.Join(home, ".ssh", "config")
 }
 
-// Build probes aliases with the selected prefix and returns inventory rows.
-// ProxyJump aliases are normalized to inventory hostnames.
-func Build(blocks []hostBlock, prefix string, probeTimeout time.Duration) []store.Server {
-	return BuildWithOptions(blocks, BuildOptions{Prefix: prefix, ProbeTimeout: probeTimeout})
-}
-
+// BuildWithOptions probes aliases with the selected prefix and returns inventory
+// rows. ProxyJump aliases are normalized to inventory hostnames.
 func BuildWithOptions(blocks []hostBlock, opts BuildOptions) []store.Server {
 	opts = opts.withDefaults()
 
@@ -340,11 +328,7 @@ func probe(host string, port int, timeout time.Duration) bool {
 	return true
 }
 
-// classifyDC estimates the DC from configured IP prefixes.
-func classifyDC(ip string) string {
-	return classifyDCWithRules(ip, DefaultDCRules())
-}
-
+// classifyDCWithRules estimates the DC from configured IP prefixes.
 func classifyDCWithRules(ip string, rules []DCRule) string {
 	for _, rule := range rules {
 		for _, prefix := range rule.Prefixes {

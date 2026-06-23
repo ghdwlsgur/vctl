@@ -67,14 +67,14 @@ func dialTarget(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, fun
 			return client, cleanup, connectionInfo(client, t, false), directErr
 		}
 
-		client, cleanup, jumpErr := dialViaJump(ctx, t, sign)
+		client, cleanup, jumpErr := dialChain(ctx, t, sign, ptyExtensions)
 		if jumpErr != nil {
 			return nil, nil, ConnectionInfo{TargetAddr: t.Addr, ViaJump: true, JumpHost: t.Jump.Name}, fmt.Errorf("direct connection failed: %v; jump connection failed: %w", directErr, jumpErr)
 		}
 		return client, cleanup, connectionInfo(client, t, true), nil
 	}
 
-	client, cleanup, jumpErr := dialViaJump(ctx, t, sign)
+	client, cleanup, jumpErr := dialChain(ctx, t, sign, ptyExtensions)
 	if jumpErr != nil {
 		return nil, nil, ConnectionInfo{TargetAddr: t.Addr, ViaJump: true, JumpHost: t.Jump.Name}, jumpErr
 	}
@@ -122,8 +122,16 @@ func dialSingle(t *Target, sign SignFunc, extensions []string) (*ssh.Client, fun
 	return client, func() { client.Close() }, nil
 }
 
-func dialViaJump(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), error) {
-	jclient, jcleanup, err := dialJump(ctx, t.Jump, sign)
+// dialChain dials t through its jump chain. The hop being dialed (t) gets
+// leafExtensions on its cert; intermediate jump hosts always get
+// portForwardExtensions (the target gets ptyExtensions, jump hosts only need to
+// forward). With t.Jump == nil it is a direct single dial.
+func dialChain(ctx context.Context, t *Target, sign SignFunc, leafExtensions []string) (*ssh.Client, func(), error) {
+	if t.Jump == nil {
+		return dialSingle(t, sign, leafExtensions)
+	}
+
+	jclient, jcleanup, err := dialChain(ctx, t.Jump, sign, portForwardExtensions)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jump %s connection: %w", t.Jump.Name, err)
 	}
@@ -132,7 +140,7 @@ func dialViaJump(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, fu
 		jcleanup()
 		return nil, nil, fmt.Errorf("connect through jump to %s: %w", t.Addr, err)
 	}
-	cfg, err := clientConfig(t, sign, ptyExtensions)
+	cfg, err := clientConfig(t, sign, leafExtensions)
 	if err != nil {
 		jcleanup()
 		return nil, nil, err
@@ -144,34 +152,6 @@ func dialViaJump(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, fu
 	}
 	client := ssh.NewClient(ncc, chans, reqs)
 	// Close target before jump.
-	return client, func() { client.Close(); jcleanup() }, nil
-}
-
-func dialJump(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), error) {
-	if t.Jump == nil {
-		return dialSingle(t, sign, portForwardExtensions)
-	}
-
-	jclient, jcleanup, err := dialJump(ctx, t.Jump, sign)
-	if err != nil {
-		return nil, nil, fmt.Errorf("jump %s connection: %w", t.Jump.Name, err)
-	}
-	conn, err := jclient.Dial("tcp", t.Addr)
-	if err != nil {
-		jcleanup()
-		return nil, nil, fmt.Errorf("connect through jump to %s: %w", t.Addr, err)
-	}
-	cfg, err := clientConfig(t, sign, portForwardExtensions)
-	if err != nil {
-		jcleanup()
-		return nil, nil, err
-	}
-	ncc, chans, reqs, err := ssh.NewClientConn(conn, t.Addr, cfg)
-	if err != nil {
-		jcleanup()
-		return nil, nil, fmt.Errorf("%s handshake: %w", t.Name, err)
-	}
-	client := ssh.NewClient(ncc, chans, reqs)
 	return client, func() { client.Close(); jcleanup() }, nil
 }
 

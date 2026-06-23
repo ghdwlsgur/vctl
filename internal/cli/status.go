@@ -31,7 +31,7 @@ func statusCmd() *cobra.Command {
 				ui.KVs(os.Stdout, rows)
 				return nil
 			}
-			ca, err := a.Vault.CAPublicKey(ctx)
+			ca, err := a.Vault.SSHCAPublicKey(ctx)
 			if err != nil {
 				rows = append(rows, ui.KV{Key: "SSH CA", Value: "read failed (" + err.Error() + ")", State: ui.StateFail})
 			} else {
