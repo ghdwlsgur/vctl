@@ -8,10 +8,17 @@ the vctl repo alone — even if Vault state (or the vault-iac repo) is wiped.
   GitLab **OIDC** auth. Run it to bootstrap or to break-glass recover.
 - **`*.hcl`** — the five policy definitions (`vctl-user/admin/node/collector/host`).
 
-> The live system is normally managed by the [`vault-iac`](https://gitlab.sre.local)
-> Terraform repo (the IaC source of truth). This directory is the **self-contained
-> equivalent** for recovery and to keep vctl's Vault dependencies documented in
-> one place. Keep the two in sync when you change either.
+> **Criterion:** deploying Vault from *this directory alone* (`./setup.sh`) must
+> be enough to **use** vctl — login, ssh, audit, host agents. That is the bar.
+>
+> `vault-iac` (Terraform) runs the **production** Vault and owns org-wide concerns
+> beyond vctl (e.g. the `sre`→`sre-admin` group elevation, other services). The
+> vctl OIDC role here grants `vctl-user`, which is all vctl itself needs. Keep the
+> two in sync when vctl's Vault needs change.
+>
+> One external prerequisite vctl can't create itself: the GitLab OAuth app whose
+> client_id/secret seed `kv/services/vault-oidc-gitlab` (a GitLab-side object).
+> `setup.sh` configures OIDC when that seed exists, else uses userpass.
 
 ## What vctl depends on
 
@@ -22,7 +29,8 @@ the vctl repo alone — even if Vault state (or the vault-iac repo) is wiped.
 | DB roles | `database/roles/vctl-{ro,rw,status,migrator}` | ro=reads, rw=audit writes, status=node-agent, migrator=schema |
 | Policies | `vctl-{user,admin,node,collector,host}` | least privilege per caller |
 | AppRoles | `vctl-{user,collector,host}` | non-interactive auto-auth (services/hosts) |
-| OIDC + role + group | `auth/oidc`, `.../role/vctl`, group `sre`→`sre-admin` | per-person GitLab SSO (`vctl login`) |
+| OIDC + role | `auth/oidc`, `auth/oidc/role/vctl` | per-person GitLab SSO (`vctl login`), grants `vctl-user` |
+| userpass | `auth/userpass` | bootstrap login before the OIDC seed exists |
 
 ## Recover
 

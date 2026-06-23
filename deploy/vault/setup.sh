@@ -137,17 +137,17 @@ if vault kv get -field=client_id kv/services/vault-oidc-gitlab >/dev/null 2>&1; 
     "https://vault.sre.local/ui/vault/auth/oidc/oidc/callback"],
   "token_policies":["vctl-user"],"token_ttl":3600,"token_max_ttl":28800 }
 JSON
-  # SRE GitLab group members get sre-admin on login (external group + alias).
-  GID="$(vault write -field=id identity/group name=sre-gitlab-oidc type=external policies=sre-admin 2>/dev/null || vault read -field=id identity/group/name/sre-gitlab-oidc)"
-  ACC="$(vault read -field=accessor sys/auth/oidc 2>/dev/null | sed 's#/##' || true)"
-  ACC="$(vault auth list -format=json 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['oidc/']['accessor'])" 2>/dev/null || true)"
-  [ -n "${ACC}" ] && vault write identity/group-alias name=sre mount_accessor="${ACC}" canonical_id="${GID}" || echo "   (set the 'sre' group-alias manually if needed)"
+  # NOTE: the OIDC role grants vctl-user — enough to USE vctl (login/ssh/audit,
+  # and sync --migrate via vctl-migrator). The org-wide "sre group -> sre-admin"
+  # elevation is a production/admin concern and lives in vault-iac, not here.
 else
   echo "   (kv/services/vault-oidc-gitlab not seeded — skipping OIDC; seed then re-run)"
 fi
 
-echo "==> 10) userpass account example (bootstrap fallback)"
-echo "   vault write auth/userpass/users/<id> password=<once> policies=vctl-user"
+echo "==> 10) userpass auth (bootstrap fallback — usable before the OIDC seed exists)"
+vault auth enable userpass 2>/dev/null || echo "   (userpass already enabled)"
+echo "   create a person: vault write auth/userpass/users/<id> password=<once> policies=vctl-user"
+echo "   then: vctl login --method userpass"
 echo
 echo "Done. Per-person login: vctl login (GitLab SSO); connect: vctl ssh <host>."
 echo "Initial inventory load: vctl sync --migrate with a vctl-admin token."
