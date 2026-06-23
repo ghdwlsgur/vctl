@@ -117,10 +117,16 @@ func Table(w io.Writer, headers []string, rows [][]string) error {
 	for i, header := range headers {
 		styledHeaders[i] = headerStyle.Render(strings.ToUpper(header))
 	}
-	fmt.Fprintln(w, joinPadded(styledHeaders, widths))
-	fmt.Fprintln(w, mutedStyle.Render(joinRule(widths)))
+	if _, err := fmt.Fprintln(w, joinPadded(styledHeaders, widths)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, mutedStyle.Render(joinRule(widths))); err != nil {
+		return err
+	}
 	for _, row := range rows {
-		fmt.Fprintln(w, joinPadded(row, widths))
+		if _, err := fmt.Fprintln(w, joinPadded(row, widths)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -50,6 +50,17 @@ func newApp() (*app.App, error) {
 	return app.New()
 }
 
+// withApp builds the app and runs fn with it — for commands that need the app
+// (Vault/config) but not the inventory store, or that open the store themselves
+// with bespoke error handling (e.g. status).
+func withApp(fn func(*app.App) error) error {
+	a, err := newApp()
+	if err != nil {
+		return err
+	}
+	return fn(a)
+}
+
 // withStore builds the app, opens the inventory store (rw=true for write roles),
 // and runs fn with both — closing the store afterward. It collapses the
 // new-app + open-store + defer-close preamble repeated by every store-backed
