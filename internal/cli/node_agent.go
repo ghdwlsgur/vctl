@@ -2,10 +2,8 @@ package cli
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -52,7 +50,7 @@ database role for low-risk, low-resource status reporting.`,
 			}
 
 			report := func() error {
-				status := collectNodeStatus(ctx, hostname)
+				status := collectNodeStatus(hostname)
 				ok, err := st.UpsertServerStatus(ctx, status)
 				if err != nil {
 					return err
@@ -94,21 +92,16 @@ database role for low-risk, low-resource status reporting.`,
 	return cmd
 }
 
-func collectNodeStatus(ctx context.Context, hostname string) store.ServerStatus {
+func collectNodeStatus(hostname string) store.ServerStatus {
 	return store.ServerStatus{
-		Hostname:         hostname,
-		AgentVersion:     Version,
-		OS:               runtime.GOOS,
-		Kernel:           kernelVersion(),
-		UptimeSeconds:    uptimeSeconds(),
-		Load1:            load1(),
-		MemoryUsedPct:    memoryUsedPct(),
-		DiskRootUsedPct:  diskUsedPct("/"),
-		SSHDOK:           serviceOK(ctx, "sshd", "ssh"),
-		KubeletOK:        serviceOK(ctx, "kubelet"),
-		CRIOOK:           serviceOK(ctx, "crio", "cri-o"),
-		DockerOK:         serviceOK(ctx, "docker"),
-		AuditCollectorOK: serviceOK(ctx, "vctl-collect"),
+		Hostname:        hostname,
+		AgentVersion:    Version,
+		OS:              runtime.GOOS,
+		Kernel:          kernelVersion(),
+		UptimeSeconds:   uptimeSeconds(),
+		Load1:           load1(),
+		MemoryUsedPct:   memoryUsedPct(),
+		DiskRootUsedPct: diskUsedPct("/"),
 	}
 }
 
@@ -191,19 +184,3 @@ func diskUsedPct(path string) *float64 {
 	return &used
 }
 
-func serviceOK(ctx context.Context, names ...string) *bool {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return nil
-	}
-	for _, name := range names {
-		cctx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
-		err := exec.CommandContext(cctx, "systemctl", "is-active", "--quiet", name).Run()
-		cancel()
-		if err == nil {
-			v := true
-			return &v
-		}
-	}
-	v := false
-	return &v
-}

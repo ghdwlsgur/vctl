@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -44,10 +43,10 @@ func lsCmd() *cobra.Command {
 				if jump == "" {
 					jump = ui.Muted("direct")
 				}
-				rows = append(rows, []string{ui.Truncate(s.Hostname, 40), s.IP, s.User, s.DC, jump, liveStatus(s), agentStatus(s.Status), serviceSummary(s.Status)})
+				rows = append(rows, []string{ui.Truncate(s.Hostname, 40), s.IP, s.User, s.DC, jump, liveStatus(s), agentStatus(s.Status)})
 			}
 			ui.Section(os.Stdout, "inventory")
-			return ui.Table(os.Stdout, []string{"host", "ip", "user", "dc", "jump", "status", "agent", "services"}, rows)
+			return ui.Table(os.Stdout, []string{"host", "ip", "user", "dc", "jump", "status", "agent"}, rows)
 		},
 	}
 	cmd.Flags().StringVar(&dc, "dc", "", "DC filter, for example incheon or seoul-onprem")
@@ -84,43 +83,6 @@ func agentStatus(st *store.ServerStatus) string {
 		return ui.Warn(text)
 	}
 	return ui.Muted(text)
-}
-
-func serviceSummary(st *store.ServerStatus) string {
-	if st == nil {
-		return ui.Muted("-")
-	}
-	parts := []string{
-		serviceBit("ssh", st.SSHDOK),
-		serviceBit("kubelet", st.KubeletOK),
-		serviceBit("crio", st.CRIOOK),
-		serviceBit("docker", st.DockerOK),
-		serviceBit("audit", st.AuditCollectorOK),
-	}
-	return stringsJoinNonEmpty(parts, " ")
-}
-
-func serviceBit(label string, ok *bool) string {
-	if ok == nil {
-		return ""
-	}
-	if *ok {
-		return ui.OK(label)
-	}
-	return ui.Warn(label + "!")
-}
-
-func stringsJoinNonEmpty(vals []string, sep string) string {
-	out := make([]string, 0, len(vals))
-	for _, v := range vals {
-		if v != "" {
-			out = append(out, v)
-		}
-	}
-	if len(out) == 0 {
-		return ui.Muted("-")
-	}
-	return strings.Join(out, sep)
 }
 
 func compactDuration(d time.Duration) string {

@@ -253,7 +253,7 @@ vctl session <cert-serial> --json   # machine-readable export (e.g. for an agent
 
 The collector ingests `process_exec`/`process_exit` from Tetragon; events link to sessions by cgroup id, falling back to cert serial. Retention is enforced by `vctl prune` (a CronJob), mirroring Teleport's storage-lifecycle model — high-volume `kernel_event` rows expire sooner than the small `audit_session` index.
 
-**Runtime host status.** `vctl node-agent` reports a lightweight heartbeat (load, memory, disk, and service health for sshd/kubelet/cri-o/docker/audit-collector) into `server_status` *only for hosts already present in `servers`* — it never creates inventory. `vctl list` and `vctl status` surface this freshness alongside topology.
+**Runtime host status.** `vctl node-agent` reports a lightweight liveness heartbeat (load, memory, disk) into `server_status` *only for hosts already present in `servers`* — it never creates inventory. `vctl list` and `vctl status` surface this freshness alongside topology.
 
 **Long-running credential renewal.** These daemons hold a Postgres pool for days, but Vault dynamic DB creds are short-lived (1h default, 4h max). The pool recycles each physical connection well inside that window and re-fetches a live credential before connecting, re-authenticating the Vault session if the token lapsed. A daemon never outlives its credential lease and needs no Vault Agent.
 
