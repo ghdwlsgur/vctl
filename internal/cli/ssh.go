@@ -120,17 +120,51 @@ func pick(ctx context.Context, st *store.Store, args []string) (*store.Server, e
 		if len(cands) == 0 {
 			return nil, fmt.Errorf("no server matches %q", args[0])
 		}
-		return selectServer(cands, fmt.Sprintf("Select a server matching %q", args[0]))
+		ws, err := withLiveStatus(ctx, st, cands)
+		if err != nil {
+			return nil, err
+		}
+		sel, err := selectServer(ws, fmt.Sprintf("Select a server matching %q", args[0]))
+		if err != nil {
+			return nil, err
+		}
+		return &sel.Server, nil
 	}
-	// No argument: choose from the full list.
-	all, err := st.List(ctx, "")
+	// No argument: choose from the full list (with live agent status).
+	all, err := st.ListWithStatus(ctx, "")
 	if err != nil {
 		return nil, err
 	}
 	if len(all) == 0 {
 		return nil, fmt.Errorf("inventory is empty. Run 'vctl sync' first")
 	}
-	return selectServer(all, "Select a server")
+	sel, err := selectServer(all, "Select a server")
+	if err != nil {
+		return nil, err
+	}
+	return &sel.Server, nil
+}
+
+// withLiveStatus pairs resolved candidates with their runtime status (agent
+// freshness / probe) so the picker shows the same up/down as `vctl list`.
+func withLiveStatus(ctx context.Context, st *store.Store, cands []store.Server) ([]store.ServerWithStatus, error) {
+	withStatus, err := st.ListWithStatus(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	byHost := make(map[string]store.ServerWithStatus, len(withStatus))
+	for _, w := range withStatus {
+		byHost[w.Hostname] = w
+	}
+	out := make([]store.ServerWithStatus, len(cands))
+	for i, c := range cands {
+		if w, ok := byHost[c.Hostname]; ok {
+			out[i] = w
+		} else {
+			out[i] = store.ServerWithStatus{Server: c}
+		}
+	}
+	return out, nil
 }
 
 // buildTarget converts a server and jump chain into sshc.Target values.

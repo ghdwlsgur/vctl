@@ -58,16 +58,32 @@ func lsCmd() *cobra.Command {
 // now (dynamic); a stale agent reads as down; with no agent we fall back to the
 // last sync probe, marked "up~" to show it's point-in-time, not live.
 func liveStatus(s store.ServerWithStatus) string {
+	switch liveStatusText(s) {
+	case "up":
+		return ui.OK("up")
+	case "stale":
+		return ui.Warn("stale") // agent stopped reporting → likely down
+	case "up~":
+		return ui.Muted("up~") // last sync probe only (no agent)
+	default:
+		return ui.Muted("down")
+	}
+}
+
+// liveStatusText is the shared, uncolored liveness decision used by both
+// `vctl list` and the `vctl ssh` picker so the two never disagree. Agent
+// freshness wins; otherwise the sync-time probe; otherwise down.
+func liveStatusText(s store.ServerWithStatus) string {
 	if s.Status != nil {
 		if time.Since(s.Status.LastSeenAt) <= 10*time.Minute {
-			return ui.OK("up")
+			return "up"
 		}
-		return ui.Warn("stale") // agent stopped reporting → likely down
+		return "stale"
 	}
 	if s.LastSeenUp != nil {
-		return ui.Muted("up~") // last sync probe only (no agent)
+		return "up~"
 	}
-	return ui.Muted("down")
+	return "down"
 }
 
 func agentStatus(st *store.ServerStatus) string {
