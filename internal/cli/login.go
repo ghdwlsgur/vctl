@@ -10,18 +10,22 @@ import (
 
 func loginCmd() *cobra.Command {
 	var (
-		method     string
-		noRegister bool
+		method   string
+		register bool
 	)
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Log in to Vault and register the approle agent for future auto-auth",
-		Long: `login authenticates to Vault (userpass/oidc/approle) and caches the token.
+		Short: "Log in to Vault (per-person GitLab SSO by default)",
+		Long: `login authenticates to Vault (oidc/userpass/approle) and caches the token.
 
-By default it then "registers the agent": fetches the configured approle's
-role_id and a fresh secret_id and stores them under ~/.vctl, so subsequent
-commands re-authenticate automatically without prompting. Use --no-register to
-skip (e.g. logging in as approle already, or without secret-id permission).`,
+Human logins stay per-person: the OIDC (GitLab SSO) token is what every later
+command uses, so access_log / Vault audit attribute to *you*. Re-run login when
+the token expires (max 8h).
+
+--register additionally caches the configured approle (role_id + a fresh
+secret_id) under ~/.vctl for non-interactive auto-auth. That approle is a SHARED
+identity — once it takes over, audit attributes to the approle, not the person —
+so use it only for automation/bootstrap, never for day-to-day human access.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			a, err := newApp()
@@ -35,18 +39,20 @@ skip (e.g. logging in as approle already, or without secret-id permission).`,
 			if err := a.Login(ctx, m); err != nil {
 				return err
 			}
-			if !noRegister {
+			if register {
 				if err := a.RegisterAgent(ctx); err != nil {
-					ui.Warnf(os.Stderr, "agent not registered (will prompt again next time): %v", err)
+					ui.Warnf(os.Stderr, "agent not registered: %v", err)
 				} else if _, _, ok := a.AppRoleCreds(); ok {
-					ui.Successf(os.Stderr, "agent registered (%s) — future logins are automatic", a.Cfg.AppRoleSelfRole)
+					ui.Successf(os.Stderr, "agent registered (%s) — auto-auth via shared approle", a.Cfg.AppRoleSelfRole)
 				}
+			} else {
+				ui.Successf(os.Stderr, "logged in")
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&method, "method", "", "auth method: userpass | oidc | approle")
-	cmd.Flags().BoolVar(&noRegister, "no-register", false, "skip approle agent registration")
+	cmd.Flags().BoolVar(&register, "register", false, "also cache the approle for non-interactive auto-auth (shared identity)")
 	return cmd
 }
 
