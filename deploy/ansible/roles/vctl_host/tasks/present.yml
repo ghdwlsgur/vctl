@@ -18,41 +18,47 @@
       {{ vault_lb_ip }} vault.sre.local
       {{ pg_lb_ip }} vctl-postgres.sre.local
 
-# --- sshd: expose the offered cert to the session ---
-- name: Enable sshd ExposeAuthInfo (validated)
-  ansible.builtin.lineinfile:
-    path: /etc/ssh/sshd_config
-    regexp: '^#?\s*ExposeAuthInfo'
-    line: "ExposeAuthInfo yes"
-    validate: "sshd -t -f %s"
-  notify: reload sshd
+# Session recording (ExposeAuthInfo + login stampers + marker dir) is only for
+# watch-sessions. Skip it on node-only hosts (audit_stack=false) — no sshd change,
+# no stampers — so a liveness-only host stays untouched beyond the node-agent.
+- name: Session recording setup (full audit stack only)
+  when: audit_stack | bool
+  block:
+    # --- sshd: expose the offered cert to the session ---
+    - name: Enable sshd ExposeAuthInfo (validated)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\s*ExposeAuthInfo'
+        line: "ExposeAuthInfo yes"
+        validate: "sshd -t -f %s"
+      notify: reload sshd
 
-# --- session stampers (drop markers, no creds) ---
-- name: Install PAM session stamper
-  ansible.builtin.copy:
-    src: "{{ vctl_audit_src }}/pam-session-stamp.sh"
-    dest: /usr/local/sbin/pam-session-stamp.sh
-    owner: root
-    group: root
-    mode: "0755"
+    # --- session stampers (drop markers, no creds) ---
+    - name: Install PAM session stamper
+      ansible.builtin.copy:
+        src: "{{ vctl_audit_src }}/pam-session-stamp.sh"
+        dest: /usr/local/sbin/pam-session-stamp.sh
+        owner: root
+        group: root
+        mode: "0755"
 
-# profile.d stamper runs in the login shell, where $SSH_USER_AUTH exists (pam_exec
-# does not receive it — verified). This is the path that actually records markers.
-- name: Install login-shell session stamper (profile.d)
-  ansible.builtin.copy:
-    src: "{{ vctl_audit_src }}/vctl-session-stamp.sh"
-    dest: /etc/profile.d/vctl-session-stamp.sh
-    owner: root
-    group: root
-    mode: "0644"
+    # profile.d stamper runs in the login shell, where $SSH_USER_AUTH exists (pam_exec
+    # does not receive it — verified). This is the path that actually records markers.
+    - name: Install login-shell session stamper (profile.d)
+      ansible.builtin.copy:
+        src: "{{ vctl_audit_src }}/vctl-session-stamp.sh"
+        dest: /etc/profile.d/vctl-session-stamp.sh
+        owner: root
+        group: root
+        mode: "0644"
 
-- name: Ensure marker dir exists
-  ansible.builtin.file:
-    path: /run/vctl/sessions
-    state: directory
-    owner: root
-    group: root
-    mode: "0700"
+    - name: Ensure marker dir exists
+      ansible.builtin.file:
+        path: /run/vctl/sessions
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
 
 # --- AppRole creds (role_id not secret; secret_id minted per host, never baked) ---
 - name: Ensure vctl creds dir
@@ -64,12 +70,14 @@
     mode: "0700"
 
 # Fetch role_id from the control-node Vault token so the file can't drift from the
-# live vctl-host AppRole (grants vctl-rw for collector/watch + vctl-status for node-agent).
-- name: Fetch vctl-host role_id (control node Vault)
+# live AppRole. vctl_approle = vctl-host (full stack: vctl-rw + vctl-status) or
+# vctl-node (node-agent only: vctl-status), per audit_stack.
+- name: Fetch role_id (control node Vault)
   delegate_to: localhost
   become: false
-  run_once: true
-  ansible.builtin.command: vault read -field=role_id auth/approle/role/vctl-host/role-id
+  # not run_once: vctl_approle can differ per host (audit_stack), so each host
+  # fetches its own role_id.
+  ansible.builtin.command: "vault read -field=role_id auth/approle/role/{{ vctl_approle }}/role-id"
   register: vctl_roleid
   changed_when: false
 
@@ -91,7 +99,7 @@
   when: provision_secret_id | bool and not vctl_secret_id.stat.exists
   delegate_to: localhost
   become: false
-  ansible.builtin.command: vault write -f -field=secret_id auth/approle/role/vctl-host/secret-id
+  ansible.builtin.command: "vault write -f -field=secret_id auth/approle/role/{{ vctl_approle }}/secret-id"
   register: vctl_sid
   changed_when: true
   no_log: true
@@ -228,20 +236,29 @@
     - daemon-reload
     - restart vctl services
 
-# Enable watch + node-agent always; collector only when requested (it needs Tetragon).
+# node-agent always; watch-sessions + collector only with the full audit stack
+# (collector additionally needs install_collect / Tetragon).
 - name: Enable services (only with secret_id present)
-  when: enable_services | bool and vctl_secret_id.stat.exists | default(false)
+  when: enable_services | bool and (vctl_secret_id.stat.exists | default(false))
   ansible.builtin.systemd:
     name: "{{ item }}"
     enabled: true
     state: started
     daemon_reload: true
-  loop: "{{ ['vctl-watch-sessions', 'vctl-node-agent'] + (['vctl-collect'] if install_collect | bool else []) }}"
+  loop: "{{ ['vctl-node-agent'] + ((['vctl-watch-sessions'] + (['vctl-collect'] if install_collect | bool else [])) if audit_stack | bool else []) }}"
 
-- name: Keep collector stopped when not requested (no Tetragon)
-  when: not (install_collect | bool)
+- name: Keep collector stopped when not requested (no Tetragon / node-only)
+  when: not (install_collect | bool) or not (audit_stack | bool)
   ansible.builtin.systemd:
     name: vctl-collect
+    enabled: false
+    state: stopped
+  failed_when: false
+
+- name: Keep watch-sessions stopped on node-only hosts (no audit stack)
+  when: not (audit_stack | bool)
+  ansible.builtin.systemd:
+    name: vctl-watch-sessions
     enabled: false
     state: stopped
   failed_when: false
