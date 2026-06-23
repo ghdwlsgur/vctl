@@ -1,0 +1,36 @@
+---
+# vctl_host role defaults. Override per group in inventory/group_vars or with -e.
+state: present
+
+# Release binary (linux/amd64), placed under the playbook's files/ (gitignored).
+#   gh release download vX.Y.Z -p 'vctl_*_linux_amd64.tar.gz' && tar -xzf … -C files/
+vctl_bin_src: "{{ playbook_dir }}/files/vctl"
+vctl_bin_dest: /usr/local/bin/vctl
+
+# Daemon scope.
+#   install_collect=false installs the collector unit but does NOT enable it (it
+#   needs Tetragon) — use for a Tetragon-free rollout of node-agent + watch.
+install_collect: true
+enable_services: true
+
+# Per-host AppRole secret_id is minted from the control node's Vault token.
+provision_secret_id: true
+
+# Tetragon (kernel-event source for the collector). Bare VMs: systemd install
+# here. k8s nodes: set install_tetragon=false and run a DaemonSet instead.
+install_tetragon: true
+tetragon_version: v1.1.2
+tetragon_url: "https://github.com/cilium/tetragon/releases/download/{{ tetragon_version }}/tetragon-{{ tetragon_version }}-amd64.tar.gz"
+# Pin the release digest per version (e.g. "sha256:…"). Empty = no verification
+# (acceptable only for the public HTTPS URL; set before fronting an internal mirror).
+tetragon_sha256: ""
+
+# REQUIRED (no default — internal IPs are not baked into the repo): the LB that
+# fronts *.sre.local for this host's network. Set per group in group_vars or with
+# -e sre_lb_ip=<ip>. Asserted non-empty before use.
+sre_lb_ip: ""
+
+# Canonical unit/script sources live in deploy/audit and deploy/node (one source
+# of truth — not duplicated into the role).
+vctl_audit_src: "{{ playbook_dir }}/../audit"
+vctl_node_src: "{{ playbook_dir }}/../node"
