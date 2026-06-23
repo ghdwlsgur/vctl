@@ -40,22 +40,35 @@ func lsCmd() *cobra.Command {
 			}
 			rows := make([][]string, 0, len(servers))
 			for _, s := range servers {
-				status := ui.Muted("down")
-				if s.LastSeenUp != nil {
-					status = ui.OK("up")
-				}
 				jump := s.JumpVia
 				if jump == "" {
 					jump = ui.Muted("direct")
 				}
-				rows = append(rows, []string{ui.Truncate(s.Hostname, 40), s.IP, s.User, s.DC, jump, status, agentStatus(s.Status), serviceSummary(s.Status)})
+				rows = append(rows, []string{ui.Truncate(s.Hostname, 40), s.IP, s.User, s.DC, jump, liveStatus(s), agentStatus(s.Status), serviceSummary(s.Status)})
 			}
 			ui.Section(os.Stdout, "inventory")
-			return ui.Table(os.Stdout, []string{"host", "ip", "user", "dc", "jump", "probe", "agent", "services"}, rows)
+			return ui.Table(os.Stdout, []string{"host", "ip", "user", "dc", "jump", "status", "agent", "services"}, rows)
 		},
 	}
 	cmd.Flags().StringVar(&dc, "dc", "", "DC filter, for example incheon or seoul-onprem")
 	return cmd
+}
+
+// liveStatus prefers the node-agent's live report over the sync-time probe.
+// An agent that reported within the freshness window means the host is up right
+// now (dynamic); a stale agent reads as down; with no agent we fall back to the
+// last sync probe, marked "up~" to show it's point-in-time, not live.
+func liveStatus(s store.ServerWithStatus) string {
+	if s.Status != nil {
+		if time.Since(s.Status.LastSeenAt) <= 10*time.Minute {
+			return ui.OK("up")
+		}
+		return ui.Warn("stale") // agent stopped reporting → likely down
+	}
+	if s.LastSeenUp != nil {
+		return ui.Muted("up~") // last sync probe only (no agent)
+	}
+	return ui.Muted("down")
 }
 
 func agentStatus(st *store.ServerStatus) string {
