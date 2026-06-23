@@ -271,6 +271,7 @@ Resource limits, journald caps, and the golden-image bake guidance live in `depl
 | `vctl list [--dc <dc>]` | List inventory hosts |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | Show central SSH access audit rows |
 | `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | Install Vault SSH CA trust on a host so vctl ssh works (one-time onboarding) |
+| `vctl ca install\|remove\|print` | Trust the SRE root CA in this machine's OS store so browsers/curl accept `*.sre.local` (clears HSTS errors); platform auto-detected |
 | `vctl node-agent [--interval 5m]` | Report lightweight host runtime status for already registered inventory |
 | `vctl session [<serial>\|--list\|--json]` | Show what a person did inside an SSH session (host kernel-audit timeline) |
 | `vctl status` | Check login, SSH CA, and inventory DB connectivity |
