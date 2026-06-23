@@ -5,8 +5,11 @@
 # release binary, CA pubkey, any fetched artifacts
 files/
 
-# real fleet inventory (commit inventory.example.ini only)
-inventory.ini
+# real fleet inventory with internal IPs (commit inventory/hosts.example.ini only)
+inventory/hosts.ini
+
+# per-network group vars may carry internal LB IPs
+inventory/group_vars/*.local.yml
 
 *.secret-id
 *.retry

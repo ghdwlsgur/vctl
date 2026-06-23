@@ -39,7 +39,7 @@ yet), installs it as TrustedUserCAKeys and reloads sshd. It is idempotent and
 validates sshd config before reloading, rolling back on failure.
 
   vctl trust-ca rnd-gitlab             # resolve user/addr from inventory
-  vctl trust-ca root@192.168.110.250   # explicit target
+  vctl trust-ca root@198.51.100.25     # explicit target (user@addr)
   vctl trust-ca web01 --sudo           # non-root login, escalate for the install`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
