@@ -1,0 +1,14 @@
+---
+- name: reload sshd
+  # Service name differs by distro: sshd (RHEL) / ssh (Debian·Ubuntu) — try both.
+  ansible.builtin.shell: systemctl reload sshd 2>/dev/null || systemctl reload ssh
+  changed_when: true
+
+- name: daemon-reload
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: restart journald
+  ansible.builtin.service:
+    name: systemd-journald
+    state: restarted
