@@ -11,12 +11,16 @@ truth — no duplicated copies here) plus the SSH CA trust.
 
 ## Prerequisites
 
-- The **`vctl-host` AppRole** exists in Vault (combined `vctl-rw` + `vctl-status`
-  policy — see the `vault-iac` repo). The playbook reads its `role_id` and mints a
-  per-host `secret_id` from the **control node's** `VAULT_ADDR`/`VAULT_TOKEN`, so
-  run with a token allowed to do:
-  `vault read auth/approle/role/vctl-host/role-id` and
-  `vault write -f auth/approle/role/vctl-host/secret-id`.
+- The AppRole the host uses exists in Vault (see the `vault-iac` repo). Which one
+  depends on `audit_stack`:
+  - `audit_stack=true` (default) → **`vctl-host`** (combined `vctl-rw` + `vctl-status`):
+    full stack (collector + watch-sessions + node-agent).
+  - `audit_stack=false` → **`vctl-node`** (`vctl-status` only): node-agent ONLY,
+    no DB write — least privilege for liveness-only hosts.
+  The playbook reads the role's `role_id` and mints a per-host `secret_id` from the
+  **control node's** `VAULT_ADDR`/`VAULT_TOKEN`, so run with a token allowed to do
+  `vault read auth/approle/role/<role>/role-id` and
+  `vault write -f auth/approle/role/<role>/secret-id` (role = vctl-host or vctl-node).
 - The release **linux binary** placed at `files/vctl` (gitignored):
   `gh release download vX.Y.Z -p 'vctl_*_linux_amd64.tar.gz' && tar -xzf … -C files/`
   (or switch the play to install the `.deb`/`.rpm` from the release).
