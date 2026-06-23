@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -289,18 +290,10 @@ func shell(client *ssh.Client) error {
 	err = sess.Wait()
 	// Treat remote exit codes as normal shell termination.
 	var ee *ssh.ExitError
-	if err != nil && asExitError(err, &ee) {
+	if err != nil && errors.As(err, &ee) {
 		return nil
 	}
 	return err
-}
-
-func asExitError(err error, target **ssh.ExitError) bool {
-	if ee, ok := err.(*ssh.ExitError); ok {
-		*target = ee
-		return true
-	}
-	return false
 }
 
 func watchResize(sess *ssh.Session, fd int) {
