@@ -9,7 +9,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
-func TestSplitKV(t *testing.T) {
+func TestSplitFields(t *testing.T) {
 	cases := []struct{ in, k, v string }{
 		{"Host sre-srv-0047", "Host", "sre-srv-0047"},
 		{"  HostName 10.40.0.1", "HostName", "10.40.0.1"},
@@ -17,9 +17,9 @@ func TestSplitKV(t *testing.T) {
 		{"ProxyJump\tbastion", "ProxyJump", "bastion"},
 	}
 	for _, c := range cases {
-		k, v, ok := splitKV(trimLeftSpace(c.in))
-		if !ok || k != c.k || v != c.v {
-			t.Errorf("splitKV(%q) = (%q,%q,%v), want (%q,%q,true)", c.in, k, v, ok, c.k, c.v)
+		k, vals, ok := splitFields(trimLeftSpace(c.in))
+		if !ok || k != c.k || vals[0] != c.v {
+			t.Errorf("splitFields(%q) = (%q,%v,%v), want (%q,[%q ...],true)", c.in, k, vals, ok, c.k, c.v)
 		}
 	}
 }
@@ -134,13 +134,13 @@ func TestClassifyDC(t *testing.T) {
 		"8.8.8.8":       "unknown",
 	}
 	for ip, want := range cases {
-		if got := classifyDC(ip); got != want {
-			t.Errorf("classifyDC(%q) = %q, want %q", ip, got, want)
+		if got := classifyDCWithRules(ip, DefaultDCRules()); got != want {
+			t.Errorf("classifyDCWithRules(%q) = %q, want %q", ip, got, want)
 		}
 	}
 }
 
-// trimLeftSpace removes leading whitespace because splitKV expects trimmed input.
+// trimLeftSpace removes leading whitespace because splitFields expects trimmed input.
 func trimLeftSpace(s string) string {
 	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
 		s = s[1:]
