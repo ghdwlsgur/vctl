@@ -108,7 +108,7 @@ func liveStatus(s store.ServerWithStatus) string {
 	case "up~":
 		return ui.Muted("up~") // last sync probe only (no agent)
 	default:
-		return ui.Muted("down")
+		return ui.Fail("down") // red — not reachable / no signal
 	}
 }
 
