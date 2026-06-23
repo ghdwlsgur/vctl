@@ -120,13 +120,11 @@ func TestServerStatusDoesNotCreateInventory(t *testing.T) {
 		t.Fatalf("Upsert server: %v", err)
 	}
 	load := 0.25
-	sshd := true
 	ok, err = st.UpsertServerStatus(ctx, ServerStatus{
 		Hostname:     host,
 		AgentVersion: "test",
 		OS:           "linux",
 		Load1:        &load,
-		SSHDOK:       &sshd,
 	})
 	if err != nil || !ok {
 		t.Fatalf("UpsertServerStatus registered host = (%v,%v), want (true,nil)", ok, err)
