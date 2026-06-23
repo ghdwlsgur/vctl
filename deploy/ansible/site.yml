@@ -1,0 +1,14 @@
+---
+# Onboard hosts to the vctl audit/status stack (collector + watch-sessions + node-agent).
+# See README.md. Needs a control-node Vault token (mints the per-host secret_id).
+#
+#   ansible-playbook site.yml -l <canary>
+#   ansible-playbook site.yml -l seoul_onprem -e sre_lb_ip=<lb>
+#   ansible-playbook site.yml -l seoul_onprem -e install_collect=false -e install_tetragon=false
+#   ansible-playbook site.yml -l <host> -e state=absent     # rollback
+- name: Onboard host audit/status stack (vctl)
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - vctl_host

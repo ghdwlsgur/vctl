@@ -172,6 +172,9 @@ func memoryUsedPct() *float64 {
 			available = v
 		}
 	}
+	if sc.Err() != nil {
+		return nil
+	}
 	if total <= 0 || available < 0 {
 		return nil
 	}

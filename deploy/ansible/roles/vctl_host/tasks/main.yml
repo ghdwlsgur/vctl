@@ -1,0 +1,20 @@
+---
+# Onboard a host to the vctl audit/status stack. Idempotent and safe:
+# sshd/PAM changes validate (sshd -t) before reload; the AppRole secret_id is
+# never baked (minted per host from the control node); state=absent rolls back.
+- name: Assert sre_lb_ip is provided
+  when: state == 'present'
+  ansible.builtin.assert:
+    that:
+      - sre_lb_ip | length > 0
+    fail_msg: >-
+      sre_lb_ip is required (the LB fronting *.sre.local for this network).
+      Set it in inventory/group_vars or pass -e sre_lb_ip=<ip>.
+
+- name: Install / onboard
+  when: state == 'present'
+  ansible.builtin.import_tasks: present.yml
+
+- name: Roll back
+  when: state == 'absent'
+  ansible.builtin.import_tasks: absent.yml

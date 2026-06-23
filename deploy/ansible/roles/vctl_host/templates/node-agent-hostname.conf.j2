@@ -1,0 +1,6 @@
+# Managed by Ansible (vctl_host role). node-agent reports under the INVENTORY
+# hostname, not the OS hostname — OS names (e.g. k8s-all-01) don't match inventory
+# names (e.g. sre-srv-0023) and UpsertServerStatus drops unregistered reports.
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/vctl node-agent --hostname {{ inventory_hostname }} --interval 5m

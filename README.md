@@ -193,7 +193,7 @@ a new host once with `vctl trust-ca` (it installs the CA public key as
 
 ```bash
 vctl trust-ca rnd-gitlab             # resolve user/addr from inventory
-vctl trust-ca root@192.168.110.250   # or an explicit, not-yet-registered host
+vctl trust-ca root@198.51.100.25     # or an explicit, not-yet-registered host
 ```
 
 Without this, `vctl ssh` fails the handshake (`no supported methods remain`)
