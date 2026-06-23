@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -71,101 +72,93 @@ Typical host wiring (systemd or sidecar):
 Events link to a session by cgroup when the login stamper recorded one; pass
 --serial to attach a known access explicitly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			a, err := newApp()
-			if err != nil {
-				return err
-			}
-			st, err := a.OpenStore(ctx, true) // RW: kernel_event insert
-			if err != nil {
-				return err
-			}
-			defer st.Close()
-
-			var r io.Reader = os.Stdin
-			if from != "" {
-				f, err := os.Open(from)
-				if err != nil {
-					return err
-				}
-				defer f.Close()
-				r = f
-			}
-
-			// Scan lines in a goroutine so we can flush on a timer too — a live
-			// `tetra getevents` stream never hits EOF, and on a quiet host events
-			// would otherwise sit in the buffer until a full batch accumulates.
-			lines := make(chan string, 4096)
-			var scanErr error // read after lines closes (close happens-after assignment)
-			go func() {
-				sc := bufio.NewScanner(r)
-				sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
-				for sc.Scan() {
-					lines <- sc.Text()
-				}
-				scanErr = sc.Err()
-				close(lines)
-			}()
-
-			buf := make([]store.KernelEvent, 0, batch)
-			total, skipped := 0, 0
-			flush := func() error {
-				if len(buf) == 0 {
-					return nil
-				}
-				n, err := st.InsertKernelEvents(ctx, buf)
-				total += n
-				buf = buf[:0]
-				return err
-			}
-
-			ticker := time.NewTicker(flushInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					_ = flush()
-					return ctx.Err()
-				case <-ticker.C:
-					if err := flush(); err != nil {
-						ui.Warnf(os.Stderr, "flush: %v", err)
+			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error { // RW: kernel_event insert
+				ctx := cmd.Context()
+				var r io.Reader = os.Stdin
+				if from != "" {
+					f, err := os.Open(from)
+					if err != nil {
+						return err
 					}
-				case line, ok := <-lines:
-					if !ok {
-						if err := flush(); err != nil {
-							return err
-						}
-						// Don't report success if the input stream errored (read
-						// failure, or a line over the 8MiB buffer) — that would
-						// silently mask dropped audit events.
-						if scanErr != nil {
-							return fmt.Errorf("input scan aborted after %d events: %w", total, scanErr)
-						}
-						ui.Successf(os.Stderr, "ingested %d kernel events (%d skipped)", total, skipped)
+					defer f.Close()
+					r = f
+				}
+
+				// Scan lines in a goroutine so we can flush on a timer too — a live
+				// `tetra getevents` stream never hits EOF, and on a quiet host events
+				// would otherwise sit in the buffer until a full batch accumulates.
+				lines := make(chan string, 4096)
+				var scanErr error // read after lines closes (close happens-after assignment)
+				go func() {
+					sc := bufio.NewScanner(r)
+					sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+					for sc.Scan() {
+						lines <- sc.Text()
+					}
+					scanErr = sc.Err()
+					close(lines)
+				}()
+
+				buf := make([]store.KernelEvent, 0, batch)
+				total, skipped := 0, 0
+				flush := func() error {
+					if len(buf) == 0 {
 						return nil
 					}
-					line = strings.TrimSpace(line)
-					if line == "" {
-						continue
-					}
-					var te tetraEvent
-					if err := json.Unmarshal([]byte(line), &te); err != nil {
-						skipped++
-						continue
-					}
-					ev, ok := mapTetra(te, host, serial)
-					if !ok {
-						skipped++
-						continue
-					}
-					buf = append(buf, ev)
-					if len(buf) >= batch {
+					n, err := st.InsertKernelEvents(ctx, buf)
+					total += n
+					buf = buf[:0]
+					return err
+				}
+
+				ticker := time.NewTicker(flushInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						_ = flush()
+						return ctx.Err()
+					case <-ticker.C:
 						if err := flush(); err != nil {
 							ui.Warnf(os.Stderr, "flush: %v", err)
 						}
+					case line, ok := <-lines:
+						if !ok {
+							if err := flush(); err != nil {
+								return err
+							}
+							// Don't report success if the input stream errored (read
+							// failure, or a line over the 8MiB buffer) — that would
+							// silently mask dropped audit events.
+							if scanErr != nil {
+								return fmt.Errorf("input scan aborted after %d events: %w", total, scanErr)
+							}
+							ui.Successf(os.Stderr, "ingested %d kernel events (%d skipped)", total, skipped)
+							return nil
+						}
+						line = strings.TrimSpace(line)
+						if line == "" {
+							continue
+						}
+						var te tetraEvent
+						if err := json.Unmarshal([]byte(line), &te); err != nil {
+							skipped++
+							continue
+						}
+						ev, ok := mapTetra(te, host, serial)
+						if !ok {
+							skipped++
+							continue
+						}
+						buf = append(buf, ev)
+						if len(buf) >= batch {
+							if err := flush(); err != nil {
+								ui.Warnf(os.Stderr, "flush: %v", err)
+							}
+						}
 					}
 				}
-			}
+			})
 		},
 	}
 	cmd.Flags().StringVar(&from, "from", "", "read events from a file instead of stdin")

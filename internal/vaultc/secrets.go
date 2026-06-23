@@ -104,19 +104,3 @@ func (c *Client) GenerateSecretID(ctx context.Context, mount, role string) (stri
 	}
 	return sid, nil
 }
-
-// CAPublicKey reads the CA public key from ssh/config/ca.
-func (c *Client) CAPublicKey(ctx context.Context) (string, error) {
-	sec, err := c.api.Logical().ReadWithContext(ctx, "ssh/config/ca")
-	if err != nil {
-		return "", fmt.Errorf("ssh/config/ca: %w", err)
-	}
-	if sec == nil || sec.Data == nil {
-		return "", fmt.Errorf("ssh/config/ca: empty response")
-	}
-	pub, ok := sec.Data["public_key"].(string)
-	if !ok || pub == "" {
-		return "", fmt.Errorf("ssh/config/ca: missing public_key")
-	}
-	return pub, nil
-}

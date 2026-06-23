@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -44,84 +45,77 @@ itself stays credential-free.
   vctl watch-sessions /run/vctl/sessions --once    # one pass (testing)`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			if len(args) == 1 {
-				dir = args[0]
-			}
-			a, err := newApp()
-			if err != nil {
-				return err
-			}
-			st, err := a.OpenStore(ctx, true) // RW
-			if err != nil {
-				return err
-			}
-			defer st.Close()
+			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error { // RW
+				ctx := cmd.Context()
+				if len(args) == 1 {
+					dir = args[0]
+				}
 
-			// Restart reconcile: the in-memory seen map is lost on restart, so
-			// end any session this host left un-ended whose leader process is
-			// gone (otherwise stale "live" sessions accumulate).
-			if hn, err := os.Hostname(); err == nil {
-				if stale, err := st.UnendedSessions(ctx, hn); err == nil {
-					for _, sess := range stale {
-						if !processAlive(sess.LeaderPID) {
-							if err := st.EndSession(ctx, sess.ID, ""); err != nil {
-								ui.Warnf(os.Stderr, "end stale session %d: %v", sess.ID, err)
+				// Restart reconcile: the in-memory seen map is lost on restart, so
+				// end any session this host left un-ended whose leader process is
+				// gone (otherwise stale "live" sessions accumulate).
+				if hn, err := os.Hostname(); err == nil {
+					if stale, err := st.UnendedSessions(ctx, hn); err == nil {
+						for _, sess := range stale {
+							if !processAlive(sess.LeaderPID) {
+								if err := st.EndSession(ctx, sess.ID, ""); err != nil {
+									ui.Warnf(os.Stderr, "end stale session %d: %v", sess.ID, err)
+								}
 							}
 						}
 					}
 				}
-			}
 
-			seen := map[string]int64{} // marker path -> session id
-			scan := func() {
-				entries, err := os.ReadDir(dir)
-				if err != nil {
-					return
-				}
-				for _, e := range entries {
-					if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-						continue
-					}
-					path := filepath.Join(dir, e.Name())
-					if _, ok := seen[path]; ok {
-						closeIfEnded(ctx, st, path, seen)
-						continue
-					}
-					m, err := readMarker(path)
+				seen := map[string]int64{} // marker path -> session id
+				scan := func() {
+					entries, err := os.ReadDir(dir)
 					if err != nil {
-						continue
+						return
 					}
-					started, _ := time.Parse(time.RFC3339, m.Started)
-					id, err := st.RecordSession(ctx, store.AuditSession{
-						CertSerial: m.Serial, Hostname: m.Host, LoginUser: m.Login,
-						SourceIP: stripPort(m.RHost), LeaderPID: m.LeaderPID,
-						CgroupID: cgroupID(m.LeaderPID), StartedAt: started,
-					})
-					if err != nil {
-						ui.Warnf(os.Stderr, "record session %s: %v", e.Name(), err)
-						continue
+					for _, e := range entries {
+						if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+							continue
+						}
+						path := filepath.Join(dir, e.Name())
+						if _, ok := seen[path]; ok {
+							closeIfEnded(ctx, st, path, seen)
+							continue
+						}
+						m, err := readMarker(path)
+						if err != nil {
+							continue
+						}
+						started, _ := time.Parse(time.RFC3339, m.Started)
+						id, err := st.RecordSession(ctx, store.AuditSession{
+							CertSerial: m.Serial, Hostname: m.Host, LoginUser: m.Login,
+							SourceIP: stripPort(m.RHost), LeaderPID: m.LeaderPID,
+							CgroupID: cgroupID(m.LeaderPID), StartedAt: started,
+						})
+						if err != nil {
+							ui.Warnf(os.Stderr, "record session %s: %v", e.Name(), err)
+							continue
+						}
+						seen[path] = id
+						ui.Infof(os.Stderr, "session %d started: %s on %s (serial %s)", id, m.Login, m.Host, m.Serial)
 					}
-					seen[path] = id
-					ui.Infof(os.Stderr, "session %d started: %s on %s (serial %s)", id, m.Login, m.Host, m.Serial)
 				}
-			}
 
-			if once {
-				scan()
-				return nil
-			}
-			t := time.NewTicker(interval)
-			defer t.Stop()
-			scan()
-			for {
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-t.C:
+				if once {
 					scan()
+					return nil
 				}
-			}
+				t := time.NewTicker(interval)
+				defer t.Stop()
+				scan()
+				for {
+					select {
+					case <-ctx.Done():
+						return nil
+					case <-t.C:
+						scan()
+					}
+				}
+			})
 		},
 	}
 	cmd.Flags().StringVar(&dir, "dir", "/run/vctl/sessions", "marker directory")

@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -38,41 +39,33 @@ Two uses:
   vctl session <cert-serial> --json   machine-readable export`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			a, err := newApp()
-			if err != nil {
-				return err
-			}
-			st, err := a.OpenStore(ctx, false)
-			if err != nil {
-				return err
-			}
-			defer st.Close()
+			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+				ctx := cmd.Context()
+				if list || len(args) == 0 {
+					sessions, err := st.ListSessions(ctx, host, limit)
+					if err != nil {
+						return err
+					}
+					if asJSON {
+						return writeJSON(sessions)
+					}
+					return printSessions(sessions)
+				}
 
-			if list || len(args) == 0 {
-				sessions, err := st.ListSessions(ctx, host, limit)
+				serial := args[0]
+				sessions, events, err := st.SessionTimeline(ctx, serial, limit)
 				if err != nil {
 					return err
 				}
-				if asJSON {
-					return writeJSON(sessions)
+				if len(sessions) == 0 {
+					ui.Warnf(os.Stderr, "no session recorded for serial %s (collector/stamper deployed on the host?)", serial)
+					return nil
 				}
-				return printSessions(sessions)
-			}
-
-			serial := args[0]
-			sessions, events, err := st.SessionTimeline(ctx, serial, limit)
-			if err != nil {
-				return err
-			}
-			if len(sessions) == 0 {
-				ui.Warnf(os.Stderr, "no session recorded for serial %s (collector/stamper deployed on the host?)", serial)
-				return nil
-			}
-			if asJSON {
-				return writeJSON(timelineExport(sessions, events))
-			}
-			return printTimeline(sessions, events, sessionDetailOptions{Full: full, Width: detailWidth})
+				if asJSON {
+					return writeJSON(timelineExport(sessions, events))
+				}
+				return printTimeline(sessions, events, sessionDetailOptions{Full: full, Width: detailWidth})
+			})
 		},
 	}
 	cmd.Flags().BoolVar(&list, "list", false, "list recent sessions instead of one timeline")
@@ -93,22 +86,14 @@ func sessionStartCmd() *cobra.Command {
 		Short:  "Register an SSH session for kernel audit (host stamper use)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			app, err := newApp()
-			if err != nil {
-				return err
-			}
-			st, err := app.OpenStore(ctx, true) // RW
-			if err != nil {
-				return err
-			}
-			defer st.Close()
-			id, err := st.RecordSession(ctx, a)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintln(os.Stdout, id)
-			return nil
+			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error { // RW
+				id, err := st.RecordSession(cmd.Context(), a)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stdout, id)
+				return nil
+			})
 		},
 	}
 	f := cmd.Flags()
@@ -132,7 +117,7 @@ func printSessions(sessions []store.AuditSession) error {
 	for _, s := range sessions {
 		rows = append(rows, []string{
 			s.StartedAt.Local().Format("2006-01-02 15:04:05"),
-			orDash(s.VaultUser), s.Hostname, orDash(s.LoginUser),
+			valueOrDash(s.VaultUser), s.Hostname, valueOrDash(s.LoginUser),
 			s.CertSerial, dur(s.StartedAt, s.EndedAt),
 		})
 	}
@@ -147,9 +132,9 @@ type sessionDetailOptions struct {
 
 func printTimeline(sessions []store.AuditSession, events map[int64][]store.KernelEvent, opts sessionDetailOptions) error {
 	for _, s := range sessions {
-		ui.Section(os.Stdout, fmt.Sprintf("%s on %s (%s)", orDash(s.VaultUser), s.Hostname, s.CertSerial))
+		ui.Section(os.Stdout, fmt.Sprintf("%s on %s (%s)", valueOrDash(s.VaultUser), s.Hostname, s.CertSerial))
 		ui.Infof(os.Stdout, "login=%s source=%s started=%s dur=%s",
-			orDash(s.LoginUser), orDash(s.SourceIP),
+			valueOrDash(s.LoginUser), valueOrDash(s.SourceIP),
 			s.StartedAt.Local().Format("2006-01-02 15:04:05"), dur(s.StartedAt, s.EndedAt))
 		if s.Summary != "" {
 			ui.Infof(os.Stdout, "summary: %s", s.Summary)
@@ -261,13 +246,6 @@ func writeJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
-}
-
-func orDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }
 
 func dur(start time.Time, end *time.Time) string {
