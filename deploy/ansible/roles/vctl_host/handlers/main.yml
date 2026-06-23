@@ -18,7 +18,7 @@
   ansible.builtin.systemd:
     name: "{{ item }}"
     state: restarted
-  loop: "{{ ['vctl-watch-sessions', 'vctl-node-agent'] + (['vctl-collect'] if install_collect | bool else []) }}"
+  loop: "{{ ['vctl-node-agent'] + ((['vctl-watch-sessions'] + (['vctl-collect'] if install_collect | bool else [])) if audit_stack | bool else []) }}"
   when: enable_services | bool and (vctl_secret_id.stat.exists | default(false))
 
 - name: restart journald

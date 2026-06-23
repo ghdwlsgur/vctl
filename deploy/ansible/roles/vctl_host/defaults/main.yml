@@ -13,6 +13,15 @@ vctl_bin_dest: /usr/local/bin/vctl
 install_collect: true
 enable_services: true
 
+# audit_stack=true (default): full stack — collector/watch-sessions (DB write) +
+#   node-agent → uses the vctl-host AppRole (vctl-rw + vctl-status).
+# audit_stack=false: node-agent ONLY (status heartbeat, no DB write) → uses the
+#   least-privilege vctl-node AppRole (vctl-status only); watch/collect are not
+#   enabled. Set false for hosts you only want liveness from.
+audit_stack: true
+# Derived: which AppRole the host authenticates with (least privilege per scope).
+vctl_approle: "{{ 'vctl-host' if audit_stack | bool else 'vctl-node' }}"
+
 # Per-host AppRole secret_id is minted from the control node's Vault token.
 provision_secret_id: true
 

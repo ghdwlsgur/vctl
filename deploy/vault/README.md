@@ -31,7 +31,7 @@ the vctl repo alone — even if Vault state (or the vault-iac repo) is wiped.
 | DB connection | `database/config/vctl-pg` | issue dynamic Postgres creds (verify-full TLS) |
 | DB roles | `database/roles/vctl-{ro,rw,status,migrator}` | ro=reads, rw=audit writes, status=node-agent, migrator=schema |
 | Policies | `vctl-{user,admin,node,collector,host}` | least privilege per caller |
-| AppRoles | `vctl-{user,collector,host}` | non-interactive auto-auth (services/hosts) |
+| AppRoles | `vctl-{user,collector,host,node}` | non-interactive auto-auth; `node` = node-agent only (vctl-status), `host` = full stack (vctl-rw + vctl-status) |
 | OIDC + role | `auth/oidc`, `auth/oidc/role/vctl` | per-person GitLab SSO (`vctl login`), grants `vctl-user` |
 | userpass | `auth/userpass` | bootstrap login before the OIDC seed exists |
 
