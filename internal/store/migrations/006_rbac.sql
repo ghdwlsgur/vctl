@@ -1,6 +1,6 @@
 -- App-layer RBAC: command permissions assigned to groups, groups to users.
 --
--- Vault does the coarse bootstrap (vctl-admin / vctl-user / vctl-ssh). This is
+-- Vault does the coarse bootstrap (vctl-admin vs vctl-user). This is
 -- the fine-grained, CLI-managed layer (`vctl rbac ...`): which vctl commands a
 -- non-admin may run, granted per group. Enforcement reads CommandsForUser;
 -- admins (vctl-admin) bypass it. Read commands default-allow; mutate/connect
