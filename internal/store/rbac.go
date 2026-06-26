@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 )
 
 // RBACGroup is a named permission group in the app-layer RBAC (layer 2).
@@ -121,17 +122,45 @@ func (s *Store) RBACCommandsForUser(ctx context.Context, user string) (map[strin
 	return out, rows.Err()
 }
 
-// RecordSeenUser upserts a username into seen_users — called on `vctl login` so
-// anyone who authenticates becomes a candidate for the interactive assigner,
-// without first having to ssh. Best-effort at the call site.
-func (s *Store) RecordSeenUser(ctx context.Context, username string) error {
+// SeenUser is a person who has logged in, with the vctl version they last used.
+type SeenUser struct {
+	Username string
+	Version  string
+	LastSeen time.Time
+}
+
+// RecordSeenUser upserts a username (+ the vctl version they logged in with) into
+// seen_users — called on `vctl login` so anyone who authenticates becomes a
+// candidate for the interactive assigner, without first having to ssh, and so an
+// admin can track who is on which version. Best-effort at the call site.
+func (s *Store) RecordSeenUser(ctx context.Context, username, version string) error {
 	if username == "" {
 		return nil
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO seen_users (username) VALUES ($1)
-		ON CONFLICT (username) DO UPDATE SET last_seen = now()`, username)
+		INSERT INTO seen_users (username, vctl_version) VALUES ($1, NULLIF($2, ''))
+		ON CONFLICT (username) DO UPDATE SET last_seen = now(), vctl_version = NULLIF($2, '')`,
+		username, version)
 	return err
+}
+
+// SeenUsers lists everyone recorded at login, with version and last-seen time.
+func (s *Store) SeenUsers(ctx context.Context) ([]SeenUser, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT username, coalesce(vctl_version, ''), last_seen FROM seen_users ORDER BY username`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SeenUser
+	for rows.Next() {
+		var u SeenUser
+		if err := rows.Scan(&u.Username, &u.Version, &u.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }
 
 // RBACCandidateUsers returns known usernames to offer in the interactive

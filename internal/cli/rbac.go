@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -146,8 +147,43 @@ that, admins group users and grant them specific commands here. Non-admins may
 run read commands (list/status/audit) by default; mutate/connect commands
 (ssh/exec/sync/prune/trust-ca) need a group grant. Admins (vctl-admin) bypass.`,
 	}
-	cmd.AddCommand(rbacAssignCmd(), rbacGroupCmd(), rbacMemberCmd(), rbacGrantCmd(), rbacRevokeCmd(), rbacWhoamiCmd(), rbacCheckCmd())
+	cmd.AddCommand(rbacAssignCmd(), rbacGroupCmd(), rbacMemberCmd(), rbacGrantCmd(), rbacRevokeCmd(), rbacUsersCmd(), rbacWhoamiCmd(), rbacCheckCmd())
 	return cmd
+}
+
+// rbacUsersCmd lists everyone who has logged in, with the vctl version they last
+// used and when — so an admin can see who is behind. Read (default-allow).
+func rbacUsersCmd() *cobra.Command {
+	return gate(&cobra.Command{
+		Use:   "users",
+		Short: "List known users with their vctl version and last login",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+				users, err := st.SeenUsers(cmd.Context())
+				if err != nil {
+					if isUninitializedRBAC(err) {
+						return fmt.Errorf("rbac: not initialized yet — an admin must run 'vctl sync --migrate' first")
+					}
+					return err
+				}
+				if len(users) == 0 {
+					ui.Warnf(os.Stderr, "no users recorded yet (they appear after `vctl login`)")
+					return nil
+				}
+				rows := make([][]string, 0, len(users))
+				for _, u := range users {
+					ver := u.Version
+					if ver == "" {
+						ver = ui.Muted("-")
+					}
+					rows = append(rows, []string{u.Username, ver, "seen " + compactDuration(time.Since(u.LastSeen))})
+				}
+				ui.Section(os.Stdout, "rbac users")
+				return ui.Table(os.Stdout, []string{"user", "vctl version", "last login"}, rows)
+			})
+		},
+	}, "users", classRead)
 }
 
 // rbacAssignCmd is the convenient interactive assigner: pick a group, then
