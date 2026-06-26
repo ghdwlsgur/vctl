@@ -116,7 +116,7 @@ func printSessions(sessions []store.AuditSession) error {
 	rows := make([][]string, 0, len(sessions))
 	for _, s := range sessions {
 		rows = append(rows, []string{
-			s.StartedAt.Local().Format("2006-01-02 15:04:05"),
+			s.StartedAt.Local().Format(ui.TimeLayout),
 			valueOrDash(s.VaultUser), s.Hostname, valueOrDash(s.LoginUser),
 			s.CertSerial, dur(s.StartedAt, s.EndedAt),
 		})
@@ -135,7 +135,7 @@ func printTimeline(sessions []store.AuditSession, events map[int64][]store.Kerne
 		ui.Section(os.Stdout, fmt.Sprintf("%s on %s (%s)", valueOrDash(s.VaultUser), s.Hostname, s.CertSerial))
 		ui.Infof(os.Stdout, "login=%s source=%s started=%s dur=%s",
 			valueOrDash(s.LoginUser), valueOrDash(s.SourceIP),
-			s.StartedAt.Local().Format("2006-01-02 15:04:05"), dur(s.StartedAt, s.EndedAt))
+			s.StartedAt.Local().Format(ui.TimeLayout), dur(s.StartedAt, s.EndedAt))
 		if s.Summary != "" {
 			ui.Infof(os.Stdout, "summary: %s", s.Summary)
 		}
@@ -190,15 +190,7 @@ func maybeTruncateDetail(s string, opts sessionDetailOptions) string {
 	if width <= 0 {
 		width = 120
 	}
-	const suffix = "..."
-	r := []rune(s)
-	if len(r) <= width {
-		return s
-	}
-	if width <= len(suffix) {
-		return string(r[:width])
-	}
-	return string(r[:width-len(suffix)]) + suffix
+	return ui.TruncateTail(s, width)
 }
 
 // timelineExport builds the JSON shape for dataset/agent consumption.

@@ -177,7 +177,7 @@ func rbacUsersCmd() *cobra.Command {
 					if ver == "" {
 						ver = ui.Muted("-")
 					}
-					rows = append(rows, []string{u.Username, ver, "seen " + compactDuration(time.Since(u.LastSeen))})
+					rows = append(rows, []string{u.Username, ver, "seen " + ui.CompactDuration(time.Since(u.LastSeen))})
 				}
 				ui.Section(os.Stdout, "rbac users")
 				return ui.Table(os.Stdout, []string{"user", "vctl version", "last login"}, rows)
