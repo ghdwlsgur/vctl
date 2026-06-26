@@ -39,6 +39,20 @@ so use it only for automation/bootstrap, never for day-to-day human access.`,
 			if err := a.Login(ctx, m); err != nil {
 				return err
 			}
+			// Register the person in seen_users so `vctl rbac assign` can offer
+			// them without a prior ssh. Best-effort, human methods only (approle
+			// is a shared identity, not a person). Done before --register flips
+			// the cached token to the approle.
+			if m != "approle" {
+				if id := a.Vault.Identity(ctx); id != "" {
+					if st, err := a.OpenStore(ctx, true); err == nil {
+						if err := st.RecordSeenUser(ctx, id); err != nil {
+							ui.Warnf(os.Stderr, "rbac: could not register identity %q: %v", id, err)
+						}
+						st.Close()
+					}
+				}
+			}
 			if register {
 				if err := a.RegisterAgent(ctx); err != nil {
 					ui.Warnf(os.Stderr, "agent not registered: %v", err)
