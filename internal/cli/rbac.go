@@ -15,7 +15,8 @@ import (
 
 // --- RBAC layer 2 (app-layer, CLI-managed) -----------------------------------
 //
-// Vault (layer 1) does the coarse bootstrap: vctl-admin / vctl-user / vctl-ssh.
+// Vault (layer 1) does the coarse bootstrap: vctl-admin vs vctl-user (everyone
+// gets the ssh-sign capability; this app layer decides who may actually ssh).
 // This layer is the fine-grained, admin-managed command RBAC stored centrally
 // in Postgres. Enforcement (enforceRBAC) gates each command by its annotation:
 //
@@ -124,7 +125,7 @@ func rbacCmd() *cobra.Command {
 		Short: "Manage app-layer command RBAC (groups, members, grants)",
 		Long: `rbac manages the fine-grained, admin-managed command permissions (layer 2).
 
-Vault does the coarse bootstrap (vctl-admin / vctl-user / vctl-ssh). On top of
+Vault does the coarse bootstrap (vctl-admin vs vctl-user). On top of
 that, admins group users and grant them specific commands here. Non-admins may
 run read commands (list/status/audit) by default; mutate/connect commands
 (ssh/exec/sync/prune/trust-ca) need a group grant. Admins (vctl-admin) bypass.`,
