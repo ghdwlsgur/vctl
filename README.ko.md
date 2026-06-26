@@ -1,6 +1,6 @@
 # vctl
 
-[English README](README.md)
+[English README](README.md) · [日本語 README](README.ja.md)
 
 `vctl`은 Vault를 기반으로 인프라 접근을 관리하는 CLI입니다. Vault 토큰을 직접 관리하고, Vault SSH CA로 짧은 수명의 SSH 인증서를 발급받으며, Postgres에서 호스트 인벤토리를 읽고 중앙 SSH 접근 감사 메타데이터를 기록합니다.
 
@@ -158,6 +158,42 @@ Vault의 `oidc` auth backend는 GitLab을 identity provider로 신뢰합니다. 
 
 > Vault/IaC 쪽 1회 작업(운영자 수행): GitLab application(Confidential, `openid profile email`, redirect URI `http://localhost:8250/oidc/callback` 및 Vault UI callback)이 client_id/secret을 제공하고, 이는 `kv/services/vault-oidc-gitlab`에 저장됩니다. OIDC backend와 role은 `vault-iac` repo에 있습니다(`enable_gitlab_oidc=true`).
 
+## 접근 제어 (RBAC)
+
+인가는 두 계층으로 나뉩니다.
+
+**계층 1 — Vault (거친 부트스트랩).** 인증된 모든 사용자는 `vctl-user`를 받습니다
+(SSH 인증서 서명 capability + 인벤토리 읽기). GitLab `vctl-admins` 그룹 — 또는
+조직 `sre` 그룹 — 멤버십이 `vctl-admin`으로 매핑되어 인벤토리 쓰기·CA 작업·RBAC
+관리가 더해집니다. Vault는 admin과 user만 구분할 뿐 개별 커맨드는 막지 않습니다.
+(GitLab 인스턴스 admin은 OIDC 클레임이 아니므로, admin은 admin 플래그가 아니라
+그룹 멤버십으로 부여됩니다.)
+
+**계층 2 — 앱 (관리자가 다루는 세밀한 제어).** 비-admin이 어떤 커맨드를 실행할 수
+있는지는 `vctl rbac`이 결정하며, 중앙 Postgres에 저장되어 매 커맨드 실행 전에
+적용됩니다.
+
+- 읽기 커맨드(`list`, `status`, `audit`, `session`)는 기본 허용입니다.
+- 변경·접속 커맨드(`ssh`, `exec`, `sync`, `prune`, `trust-ca`)는 그룹이 권한을
+  부여하기 전까지 거부됩니다.
+- `vctl-admin`(과 `sre-admin`)은 앱 계층을 우회하므로 관리자가 스스로 막히는 일은
+  없습니다.
+
+관리자는 CLI에서 인터랙티브 픽커로 다룹니다.
+
+```bash
+vctl rbac group create devs        # 그룹 생성
+vctl rbac assign [devs]            # 그룹 선택 -> 추가할 유저 멀티선택
+vctl rbac grant  [devs]            # 그룹 선택 -> 커맨드 멀티선택 (ssh, sync, … 또는 *)
+vctl rbac whoami                   # 내 신원·admin 여부·그룹·부여된 커맨드
+vctl rbac users                    # 로그인한 사람들과 각자의 vctl 버전
+```
+
+`assign`의 후보 유저는 로그인한 모든 사람(`vctl login`이 신원을 기록) + 기존
+멤버에서 나오므로, 새 팀원은 한 번 로그인하면 후보에 나타납니다. `vctl ssh`는
+계층 1의 영향도 받습니다 — 토큰이 서명 capability를 가져야 하고(`vctl-user`로 이미
+보유), 나머지는 앱 게이트가 결정합니다.
+
 ## SSH Flow
 
 ```text
@@ -213,8 +249,9 @@ vctl audit --source-ip 192.0.2.10
 | `vctl token` | 갱신 또는 재인증 후 유효한 Vault 토큰을 출력합니다 |
 | `vctl exec -- <cmd>` | 자식 프로세스를 `VAULT_TOKEN`, `VAULT_ADDR`와 함께 실행합니다 |
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |
-| `vctl ssh [host]` | exact, fuzzy, interactive host 선택으로 접속합니다 |
+| `vctl ssh [host] [--server <host>]` | exact, fuzzy, interactive host 선택으로 접속합니다. `--server`는 정확히 해석해 비대화형으로 접속합니다(스크립트/에이전트용) |
 | `vctl list [--dc <dc>]` | 인벤토리 호스트를 나열합니다 |
+| `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | 앱 계층 커맨드 RBAC 관리(관리자). `assign`/`grant`은 인터랙티브 픽커 |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | 중앙 SSH 접근 감사 row를 보여줍니다 |
 | `vctl node-agent [--interval 5m]` | 이미 등록된 인벤토리 호스트의 가벼운 런타임 상태를 보고합니다 |
 | `vctl status` | 로그인, SSH CA, inventory DB 연결 상태를 확인합니다 |

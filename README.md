@@ -1,6 +1,6 @@
 # vctl
 
-[한국어 README](README.ko.md)
+[한국어 README](README.ko.md) · [日本語 README](README.ja.md)
 
 `vctl` is a Vault-backed infrastructure access CLI. It manages Vault tokens directly, signs short-lived SSH certificates through Vault SSH CA, reads host inventory from Postgres, and records central SSH access audit metadata.
 
@@ -174,6 +174,41 @@ is re-satisfied by a quick SSO round-trip rather than re-typing a password.
 > `kv/services/vault-oidc-gitlab`; the OIDC backend + role live in the `vault-iac`
 > repo (`enable_gitlab_oidc=true`).
 
+## Access Control (RBAC)
+
+Authorization is two layers.
+
+**Layer 1 — Vault (coarse, bootstrap).** Every authenticated user gets `vctl-user`
+(the SSH-cert-signing capability + inventory reads). Membership in the GitLab
+`vctl-admins` group — or the org `sre` group — maps to `vctl-admin`, which adds
+inventory writes, CA operations, and RBAC management. Vault only distinguishes
+admin from user; it does not gate individual commands. (GitLab *instance* admin is
+not an OIDC claim, so admin is conferred by group membership, not the admin flag.)
+
+**Layer 2 — app (fine, admin-managed).** Which commands a non-admin may run is
+decided by `vctl rbac`, stored centrally in Postgres and enforced before each
+command:
+
+- Read commands (`list`, `status`, `audit`, `session`) are allowed by default.
+- Mutate/connect commands (`ssh`, `exec`, `sync`, `prune`, `trust-ca`) are denied
+  until a group grants them.
+- `vctl-admin` (and `sre-admin`) bypass the app layer, so admins never lock out.
+
+Admins manage it from the CLI, with interactive pickers:
+
+```bash
+vctl rbac group create devs        # create a group
+vctl rbac assign [devs]            # pick a group -> multi-select users to add
+vctl rbac grant  [devs]            # pick a group -> multi-select commands (ssh, sync, … or *)
+vctl rbac whoami                   # your identity, admin status, groups, granted commands
+vctl rbac users                    # everyone who has logged in, with their vctl version
+```
+
+Candidate users for `assign` come from everyone who has logged in (`vctl login`
+records the identity) plus existing members, so a new teammate appears after one
+login. `vctl ssh` is still also subject to Layer 1: the token must carry the
+signing capability (it does, via `vctl-user`), and the app gate decides the rest.
+
 ## SSH Flow
 
 ```text
@@ -267,8 +302,9 @@ Resource limits, journald caps, and the golden-image bake guidance live in `depl
 | `vctl token` | Print a valid Vault token after renewal or re-authentication |
 | `vctl exec -- <cmd>` | Run a child process with `VAULT_TOKEN` and `VAULT_ADDR` |
 | `vctl agent [--sink <path>]` | Keep a token alive and write it to sink files |
-| `vctl ssh [host]` | Connect by exact, fuzzy, or interactive host selection |
+| `vctl ssh [host] [--server <host>]` | Connect by exact, fuzzy, or interactive host selection; `--server` resolves exactly and connects non-interactively (scripts/agents) |
 | `vctl list [--dc <dc>]` | List inventory hosts |
+| `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | Manage app-layer command RBAC (admin); `assign`/`grant` are interactive pickers |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | Show central SSH access audit rows |
 | `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | Install Vault SSH CA trust on a host so vctl ssh works (one-time onboarding) |
 | `vctl ca install\|remove\|print` | Trust the SRE root CA in this machine's OS store so browsers/curl accept `*.sre.local` (clears HSTS errors); platform auto-detected |
