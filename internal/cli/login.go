@@ -46,7 +46,7 @@ so use it only for automation/bootstrap, never for day-to-day human access.`,
 			if m != "approle" {
 				if id := a.Vault.Identity(ctx); id != "" {
 					if st, err := a.OpenStore(ctx, true); err == nil {
-						if err := st.RecordSeenUser(ctx, id); err != nil {
+						if err := st.RecordSeenUser(ctx, id, Version); err != nil {
 							ui.Warnf(os.Stderr, "rbac: could not register identity %q: %v", id, err)
 						}
 						st.Close()
