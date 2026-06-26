@@ -2,11 +2,14 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
@@ -30,19 +33,7 @@ func lsCmd() *cobra.Command {
 					ui.Warnf(os.Stderr, "inventory is empty. Run 'vctl sync' first.")
 					return nil
 				}
-				rows := make([][]string, 0, len(servers))
-				for _, s := range servers {
-					jump := s.JumpVia
-					if jump == "" {
-						jump = ui.Muted("direct")
-					}
-					rows = append(rows, []string{ui.Truncate(s.Hostname, 40), s.IP, s.User, s.DC, jump, liveStatus(s), agentStatus(s.Status)})
-				}
-				ui.Section(os.Stdout, "inventory")
-				if err := ui.Table(os.Stdout, []string{"host", "ip", "user", "dc", "jump", "status", "agent"}, rows); err != nil {
-					return err
-				}
-				printDCTotals(servers)
+				renderInventory(os.Stdout, servers)
 				return nil
 			})
 		},
@@ -51,11 +42,86 @@ func lsCmd() *cobra.Command {
 	return cmd
 }
 
-// printDCTotals prints a per-DC count summary (hosts + reachable) under the
-// inventory table so the fleet size per datacenter is visible at a glance.
-func printDCTotals(servers []store.ServerWithStatus) {
-	ui.Section(os.Stdout, "by dc")
-	_ = ui.Table(os.Stdout, []string{"dc", "hosts", "up"}, dcTotalsRows(servers))
+// renderInventory prints the inventory grouped by DC. Each DC gets a header with
+// its reachable/total count, and every host row leads with a colored status dot
+// (the same up/stale/down decision as the `vctl ssh` picker), so the fleet reads
+// as sections rather than one flat table with a repeating dc column. Column
+// widths are computed across all rows so groups stay aligned.
+//
+// Servers arrive already sorted by (dc, hostname) from ListWithStatus, so a
+// single pass can detect group boundaries.
+func renderInventory(w io.Writer, servers []store.ServerWithStatus) {
+	host := make([]string, len(servers))
+	cells := make([][]string, len(servers)) // ip, user, jump, status, agent
+	widths := make([]int, 6)                // host + the five cells above
+	for i, s := range servers {
+		jump := s.JumpVia
+		if jump == "" {
+			jump = ui.Muted("direct")
+		}
+		host[i] = ui.Truncate(s.Hostname, 40)
+		cells[i] = []string{s.IP, s.User, jump, liveStatus(s), agentStatus(s.Status)}
+		if n := lipgloss.Width(host[i]); n > widths[0] {
+			widths[0] = n
+		}
+		for j, c := range cells[i] {
+			if n := lipgloss.Width(c); n > widths[j+1] {
+				widths[j+1] = n
+			}
+		}
+	}
+
+	dcStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	grandTotal, grandUp := 0, 0
+	for i := 0; i < len(servers); {
+		dc := servers[i].DC
+		up, total := 0, 0
+		for k := i; k < len(servers) && servers[k].DC == dc; k++ {
+			total++
+			if t := liveStatusText(servers[k]); t == "up" || t == "up~" {
+				up++
+			}
+		}
+		grandTotal += total
+		grandUp += up
+
+		name := dc
+		if name == "" {
+			name = "(no dc)"
+		}
+		fmt.Fprintf(w, "%s %s\n", dcStyle.Render("▌ "+name), ui.Muted(fmt.Sprintf("· %d/%d up", up, total)))
+
+		for ; i < len(servers) && servers[i].DC == dc; i++ {
+			var line strings.Builder
+			line.WriteString("  ")
+			line.WriteString(statusDot(servers[i]))
+			line.WriteString(" ")
+			line.WriteString(ui.PadRight(host[i], widths[0]))
+			for j, c := range cells[i] {
+				line.WriteString("  ")
+				line.WriteString(ui.PadRight(c, widths[j+1]))
+			}
+			fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
+		}
+		fmt.Fprintln(w)
+	}
+	fmt.Fprintln(w, ui.Muted(fmt.Sprintf("%d hosts · %d up", grandTotal, grandUp)))
+}
+
+// statusDot is the leading liveness glyph for each inventory row: a filled dot
+// for reachable hosts (green up / yellow stale / muted probe-only) and a hollow
+// red dot for unreachable. Mirrors liveStatusText so list and picker never disagree.
+func statusDot(s store.ServerWithStatus) string {
+	switch liveStatusText(s) {
+	case "up":
+		return ui.OK("●")
+	case "stale":
+		return ui.Warn("●")
+	case "up~":
+		return ui.Muted("●")
+	default:
+		return ui.Fail("○")
+	}
 }
 
 // dcTotalsRows aggregates servers into sorted [dc, hosts, up] rows with a
