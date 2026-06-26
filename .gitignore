@@ -4,3 +4,7 @@
 dist/
 bin/
 .cache/
+
+# Working symlink to the production vault-iac repo (mirror RBAC changes there,
+# then MR from vault-iac itself). Never commit the symlink into vctl.
+/vault-iac

@@ -1,15 +1,7 @@
 # vctl-user policy for regular team members.
-# Minimum permissions for SSH certificate signing and inventory reads.
-
-# SSH certificate signing.
-path "ssh/sign/sre-core" {
-  capabilities = ["update"]
-}
-
-# Read the CA public key for status checks.
-path "ssh/config/ca" {
-  capabilities = ["read"]
-}
+# Inventory reads only. SSH cert signing is NOT here — it lives in the separate
+# vctl-ssh policy, granted by group (see groups.tf). So a plain OIDC login can
+# list inventory but cannot `vctl ssh` unless mapped to vctl-ssh.
 
 # Short-lived read-only DB credentials for inventory reads.
 path "database/creds/vctl-ro" {

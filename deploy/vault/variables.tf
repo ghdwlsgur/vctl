@@ -43,6 +43,12 @@ variable "enable_oidc" {
   description = "Configure GitLab OIDC login (needs the kv seed below). false = userpass only."
 }
 
+variable "oidc_admin_group" {
+  type        = string
+  default     = "vctl-admins"
+  description = "GitLab group (groups_direct claim) mapped to vctl-admin + vctl-ssh. Members manage RBAC and can use vctl ssh."
+}
+
 variable "sre_ca_pem_file" {
   type        = string
   default     = "../../internal/config/innogrid-sre-root-ca.crt"
