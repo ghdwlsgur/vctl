@@ -117,6 +117,23 @@ func (s *Store) Get(ctx context.Context, hostname string) (*Server, error) {
 	return &sv, nil
 }
 
+// collectRows drains rows through scan and closes them, standardizing the
+// for-rows.Next()/Scan/Err loop repeated across the store.
+func collectRows[T any](rows pgx.Rows, scan func(pgx.Rows) (T, error)) ([]T, error) {
+	defer rows.Close()
+	var out []T
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func scanServerRow(r pgx.Rows) (Server, error) { return scanServer(r) }
+
 // Resolve tries exact match first, then fuzzy hostname matching.
 // One match returns server; multiple matches return candidates.
 func (s *Store) Resolve(ctx context.Context, query string) (*Server, []Server, error) {
@@ -128,19 +145,14 @@ func (s *Store) Resolve(ctx context.Context, query string) (*Server, []Server, e
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
-	var cands []Server
-	for rows.Next() {
-		sv, err := scanServer(rows)
-		if err != nil {
-			return nil, nil, err
-		}
-		cands = append(cands, sv)
+	cands, err := collectRows(rows, scanServerRow)
+	if err != nil {
+		return nil, nil, err
 	}
 	if len(cands) == 1 {
 		return &cands[0], nil, nil
 	}
-	return nil, cands, rows.Err()
+	return nil, cands, nil
 }
 
 // List returns all servers or those matching a DC filter.
@@ -156,16 +168,7 @@ func (s *Store) List(ctx context.Context, dc string) ([]Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Server
-	for rows.Next() {
-		sv, err := scanServer(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, sv)
-	}
-	return out, rows.Err()
+	return collectRows(rows, scanServerRow)
 }
 
 // AccessEntry is one row of the inventory-level SSH access audit.
@@ -216,16 +219,11 @@ func (s *Store) AccessLog(ctx context.Context, limit int, hostFilter, userFilter
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []AccessEntry
-	for rows.Next() {
+	return collectRows(rows, func(r pgx.Rows) (AccessEntry, error) {
 		var e AccessEntry
-		if err := rows.Scan(&e.VaultUser, &e.Hostname, &e.CertSerial, &e.SignedAt, &e.OK, &e.SourceIP, &e.SourceAddr, &e.ClientHost, &e.ClientUser, &e.TargetAddr, &e.JumpVia, &e.Error); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+		err := r.Scan(&e.VaultUser, &e.Hostname, &e.CertSerial, &e.SignedAt, &e.OK, &e.SourceIP, &e.SourceAddr, &e.ClientHost, &e.ClientUser, &e.TargetAddr, &e.JumpVia, &e.Error)
+		return e, err
+	})
 }
 
 func nullIfEmpty(s string) any {

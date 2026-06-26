@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ServerStatus is runtime state reported by vctl node-agent. It is observation,
@@ -72,20 +74,17 @@ func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStat
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []ServerWithStatus
-	for rows.Next() {
+	return collectRows(rows, func(r pgx.Rows) (ServerWithStatus, error) {
 		var item ServerWithStatus
 		var statusHost string
 		var st ServerStatus
 		var lastSeen sql.NullTime
 		var load1, memoryUsed, diskUsed sql.NullFloat64
-		err := rows.Scan(&item.Hostname, &item.IP, &item.Port, &item.User, &item.JumpVia, &item.DC, &item.CARole,
+		err := r.Scan(&item.Hostname, &item.IP, &item.Port, &item.User, &item.JumpVia, &item.DC, &item.CARole,
 			&item.CAKeyVersion, &item.LastSeenUp, &statusHost, &lastSeen, &st.AgentVersion, &st.OS, &st.Kernel,
 			&st.UptimeSeconds, &load1, &memoryUsed, &diskUsed)
 		if err != nil {
-			return nil, err
+			return item, err
 		}
 		if statusHost != "" {
 			st.Hostname = statusHost
@@ -97,9 +96,8 @@ func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStat
 			st.DiskRootUsedPct = nullFloatPtr(diskUsed)
 			item.Status = &st
 		}
-		out = append(out, item)
-	}
-	return out, rows.Err()
+		return item, nil
+	})
 }
 
 func nullFloatPtr(v sql.NullFloat64) *float64 {
