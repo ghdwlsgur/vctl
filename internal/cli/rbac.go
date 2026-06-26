@@ -146,8 +146,91 @@ that, admins group users and grant them specific commands here. Non-admins may
 run read commands (list/status/audit) by default; mutate/connect commands
 (ssh/exec/sync/prune/trust-ca) need a group grant. Admins (vctl-admin) bypass.`,
 	}
-	cmd.AddCommand(rbacGroupCmd(), rbacMemberCmd(), rbacGrantCmd(), rbacRevokeCmd(), rbacWhoamiCmd(), rbacCheckCmd())
+	cmd.AddCommand(rbacAssignCmd(), rbacGroupCmd(), rbacMemberCmd(), rbacGrantCmd(), rbacRevokeCmd(), rbacWhoamiCmd(), rbacCheckCmd())
 	return cmd
+}
+
+// rbacAssignCmd is the convenient interactive assigner: pick a group, then
+// multi-select users to add as members. Candidate users come from access_log +
+// existing members (RBACCandidateUsers). Admin-only.
+func rbacAssignCmd() *cobra.Command {
+	return gate(&cobra.Command{
+		Use:   "assign [group]",
+		Short: "Interactively add users to a group (pick group → select users)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			return withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+				// 1) group: arg, or pick from the list.
+				group := ""
+				if len(args) == 1 {
+					group = args[0]
+				} else {
+					groups, err := st.RBACGroups(ctx)
+					if err != nil {
+						return err
+					}
+					if len(groups) == 0 {
+						return fmt.Errorf("no groups yet — create one: vctl rbac group create <name>")
+					}
+					names := make([]string, len(groups))
+					for i, g := range groups {
+						names[i] = g.Name
+					}
+					if group, err = pickOne(names, "Select a group"); err != nil {
+						return err
+					}
+				}
+				ok, err := st.RBACGroupExists(ctx, group)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("group %q not found — create it first", group)
+				}
+
+				// 2) candidate users minus current members.
+				cands, err := st.RBACCandidateUsers(ctx)
+				if err != nil {
+					return err
+				}
+				members, err := st.RBACGroupMembers(ctx, group)
+				if err != nil {
+					return err
+				}
+				inGroup := map[string]bool{}
+				for _, m := range members {
+					inGroup[m] = true
+				}
+				avail := make([]string, 0, len(cands))
+				for _, u := range cands {
+					if !inGroup[u] {
+						avail = append(avail, u)
+					}
+				}
+				if len(avail) == 0 {
+					return fmt.Errorf("no candidate users to add — known users are already members, or nobody has used vctl yet. Add one explicitly: vctl rbac member add %s <user>", group)
+				}
+
+				// 3) multi-select and assign.
+				picked, err := pickMany(avail, fmt.Sprintf("Add users to %q (space to select)", group))
+				if err != nil {
+					return err
+				}
+				if len(picked) == 0 {
+					ui.Warnf(os.Stderr, "nothing selected")
+					return nil
+				}
+				for _, u := range picked {
+					if err := st.RBACMemberAdd(ctx, group, u); err != nil {
+						return fmt.Errorf("add %s: %w", u, err)
+					}
+				}
+				ui.Successf(os.Stderr, "added %d user(s) to %q: %s", len(picked), group, strings.Join(picked, ", "))
+				return nil
+			})
+		},
+	}, "admin", classAdmin)
 }
 
 func rbacGroupCmd() *cobra.Command {
