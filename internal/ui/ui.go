@@ -89,7 +89,7 @@ func KVs(w io.Writer, rows []KV) {
 		}
 	}
 	for _, row := range rows {
-		key := padRight(labelStyle.Render(row.Key), width)
+		key := PadRight(labelStyle.Render(row.Key), width)
 		fmt.Fprintf(w, "%s  %s\n", key, Badge(row.State, row.Value))
 	}
 }
@@ -138,7 +138,7 @@ func joinPadded(cells []string, widths []int) string {
 		if i < len(cells) {
 			cell = cells[i]
 		}
-		out[i] = padRight(cell, widths[i])
+		out[i] = PadRight(cell, widths[i])
 	}
 	return strings.Join(out, "  ")
 }
@@ -151,7 +151,10 @@ func joinRule(widths []int) string {
 	return strings.Join(parts, "  ")
 }
 
-func padRight(s string, width int) string {
+// PadRight right-pads s with spaces to width display columns, measuring with
+// lipgloss.Width so ANSI styling and wide runes are counted correctly. Returns s
+// unchanged when it already meets or exceeds width.
+func PadRight(s string, width int) string {
 	pad := width - lipgloss.Width(s)
 	if pad <= 0 {
 		return s
