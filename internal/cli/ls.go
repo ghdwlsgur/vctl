@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -72,24 +70,22 @@ func renderInventory(w io.Writer, servers []store.ServerWithStatus) {
 	}
 
 	dcStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	tallies := tallyByDC(servers)
+	byDC := make(map[string]dcTally, len(tallies))
 	grandTotal, grandUp := 0, 0
+	for _, t := range tallies {
+		byDC[t.DC] = t
+		grandTotal += t.Total
+		grandUp += t.Up
+	}
 	for i := 0; i < len(servers); {
 		dc := servers[i].DC
-		up, total := 0, 0
-		for k := i; k < len(servers) && servers[k].DC == dc; k++ {
-			total++
-			if t := liveStatusText(servers[k]); t == "up" || t == "up~" {
-				up++
-			}
-		}
-		grandTotal += total
-		grandUp += up
-
 		name := dc
 		if name == "" {
 			name = "(no dc)"
 		}
-		fmt.Fprintf(w, "%s %s\n", dcStyle.Render("▌ "+name), ui.Muted(fmt.Sprintf("· %d/%d up", up, total)))
+		t := byDC[dc]
+		fmt.Fprintf(w, "%s %s\n", dcStyle.Render("▌ "+name), ui.Muted(fmt.Sprintf("· %d/%d up", t.Up, t.Total)))
 
 		for ; i < len(servers) && servers[i].DC == dc; i++ {
 			var line strings.Builder
@@ -124,36 +120,33 @@ func statusDot(s store.ServerWithStatus) string {
 	}
 }
 
-// dcTotalsRows aggregates servers into sorted [dc, hosts, up] rows with a
-// trailing [total, …] row. Pure (no I/O) so it can be unit-tested; "up" counts
-// agent-fresh and probe ("up~") hosts via the shared liveStatusText.
-func dcTotalsRows(servers []store.ServerWithStatus) [][]string {
-	type agg struct{ total, up int }
-	byDC := map[string]*agg{}
-	order := make([]string, 0)
-	var total, totalUp int
+// dcTally is the per-DC host/reachable count used for the inventory headers.
+type dcTally struct {
+	DC    string
+	Up    int
+	Total int
+}
+
+// tallyByDC counts hosts and reachable ("up"/"up~") per DC, in first-seen order.
+// renderInventory uses it for the per-DC headers and grand total, so the count
+// logic that ships is the same logic the tests assert on. Pure (no I/O); "up"
+// counts agent-fresh and probe-only hosts via the shared liveStatusText.
+func tallyByDC(servers []store.ServerWithStatus) []dcTally {
+	idx := map[string]int{}
+	out := make([]dcTally, 0)
 	for _, s := range servers {
-		a := byDC[s.DC]
-		if a == nil {
-			a = &agg{}
-			byDC[s.DC] = a
-			order = append(order, s.DC)
+		i, ok := idx[s.DC]
+		if !ok {
+			i = len(out)
+			idx[s.DC] = i
+			out = append(out, dcTally{DC: s.DC})
 		}
-		a.total++
-		total++
+		out[i].Total++
 		if t := liveStatusText(s); t == "up" || t == "up~" {
-			a.up++
-			totalUp++
+			out[i].Up++
 		}
 	}
-	sort.Strings(order)
-	rows := make([][]string, 0, len(order)+1)
-	for _, dc := range order {
-		a := byDC[dc]
-		rows = append(rows, []string{dc, strconv.Itoa(a.total), strconv.Itoa(a.up)})
-	}
-	rows = append(rows, []string{"total", strconv.Itoa(total), strconv.Itoa(totalUp)})
-	return rows
+	return out
 }
 
 // statusFreshnessWindow is how recently a node-agent must have reported for a

@@ -13,6 +13,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -128,7 +129,7 @@ func accessEntry(vaultUser string, tgt *sshc.Target, connInfo sshc.ConnectionInf
 		SourceAddr: connInfo.SourceAddr,
 		ClientHost: clientHost,
 		ClientUser: clientUser,
-		TargetAddr: firstNonEmpty(connInfo.TargetAddr, tgt.Addr),
+		TargetAddr: strutil.FirstNonEmpty(connInfo.TargetAddr, tgt.Addr),
 		JumpVia:    connInfo.JumpHost,
 	}
 	if connErr != nil {
@@ -206,15 +207,6 @@ func withLiveStatus(ctx context.Context, st *store.Store, cands []store.Server) 
 }
 
 // buildTarget converts a server and jump chain into sshc.Target values.
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 func buildTarget(ctx context.Context, st *store.Store, sv *store.Server, directFirst bool) (*sshc.Target, error) {
 	return buildTargetSeen(ctx, st, sv, directFirst, map[string]bool{})
 }
