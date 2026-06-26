@@ -3,4 +3,4 @@
 # names (e.g. sre-srv-0023) and UpsertServerStatus drops unregistered reports.
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/vctl node-agent --hostname {{ inventory_hostname }} --interval 5m
+ExecStart=/usr/local/bin/vctl node-agent --hostname '{{ vctl_node_hostname }}' --interval 5m
