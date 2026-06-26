@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 )
 
 const (
@@ -206,7 +207,7 @@ func buildServer(b hostBlock, byAlias map[string]hostBlock, up *time.Time, opts 
 		Hostname:   b.alias,
 		IP:         b.hostName,
 		Port:       b.port,
-		User:       firstNonEmpty(b.user, opts.DefaultUser),
+		User:       strutil.FirstNonEmpty(b.user, opts.DefaultUser),
 		JumpVia:    resolveJumpAlias(b.proxyJump, byAlias),
 		DC:         classifyDCWithRules(b.hostName, opts.DCRules),
 		CARole:     opts.CARole,
@@ -338,13 +339,4 @@ func classifyDCWithRules(ip string, rules []DCRule) string {
 		}
 	}
 	return "unknown"
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

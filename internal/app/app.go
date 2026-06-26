@@ -12,6 +12,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
 )
@@ -95,8 +96,8 @@ func (a *App) ReAuthNonInteractive(ctx context.Context) error {
 
 // AppRoleCreds resolves role_id and secret_id from values or files.
 func (a *App) AppRoleCreds() (roleID, secretID string, ok bool) {
-	roleID = firstNonEmpty(a.Cfg.AppRoleID, readFileTrim(a.Cfg.AppRoleIDFile))
-	secretID = firstNonEmpty(a.Cfg.AppRoleSecretID, readFileTrim(a.Cfg.AppRoleSecretIDFile))
+	roleID = strutil.FirstNonEmpty(a.Cfg.AppRoleID, readFileTrim(a.Cfg.AppRoleIDFile))
+	secretID = strutil.FirstNonEmpty(a.Cfg.AppRoleSecretID, readFileTrim(a.Cfg.AppRoleSecretIDFile))
 	return roleID, secretID, roleID != "" && secretID != ""
 }
 
@@ -142,15 +143,6 @@ func readFileTrim(path string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func (a *App) loginUserpass(ctx context.Context) error {
