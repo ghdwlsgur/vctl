@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -58,21 +60,12 @@ func gate(cmd *cobra.Command, name, class string) *cobra.Command {
 	return cmd
 }
 
-func containsStr(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
-}
-
 // hasAdminPolicy reports whether the token carries an admin policy that bypasses
 // the app-layer RBAC: vctl-admin (vctl manager) or sre-admin (org superuser).
 // sre-admin is org full-power, so it must bypass — and the workstation AppRole
 // commonly carries sre-admin rather than the OIDC-group-derived vctl-admin.
 func hasAdminPolicy(pols []string) bool {
-	return containsStr(pols, "vctl-admin") || containsStr(pols, "sre-admin")
+	return slices.Contains(pols, "vctl-admin") || slices.Contains(pols, "sre-admin")
 }
 
 // isUninitializedRBAC reports a "relation does not exist" (SQLSTATE 42P01): the
@@ -427,15 +420,7 @@ func rbacMemberRemoveCmd() *cobra.Command {
 // grantableList is the multi-select menu for command grants: every gated
 // command plus "*" (all), sorted.
 func grantableList() []string {
-	return append([]string{"*"}, sortedKeys(boolSet(gatedCommands))...)
-}
-
-func boolSet(m map[string]string) map[string]bool {
-	out := make(map[string]bool, len(m))
-	for k := range m {
-		out[k] = true
-	}
-	return out
+	return append([]string{"*"}, slices.Sorted(maps.Keys(gatedCommands))...)
 }
 
 func rbacGrantCmd() *cobra.Command {
@@ -545,14 +530,14 @@ func rbacWhoamiCmd() *cobra.Command {
 					return err
 				}
 				ui.Section(os.Stdout, "rbac whoami")
-				fmt.Fprintf(os.Stdout, "identity: %s\n", dashIfEmpty(user))
+				fmt.Fprintf(os.Stdout, "identity: %s\n", valueOrDash(user))
 				if isAdmin {
 					fmt.Fprintf(os.Stdout, "admin:    %s (vctl-admin/sre-admin — bypasses command RBAC)\n", ui.OK("yes"))
 				} else {
 					fmt.Fprintf(os.Stdout, "admin:    no\n")
 				}
 				fmt.Fprintf(os.Stdout, "groups:   %s\n", joinOrDash(groups))
-				fmt.Fprintf(os.Stdout, "granted:  %s\n", joinOrDash(sortedKeys(cmds)))
+				fmt.Fprintf(os.Stdout, "granted:  %s\n", joinOrDash(slices.Sorted(maps.Keys(cmds))))
 				return nil
 			})
 		},
@@ -601,25 +586,9 @@ func knownCommands() string {
 	return strings.Join(out, ", ")
 }
 
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
 func joinOrDash(ss []string) string {
 	if len(ss) == 0 {
 		return "-"
 	}
 	return strings.Join(ss, ", ")
-}
-
-func dashIfEmpty(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }
