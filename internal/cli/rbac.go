@@ -388,30 +388,84 @@ func rbacMemberRemoveCmd() *cobra.Command {
 	}
 }
 
+// grantableList is the multi-select menu for command grants: every gated
+// command plus "*" (all), sorted.
+func grantableList() []string {
+	return append([]string{"*"}, sortedKeys(boolSet(gatedCommands))...)
+}
+
+func boolSet(m map[string]string) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
 func rbacGrantCmd() *cobra.Command {
 	return gate(&cobra.Command{
-		Use:   "grant <group> <command>",
-		Short: "Grant a command to a group (command name or '*')",
-		Args:  cobra.ExactArgs(2),
+		Use:   "grant [group] [command]",
+		Short: "Grant command(s) to a group; with no command, pick interactively",
+		Args:  cobra.RangeArgs(0, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			group, command := args[0], args[1]
-			if command != "*" {
-				if _, ok := gatedCommands[command]; !ok {
-					return fmt.Errorf("unknown command %q. Grantable: %s, or '*'", command, knownCommands())
+			ctx := cmd.Context()
+			return withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+				// 1) group: arg or picker.
+				group := ""
+				if len(args) >= 1 {
+					group = args[0]
+				} else {
+					groups, err := st.RBACGroups(ctx)
+					if err != nil {
+						return err
+					}
+					if len(groups) == 0 {
+						return fmt.Errorf("no groups yet — create one: vctl rbac group create <name>")
+					}
+					names := make([]string, len(groups))
+					for i, g := range groups {
+						names[i] = g.Name
+					}
+					if group, err = pickOne(names, "Select a group"); err != nil {
+						return err
+					}
 				}
-			}
-			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
-				ok, err := st.RBACGroupExists(cmd.Context(), group)
+				ok, err := st.RBACGroupExists(ctx, group)
 				if err != nil {
 					return err
 				}
 				if !ok {
 					return fmt.Errorf("group %q not found — create it first", group)
 				}
-				if err := st.RBACGrant(cmd.Context(), group, command); err != nil {
-					return err
+
+				// 2) command(s): arg or multi-select picker.
+				var commands []string
+				if len(args) == 2 {
+					c := args[1]
+					if c != "*" {
+						if _, known := gatedCommands[c]; !known {
+							return fmt.Errorf("unknown command %q. Grantable: %s, or '*'", c, knownCommands())
+						}
+					}
+					commands = []string{c}
+				} else {
+					picked, err := pickMany(grantableList(), fmt.Sprintf("Grant commands to %q (space to select)", group))
+					if err != nil {
+						return err
+					}
+					if len(picked) == 0 {
+						ui.Warnf(os.Stderr, "nothing selected")
+						return nil
+					}
+					commands = picked
 				}
-				ui.Successf(os.Stderr, "granted %q to %q", command, group)
+
+				for _, c := range commands {
+					if err := st.RBACGrant(ctx, group, c); err != nil {
+						return fmt.Errorf("grant %s: %w", c, err)
+					}
+				}
+				ui.Successf(os.Stderr, "granted [%s] to %q", strings.Join(commands, ", "), group)
 				return nil
 			})
 		},
