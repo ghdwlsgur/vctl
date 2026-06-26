@@ -1,6 +1,10 @@
 package store
 
-import "context"
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+)
 
 // SessionTimeline returns sessions matching a cert serial (newest first) with
 // their kernel events in chronological order.
@@ -65,15 +69,10 @@ func (s *Store) sessionEvents(ctx context.Context, sess AuditSession) ([]KernelE
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []KernelEvent
-	for rows.Next() {
+	return collectRows(rows, func(r pgx.Rows) (KernelEvent, error) {
 		var e KernelEvent
-		if err := rows.Scan(&e.CertSerial, &e.Hostname, &e.TS, &e.Kind, &e.PID, &e.PPID,
-			&e.CgroupID, &e.Binary, &e.Args, &e.CWD, &e.UID, &e.Filename, &e.DestAddr, &e.ExitCode); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+		err := r.Scan(&e.CertSerial, &e.Hostname, &e.TS, &e.Kind, &e.PID, &e.PPID,
+			&e.CgroupID, &e.Binary, &e.Args, &e.CWD, &e.UID, &e.Filename, &e.DestAddr, &e.ExitCode)
+		return e, err
+	})
 }

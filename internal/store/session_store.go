@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // AuditSession ties a cert serial (a human, via access_log) to one SSH session
@@ -77,16 +79,11 @@ func (s *Store) UnendedSessions(ctx context.Context, host string) ([]AuditSessio
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []AuditSession
-	for rows.Next() {
+	return collectRows(rows, func(r pgx.Rows) (AuditSession, error) {
 		var a AuditSession
-		if err := rows.Scan(&a.ID, &a.LeaderPID); err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	return out, rows.Err()
+		err := r.Scan(&a.ID, &a.LeaderPID)
+		return a, err
+	})
 }
 
 // ListSessions returns recent sessions, optionally filtered by host substring.
@@ -102,14 +99,5 @@ func (s *Store) ListSessions(ctx context.Context, hostFilter string, limit int) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []AuditSession
-	for rows.Next() {
-		a, err := scanSession(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	return out, rows.Err()
+	return collectRows(rows, func(r pgx.Rows) (AuditSession, error) { return scanSession(r) })
 }
