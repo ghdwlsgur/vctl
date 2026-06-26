@@ -24,15 +24,12 @@ const oidcRedirect = "http://localhost:8250/oidc/callback"
 //	vctl login --method oidc -> browser -> SSO -> group policy mapping -> token
 func (c *Client) LoginOIDC(ctx context.Context, mount, role string) error {
 	// 1. Request the authorization URL from Vault.
-	sec, err := c.api.Logical().WriteWithContext(ctx, "auth/"+mount+"/oidc/auth_url", map[string]interface{}{
+	sec, err := c.writePath(ctx, "auth/"+mount+"/oidc/auth_url", map[string]interface{}{
 		"role":         role,
 		"redirect_uri": oidcRedirect,
 	})
 	if err != nil {
-		return fmt.Errorf("oidc auth_url: %w", err)
-	}
-	if sec == nil || sec.Data == nil {
-		return fmt.Errorf("oidc auth_url: empty response")
+		return err
 	}
 	authURL, _ := sec.Data["auth_url"].(string)
 	if authURL == "" {
