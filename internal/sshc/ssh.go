@@ -61,24 +61,34 @@ func Connect(ctx context.Context, t *Target, sign SignFunc) (ConnectionInfo, err
 
 // dialTarget prefers direct SSH, then falls back to the configured jump chain.
 func dialTarget(ctx context.Context, t *Target, sign SignFunc) (*ssh.Client, func(), ConnectionInfo, error) {
-	if !t.SkipDirect || t.Jump == nil {
-		client, cleanup, directErr := dialSingle(t, sign, ptyExtensions)
-		if directErr == nil || t.Jump == nil {
-			return client, cleanup, connectionInfo(client, t, false), directErr
-		}
-
-		client, cleanup, jumpErr := dialChain(ctx, t, sign, ptyExtensions)
-		if jumpErr != nil {
-			return nil, nil, ConnectionInfo{TargetAddr: t.Addr, ViaJump: true, JumpHost: t.Jump.Name}, fmt.Errorf("direct connection failed: %v; jump connection failed: %w", directErr, jumpErr)
+	// dialJump connects via the jump chain; connectionInfo(nil, …) builds the
+	// failure info (addr + ViaJump + JumpHost) so error paths don't reassemble it.
+	dialJump := func() (*ssh.Client, func(), ConnectionInfo, error) {
+		client, cleanup, err := dialChain(ctx, t, sign, ptyExtensions)
+		if err != nil {
+			return nil, nil, connectionInfo(nil, t, true), err
 		}
 		return client, cleanup, connectionInfo(client, t, true), nil
 	}
 
-	client, cleanup, jumpErr := dialChain(ctx, t, sign, ptyExtensions)
-	if jumpErr != nil {
-		return nil, nil, ConnectionInfo{TargetAddr: t.Addr, ViaJump: true, JumpHost: t.Jump.Name}, jumpErr
+	// SkipDirect with a jump available: go straight to the jump chain.
+	if t.SkipDirect && t.Jump != nil {
+		return dialJump()
 	}
-	return client, cleanup, connectionInfo(client, t, true), nil
+
+	// Otherwise try direct first.
+	client, cleanup, directErr := dialSingle(t, sign, ptyExtensions)
+	if directErr == nil || t.Jump == nil {
+		// success, or no jump to fall back to — return the direct result as-is.
+		return client, cleanup, connectionInfo(client, t, false), directErr
+	}
+
+	// Direct failed but a jump exists: fall back, wrapping both errors if it fails.
+	client, cleanup, info, jumpErr := dialJump()
+	if jumpErr != nil {
+		return nil, nil, info, fmt.Errorf("direct connection failed: %v; jump connection failed: %w", directErr, jumpErr)
+	}
+	return client, cleanup, info, nil
 }
 
 func connectionInfo(client *ssh.Client, t *Target, viaJump bool) ConnectionInfo {
