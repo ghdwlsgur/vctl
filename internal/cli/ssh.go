@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
@@ -30,60 +31,55 @@ Non-interactive (scripts/agents):
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := newApp()
-			if err != nil {
-				return err
-			}
-			st, err := a.OpenStore(ctx, false)
-			if err != nil {
-				return err
-			}
-			defer st.Close()
-
-			var target *store.Server
-			if server != "" {
-				if len(args) > 0 {
-					return fmt.Errorf("pass the host via --server or as a positional argument, not both")
-				}
-				target, err = resolveServer(ctx, st, server)
-			} else {
-				target, err = pick(ctx, st, args)
-			}
-			if err != nil {
-				return err
-			}
-
-			tgt, err := buildTarget(ctx, st, target, a.Cfg.SSHDirectFirst)
-			if err != nil {
-				return err
-			}
-
-			// Capture the most recent Vault-signed cert serial so the access
-			// audit row maps to a specific issued certificate. On a jump chain
-			// the target is signed last, so this ends up holding its serial.
-			var lastSerial string
-			sign := func(role, pub string, principals []string, extensions []string) (string, error) {
-				cert, err := a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign, extensions)
-				if err == nil {
-					if s := sshc.CertSerial(cert); s != "" {
-						lastSerial = s
+			return withStore(ctx, false, func(a *app.App, st *store.Store) error {
+				var (
+					target *store.Server
+					err    error
+				)
+				if server != "" {
+					if len(args) > 0 {
+						return fmt.Errorf("pass the host via --server or as a positional argument, not both")
 					}
+					target, err = resolveServer(ctx, st, server)
+				} else {
+					target, err = pick(ctx, st, args)
 				}
-				return cert, err
-			}
+				if err != nil {
+					return err
+				}
 
-			vaultUser := a.Vault.Identity(ctx)
+				tgt, err := buildTarget(ctx, st, target, a.Cfg.SSHDirectFirst)
+				if err != nil {
+					return err
+				}
 
-			ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
-			connInfo, connErr := sshc.Connect(ctx, tgt, sign)
+				// Capture the most recent Vault-signed cert serial so the access
+				// audit row maps to a specific issued certificate. On a jump chain
+				// the target is signed last, so this ends up holding its serial.
+				var lastSerial string
+				sign := func(role, pub string, principals []string, extensions []string) (string, error) {
+					cert, err := a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign, extensions)
+					if err == nil {
+						if s := sshc.CertSerial(cert); s != "" {
+							lastSerial = s
+						}
+					}
+					return cert, err
+				}
 
-			// Best-effort central access log. Never fails the SSH: audit
-			// loss is logged to stderr but the connection result is returned as-is.
-			entry := accessEntry(vaultUser, tgt, connInfo, lastSerial, connErr)
-			if logErr := a.LogAccess(ctx, entry); logErr != nil {
-				ui.Warnf(os.Stderr, "access log not recorded: %v", logErr)
-			}
-			return connErr
+				vaultUser := a.Vault.Identity(ctx)
+
+				ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
+				connInfo, connErr := sshc.Connect(ctx, tgt, sign)
+
+				// Best-effort central access log. Never fails the SSH: audit
+				// loss is logged to stderr but the connection result is returned as-is.
+				entry := accessEntry(vaultUser, tgt, connInfo, lastSerial, connErr)
+				if logErr := a.LogAccess(ctx, entry); logErr != nil {
+					ui.Warnf(os.Stderr, "access log not recorded: %v", logErr)
+				}
+				return connErr
+			})
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "exact inventory host to connect to (non-interactive; for scripts/agents)")
