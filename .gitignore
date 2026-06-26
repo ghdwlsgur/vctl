@@ -9,3 +9,4 @@ bin/
 # from those repos themselves). Never commit the symlinks into vctl.
 /vault-iac
 /vctl-postgres
+/dbedit
