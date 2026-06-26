@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
+	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -44,45 +46,30 @@ database role for low-risk, low-resource status reporting.`,
 				return fmt.Errorf("hostname is required")
 			}
 
-			report := func() error {
-				status := hoststatus.Collect(hostname, Version)
-				ok, err := st.UpsertServerStatus(ctx, status)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					ui.Warnf(os.Stderr, "status ignored: %s is not registered in inventory", hostname)
-					return nil
-				}
-				ui.Infof(os.Stderr, "reported status for %s", hostname)
-				return nil
-			}
-
-			if once {
-				return report()
-			}
-			if interval <= 0 {
-				interval = 5 * time.Minute
-			}
-			if err := report(); err != nil {
+			report := func() error { return reportStatus(ctx, st, hostname) }
+			return runPeriodic(ctx, once, false, interval, 5*time.Minute, report, func(err error) {
 				ui.Warnf(os.Stderr, "status report failed: %v", err)
-			}
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-ticker.C:
-					if err := report(); err != nil {
-						ui.Warnf(os.Stderr, "status report failed: %v", err)
-					}
-				}
-			}
+			})
 		},
 	}
 	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname to report; defaults to os hostname")
 	cmd.Flags().DurationVar(&interval, "interval", 5*time.Minute, "heartbeat interval")
 	cmd.Flags().BoolVar(&once, "once", false, "report once and exit")
 	return cmd
+}
+
+// reportStatus collects host status and upserts it for an already-registered
+// host. A heartbeat for an unknown host is ignored (warned), not an error.
+func reportStatus(ctx context.Context, st *store.Store, hostname string) error {
+	status := hoststatus.Collect(hostname, Version)
+	ok, err := st.UpsertServerStatus(ctx, status)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		ui.Warnf(os.Stderr, "status ignored: %s is not registered in inventory", hostname)
+		return nil
+	}
+	ui.Infof(os.Stderr, "reported status for %s", hostname)
+	return nil
 }

@@ -51,84 +51,21 @@ itself stays credential-free.
 				if len(args) == 1 {
 					dir = args[0]
 				}
-
-				// Restart reconcile: the in-memory seen map is lost on restart, so
-				// end any session this host left un-ended whose leader process is
-				// gone (otherwise stale "live" sessions accumulate).
-				if hn, err := os.Hostname(); err == nil {
-					if stale, err := st.UnendedSessions(ctx, hn); err == nil {
-						for _, sess := range stale {
-							if !processAlive(sess.LeaderPID) {
-								if err := st.EndSession(ctx, sess.ID, ""); err != nil {
-									ui.Warnf(os.Stderr, "end stale session %d: %v", sess.ID, err)
-								}
-							}
-						}
-					}
-				}
+				reconcileStaleSessions(ctx, st)
 
 				seen := map[string]int64{} // marker path -> session id
-				scan := func() error {
-					entries, err := os.ReadDir(dir)
-					if err != nil {
-						return err
-					}
-					for _, e := range entries {
-						if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-							continue
-						}
-						path := filepath.Join(dir, e.Name())
-						if _, ok := seen[path]; ok {
-							closeIfEnded(ctx, st, path, seen)
-							continue
-						}
-						m, err := readMarker(path)
-						if err != nil {
-							continue
-						}
-						started, _ := time.Parse(time.RFC3339, m.Started)
-						id, err := st.RecordSession(ctx, store.AuditSession{
-							CertSerial: m.Serial, Hostname: m.Host, LoginUser: m.Login,
-							SourceIP: stripPort(m.RHost), LeaderPID: m.LeaderPID,
-							CgroupID: cgroupID(m.LeaderPID), StartedAt: started,
-						})
-						if err != nil {
-							ui.Warnf(os.Stderr, "record session %s: %v", e.Name(), err)
-							continue
-						}
-						seen[path] = id
-						ui.Infof(os.Stderr, "session %d started: %s on %s (serial %s)", id, m.Login, m.Host, m.Serial)
-					}
-					return nil
-				}
+				scan := func() error { return scanMarkers(ctx, st, dir, seen) }
 
-				if once {
-					return scan()
-				}
-				if interval <= 0 {
-					interval = 5 * time.Second // guard: NewTicker panics on <= 0
-				}
-				// Fail fast if the marker dir is unreadable at startup (misconfig):
-				// a silently-idle daemon would record no sessions forever.
-				if err := scan(); err != nil {
-					return fmt.Errorf("watch %s: %w", dir, err)
-				}
-				t := time.NewTicker(interval)
-				defer t.Stop()
+				// First scan fails fast (a silently-idle daemon would record nothing
+				// forever); in the loop the dir may transiently vanish, so warn
+				// (rate-limited) instead of crashing.
 				var lastWarn time.Time
-				for {
-					select {
-					case <-ctx.Done():
-						return nil
-					case <-t.C:
-						// In the loop the dir may transiently vanish; warn (rate-limited)
-						// instead of crashing the daemon.
-						if err := scan(); err != nil && time.Since(lastWarn) > time.Minute {
-							ui.Warnf(os.Stderr, "watch %s: %v (retrying)", dir, err)
-							lastWarn = time.Now()
-						}
+				return runPeriodic(ctx, once, true, interval, 5*time.Second, scan, func(err error) {
+					if time.Since(lastWarn) > time.Minute {
+						ui.Warnf(os.Stderr, "%v (retrying)", err)
+						lastWarn = time.Now()
 					}
-				}
+				})
 			})
 		},
 	}
@@ -136,6 +73,65 @@ itself stays credential-free.
 	cmd.Flags().DurationVar(&interval, "interval", 5*time.Second, "scan interval")
 	cmd.Flags().BoolVar(&once, "once", false, "process current markers once and exit")
 	return cmd
+}
+
+// reconcileStaleSessions ends sessions this host left un-ended on a prior run
+// whose leader process is gone — the in-memory seen map is lost on restart, so
+// without this stale "live" sessions accumulate. Best-effort.
+func reconcileStaleSessions(ctx context.Context, st *store.Store) {
+	hn, err := os.Hostname()
+	if err != nil {
+		return
+	}
+	stale, err := st.UnendedSessions(ctx, hn)
+	if err != nil {
+		return
+	}
+	for _, sess := range stale {
+		if processAlive(sess.LeaderPID) {
+			continue
+		}
+		if err := st.EndSession(ctx, sess.ID, ""); err != nil {
+			ui.Warnf(os.Stderr, "end stale session %d: %v", sess.ID, err)
+		}
+	}
+}
+
+// scanMarkers turns new login markers in dir into audit_session rows and closes
+// sessions whose leader has exited. seen maps marker path -> session id across
+// calls. A dir-read error is wrapped with the path for the caller.
+func scanMarkers(ctx context.Context, st *store.Store, dir string, seen map[string]int64) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("watch %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if _, ok := seen[path]; ok {
+			closeIfEnded(ctx, st, path, seen)
+			continue
+		}
+		m, err := readMarker(path)
+		if err != nil {
+			continue
+		}
+		started, _ := time.Parse(time.RFC3339, m.Started)
+		id, err := st.RecordSession(ctx, store.AuditSession{
+			CertSerial: m.Serial, Hostname: m.Host, LoginUser: m.Login,
+			SourceIP: stripPort(m.RHost), LeaderPID: m.LeaderPID,
+			CgroupID: cgroupID(m.LeaderPID), StartedAt: started,
+		})
+		if err != nil {
+			ui.Warnf(os.Stderr, "record session %s: %v", e.Name(), err)
+			continue
+		}
+		seen[path] = id
+		ui.Infof(os.Stderr, "session %d started: %s on %s (serial %s)", id, m.Login, m.Host, m.Serial)
+	}
+	return nil
 }
 
 // closeIfEnded ends a session whose leader process has exited and removes its marker.
