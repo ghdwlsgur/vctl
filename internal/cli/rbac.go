@@ -30,8 +30,6 @@ const (
 	classRead   = "read"
 	classMutate = "mutate"
 	classAdmin  = "admin"
-
-	adminPolicy = "vctl-admin"
 )
 
 // gatedCommands is the set of command names a grant may reference (plus "*").
@@ -68,6 +66,20 @@ func containsStr(ss []string, want string) bool {
 	return false
 }
 
+// hasAdminPolicy reports whether the token carries an admin policy that bypasses
+// the app-layer RBAC: vctl-admin (vctl manager) or sre-admin (org superuser).
+// sre-admin is org full-power, so it must bypass — and the workstation AppRole
+// commonly carries sre-admin rather than the OIDC-group-derived vctl-admin.
+func hasAdminPolicy(pols []string) bool {
+	return containsStr(pols, "vctl-admin") || containsStr(pols, "sre-admin")
+}
+
+// isUninitializedRBAC reports a "relation does not exist" (SQLSTATE 42P01): the
+// rbac_* tables aren't migrated yet. Run 'vctl sync --migrate' as an admin.
+func isUninitializedRBAC(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "42P01")
+}
+
 // enforceRBAC runs in the root PersistentPreRunE for every command. Commands
 // without an rbac annotation are ungated (login/token/agent/daemons/ca).
 func enforceRBAC(cmd *cobra.Command) error {
@@ -85,19 +97,20 @@ func enforceRBAC(cmd *cobra.Command) error {
 	if err := a.EnsureLogin(ctx); err != nil {
 		return err
 	}
-	// Layer 1: vctl-admin bypasses everything.
+	// Layer 1: an admin policy (vctl-admin or sre-admin) bypasses everything —
+	// including the DB lookup below, so admins work before migration 006 runs.
 	pols, err := a.Vault.TokenPolicies(ctx)
 	if err != nil {
 		return fmt.Errorf("rbac: token lookup: %w", err)
 	}
-	if containsStr(pols, adminPolicy) {
+	if hasAdminPolicy(pols) {
 		return nil
 	}
 	switch class {
 	case classRead:
 		return nil // default allow
 	case classAdmin:
-		return fmt.Errorf("rbac: '%s' is admin-only (requires the %s policy)", name, adminPolicy)
+		return fmt.Errorf("rbac: '%s' is admin-only (needs vctl-admin or sre-admin)", name)
 	}
 	// classMutate: needs a group grant.
 	user := a.Vault.Identity(ctx)
@@ -111,6 +124,9 @@ func enforceRBAC(cmd *cobra.Command) error {
 	defer st.Close()
 	cmds, err := st.RBACCommandsForUser(ctx, user)
 	if err != nil {
+		if isUninitializedRBAC(err) {
+			return fmt.Errorf("rbac: not initialized yet — an admin must run 'vctl sync --migrate' first")
+		}
 		return err
 	}
 	if cmds["*"] || cmds[name] {
@@ -346,19 +362,19 @@ func rbacWhoamiCmd() *cobra.Command {
 			return withStore(ctx, false, func(a *app.App, st *store.Store) error {
 				user := a.Vault.Identity(ctx)
 				pols, _ := a.Vault.TokenPolicies(ctx)
-				isAdmin := containsStr(pols, adminPolicy)
+				isAdmin := hasAdminPolicy(pols)
 				groups, err := st.RBACGroupsForUser(ctx, user)
-				if err != nil {
+				if err != nil && !isUninitializedRBAC(err) {
 					return err
 				}
 				cmds, err := st.RBACCommandsForUser(ctx, user)
-				if err != nil {
+				if err != nil && !isUninitializedRBAC(err) {
 					return err
 				}
 				ui.Section(os.Stdout, "rbac whoami")
 				fmt.Fprintf(os.Stdout, "identity: %s\n", dashIfEmpty(user))
 				if isAdmin {
-					fmt.Fprintf(os.Stdout, "admin:    %s (vctl-admin — bypasses command RBAC)\n", ui.OK("yes"))
+					fmt.Fprintf(os.Stdout, "admin:    %s (vctl-admin/sre-admin — bypasses command RBAC)\n", ui.OK("yes"))
 				} else {
 					fmt.Fprintf(os.Stdout, "admin:    no\n")
 				}
@@ -380,7 +396,7 @@ func rbacCheckCmd() *cobra.Command {
 			return withStore(ctx, false, func(a *app.App, st *store.Store) error {
 				want := args[0]
 				pols, _ := a.Vault.TokenPolicies(ctx)
-				if containsStr(pols, adminPolicy) {
+				if hasAdminPolicy(pols) {
 					fmt.Fprintf(os.Stdout, "%s %q (admin bypass)\n", ui.OK("allow"), want)
 					return nil
 				}
