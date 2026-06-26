@@ -78,13 +78,18 @@ func (c *Client) saveToken(token string, ttl time.Duration, renewable bool) erro
 }
 
 // applyAuth applies and caches a token from a login or renewal response.
+// fallbackAuthTokenTTL is assumed when Vault returns a token without a lease
+// duration (e.g. some root/periodic tokens), so renewal scheduling has a sane
+// window rather than treating the token as already expired.
+const fallbackAuthTokenTTL = time.Hour
+
 func (c *Client) applyAuth(sec *vault.Secret) error {
 	if sec == nil || sec.Auth == nil || sec.Auth.ClientToken == "" {
 		return fmt.Errorf("vault auth response has no token")
 	}
 	ttl := time.Duration(sec.Auth.LeaseDuration) * time.Second
 	if ttl <= 0 {
-		ttl = time.Hour
+		ttl = fallbackAuthTokenTTL
 	}
 	return c.saveToken(sec.Auth.ClientToken, ttl, sec.Auth.Renewable)
 }
