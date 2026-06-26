@@ -117,6 +117,31 @@ func (s *Store) RBACCommandsForUser(ctx context.Context, user string) (map[strin
 	return out, rows.Err()
 }
 
+// RBACCandidateUsers returns known usernames to offer in the interactive
+// assigner: everyone who has authenticated (access_log) plus existing members.
+// Users who have never used vctl won't appear — add them with `member add`.
+func (s *Store) RBACCandidateUsers(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT u FROM (
+			SELECT DISTINCT vault_user AS u FROM access_log WHERE vault_user IS NOT NULL AND vault_user <> ''
+			UNION
+			SELECT DISTINCT username AS u FROM rbac_members
+		) t ORDER BY u`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) rbacStrings(ctx context.Context, q, arg string) ([]string, error) {
 	rows, err := s.pool.Query(ctx, q, arg)
 	if err != nil {
