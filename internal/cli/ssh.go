@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/user"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -16,10 +17,16 @@ import (
 )
 
 func sshCmd() *cobra.Command {
-	return &cobra.Command{
+	var server string
+	cmd := &cobra.Command{
 		Use:   "ssh [host]",
 		Short: "Connect to an inventory host",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Connect to an inventory host.
+
+Interactive:  vctl ssh [host]            fuzzy match; picker when ambiguous/omitted
+Non-interactive (scripts/agents):
+              vctl ssh --server <host>   exact/unique match only; errors instead of prompting`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			a, err := newApp()
@@ -32,7 +39,15 @@ func sshCmd() *cobra.Command {
 			}
 			defer st.Close()
 
-			target, err := pick(ctx, st, args)
+			var target *store.Server
+			if server != "" {
+				if len(args) > 0 {
+					return fmt.Errorf("pass the host via --server or as a positional argument, not both")
+				}
+				target, err = resolveServer(ctx, st, server)
+			} else {
+				target, err = pick(ctx, st, args)
+			}
 			if err != nil {
 				return err
 			}
@@ -70,6 +85,29 @@ func sshCmd() *cobra.Command {
 			return connErr
 		},
 	}
+	cmd.Flags().StringVar(&server, "server", "", "exact inventory host to connect to (non-interactive; for scripts/agents)")
+	return cmd
+}
+
+// resolveServer resolves a host non-interactively for --server (scripts/agents):
+// exact or unique match only, never a picker. Ambiguous or missing host errors out
+// with the candidate list so the caller can pick an exact name.
+func resolveServer(ctx context.Context, st *store.Store, query string) (*store.Server, error) {
+	sv, cands, err := st.Resolve(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if sv != nil {
+		return sv, nil
+	}
+	if len(cands) == 0 {
+		return nil, fmt.Errorf("no server matches %q", query)
+	}
+	names := make([]string, 0, len(cands))
+	for _, c := range cands {
+		names = append(names, c.Hostname)
+	}
+	return nil, fmt.Errorf("%q is ambiguous (%d matches: %s) — pass an exact hostname", query, len(cands), strings.Join(names, ", "))
 }
 
 func accessEntry(vaultUser string, tgt *sshc.Target, connInfo sshc.ConnectionInfo, certSerial string, connErr error) store.AccessEntry {
