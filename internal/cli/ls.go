@@ -192,7 +192,7 @@ func agentStatus(st *store.ServerStatus) string {
 		return ui.Muted("-")
 	}
 	age := time.Since(st.LastSeenAt)
-	text := fmt.Sprintf("seen %s", compactDuration(age))
+	text := fmt.Sprintf("seen %s", ui.CompactDuration(age))
 	if age <= statusFreshnessWindow {
 		return ui.OK(text)
 	}
@@ -200,20 +200,4 @@ func agentStatus(st *store.ServerStatus) string {
 		return ui.Warn(text)
 	}
 	return ui.Muted(text)
-}
-
-func compactDuration(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	}
 }

@@ -4,9 +4,46 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+// TimeLayout is the local timestamp layout shared by audit/session output.
+const TimeLayout = "2006-01-02 15:04:05"
+
+// CompactDuration renders d as a single largest-unit value (e.g. "5s", "3m",
+// "2h", "4d") for at-a-glance "last seen" columns.
+func CompactDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// TruncateTail shortens s to at most max columns by dropping the tail and adding
+// "…" as "...". Unlike Truncate (which elides the middle), it keeps the leading
+// text — for free-form fields like command args where the start matters most.
+func TruncateTail(s string, max int) string {
+	const suffix = "..."
+	r := []rune(s)
+	if max <= 0 || len(r) <= max {
+		return s
+	}
+	if max <= len(suffix) {
+		return string(r[:max])
+	}
+	return string(r[:max-len(suffix)]) + suffix
+}
 
 type KV struct {
 	Key   string
@@ -52,21 +89,15 @@ func Section(w io.Writer, title string) {
 	fmt.Fprintln(w, Title(title))
 }
 
-func Successf(w io.Writer, format string, args ...interface{}) {
-	fmt.Fprintf(w, "%s %s\n", OK("OK"), fmt.Sprintf(format, args...))
+// logf writes a tagged status line; the four level helpers differ only by tag.
+func logf(w io.Writer, tag, format string, args ...interface{}) {
+	fmt.Fprintf(w, "%s %s\n", tag, fmt.Sprintf(format, args...))
 }
 
-func Warnf(w io.Writer, format string, args ...interface{}) {
-	fmt.Fprintf(w, "%s %s\n", Warn("WARN"), fmt.Sprintf(format, args...))
-}
-
-func Errorf(w io.Writer, format string, args ...interface{}) {
-	fmt.Fprintf(w, "%s %s\n", Fail("ERR"), fmt.Sprintf(format, args...))
-}
-
-func Infof(w io.Writer, format string, args ...interface{}) {
-	fmt.Fprintf(w, "%s %s\n", Muted("--"), fmt.Sprintf(format, args...))
-}
+func Successf(w io.Writer, format string, args ...interface{}) { logf(w, OK("OK"), format, args...) }
+func Warnf(w io.Writer, format string, args ...interface{})    { logf(w, Warn("WARN"), format, args...) }
+func Errorf(w io.Writer, format string, args ...interface{})   { logf(w, Fail("ERR"), format, args...) }
+func Infof(w io.Writer, format string, args ...interface{})    { logf(w, Muted("--"), format, args...) }
 
 func Badge(state State, text string) string {
 	switch state {

@@ -44,13 +44,22 @@ func uptimeSeconds() int64 {
 	return parseUptimeSeconds(string(b))
 }
 
-func parseUptimeSeconds(s string) int64 {
+// parseFirstFloat parses the first whitespace-separated field as a float.
+func parseFirstFloat(s string) (float64, bool) {
 	fields := strings.Fields(s)
 	if len(fields) == 0 {
-		return 0
+		return 0, false
 	}
 	f, err := strconv.ParseFloat(fields[0], 64)
 	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+func parseUptimeSeconds(s string) int64 {
+	f, ok := parseFirstFloat(s)
+	if !ok {
 		return 0
 	}
 	return int64(f)
@@ -65,12 +74,8 @@ func load1() *float64 {
 }
 
 func parseLoad1(s string) *float64 {
-	fields := strings.Fields(s)
-	if len(fields) == 0 {
-		return nil
-	}
-	f, err := strconv.ParseFloat(fields[0], 64)
-	if err != nil {
+	f, ok := parseFirstFloat(s)
+	if !ok {
 		return nil
 	}
 	return &f

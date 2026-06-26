@@ -45,7 +45,7 @@ request lives in the Vault file audit device on the Vault pod
 						result = ui.OK("ok")
 					}
 					row := []string{
-						e.SignedAt.Local().Format("2006-01-02 15:04:05"),
+						e.SignedAt.Local().Format(ui.TimeLayout),
 						valueOrDash(e.VaultUser),
 						e.Hostname,
 						valueOrDash(e.SourceIP),

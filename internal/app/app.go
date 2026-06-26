@@ -48,10 +48,8 @@ func (a *App) EnsureLogin(ctx context.Context) error {
 			return nil
 		}
 	}
-	if id, sec, ok := a.AppRoleCreds(); ok {
-		if err := a.Vault.LoginAppRole(ctx, a.Cfg.AppRoleMount, id, sec); err == nil {
-			return nil
-		}
+	if ok, err := a.tryAppRoleLogin(ctx); ok && err == nil {
+		return nil
 	}
 	return a.Login(ctx, a.Cfg.AuthMethod)
 }
@@ -63,11 +61,11 @@ func (a *App) Login(ctx context.Context, method string) error {
 		ui.Infof(os.Stderr, "Vault OIDC SSO login (%s)", a.Cfg.VaultAddr)
 		return a.Vault.LoginOIDC(ctx, a.Cfg.OIDCMount, a.Cfg.OIDCRole)
 	case "approle":
-		id, sec, ok := a.AppRoleCreds()
+		ok, err := a.tryAppRoleLogin(ctx)
 		if !ok {
 			return fmt.Errorf("missing AppRole credentials (VCTL_ROLE_ID/VCTL_SECRET_ID or *_FILE)")
 		}
-		return a.Vault.LoginAppRole(ctx, a.Cfg.AppRoleMount, id, sec)
+		return err
 	case "", "userpass":
 		return a.loginUserpass(ctx)
 	default:
@@ -87,11 +85,11 @@ func (a *App) ReAuth(ctx context.Context) error {
 // ReAuthNonInteractive re-authenticates with AppRole only.
 // It is used when stdin belongs to a child process and prompts would conflict.
 func (a *App) ReAuthNonInteractive(ctx context.Context) error {
-	id, sec, ok := a.AppRoleCreds()
+	ok, err := a.tryAppRoleLogin(ctx)
 	if !ok {
 		return fmt.Errorf("missing AppRole credentials for non-interactive re-auth")
 	}
-	return a.Vault.LoginAppRole(ctx, a.Cfg.AppRoleMount, id, sec)
+	return err
 }
 
 // AppRoleCreds resolves role_id and secret_id from values or files.
@@ -99,6 +97,16 @@ func (a *App) AppRoleCreds() (roleID, secretID string, ok bool) {
 	roleID = strutil.FirstNonEmpty(a.Cfg.AppRoleID, readFileTrim(a.Cfg.AppRoleIDFile))
 	secretID = strutil.FirstNonEmpty(a.Cfg.AppRoleSecretID, readFileTrim(a.Cfg.AppRoleSecretIDFile))
 	return roleID, secretID, roleID != "" && secretID != ""
+}
+
+// tryAppRoleLogin logs in with stored AppRole creds. ok=false (with nil error)
+// means no creds are configured; otherwise err is the login result.
+func (a *App) tryAppRoleLogin(ctx context.Context) (ok bool, err error) {
+	id, sec, have := a.AppRoleCreds()
+	if !have {
+		return false, nil
+	}
+	return true, a.Vault.LoginAppRole(ctx, a.Cfg.AppRoleMount, id, sec)
 }
 
 // RegisterAgent makes vctl self-sufficient after the first interactive login:
