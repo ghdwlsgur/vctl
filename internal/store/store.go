@@ -233,18 +233,40 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-// Upsert updates one host record during sync. It requires write credentials.
+// Upsert reconciles one probed host during sync. It requires write credentials.
+//
+// An already-known host is matched by IP and its operator-managed identity and
+// topology — hostname, dc, ssh_user, jump_via — are PRESERVED; only the probe
+// fields refresh (last_seen_up, ssh_port, ca_role). So dbedit edits (DC moves,
+// renames, ssh-user overrides) stay sticky across syncs and a renamed host is
+// never re-inserted under its ssh-config alias. A genuinely new IP is inserted
+// with the sync-derived values (initial DC classification etc.).
 func (s *Store) Upsert(ctx context.Context, sv Server) error {
 	var jump any
 	if sv.JumpVia != "" {
 		jump = sv.JumpVia
 	}
-	_, err := s.pool.Exec(ctx, `
+
+	// Known host (by IP): refresh liveness only, preserve operator fields.
+	var existing string
+	err := s.pool.QueryRow(ctx, `SELECT hostname FROM servers WHERE host(ip)=$1 LIMIT 1`, sv.IP).Scan(&existing)
+	switch {
+	case err == nil:
+		_, err = s.pool.Exec(ctx, `
+			UPDATE servers SET ssh_port=$2, ca_role=$3, last_seen_up=$4, updated_at=now()
+			WHERE hostname=$1`, existing, sv.Port, sv.CARole, sv.LastSeenUp)
+		return err
+	case err != pgx.ErrNoRows:
+		return err
+	}
+
+	// New host: insert sync-derived values. The hostname conflict fallback also
+	// preserves operator dc/ssh_user/jump_via (only refreshes probe fields).
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO servers (hostname, ip, ssh_port, ssh_user, jump_via, dc, ca_role, last_seen_up, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
 		ON CONFLICT (hostname) DO UPDATE SET
-			ip=EXCLUDED.ip, ssh_port=EXCLUDED.ssh_port, ssh_user=EXCLUDED.ssh_user,
-			jump_via=EXCLUDED.jump_via, dc=EXCLUDED.dc, ca_role=EXCLUDED.ca_role,
+			ip=EXCLUDED.ip, ssh_port=EXCLUDED.ssh_port, ca_role=EXCLUDED.ca_role,
 			last_seen_up=EXCLUDED.last_seen_up, updated_at=now()`,
 		sv.Hostname, sv.IP, sv.Port, sv.User, jump, sv.DC, sv.CARole, sv.LastSeenUp)
 	return err
