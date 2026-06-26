@@ -107,50 +107,45 @@ func (c *Config) loadConfigFile() error {
 	return yaml.Unmarshal(b, c)
 }
 
+// envStrPair / envIntPair apply VGO_<suffix> then VCTL_<suffix> (VCTL wins),
+// the legacy→current precedence used for every dual-prefixed setting. Settings
+// commented "VCTL-only" intentionally have no VGO_ alias.
+func envStrPair(dst *string, suffix string) {
+	envStr(dst, "VGO_"+suffix)
+	envStr(dst, "VCTL_"+suffix)
+}
+
+func envIntPair(dst *int, suffix string) {
+	envInt(dst, "VGO_"+suffix)
+	envInt(dst, "VCTL_"+suffix)
+}
+
 func (c *Config) applyEnv() {
-	envStr(&c.VaultAddr, "VAULT_ADDR")
-	envStr(&c.VaultAddr, "VGO_VAULT_ADDR")
-	envStr(&c.VaultAddr, "VCTL_VAULT_ADDR")
-	envStr(&c.AuthMethod, "VGO_AUTH_METHOD")
-	envStr(&c.AuthMethod, "VCTL_AUTH_METHOD")
-	envStr(&c.DBHost, "VGO_DB_HOST")
-	envStr(&c.DBHost, "VCTL_DB_HOST")
-	envStr(&c.DBServerName, "VCTL_DB_SERVERNAME")
-	envInt(&c.DBPort, "VGO_DB_PORT")
-	envInt(&c.DBPort, "VCTL_DB_PORT")
-	envStr(&c.DBName, "VGO_DB_NAME")
-	envStr(&c.DBName, "VCTL_DB_NAME")
-	envStr(&c.DBRoleRO, "VGO_DB_ROLE_RO")
-	envStr(&c.DBRoleRO, "VCTL_DB_ROLE_RO")
-	envStr(&c.DBRoleRW, "VGO_DB_ROLE_RW")
-	envStr(&c.DBRoleRW, "VCTL_DB_ROLE_RW")
-	envStr(&c.DBRoleStatus, "VCTL_DB_ROLE_STATUS")
-	envStr(&c.DBRoleMigrate, "VGO_DB_ROLE_MIGRATE")
-	envStr(&c.DBRoleMigrate, "VCTL_DB_ROLE_MIGRATE")
-	envStr(&c.DBMigrationOwner, "VGO_DB_MIGRATION_OWNER")
-	envStr(&c.DBMigrationOwner, "VCTL_DB_MIGRATION_OWNER")
-	envInt(&c.KernelRetentionDays, "VCTL_KERNEL_RETENTION_DAYS")
-	envInt(&c.SessionRetentionDays, "VCTL_SESSION_RETENTION_DAYS")
-	envStr(&c.CARole, "VGO_CA_ROLE")
-	envStr(&c.CARole, "VCTL_CA_ROLE")
-	envBool(&c.SSHDirectFirst, "VCTL_SSH_DIRECT_FIRST")
-	envStr(&c.SSHDefaultUser, "VGO_SSH_DEFAULT_USER")
-	envStr(&c.SSHDefaultUser, "VCTL_SSH_DEFAULT_USER")
-	envStr(&c.SyncProbeTimeout, "VGO_SYNC_PROBE_TIMEOUT")
-	envStr(&c.SyncProbeTimeout, "VCTL_SYNC_PROBE_TIMEOUT")
-	envInt(&c.SyncProbeConcurrency, "VGO_SYNC_PROBE_CONCURRENCY")
-	envInt(&c.SyncProbeConcurrency, "VCTL_SYNC_PROBE_CONCURRENCY")
-	envStr(&c.AppRoleID, "VGO_ROLE_ID")
-	envStr(&c.AppRoleID, "VCTL_ROLE_ID")
-	envStr(&c.AppRoleSecretID, "VGO_SECRET_ID")
-	envStr(&c.AppRoleSecretID, "VCTL_SECRET_ID")
-	envStr(&c.AppRoleIDFile, "VGO_ROLE_ID_FILE")
-	envStr(&c.AppRoleIDFile, "VCTL_ROLE_ID_FILE")
-	envStr(&c.AppRoleSecretIDFile, "VGO_SECRET_ID_FILE")
-	envStr(&c.AppRoleSecretIDFile, "VCTL_SECRET_ID_FILE")
-	envStr(&c.AppRoleSelfRole, "VCTL_APPROLE_SELF_ROLE")
-	envStr(&c.SinkPath, "VGO_SINK")
-	envStr(&c.SinkPath, "VCTL_SINK")
+	envStr(&c.VaultAddr, "VAULT_ADDR") // standard Vault var (no prefix)
+	envStrPair(&c.VaultAddr, "VAULT_ADDR")
+	envStrPair(&c.AuthMethod, "AUTH_METHOD")
+	envStrPair(&c.DBHost, "DB_HOST")
+	envStr(&c.DBServerName, "VCTL_DB_SERVERNAME") // VCTL-only
+	envIntPair(&c.DBPort, "DB_PORT")
+	envStrPair(&c.DBName, "DB_NAME")
+	envStrPair(&c.DBRoleRO, "DB_ROLE_RO")
+	envStrPair(&c.DBRoleRW, "DB_ROLE_RW")
+	envStr(&c.DBRoleStatus, "VCTL_DB_ROLE_STATUS") // VCTL-only
+	envStrPair(&c.DBRoleMigrate, "DB_ROLE_MIGRATE")
+	envStrPair(&c.DBMigrationOwner, "DB_MIGRATION_OWNER")
+	envInt(&c.KernelRetentionDays, "VCTL_KERNEL_RETENTION_DAYS")   // VCTL-only
+	envInt(&c.SessionRetentionDays, "VCTL_SESSION_RETENTION_DAYS") // VCTL-only
+	envStrPair(&c.CARole, "CA_ROLE")
+	envBool(&c.SSHDirectFirst, "VCTL_SSH_DIRECT_FIRST") // VCTL-only
+	envStrPair(&c.SSHDefaultUser, "SSH_DEFAULT_USER")
+	envStrPair(&c.SyncProbeTimeout, "SYNC_PROBE_TIMEOUT")
+	envIntPair(&c.SyncProbeConcurrency, "SYNC_PROBE_CONCURRENCY")
+	envStrPair(&c.AppRoleID, "ROLE_ID")
+	envStrPair(&c.AppRoleSecretID, "SECRET_ID")
+	envStrPair(&c.AppRoleIDFile, "ROLE_ID_FILE")
+	envStrPair(&c.AppRoleSecretIDFile, "SECRET_ID_FILE")
+	envStr(&c.AppRoleSelfRole, "VCTL_APPROLE_SELF_ROLE") // VCTL-only
+	envStrPair(&c.SinkPath, "SINK")
 }
 
 func (c *Config) setDerivedDefaults() {
