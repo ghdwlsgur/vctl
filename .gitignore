@@ -5,6 +5,7 @@ dist/
 bin/
 .cache/
 
-# Working symlink to the production vault-iac repo (mirror RBAC changes there,
-# then MR from vault-iac itself). Never commit the symlink into vctl.
+# Working symlinks to the production IaC repos (mirror changes there, then MR
+# from those repos themselves). Never commit the symlinks into vctl.
 /vault-iac
+/vctl-postgres

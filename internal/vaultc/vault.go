@@ -149,6 +149,40 @@ func (c *Client) Identity(ctx context.Context) string {
 	return ""
 }
 
+// TokenPolicies returns the effective policy set on the current token: token
+// policies plus identity (group-derived) policies. The app-layer RBAC uses it
+// to detect vctl-admin (bypass) — group membership grants vctl-admin via
+// identity_policies, so both keys must be unioned.
+func (c *Client) TokenPolicies(ctx context.Context) ([]string, error) {
+	if c.api.Token() == "" {
+		return nil, nil
+	}
+	sec, err := c.api.Auth().Token().LookupSelfWithContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if sec == nil || sec.Data == nil {
+		return nil, nil
+	}
+	set := map[string]struct{}{}
+	for _, key := range []string{"policies", "identity_policies"} {
+		raw, ok := sec.Data[key].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, p := range raw {
+			if str, ok := p.(string); ok && str != "" {
+				set[str] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for p := range set {
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 // Logout clears the cached token.
 func (c *Client) Logout() error {
 	c.api.ClearToken()

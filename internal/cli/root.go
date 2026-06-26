@@ -37,11 +37,27 @@ SSH CA access:
 Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault issues a short-lived SSH certificate for each connection.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// App-layer RBAC (layer 2) gate. Runs before every command; ungated
+		// commands (no rbac annotation) pass through. vctl-admin bypasses.
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			return enforceRBAC(cmd)
+		},
 	}
+	// Only mutate/connect commands are gated (default-deny without a grant).
+	// Read commands (list/status/audit/session) are ungated = allowed to any
+	// authenticated user. The `vctl rbac` mutations gate themselves (classAdmin).
 	root.AddCommand(
-		loginCmd(), logoutCmd(), tokenCmd(), execCmd(), agentCmd(),
-		sshCmd(), lsCmd(), syncCmd(), statusCmd(), auditCmd(), trustCACmd(), caCmd(),
-		sessionCmd(), sessionStartCmd(), collectCmd(), pruneCmd(), watchSessionsCmd(), nodeAgentCmd(),
+		loginCmd(), logoutCmd(), tokenCmd(),
+		gate(execCmd(), "exec", classMutate), agentCmd(),
+		gate(sshCmd(), "ssh", classMutate),
+		lsCmd(),
+		gate(syncCmd(), "sync", classMutate),
+		statusCmd(), auditCmd(),
+		gate(trustCACmd(), "trust-ca", classMutate), caCmd(),
+		sessionCmd(), sessionStartCmd(), collectCmd(),
+		gate(pruneCmd(), "prune", classMutate),
+		watchSessionsCmd(), nodeAgentCmd(),
+		rbacCmd(),
 	)
 	return root.Execute()
 }
