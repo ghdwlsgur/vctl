@@ -30,10 +30,25 @@ the vctl repo alone — even if Vault state (or the vault-iac repo) is wiped.
 | SSH CA + sign role | `ssh/`, `ssh/sign/sre-core` | sign per-connection SSH certs (`vctl ssh`) |
 | DB connection | `database/config/vctl-pg` | issue dynamic Postgres creds (verify-full TLS) |
 | DB roles | `database/roles/vctl-{ro,rw,status,migrator}` | ro=reads, rw=audit writes, status=node-agent, migrator=schema |
-| Policies | `vctl-{user,admin,node,collector,host}` | least privilege per caller |
+| Policies | `vctl-{user,ssh,admin,node,collector,host}` | least privilege per caller; `ssh` = the `vctl ssh` gate, split out so it's group-granted |
+| Identity groups | `identity/group` (external) → `vctl-admins` | GitLab group → policy mapping. `vctl-admins` carries `vctl-admin` + `vctl-ssh` |
 | AppRoles | `vctl-{user,collector,host,node}` | non-interactive auto-auth; `node` = node-agent only (vctl-status), `host` = full stack (vctl-rw + vctl-status) |
-| OIDC + role | `auth/oidc`, `auth/oidc/role/vctl` | per-person GitLab SSO (`vctl login`), grants `vctl-user` |
+| OIDC + role | `auth/oidc`, `auth/oidc/role/vctl` | per-person GitLab SSO (`vctl login`), base grant `vctl-user` (+ group policies) |
 | userpass | `auth/userpass` | bootstrap login before the OIDC seed exists |
+
+### RBAC (group-based)
+
+`vctl ssh` is **not** in `vctl-user` — a plain OIDC login can read inventory but not
+ssh. The ssh capability is the standalone **`vctl-ssh`** policy, granted via the
+**`vctl-admins`** external identity group (GitLab group `oidc_admin_group`, default
+`vctl-admins`). Members of that group get `vctl-admin` (inventory writes + CA + **RBAC
+management**: edit `vctl-*` policies and group mappings) **and** `vctl-ssh`. To grant
+ssh without admin, add a second external group bound to `["vctl-ssh"]` only.
+
+> ⚠️ RBAC self-management is the highest privilege here: a `vctl-admin` can write
+> `vctl-*` policies and group mappings, so it can escalate itself. Keep the
+> `vctl-admins` GitLab group tightly controlled. The scope is limited to `vctl-*`
+> names so org-wide objects (e.g. `sre-admin`, owned by vault-iac) stay out of reach.
 
 ## Recover / bootstrap
 
