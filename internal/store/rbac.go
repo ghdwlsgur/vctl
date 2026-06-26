@@ -1,6 +1,10 @@
 package store
 
-import "context"
+import (
+	"context"
+	"sort"
+	"strings"
+)
 
 // RBACGroup is a named permission group in the app-layer RBAC (layer 2).
 type RBACGroup struct {
@@ -117,29 +121,59 @@ func (s *Store) RBACCommandsForUser(ctx context.Context, user string) (map[strin
 	return out, rows.Err()
 }
 
-// RBACCandidateUsers returns known usernames to offer in the interactive
-// assigner: everyone who has authenticated (access_log) plus existing members.
-// Users who have never used vctl won't appear — add them with `member add`.
-func (s *Store) RBACCandidateUsers(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT u FROM (
-			SELECT DISTINCT vault_user AS u FROM access_log WHERE vault_user IS NOT NULL AND vault_user <> ''
-			UNION
-			SELECT DISTINCT username AS u FROM rbac_members
-		) t ORDER BY u`)
-	if err != nil {
-		return nil, err
+// RecordSeenUser upserts a username into seen_users — called on `vctl login` so
+// anyone who authenticates becomes a candidate for the interactive assigner,
+// without first having to ssh. Best-effort at the call site.
+func (s *Store) RecordSeenUser(ctx context.Context, username string) error {
+	if username == "" {
+		return nil
 	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err != nil {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO seen_users (username) VALUES ($1)
+		ON CONFLICT (username) DO UPDATE SET last_seen = now()`, username)
+	return err
+}
+
+// RBACCandidateUsers returns known usernames to offer in the interactive
+// assigner: everyone who logged in (seen_users), ever ssh'd (access_log), or is
+// already a member. Sources are queried independently and a not-yet-migrated
+// table (e.g. seen_users before migration 007) is tolerated rather than failing.
+func (s *Store) RBACCandidateUsers(ctx context.Context) ([]string, error) {
+	set := map[string]bool{}
+	sources := []string{
+		`SELECT DISTINCT vault_user FROM access_log WHERE vault_user IS NOT NULL AND vault_user <> ''`,
+		`SELECT DISTINCT username FROM rbac_members`,
+		`SELECT DISTINCT username FROM seen_users`,
+	}
+	for _, q := range sources {
+		rows, err := s.pool.Query(ctx, q)
+		if err != nil {
+			if strings.Contains(err.Error(), "42P01") { // table not migrated yet
+				continue
+			}
 			return nil, err
 		}
-		out = append(out, v)
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if v != "" {
+				set[v] = true
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
-	return out, rows.Err()
+	out := make([]string, 0, len(set))
+	for u := range set {
+		out = append(out, u)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func (s *Store) rbacStrings(ctx context.Context, q, arg string) ([]string, error) {
