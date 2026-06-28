@@ -96,7 +96,7 @@ resource "vault_database_secret_backend_role" "audit_ingest" {
   default_ttl = 3600
   max_ttl     = 14400
   creation_statements = [
-    "${local.create_login} GRANT USAGE ON SCHEMA public TO \"{{name}}\"; GRANT SELECT,INSERT,UPDATE ON audit_session TO \"{{name}}\"; GRANT SELECT,INSERT ON kernel_event TO \"{{name}}\"; GRANT USAGE,SELECT ON SEQUENCES audit_session_id_seq, kernel_event_id_seq TO \"{{name}}\";",
+    "${local.create_login} GRANT USAGE ON SCHEMA public TO \"{{name}}\"; GRANT SELECT,INSERT,UPDATE ON audit_session TO \"{{name}}\"; GRANT SELECT,INSERT ON kernel_event TO \"{{name}}\"; GRANT USAGE,SELECT ON SEQUENCE audit_session_id_seq, kernel_event_id_seq TO \"{{name}}\";",
   ]
 }
 
