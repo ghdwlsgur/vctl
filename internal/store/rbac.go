@@ -164,13 +164,13 @@ func (s *Store) SeenUsers(ctx context.Context) ([]SeenUser, error) {
 }
 
 // RBACCandidateUsers returns known usernames to offer in the interactive
-// assigner: everyone who logged in (seen_users), ever ssh'd (access_log), or is
-// already a member. Sources are queried independently and a not-yet-migrated
+// assigner: everyone who logged in (seen_users) or is already a member. Audit
+// data is intentionally not readable through the inventory/RBAC role. Sources
+// are queried independently and a not-yet-migrated
 // table (e.g. seen_users before migration 007) is tolerated rather than failing.
 func (s *Store) RBACCandidateUsers(ctx context.Context) ([]string, error) {
 	set := map[string]bool{}
 	sources := []string{
-		`SELECT DISTINCT vault_user FROM access_log WHERE vault_user IS NOT NULL AND vault_user <> ''`,
 		`SELECT DISTINCT username FROM rbac_members`,
 		`SELECT DISTINCT username FROM seen_users`,
 	}

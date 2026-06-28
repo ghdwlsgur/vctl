@@ -9,10 +9,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/securefile"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -106,56 +106,9 @@ func (m *Manager) writeSinks() error {
 		if s == "" {
 			continue
 		}
-		if err := writeFileAtomic(s, []byte(token), 0o600); err != nil {
+		if err := securefile.WriteAtomic(s, []byte(token), 0o600); err != nil {
 			return fmt.Errorf("sink %s: %w", s, err)
 		}
-	}
-	return nil
-}
-
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if err := ensureRegularSink(path); err != nil {
-		return err
-	}
-
-	dir := filepath.Dir(path)
-	if dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
-
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
-}
-
-func ensureRegularSink(path string) error {
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("refusing to overwrite non-regular sink file: %s", path)
 	}
 	return nil
 }

@@ -64,8 +64,8 @@ smoke: build ## Run Vault-backed smoke tests
 # Needs ansible + a control-node Vault token (VAULT_TOKEN) for the vctl-host secret_id.
 # Inventory comes from ansible.cfg (inventory/hosts.ini); LIMIT scopes the run.
 #   make onboard LIMIT=sre-srv-0023                                    # one canary
-#   make onboard LIMIT=seoul_onprem EXTRA="-e install_collect=false -e install_tetragon=false"
-#   make onboard LIMIT=incheon_onprem EXTRA="-e sre_lb_ip=<lb>"
+#   make onboard LIMIT=seoul_onprem EXTRA="-e vctl_host_install_collect=false -e vctl_host_install_tetragon=false"
+#   make onboard LIMIT=incheon_onprem EXTRA="-e vctl_host_sre_lb_ip=<lb>"
 ANSIBLE_DIR := deploy/ansible
 LIMIT       ?=
 EXTRA       ?=
@@ -89,7 +89,7 @@ onboard: ## Install host stack (node-agent+watch[+collect]): make onboard LIMIT=
 
 .PHONY: onboard-rollback
 onboard-rollback: ## Remove the host stack: make onboard-rollback LIMIT=<host>
-	$(_ANSIBLE) site.yml -e state=absent
+	$(_ANSIBLE) site.yml -e vctl_host_state=absent
 
 .PHONY: clean
 clean: ## Remove build artifacts

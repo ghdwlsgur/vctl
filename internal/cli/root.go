@@ -93,3 +93,28 @@ func withStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) err
 	defer st.Close()
 	return fn(a, st)
 }
+
+func withRoleStore(ctx context.Context, open func(*app.App, context.Context) (*store.Store, error), fn func(*app.App, *store.Store) error) error {
+	a, err := newApp()
+	if err != nil {
+		return err
+	}
+	st, err := open(a, ctx)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	return fn(a, st)
+}
+
+func withAuditStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
+	return withRoleStore(ctx, func(a *app.App, ctx context.Context) (*store.Store, error) {
+		return a.OpenAuditStore(ctx)
+	}, fn)
+}
+
+func withAuditIngestStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
+	return withRoleStore(ctx, func(a *app.App, ctx context.Context) (*store.Store, error) {
+		return a.OpenAuditIngestStore(ctx)
+	}, fn)
+}

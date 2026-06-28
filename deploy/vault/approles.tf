@@ -5,7 +5,7 @@ resource "vault_auth_backend" "approle" {
   path = "approle"
 }
 
-# vctl-collector: host audit daemons → vctl-rw.
+# vctl-collector: host audit daemons -> append/session lifecycle only.
 resource "vault_approle_auth_backend_role" "collector" {
   backend            = vault_auth_backend.approle.path
   role_name          = "vctl-collector"
@@ -18,7 +18,7 @@ resource "vault_approle_auth_backend_role" "collector" {
   secret_id_num_uses = 0
 }
 
-# vctl-host: full host stack (collector + watch-sessions + node-agent) → vctl-rw + vctl-status.
+# vctl-host: full host stack -> audit ingest + status.
 resource "vault_approle_auth_backend_role" "host" {
   backend            = vault_auth_backend.approle.path
   role_name          = "vctl-host"
@@ -37,6 +37,19 @@ resource "vault_approle_auth_backend_role" "node" {
   backend            = vault_auth_backend.approle.path
   role_name          = "vctl-node"
   token_policies     = ["vctl-node"]
+  token_ttl          = 3600
+  token_max_ttl      = 0
+  token_period       = 86400
+  token_type         = "service"
+  secret_id_ttl      = 2592000
+  secret_id_num_uses = 0
+}
+
+# Retention CronJob: delete expired audit rows only.
+resource "vault_approle_auth_backend_role" "pruner" {
+  backend            = vault_auth_backend.approle.path
+  role_name          = "vctl-pruner"
+  token_policies     = ["vctl-pruner"]
   token_ttl          = 3600
   token_max_ttl      = 0
   token_period       = 86400

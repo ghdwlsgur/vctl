@@ -27,7 +27,7 @@
         owner: root
         group: root
         mode: "0644"
-      notify: reload sshd
+      notify: Reload sshd
 
     - name: Ensure TrustedUserCAKeys in sshd_config (validated)
       when: state == 'present'
@@ -36,7 +36,7 @@
         regexp: '^#?\s*TrustedUserCAKeys'
         line: "TrustedUserCAKeys {{ ca_pub_dest }}"
         validate: "sshd -t -f %s"
-      notify: reload sshd
+      notify: Reload sshd
 
     # --- 롤백 ---
     - name: Remove TrustedUserCAKeys (rollback)
@@ -46,10 +46,10 @@
         regexp: '^TrustedUserCAKeys\s+{{ ca_pub_dest }}'
         state: absent
         validate: "sshd -t -f %s"
-      notify: reload sshd
+      notify: Reload sshd
 
   handlers:
-    - name: reload sshd
+    - name: Reload sshd
       ansible.builtin.service:
         name: "{{ 'sshd' if ansible_os_family == 'RedHat' else 'ssh' }}"
         state: reloaded

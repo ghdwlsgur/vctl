@@ -39,7 +39,7 @@ Two uses:
   vctl session <cert-serial> --json   machine-readable export`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return withAuditStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				if list || len(args) == 0 {
 					sessions, err := st.ListSessions(ctx, host, limit)
@@ -86,7 +86,7 @@ func sessionStartCmd() *cobra.Command {
 		Short:  "Register an SSH session for kernel audit (host stamper use)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error { // RW
+			return withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
 				id, err := st.RecordSession(cmd.Context(), a)
 				if err != nil {
 					return err

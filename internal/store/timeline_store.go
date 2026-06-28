@@ -9,14 +9,10 @@ import (
 // SessionTimeline returns sessions matching a cert serial (newest first) with
 // their kernel events in chronological order.
 //
-// Event→session linking has two tiers:
-//   - Exact: a kernel_event already carries session_id (set at insert when its
-//     cgroup matched a session, or by cert serial).
-//   - Fallback: when no cgroup/serial was available, events are correlated by
-//     hostname + the session's [started, ended] window. To keep concurrent
-//     sessions on one host from bleeding together, a cgroup match is still
-//     required when BOTH sides have a cgroup id (id 0 on either side = pure
-//     time-window).
+// Event→session linking has two tiers: exact session_id first, then an explicit
+// cert-serial or cgroup match for rows that were ingested before the session.
+// Time-window-only matching is intentionally forbidden because concurrent SSH
+// sessions would leak and misattribute one another's commands.
 func (s *Store) SessionTimeline(ctx context.Context, certSerial string, limit int) ([]AuditSession, map[int64][]KernelEvent, error) {
 	if limit <= 0 {
 		limit = 20
@@ -61,11 +57,15 @@ func (s *Store) sessionEvents(ctx context.Context, sess AuditSession) ([]KernelE
 		       coalesce(pid,0), coalesce(ppid,0), coalesce(cgroup_id,0),
 		       coalesce(exe,''), coalesce(args,''), coalesce(cwd,''), coalesce(uid,0),
 		       coalesce(filename,''), coalesce(dest_addr,''), exit_code
-		FROM kernel_event
-		WHERE hostname = $1
-		  AND ts >= $2 AND ts <= coalesce($3, now())
-		  AND ($4 = 0 OR coalesce(cgroup_id,0) = 0 OR cgroup_id = $4)
-		ORDER BY ts ASC`, sess.Hostname, sess.StartedAt, sess.EndedAt, sess.CgroupID)
+			FROM kernel_event
+			WHERE session_id = $1
+			   OR (
+			       session_id IS NULL
+			       AND hostname = $2
+			       AND ts >= $3 AND ts <= coalesce($4, now())
+			       AND (($5 <> '' AND cert_serial = $5) OR ($6 <> 0 AND cgroup_id = $6))
+			   )
+			ORDER BY ts ASC`, sess.ID, sess.Hostname, sess.StartedAt, sess.EndedAt, sess.CertSerial, sess.CgroupID)
 	if err != nil {
 		return nil, err
 	}

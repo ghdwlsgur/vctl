@@ -13,6 +13,8 @@ import (
 	"time"
 
 	vault "github.com/hashicorp/vault/api"
+
+	"github.com/ghdwlsgur/vctl/internal/securefile"
 )
 
 type Client struct {
@@ -73,8 +75,11 @@ func (c *Client) saveToken(token string, ttl time.Duration, renewable bool) erro
 	c.tokenExp = exp
 	c.renewable = renewable
 	c.api.SetToken(token)
-	b, _ := json.Marshal(cachedToken{Token: token, Expires: exp, Renewable: renewable})
-	return os.WriteFile(c.tokenPath, b, 0o600)
+	b, err := json.Marshal(cachedToken{Token: token, Expires: exp, Renewable: renewable})
+	if err != nil {
+		return err
+	}
+	return securefile.WriteAtomic(c.tokenPath, b, 0o600)
 }
 
 // applyAuth applies and caches a token from a login or renewal response.

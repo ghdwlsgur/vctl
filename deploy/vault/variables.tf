@@ -46,7 +46,19 @@ variable "enable_oidc" {
 variable "oidc_admin_group" {
   type        = string
   default     = "vctl-admins"
-  description = "GitLab group (groups_direct claim) mapped to vctl-admin + vctl-ssh. Members manage RBAC and can use vctl ssh."
+  description = "GitLab group mapped to vctl-admin, vctl-ssh, and vctl-auditor."
+}
+
+variable "oidc_ssh_group" {
+  type        = string
+  default     = "vctl-ssh-users"
+  description = "GitLab group mapped to the server-enforced vctl-ssh signing policy."
+}
+
+variable "oidc_auditor_group" {
+  type        = string
+  default     = "vctl-auditors"
+  description = "GitLab group mapped to read-only access and session audit data."
 }
 
 variable "sre_ca_pem_file" {

@@ -6,7 +6,7 @@ the vctl repo alone — even if Vault state (or the vault-iac repo) is wiped.
 - **`*.tf`** — a self-contained Terraform module (HCL) for the whole Vault
   surface: SSH CA, Postgres DB engine + roles, policies, AppRoles, and GitLab
   **OIDC** + userpass. `terraform apply` bootstraps or break-glass recovers it.
-- **`*.hcl`** — the five Vault policy definitions, read by `policies.tf`.
+- **`*.hcl`** — the Vault policy definitions, read by `policies.tf`.
 - **`postgres-owner.sh`** — the one step Terraform can't do: create the stable
   Postgres owner role (`vctl_owner`) via psql. Run it once before `apply`.
 
@@ -15,8 +15,9 @@ the vctl repo alone — even if Vault state (or the vault-iac repo) is wiped.
 >
 > `vault-iac` (Terraform) runs the **production** Vault and owns org-wide concerns
 > beyond vctl (e.g. the `sre`→`sre-admin` group elevation, other services). The
-> vctl OIDC role here grants `vctl-user`, which is all vctl itself needs. Keep the
-> two in sync when vctl's Vault needs change.
+> The OIDC role grants baseline `vctl-user`; GitLab identity groups add SSH,
+> auditor, or administrator capabilities. Keep the two repos in sync when those
+> mappings change.
 >
 > One external prerequisite vctl can't create itself: the GitLab OAuth app whose
 > client_id/secret seed `kv/services/vault-oidc-gitlab` (a GitLab-side object).
@@ -29,34 +30,24 @@ the vctl repo alone — even if Vault state (or the vault-iac repo) is wiped.
 |---|---|---|
 | SSH CA + sign role | `ssh/`, `ssh/sign/sre-core` | sign per-connection SSH certs (`vctl ssh`) |
 | DB connection | `database/config/vctl-pg` | issue dynamic Postgres creds (verify-full TLS) |
-| DB roles | `database/roles/vctl-{ro,rw,status,migrator}` | ro=reads, rw=audit writes, status=node-agent, migrator=schema |
-| Policies | `vctl-{user,admin,node,collector,host}` | least privilege per caller; `user` = baseline (ssh-sign capability + ro reads), `admin` = +writes/CA/RBAC-mgmt |
-| Identity groups | `identity/group` (external) → `vctl-admins` | GitLab group → policy mapping. `vctl-admins` carries `vctl-admin` |
-| AppRoles | `vctl-{user,collector,host,node}` | non-interactive auto-auth; `node` = node-agent only (vctl-status), `host` = full stack (vctl-rw + vctl-status) |
+| DB roles | `database/roles/vctl-*` | separate inventory, identity, audit read/write/ingest/prune, status, and migration privileges |
+| Policies | `vctl-{user,ssh,auditor,admin,node,collector,host,pruner}` | server-enforced least privilege per caller |
+| Identity groups | `identity/group` (external) | GitLab `vctl-{ssh-users,auditors,admins}` -> capability policies |
+| AppRoles | `vctl-{user,collector,host,node,pruner}` | non-interactive auto-auth with task-specific database roles |
 | OIDC + role | `auth/oidc`, `auth/oidc/role/vctl` | per-person GitLab SSO (`vctl login`), base grant `vctl-user` (+ group policies) |
 | userpass | `auth/userpass` | bootstrap login before the OIDC seed exists |
 
 ### RBAC — two layers
 
-**Layer 1 (Vault, coarse):** `vctl-user` (everyone) carries the *capability* set —
-SSH cert signing + inventory reads. `vctl-admin`, granted via the **`vctl-admins`**
-external identity group (GitLab group `oidc_admin_group`, default `vctl-admins`),
-adds inventory writes, CA ops, and RBAC management. Vault only distinguishes
-admin from user.
+**Layer 1 (Vault, authoritative):** `vctl-user` is inventory-only. SSH signing,
+audit reads, administration, host ingestion, and retention are separate policies
+and database roles. `vctl-ssh-users`, `vctl-auditors`, and `vctl-admins` map GitLab
+membership to those capabilities. A raw Vault API call has exactly the same gate.
 
-**Layer 2 (app, fine):** which commands a user may actually run — including
-`vctl ssh` — is decided by the app-layer RBAC (`vctl rbac`, stored in Postgres):
-read commands default-allow; mutate/connect commands need a group grant. `vctl-admin`
-bypasses. So ssh is gated by the app, not by Vault policy.
-
-> ⚠️ Giving every user the ssh-sign capability means the Vault boundary for ssh is
-> soft — a raw `vault write ssh/sign/sre-core` bypasses the app gate. The app RBAC
-> is the enforcement point for the `vctl` CLI, not a hard Vault boundary.
->
-> ⚠️ RBAC management (`vctl rbac` + editing `vctl-*` policies/groups) is the highest
-> privilege; a `vctl-admin` can escalate itself. Keep the `vctl-admins` GitLab group
-> tightly controlled. Scope is limited to `vctl-*` names so org-wide objects (e.g.
-> `sre-admin`, owned by vault-iac) stay out of reach.
+**Layer 2 (app, additional restriction):** `vctl rbac` stores command grants in
+Postgres. These grants can narrow what the standard CLI runs, but cannot grant a
+Vault capability. Vault policy and Identity objects remain Terraform/platform-admin
+operations; `vctl-admin` cannot rewrite its own policy or attach a stronger one.
 
 ## Recover / bootstrap
 

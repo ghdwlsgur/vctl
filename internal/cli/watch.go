@@ -46,7 +46,7 @@ itself stays credential-free.
   vctl watch-sessions /run/vctl/sessions --once    # one pass (testing)`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error { // RW
+			return withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				if len(args) == 1 {
 					dir = args[0]

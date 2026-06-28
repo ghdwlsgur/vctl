@@ -32,12 +32,13 @@ var (
 
 // Target describes one SSH hop. Jump is dialed first when set.
 type Target struct {
-	Name       string
-	Addr       string // host:port
-	User       string
-	Role       string // ssh/sign/<role>
-	SkipDirect bool   // connect through Jump without first trying the target directly
-	Jump       *Target
+	Name           string
+	Addr           string // host:port
+	User           string
+	Role           string // ssh/sign/<role>
+	SkipDirect     bool   // connect through Jump without first trying the target directly
+	ConfirmHostKey bool   // allow an interactive prompt for a previously unknown host key
+	Jump           *Target
 }
 
 // ConnectionInfo describes the client-side network path used for an SSH session.
@@ -173,7 +174,7 @@ func clientConfig(t *Target, sign SignFunc, extensions []string) (*ssh.ClientCon
 	return &ssh.ClientConfig{
 		User:            t.User,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: hostKeyCallback(),
+		HostKeyCallback: hostKeyCallback(t.ConfirmHostKey),
 		// Prefer ed25519 to match OpenSSH's default host-key order. x/crypto's
 		// default prefers ECDSA/RSA, so vctl would negotiate a different host
 		// key type than `ssh` and trip a false "knownhosts: key mismatch" when

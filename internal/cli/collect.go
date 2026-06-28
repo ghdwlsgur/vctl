@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/auditredact"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -72,7 +73,7 @@ Typical host wiring (systemd or sidecar):
 Events link to a session by cgroup when the login stamper recorded one; pass
 --serial to attach a known access explicitly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error { // RW: kernel_event insert
+			return withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				var r io.Reader = os.Stdin
 				if from != "" {
@@ -184,7 +185,7 @@ func mapTetra(te tetraEvent, hostOverride, serial string) (store.KernelEvent, bo
 		return store.KernelEvent{
 			CertSerial: serial, Hostname: host, TS: ts, Kind: "exec",
 			PID: p.PID, PPID: te.ProcessExec.Parent.PID, Binary: p.Binary,
-			Args: p.Arguments, CWD: p.CWD, UID: p.UID, CgroupID: p.cgroup(),
+			Args: auditredact.Arguments(p.Arguments), CWD: p.CWD, UID: p.UID, CgroupID: p.cgroup(),
 		}, host != "" && p.Binary != ""
 	case te.ProcessExit != nil:
 		p := te.ProcessExit.Process

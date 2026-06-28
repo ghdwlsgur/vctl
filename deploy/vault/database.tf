@@ -7,9 +7,13 @@ resource "vault_mount" "database" {
 }
 
 resource "vault_database_secret_backend_connection" "vctl_pg" {
-  backend       = vault_mount.database.path
-  name          = "vctl-pg"
-  allowed_roles = ["vctl-ro", "vctl-rw", "vctl-status", "vctl-migrator"]
+  backend = vault_mount.database.path
+  name    = "vctl-pg"
+  allowed_roles = [
+    "vctl-ro", "vctl-identity", "vctl-rw", "vctl-audit-ro",
+    "vctl-audit-writer", "vctl-audit-ingest", "vctl-pruner",
+    "vctl-status", "vctl-migrator"
+  ]
 
   postgresql {
     connection_url = "postgresql://{{username}}:{{password}}@${var.pg_host}:${var.pg_port}/${var.pg_db}?sslmode=${var.pg_sslmode}"
@@ -24,7 +28,7 @@ locals {
   create_login = "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT CONNECT ON DATABASE ${var.pg_db} TO \"{{name}}\";"
 }
 
-# ro: inventory reads
+# ro: inventory and app-RBAC reads. Audit payloads are deliberately excluded.
 resource "vault_database_secret_backend_role" "ro" {
   backend     = local.db_backend
   name        = "vctl-ro"
@@ -32,11 +36,23 @@ resource "vault_database_secret_backend_role" "ro" {
   default_ttl = 3600
   max_ttl     = 14400
   creation_statements = [
-    "${local.create_login} GRANT USAGE ON SCHEMA public TO \"{{name}}\"; GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{{name}}\"; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO \"{{name}}\";",
+    "${local.create_login} GRANT USAGE ON SCHEMA public TO \"{{name}}\"; GRANT SELECT ON servers, server_status, rbac_groups, rbac_members, rbac_grants, seen_users TO \"{{name}}\";",
   ]
 }
 
-# rw: audit writes / sync
+# identity: login-time seen_users upsert only.
+resource "vault_database_secret_backend_role" "identity" {
+  backend     = local.db_backend
+  name        = "vctl-identity"
+  db_name     = local.db_name
+  default_ttl = 3600
+  max_ttl     = 14400
+  creation_statements = [
+    "${local.create_login} GRANT USAGE ON SCHEMA public TO \"{{name}}\"; GRANT SELECT,INSERT,UPDATE ON seen_users TO \"{{name}}\";",
+  ]
+}
+
+# rw: operator-managed inventory and app-RBAC writes only.
 resource "vault_database_secret_backend_role" "rw" {
   backend     = local.db_backend
   name        = "vctl-rw"
@@ -44,7 +60,55 @@ resource "vault_database_secret_backend_role" "rw" {
   default_ttl = 3600
   max_ttl     = 14400
   creation_statements = [
-    "${local.create_login} GRANT USAGE,CREATE ON SCHEMA public TO \"{{name}}\"; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO \"{{name}}\"; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO \"{{name}}\"; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO \"{{name}}\";",
+    "${local.create_login} GRANT USAGE ON SCHEMA public TO \"{{name}}\"; GRANT SELECT,INSERT,UPDATE,DELETE ON servers, server_status, rbac_groups, rbac_members, rbac_grants, seen_users TO \"{{name}}\";",
+  ]
+}
+
+# Audit readers can inspect sensitive session data but cannot modify it.
+resource "vault_database_secret_backend_role" "audit_ro" {
+  backend     = local.db_backend
+  name        = "vctl-audit-ro"
+  db_name     = local.db_name
+  default_ttl = 3600
+  max_ttl     = 14400
+  creation_statements = [
+    "${local.create_login} GRANT USAGE ON SCHEMA public TO \"{{name}}\"; GRANT SELECT ON access_log, audit_session, kernel_event TO \"{{name}}\";",
+  ]
+}
+
+# SSH clients append access attempts but cannot read or alter prior records.
+resource "vault_database_secret_backend_role" "audit_writer" {
+  backend     = local.db_backend
+  name        = "vctl-audit-writer"
+  db_name     = local.db_name
+  default_ttl = 3600
+  max_ttl     = 14400
+  creation_statements = [
+    "${local.create_login} GRANT USAGE ON SCHEMA public TO \"{{name}}\"; GRANT INSERT ON access_log TO \"{{name}}\"; GRANT USAGE,SELECT ON SEQUENCE access_log_id_seq TO \"{{name}}\";",
+  ]
+}
+
+# Host collectors may append events and maintain session lifecycle, never delete.
+resource "vault_database_secret_backend_role" "audit_ingest" {
+  backend     = local.db_backend
+  name        = "vctl-audit-ingest"
+  db_name     = local.db_name
+  default_ttl = 3600
+  max_ttl     = 14400
+  creation_statements = [
+    "${local.create_login} GRANT USAGE ON SCHEMA public TO \"{{name}}\"; GRANT SELECT,INSERT,UPDATE ON audit_session TO \"{{name}}\"; GRANT SELECT,INSERT ON kernel_event TO \"{{name}}\"; GRANT USAGE,SELECT ON SEQUENCES audit_session_id_seq, kernel_event_id_seq TO \"{{name}}\";",
+  ]
+}
+
+# Retention jobs can count and delete audit rows, but cannot rewrite them.
+resource "vault_database_secret_backend_role" "pruner" {
+  backend     = local.db_backend
+  name        = "vctl-pruner"
+  db_name     = local.db_name
+  default_ttl = 3600
+  max_ttl     = 14400
+  creation_statements = [
+    "${local.create_login} GRANT USAGE ON SCHEMA public TO \"{{name}}\"; GRANT SELECT,DELETE ON audit_session, kernel_event TO \"{{name}}\";",
   ]
 }
 

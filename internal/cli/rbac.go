@@ -16,127 +16,14 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// --- RBAC layer 2 (app-layer, CLI-managed) -----------------------------------
-//
-// Vault (layer 1) does the coarse bootstrap: vctl-admin vs vctl-user (everyone
-// gets the ssh-sign capability; this app layer decides who may actually ssh).
-// This layer is the fine-grained, admin-managed command RBAC stored centrally
-// in Postgres. Enforcement (enforceRBAC) gates each command by its annotation:
-//
-//	classRead   — default allow to any authenticated user (list/status/audit)
-//	classMutate — default DENY; needs a group grant (ssh/exec/sync/prune/trust-ca)
-//	classAdmin  — vctl-admin only, not delegatable (the `vctl rbac` mutations)
-//
-// vctl-admin (layer 1) always bypasses, so admins can never lock themselves out.
-
-const (
-	classRead   = "read"
-	classMutate = "mutate"
-	classAdmin  = "admin"
-)
-
-// gatedCommands is the set of command names a grant may reference (plus "*").
-// Keeping it explicit rejects typos in `vctl rbac grant <group> <command>`.
-var gatedCommands = map[string]string{
-	"ssh":      classMutate,
-	"exec":     classMutate,
-	"sync":     classMutate,
-	"prune":    classMutate,
-	"trust-ca": classMutate,
-	"list":     classRead,
-	"status":   classRead,
-	"audit":    classRead,
-	"session":  classRead,
-}
-
-// gate tags a command with its RBAC name + class so the root PersistentPreRunE
-// can enforce it. Returns the command for inline use in AddCommand.
-func gate(cmd *cobra.Command, name, class string) *cobra.Command {
-	if cmd.Annotations == nil {
-		cmd.Annotations = map[string]string{}
-	}
-	cmd.Annotations["rbac.command"] = name
-	cmd.Annotations["rbac.class"] = class
-	return cmd
-}
-
-// hasAdminPolicy reports whether the token carries an admin policy that bypasses
-// the app-layer RBAC: vctl-admin (vctl manager) or sre-admin (org superuser).
-// sre-admin is org full-power, so it must bypass — and the workstation AppRole
-// commonly carries sre-admin rather than the OIDC-group-derived vctl-admin.
-func hasAdminPolicy(pols []string) bool {
-	return slices.Contains(pols, "vctl-admin") || slices.Contains(pols, "sre-admin")
-}
-
-// isUninitializedRBAC reports a "relation does not exist" (SQLSTATE 42P01): the
-// rbac_* tables aren't migrated yet. Run 'vctl sync --migrate' as an admin.
-func isUninitializedRBAC(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "42P01")
-}
-
-// enforceRBAC runs in the root PersistentPreRunE for every command. Commands
-// without an rbac annotation are ungated (login/token/agent/daemons/ca).
-func enforceRBAC(cmd *cobra.Command) error {
-	name := cmd.Annotations["rbac.command"]
-	if name == "" {
-		return nil // ungated
-	}
-	class := cmd.Annotations["rbac.class"]
-	ctx := cmd.Context()
-
-	a, err := newApp()
-	if err != nil {
-		return err
-	}
-	if err := a.EnsureLogin(ctx); err != nil {
-		return err
-	}
-	// Layer 1: an admin policy (vctl-admin or sre-admin) bypasses everything —
-	// including the DB lookup below, so admins work before migration 006 runs.
-	pols, err := a.Vault.TokenPolicies(ctx)
-	if err != nil {
-		return fmt.Errorf("rbac: token lookup: %w", err)
-	}
-	if hasAdminPolicy(pols) {
-		return nil
-	}
-	switch class {
-	case classRead:
-		return nil // default allow
-	case classAdmin:
-		return fmt.Errorf("rbac: '%s' is admin-only (needs vctl-admin or sre-admin)", name)
-	}
-	// classMutate: needs a group grant.
-	user := a.Vault.Identity(ctx)
-	if user == "" {
-		return fmt.Errorf("rbac: cannot determine your identity — run 'vctl login'")
-	}
-	st, err := a.OpenStore(ctx, false)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	cmds, err := st.RBACCommandsForUser(ctx, user)
-	if err != nil {
-		if isUninitializedRBAC(err) {
-			return fmt.Errorf("rbac: not initialized yet — an admin must run 'vctl sync --migrate' first")
-		}
-		return err
-	}
-	if cmds["*"] || cmds[name] {
-		return nil
-	}
-	return fmt.Errorf("rbac: '%s' not permitted for %q — ask an admin to grant it:\n  vctl rbac grant <group> %s", name, user, name)
-}
-
 func rbacCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rbac",
 		Short: "Manage app-layer command RBAC (groups, members, grants)",
 		Long: `rbac manages the fine-grained, admin-managed command permissions (layer 2).
 
-Vault does the coarse bootstrap (vctl-admin vs vctl-user). On top of
-that, admins group users and grant them specific commands here. Non-admins may
+Vault policies are the authoritative capability boundary. On top of that,
+admins group users and grant them specific CLI commands here. Non-admins may
 run read commands (list/status/audit) by default; mutate/connect commands
 (ssh/exec/sync/prune/trust-ca) need a group grant. Admins (vctl-admin) bypass.`,
 	}
@@ -180,7 +67,7 @@ func rbacUsersCmd() *cobra.Command {
 }
 
 // rbacAssignCmd is the convenient interactive assigner: pick a group, then
-// multi-select users to add as members. Candidate users come from access_log +
+// multi-select users to add as members. Candidate users come from seen_users +
 // existing members (RBACCandidateUsers). Admin-only.
 func rbacAssignCmd() *cobra.Command {
 	return gate(&cobra.Command{

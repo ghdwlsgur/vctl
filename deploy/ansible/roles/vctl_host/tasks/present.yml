@@ -2,12 +2,12 @@
 # --- vctl binary ---
 - name: Install vctl binary
   ansible.builtin.copy:
-    src: "{{ vctl_bin_src }}"
-    dest: "{{ vctl_bin_dest }}"
+    src: "{{ vctl_host_bin_src }}"
+    dest: "{{ vctl_host_bin_dest }}"
     owner: root
     group: root
     mode: "0755"
-  notify: restart vctl services # new binary only applies after a restart
+  notify: Restart vctl services # new binary only applies after a restart
 
 # --- DNS: host resolves vault/vctl-postgres .sre.local via the network's LB ---
 - name: Resolve *.sre.local to the LB (audit daemons reach Vault/Postgres)
@@ -15,14 +15,14 @@
     path: /etc/hosts
     marker: "# {mark} VCTL AUDIT (vault/postgres)"
     block: |
-      {{ vault_lb_ip }} vault.sre.local
-      {{ pg_lb_ip }} vctl-postgres.sre.local
+      {{ vctl_host_vault_lb_ip }} vault.sre.local
+      {{ vctl_host_pg_lb_ip }} vctl-postgres.sre.local
 
 # Session recording (ExposeAuthInfo + login stampers + marker dir) is only for
-# watch-sessions. Skip it on node-only hosts (audit_stack=false) — no sshd change,
+# watch-sessions. Skip it on node-only hosts (vctl_host_audit_stack=false) — no sshd change,
 # no stampers — so a liveness-only host stays untouched beyond the node-agent.
 - name: Session recording setup (full audit stack only)
-  when: audit_stack | bool
+  when: vctl_host_audit_stack | bool
   block:
     # --- sshd: expose the offered cert to the session ---
     - name: Enable sshd ExposeAuthInfo (validated)
@@ -31,12 +31,12 @@
         regexp: '^#?\s*ExposeAuthInfo'
         line: "ExposeAuthInfo yes"
         validate: "sshd -t -f %s"
-      notify: reload sshd
+      notify: Reload sshd
 
     # --- session stampers (drop markers, no creds) ---
     - name: Install PAM session stamper
       ansible.builtin.copy:
-        src: "{{ vctl_audit_src }}/pam-session-stamp.sh"
+        src: "{{ vctl_host_audit_src }}/pam-session-stamp.sh"
         dest: /usr/local/sbin/pam-session-stamp.sh
         owner: root
         group: root
@@ -46,7 +46,7 @@
     # does not receive it — verified). This is the path that actually records markers.
     - name: Install login-shell session stamper (profile.d)
       ansible.builtin.copy:
-        src: "{{ vctl_audit_src }}/vctl-session-stamp.sh"
+        src: "{{ vctl_host_audit_src }}/vctl-session-stamp.sh"
         dest: /etc/profile.d/vctl-session-stamp.sh
         owner: root
         group: root
@@ -70,54 +70,124 @@
     mode: "0700"
 
 # Fetch role_id from the control-node Vault token so the file can't drift from the
-# live AppRole. vctl_approle = vctl-host (full stack: vctl-rw + vctl-status) or
-# vctl-node (node-agent only: vctl-status), per audit_stack.
+# live AppRole. vctl_host_approle = vctl-host (audit ingest + status) or
+# vctl-node (node-agent only: vctl-status), per vctl_host_audit_stack.
 - name: Fetch role_id (control node Vault)
   delegate_to: localhost
   become: false
-  # not run_once: vctl_approle can differ per host (audit_stack), so each host
+  # not run_once: vctl_host_approle can differ per host (vctl_host_audit_stack), so each host
   # fetches its own role_id.
-  ansible.builtin.command: "vault read -field=role_id auth/approle/role/{{ vctl_approle }}/role-id"
-  register: vctl_roleid
+  ansible.builtin.command: "vault read -field=role_id auth/approle/role/{{ vctl_host_approle }}/role-id"
+  register: vctl_host_roleid
   changed_when: false
 
 - name: Install AppRole role_id (not secret)
   ansible.builtin.copy:
-    content: "{{ vctl_roleid.stdout }}"
+    content: "{{ vctl_host_roleid.stdout }}"
     dest: /etc/vctl/role-id
     owner: root
     group: root
     mode: "0600"
+  notify: Restart vctl services
 
 - name: Check whether secret_id is present
   ansible.builtin.stat:
     path: /etc/vctl/secret-id
-  register: vctl_secret_id
+  register: vctl_host_secret_id
 
-# Mint one secret_id per host from the control-node Vault token; skip if present.
+- name: Read installed AppRole marker
+  ansible.builtin.slurp:
+    src: /etc/vctl/approle
+  register: vctl_host_approle_marker
+  failed_when: false
+  changed_when: false
+
+- name: Read installed secret_id accessor
+  ansible.builtin.slurp:
+    src: /etc/vctl/secret-id-accessor
+  register: vctl_host_secret_accessor
+  failed_when: false
+  changed_when: false
+
+- name: Decide whether AppRole secret_id must be replaced
+  ansible.builtin.set_fact:
+    vctl_host_needs_secret_id: >-
+      {{ not vctl_host_secret_id.stat.exists or
+         ((ansible_date_time.epoch | int) -
+          (vctl_host_secret_id.stat.mtime | default(0) | int)) >
+         (vctl_host_secret_rotation_days | int * 86400) or
+         (vctl_host_approle_marker.content | default('') | b64decode | trim)
+         != vctl_host_approle }}
+
+# Reissue when switching between vctl-host and vctl-node; role_id and secret_id
+# from different AppRoles cannot authenticate.
 - name: Generate AppRole secret_id (control node Vault)
-  when: provision_secret_id | bool and not vctl_secret_id.stat.exists
+  when: vctl_host_provision_secret_id | bool and vctl_host_needs_secret_id | bool
   delegate_to: localhost
   become: false
-  ansible.builtin.command: "vault write -f -field=secret_id auth/approle/role/{{ vctl_approle }}/secret-id"
-  register: vctl_sid
+  ansible.builtin.command:
+    argv:
+      - vault
+      - write
+      - -format=json
+      - -f
+      - "auth/approle/role/{{ vctl_host_approle }}/secret-id"
+  register: vctl_host_sid
   changed_when: true
   no_log: true
 
 - name: Install secret_id on host
-  when: provision_secret_id | bool and not vctl_secret_id.stat.exists
+  when: vctl_host_provision_secret_id | bool and vctl_host_needs_secret_id | bool
   ansible.builtin.copy:
-    content: "{{ vctl_sid.stdout }}"
+    content: "{{ (vctl_host_sid.stdout | from_json).data.secret_id }}"
     dest: /etc/vctl/secret-id
     owner: root
     group: root
     mode: "0600"
   no_log: true
+  notify: Restart vctl services
+
+- name: Install secret_id accessor for revocation
+  when: vctl_host_provision_secret_id | bool and vctl_host_needs_secret_id | bool
+  ansible.builtin.copy:
+    content: "{{ (vctl_host_sid.stdout | from_json).data.secret_id_accessor }}\n"
+    dest: /etc/vctl/secret-id-accessor
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Record installed AppRole
+  when: vctl_host_provision_secret_id | bool and vctl_host_needs_secret_id | bool
+  ansible.builtin.copy:
+    content: "{{ vctl_host_approle }}\n"
+    dest: /etc/vctl/approle
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Revoke previous AppRole secret_id
+  when:
+    - vctl_host_provision_secret_id | bool
+    - vctl_host_needs_secret_id | bool
+    - (vctl_host_approle_marker.content | default('') | length) > 0
+    - (vctl_host_secret_accessor.content | default('') | length) > 0
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    argv:
+      - vault
+      - write
+      - -f
+      - "auth/approle/role/{{ vctl_host_approle_marker.content | b64decode | trim }}/secret-id-accessor/destroy"
+      - "secret_id_accessor={{ vctl_host_secret_accessor.content | b64decode | trim }}"
+  changed_when: true
+  no_log: true
 
 - name: Re-check secret_id after provisioning
   ansible.builtin.stat:
     path: /etc/vctl/secret-id
-  register: vctl_secret_id
+  register: vctl_host_secret_id
 
 # --- log caps: journald + logrotate ---
 - name: Ensure journald drop-in dir exists
@@ -130,24 +200,24 @@
 
 - name: Cap journald usage for audit daemons
   ansible.builtin.copy:
-    src: "{{ vctl_audit_src }}/journald-vctl-audit.conf"
+    src: "{{ vctl_host_audit_src }}/journald-vctl-audit.conf"
     dest: /etc/systemd/journald.conf.d/vctl-audit.conf
     owner: root
     group: root
     mode: "0644"
-  notify: restart journald
+  notify: Restart journald
 
 - name: Install logrotate config for file logs
   ansible.builtin.copy:
-    src: "{{ vctl_audit_src }}/logrotate-vctl-audit.conf"
+    src: "{{ vctl_host_audit_src }}/logrotate-vctl-audit.conf"
     dest: /etc/logrotate.d/vctl-audit
     owner: root
     group: root
     mode: "0644"
 
-# --- Tetragon (bare VM, systemd). k8s nodes: install_tetragon=false + DaemonSet ---
+# --- Tetragon (bare VM, systemd). k8s nodes: vctl_host_install_tetragon=false + DaemonSet ---
 - name: Install Tetragon (bare VM)
-  when: install_tetragon | bool
+  when: vctl_host_install_tetragon | bool
   block:
     # Root-only stage dir (not /tmp) — no multiuser race on the root-run tarball.
     - name: Stage dir for Tetragon
@@ -159,12 +229,12 @@
         mode: "0700"
     - name: Download Tetragon tarball
       ansible.builtin.get_url:
-        url: "{{ tetragon_url }}"
+        url: "{{ vctl_host_tetragon_url }}"
         dest: /opt/vctl/tetragon-stage/tetragon.tar.gz
         mode: "0600"
         # Digest pin: once a mirror fronts the URL, the checksum fails closed on a
-        # swapped tarball. Omitted when tetragon_sha256 is empty.
-        checksum: "{{ tetragon_sha256 | default(omit, true) }}"
+        # swapped tarball. Omitted when vctl_host_tetragon_sha256 is empty.
+        checksum: "{{ vctl_host_tetragon_sha256 | default(omit, true) }}"
     - name: Extract Tetragon
       ansible.builtin.unarchive:
         src: /opt/vctl/tetragon-stage/tetragon.tar.gz
@@ -173,7 +243,7 @@
     - name: Run Tetragon installer (systemd)
       ansible.builtin.command: ./install.sh
       args:
-        chdir: "/opt/vctl/tetragon-stage/tetragon-{{ tetragon_version }}-amd64"
+        chdir: "/opt/vctl/tetragon-stage/tetragon-{{ vctl_host_tetragon_version }}-amd64"
         creates: /usr/lib/systemd/system/tetragon.service
     - name: Ensure tracingpolicy dir
       ansible.builtin.file:
@@ -182,18 +252,18 @@
         mode: "0755"
     # Verbose policy (open/connect) is opt-in; exec/exit come from the base sensor.
     - name: Install verbose SRE audit tracingpolicy (open/connect)
-      when: install_verbose_tracingpolicy | bool
+      when: vctl_host_install_verbose_tracingpolicy | bool
       ansible.builtin.copy:
-        src: "{{ vctl_audit_src }}/tracingpolicy-ssh.yaml"
+        src: "{{ vctl_host_audit_src }}/tracingpolicy-ssh.yaml"
         dest: /etc/tetragon/tetragon.tp.d/sre-audit.yaml
         mode: "0644"
-      notify: restart tetragon
+      notify: Restart tetragon
     - name: Remove verbose SRE audit tracingpolicy when disabled
-      when: not (install_verbose_tracingpolicy | bool)
+      when: not (vctl_host_install_verbose_tracingpolicy | bool)
       ansible.builtin.file:
         path: /etc/tetragon/tetragon.tp.d/sre-audit.yaml
         state: absent
-      notify: restart tetragon
+      notify: Restart tetragon
     - name: Enable Tetragon
       ansible.builtin.systemd:
         name: tetragon
@@ -210,14 +280,14 @@
     group: root
     mode: "0644"
   loop:
-    - { src: "{{ vctl_audit_src }}/vctl-collect.service", name: vctl-collect.service }
-    - { src: "{{ vctl_audit_src }}/vctl-watch-sessions.service", name: vctl-watch-sessions.service }
-    - { src: "{{ vctl_node_src }}/vctl-node-agent.service", name: vctl-node-agent.service }
+    - { src: "{{ vctl_host_audit_src }}/vctl-collect.service", name: vctl-collect.service }
+    - { src: "{{ vctl_host_audit_src }}/vctl-watch-sessions.service", name: vctl-watch-sessions.service }
+    - { src: "{{ vctl_host_node_src }}/vctl-node-agent.service", name: vctl-node-agent.service }
   loop_control:
     label: "{{ item.name }}"
   notify:
-    - daemon-reload
-    - restart vctl services
+    - Reload systemd
+    - Restart vctl services
 
 - name: Ensure node-agent drop-in dir
   ansible.builtin.file:
@@ -233,22 +303,22 @@
     group: root
     mode: "0644"
   notify:
-    - daemon-reload
-    - restart vctl services
+    - Reload systemd
+    - Restart vctl services
 
 # node-agent always; watch-sessions + collector only with the full audit stack
-# (collector additionally needs install_collect / Tetragon).
+# (collector additionally needs vctl_host_install_collect / Tetragon).
 - name: Enable services (only with secret_id present)
-  when: enable_services | bool and (vctl_secret_id.stat.exists | default(false))
+  when: vctl_host_enable_services | bool and (vctl_host_secret_id.stat.exists | default(false))
   ansible.builtin.systemd:
     name: "{{ item }}"
     enabled: true
     state: started
     daemon_reload: true
-  loop: "{{ ['vctl-node-agent'] + ((['vctl-watch-sessions'] + (['vctl-collect'] if install_collect | bool else [])) if audit_stack | bool else []) }}"
+  loop: "{{ vctl_host_services }}"
 
 - name: Keep collector stopped when not requested (no Tetragon / node-only)
-  when: not (install_collect | bool) or not (audit_stack | bool)
+  when: not (vctl_host_install_collect | bool) or not (vctl_host_audit_stack | bool)
   ansible.builtin.systemd:
     name: vctl-collect
     enabled: false
@@ -256,7 +326,7 @@
   failed_when: false
 
 - name: Keep watch-sessions stopped on node-only hosts (no audit stack)
-  when: not (audit_stack | bool)
+  when: not (vctl_host_audit_stack | bool)
   ansible.builtin.systemd:
     name: vctl-watch-sessions
     enabled: false
@@ -265,7 +335,7 @@
 
 # Before creds/Tetragon are ready, keep everything stopped so nothing crash-loops.
 - name: Keep services stopped until enabled
-  when: not (enable_services | bool and vctl_secret_id.stat.exists | default(false))
+  when: not (vctl_host_enable_services | bool and vctl_host_secret_id.stat.exists | default(false))
   ansible.builtin.systemd:
     name: "{{ item }}"
     enabled: false

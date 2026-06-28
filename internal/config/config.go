@@ -13,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ghdwlsgur/vctl/internal/securefile"
 	"github.com/ghdwlsgur/vctl/internal/syncx"
 )
 
@@ -22,15 +23,20 @@ type Config struct {
 	OIDCRole   string `yaml:"oidc_role"`   // Vault OIDC role (phase 2)
 	OIDCMount  string `yaml:"oidc_mount"`  // Vault OIDC auth mount path
 
-	DBHost           string `yaml:"db_host"`
-	DBServerName     string `yaml:"db_server_name"` // TLS SNI override; defaults to DBHost. Use for port-forward/proxy where dial host != cert name.
-	DBPort           int    `yaml:"db_port"`
-	DBName           string `yaml:"db_name"`
-	DBRoleRO         string `yaml:"db_role_ro"`         // database/creds/<ro> for read paths
-	DBRoleRW         string `yaml:"db_role_rw"`         // database/creds/<rw> for sync/admin paths
-	DBRoleStatus     string `yaml:"db_role_status"`     // database/creds/<status> for node-agent status updates
-	DBRoleMigrate    string `yaml:"db_role_migrate"`    // database/creds/<migrator> for schema changes
-	DBMigrationOwner string `yaml:"db_migration_owner"` // stable owner role for migration objects
+	DBHost            string `yaml:"db_host"`
+	DBServerName      string `yaml:"db_server_name"` // TLS SNI override; defaults to DBHost. Use for port-forward/proxy where dial host != cert name.
+	DBPort            int    `yaml:"db_port"`
+	DBName            string `yaml:"db_name"`
+	DBRoleRO          string `yaml:"db_role_ro"`           // database/creds/<ro> for read paths
+	DBRoleRW          string `yaml:"db_role_rw"`           // database/creds/<rw> for sync/admin paths
+	DBRoleIdentity    string `yaml:"db_role_identity"`     // seen_users upsert during login
+	DBRoleAuditRO     string `yaml:"db_role_audit_ro"`     // access/session/kernel audit reads
+	DBRoleAuditWrite  string `yaml:"db_role_audit_write"`  // append-only SSH access records
+	DBRoleAuditIngest string `yaml:"db_role_audit_ingest"` // host collector/session lifecycle
+	DBRolePrune       string `yaml:"db_role_prune"`        // retention deletes
+	DBRoleStatus      string `yaml:"db_role_status"`       // database/creds/<status> for node-agent status updates
+	DBRoleMigrate     string `yaml:"db_role_migrate"`      // database/creds/<migrator> for schema changes
+	DBMigrationOwner  string `yaml:"db_migration_owner"`   // stable owner role for migration objects
 
 	// Kernel-audit retention. Raw kernel_event rows are high-volume; sessions are
 	// small metadata kept much longer as the dataset index. Pruning is delegated
@@ -80,7 +86,7 @@ func Load() (*Config, error) {
 	c.applyEnv()
 	c.setDerivedDefaults()
 
-	if err := os.MkdirAll(c.StateDir, 0o700); err != nil {
+	if err := securefile.EnsurePrivateDir(c.StateDir, 0o700); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -130,6 +136,11 @@ func (c *Config) applyEnv() {
 	envStrPair(&c.DBName, "DB_NAME")
 	envStrPair(&c.DBRoleRO, "DB_ROLE_RO")
 	envStrPair(&c.DBRoleRW, "DB_ROLE_RW")
+	envStr(&c.DBRoleIdentity, "VCTL_DB_ROLE_IDENTITY")
+	envStr(&c.DBRoleAuditRO, "VCTL_DB_ROLE_AUDIT_RO")
+	envStr(&c.DBRoleAuditWrite, "VCTL_DB_ROLE_AUDIT_WRITE")
+	envStr(&c.DBRoleAuditIngest, "VCTL_DB_ROLE_AUDIT_INGEST")
+	envStr(&c.DBRolePrune, "VCTL_DB_ROLE_PRUNE")
 	envStr(&c.DBRoleStatus, "VCTL_DB_ROLE_STATUS") // VCTL-only
 	envStrPair(&c.DBRoleMigrate, "DB_ROLE_MIGRATE")
 	envStrPair(&c.DBMigrationOwner, "DB_MIGRATION_OWNER")

@@ -11,7 +11,8 @@
 #
 # 마커 디렉터리는 root:root 0700 고정 — 절대 그룹/전역 쓰기로 풀지 말 것.
 # (풀면 비-root 사용자가 타 세션 마커를 위조/삭제할 수 있어 감사 귀속이 깨진다.)
-# 비-root 로그인 호스트는 watch-sessions 의 journal-tail 경로를 쓸 것(권한 완화 금지).
+# 현재 marker backend는 root SSH 세션만 지원한다. 비-root 지원 전에는 디렉터리
+# 권한을 완화하지 말 것. 권한을 풀면 감사 마커 위조/삭제가 가능해진다.
 [ -n "${SSH_USER_AUTH:-}" ] && [ -r "$SSH_USER_AUTH" ] || return 0 2>/dev/null
 
 _vctl_serial=""

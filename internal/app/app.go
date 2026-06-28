@@ -11,6 +11,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/ghdwlsgur/vctl/internal/config"
+	"github.com/ghdwlsgur/vctl/internal/securefile"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -133,10 +134,10 @@ func (a *App) RegisterAgent(ctx context.Context) error {
 	if a.Cfg.AppRoleIDFile == "" || a.Cfg.AppRoleSecretIDFile == "" {
 		return fmt.Errorf("approle credential file paths not set")
 	}
-	if err := os.WriteFile(a.Cfg.AppRoleIDFile, []byte(rid+"\n"), 0o600); err != nil {
+	if err := securefile.WriteAtomic(a.Cfg.AppRoleIDFile, []byte(rid+"\n"), 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(a.Cfg.AppRoleSecretIDFile, []byte(sid+"\n"), 0o600); err != nil {
+	if err := securefile.WriteAtomic(a.Cfg.AppRoleSecretIDFile, []byte(sid+"\n"), 0o600); err != nil {
 		return err
 	}
 	return nil
@@ -201,11 +202,31 @@ func (a *App) OpenStatusStore(ctx context.Context) (*store.Store, error) {
 	return a.OpenStoreRole(ctx, a.Cfg.DBRoleStatus)
 }
 
+func (a *App) OpenIdentityStore(ctx context.Context) (*store.Store, error) {
+	return a.OpenStoreRole(ctx, a.Cfg.DBRoleIdentity)
+}
+
+func (a *App) OpenAuditStore(ctx context.Context) (*store.Store, error) {
+	return a.OpenStoreRole(ctx, a.Cfg.DBRoleAuditRO)
+}
+
+func (a *App) OpenAuditWriterStore(ctx context.Context) (*store.Store, error) {
+	return a.OpenStoreRole(ctx, a.Cfg.DBRoleAuditWrite)
+}
+
+func (a *App) OpenAuditIngestStore(ctx context.Context) (*store.Store, error) {
+	return a.OpenStoreRole(ctx, a.Cfg.DBRoleAuditIngest)
+}
+
+func (a *App) OpenPruneStore(ctx context.Context) (*store.Store, error) {
+	return a.OpenStoreRole(ctx, a.Cfg.DBRolePrune)
+}
+
 // LogAccess records one SSH access attempt to the central audit table using
 // write credentials. It is best-effort: it opens a short-lived RW store, inserts
 // one row, and returns any error for the caller to log without failing the SSH.
 func (a *App) LogAccess(ctx context.Context, entry store.AccessEntry) error {
-	st, err := a.OpenStore(ctx, true)
+	st, err := a.OpenAuditWriterStore(ctx)
 	if err != nil {
 		return err
 	}

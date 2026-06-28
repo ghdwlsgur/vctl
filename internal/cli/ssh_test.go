@@ -39,3 +39,13 @@ func TestAccessEntryIncludesConnectionMetadata(t *testing.T) {
 		t.Fatal("Error is empty")
 	}
 }
+
+func TestSetHostKeyConfirmationAppliesToJumpChain(t *testing.T) {
+	target := &sshc.Target{Jump: &sshc.Target{Jump: &sshc.Target{}}}
+	setHostKeyConfirmation(target, true)
+	for hop := target; hop != nil; hop = hop.Jump {
+		if !hop.ConfirmHostKey {
+			t.Fatal("host-key confirmation was not applied to every hop")
+		}
+	}
+}
