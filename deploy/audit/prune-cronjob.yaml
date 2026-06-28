@@ -2,7 +2,7 @@
 # (kernel_retention_days / session_retention_days). Mirrors Teleport's model:
 # structured rows live in the DB, a lifecycle job enforces retention.
 #
-# Needs: vctl image + AppRole creds (vctl-rw) in secret `vctl-prune-approle`.
+# Needs: vctl image + AppRole creds (vctl-pruner) in secret `vctl-prune-approle`.
 apiVersion: batch/v1
 kind: CronJob
 metadata:

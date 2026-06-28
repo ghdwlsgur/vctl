@@ -4,11 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ghdwlsgur/vctl/internal/securefile"
 )
 
 func TestWriteFileAtomicWrites0600(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token-sink")
-	if err := writeFileAtomic(path, []byte("token"), 0o600); err != nil {
+	if err := securefile.WriteAtomic(path, []byte("token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -40,7 +42,7 @@ func TestWriteFileAtomicRejectsSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeFileAtomic(link, []byte("token"), 0o600); err == nil {
+	if err := securefile.WriteAtomic(link, []byte("token"), 0o600); err == nil {
 		t.Fatal("writeFileAtomic accepted a symlink sink")
 	}
 
@@ -54,7 +56,7 @@ func TestWriteFileAtomicRejectsSymlink(t *testing.T) {
 }
 
 func TestWriteFileAtomicRejectsDirectory(t *testing.T) {
-	if err := writeFileAtomic(t.TempDir(), []byte("token"), 0o600); err == nil {
+	if err := securefile.WriteAtomic(t.TempDir(), []byte("token"), 0o600); err == nil {
 		t.Fatal("writeFileAtomic accepted a directory sink")
 	}
 }

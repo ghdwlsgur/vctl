@@ -1,4 +1,35 @@
 ---
+- name: Read installed AppRole marker for revocation
+  ansible.builtin.slurp:
+    src: /etc/vctl/approle
+  register: vctl_host_absent_approle
+  failed_when: false
+  changed_when: false
+
+- name: Read installed secret_id accessor for revocation
+  ansible.builtin.slurp:
+    src: /etc/vctl/secret-id-accessor
+  register: vctl_host_absent_accessor
+  failed_when: false
+  changed_when: false
+
+- name: Revoke installed AppRole secret_id
+  when:
+    - (vctl_host_absent_approle.content | default('') | length) > 0
+    - (vctl_host_absent_accessor.content | default('') | length) > 0
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    argv:
+      - vault
+      - write
+      - -f
+      - "auth/approle/role/{{ vctl_host_absent_approle.content | b64decode | trim }}/secret-id-accessor/destroy"
+      - "secret_id_accessor={{ vctl_host_absent_accessor.content | b64decode | trim }}"
+  changed_when: true
+  failed_when: false
+  no_log: true
+
 - name: Disable services
   ansible.builtin.systemd:
     name: "{{ item }}"
@@ -23,7 +54,11 @@
     - /etc/systemd/journald.conf.d/vctl-audit.conf
     - /usr/local/sbin/pam-session-stamp.sh
     - /etc/profile.d/vctl-session-stamp.sh
-  notify: daemon-reload
+    - /etc/vctl/role-id
+    - /etc/vctl/secret-id
+    - /etc/vctl/secret-id-accessor
+    - /etc/vctl/approle
+  notify: Reload systemd
 
 - name: Remove ExposeAuthInfo
   ansible.builtin.lineinfile:
@@ -31,7 +66,7 @@
     regexp: '^ExposeAuthInfo'
     state: absent
     validate: "sshd -t -f %s"
-  notify: reload sshd
+  notify: Reload sshd
 
 - name: Remove PAM stamper hook
   ansible.builtin.lineinfile:

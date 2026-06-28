@@ -52,6 +52,7 @@ Non-interactive (scripts/agents):
 				if err != nil {
 					return err
 				}
+				setHostKeyConfirmation(tgt, server == "")
 
 				// Capture the most recent Vault-signed cert serial so the access
 				// audit row maps to a specific issued certificate. On a jump chain
@@ -84,6 +85,13 @@ Non-interactive (scripts/agents):
 	}
 	cmd.Flags().StringVar(&server, "server", "", "exact inventory host to connect to (non-interactive; for scripts/agents)")
 	return cmd
+}
+
+func setHostKeyConfirmation(t *sshc.Target, enabled bool) {
+	for t != nil {
+		t.ConfirmHostKey = enabled
+		t = t.Jump
+	}
 }
 
 // resolveServer resolves a host non-interactively for --server (scripts/agents):

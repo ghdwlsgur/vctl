@@ -1,10 +1,10 @@
 # vctl on-prem host agents (combined) — least privilege.
 # One on-prem host runs the full stack:
-#   - collector / watch-sessions -> database/creds/vctl-rw     (audit writes)
+#   - collector / watch-sessions -> database/creds/vctl-audit-ingest
 #   - node-agent                 -> database/creds/vctl-status  (status reports)
 # All three authenticate with the same AppRole under /etc/vctl, so this grants
 # both DB roles. Nothing else (no SSH signing, KV, sys). Token self-renew only.
-path "database/creds/vctl-rw" {
+path "database/creds/vctl-audit-ingest" {
   capabilities = ["read"]
 }
 

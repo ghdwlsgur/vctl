@@ -48,7 +48,7 @@ apt install ./vctl_<version>_linux_amd64.deb
 dnf install ./vctl_<version>_linux_amd64.rpm
 
 # then, per host:
-install -m 0600 role-id   /etc/vctl/role-id      # AppRole -> vctl-rw (audit) / vctl-status (node)
+install -m 0600 role-id   /etc/vctl/role-id      # AppRole -> vctl-audit-ingest / vctl-status
 install -m 0600 secret-id /etc/vctl/secret-id
 systemctl enable --now vctl-watch-sessions       # SSH session registrar
 systemctl enable --now vctl-collect              # kernel audit (requires tetragon)
@@ -72,7 +72,10 @@ The manual file-by-file steps below remain valid for hosts not yet on the packag
    should not be enabled fleet-wide until event volume is measured.
 4. **Collector + session registrar** — install `vctl-collect.service` (Tetragon
    → events) and `vctl-watch-sessions.service` (PAM markers → sessions), with
-   AppRole creds in `/etc/vctl/` (role → `vctl-rw`), enable both.
+   AppRole creds in `/etc/vctl/` (role -> `vctl-audit-ingest`), enable both.
+   The current root-owned marker backend records root SSH sessions only. Non-root
+   session attribution needs a privileged, authenticated marker transport; do not
+   make `/run/vctl/sessions` group/world-writable as a workaround.
 5. **Resource and log limits** — the systemd units include CPU, memory, task,
    IO weight, restart, and per-unit log rate limits. Both daemons log to
    journald; install

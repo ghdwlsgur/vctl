@@ -68,7 +68,7 @@ sequenceDiagram
   VCTL->>Vault: ssh/sign/<role>
   Vault-->>VCTL: short-lived OpenSSH certificate
   VCTL->>SSH: open SSH session, direct or via jump
-  VCTL->>Vault: read database/creds/vctl-rw
+  VCTL->>Vault: read database/creds/vctl-audit-writer
   VCTL->>PG: insert access_log row
 ```
 
@@ -176,20 +176,23 @@ is re-satisfied by a quick SSO round-trip rather than re-typing a password.
 
 ## Access Control (RBAC)
 
-Authorization is two layers.
+Authorization has a hard server boundary plus a narrower CLI policy.
 
-**Layer 1 — Vault (coarse, bootstrap).** Every authenticated user gets `vctl-user`
-(the SSH-cert-signing capability + inventory reads). Membership in the GitLab
-`vctl-admins` group — or the org `sre` group — maps to `vctl-admin`, which adds
-inventory writes, CA operations, and RBAC management. Vault only distinguishes
-admin from user; it does not gate individual commands. (GitLab *instance* admin is
-not an OIDC claim, so admin is conferred by group membership, not the admin flag.)
+**Layer 1 — Vault (authoritative).** Every authenticated user gets `vctl-user`,
+which can read inventory/RBAC data and update its login record but cannot sign SSH
+certificates or read audit payloads. GitLab groups add capabilities:
 
-**Layer 2 — app (fine, admin-managed).** Which commands a non-admin may run is
-decided by `vctl rbac`, stored centrally in Postgres and enforced before each
-command:
+- `vctl-ssh-users` -> `vctl-ssh`: SSH signing and append-only access logging.
+- `vctl-auditors` -> `vctl-auditor`: read-only access/session/kernel audit data.
+- `vctl-admins` -> admin + SSH + auditor policies: inventory/RBAC writes, migration,
+  CA operations, SSH, and audit reads. Vault policy/Identity administration stays
+  with Terraform/platform administrators to prevent self-escalation.
 
-- Read commands (`list`, `status`, `audit`, `session`) are allowed by default.
+**Layer 2 — app (additional restriction).** `vctl rbac` stores command grants in
+Postgres and is enforced by the stock CLI before each command:
+
+- Read commands are allowed by the app by default, but Vault still denies audit
+  commands unless the token carries `vctl-auditor`.
 - Mutate/connect commands (`ssh`, `exec`, `sync`, `prune`, `trust-ca`) are denied
   until a group grants them.
 - `vctl-admin` (and `sre-admin`) bypass the app layer, so admins never lock out.
@@ -206,8 +209,8 @@ vctl rbac users                    # everyone who has logged in, with their vctl
 
 Candidate users for `assign` come from everyone who has logged in (`vctl login`
 records the identity) plus existing members, so a new teammate appears after one
-login. `vctl ssh` is still also subject to Layer 1: the token must carry the
-signing capability (it does, via `vctl-user`), and the app gate decides the rest.
+login. A PostgreSQL SSH command grant cannot create signing authority: the token
+must independently carry `vctl-ssh`, so direct Vault API calls cannot bypass it.
 
 ## SSH Flow
 
@@ -221,6 +224,10 @@ vctl ssh <host>
   -> open a native SSH session with direct or jump-chain routing
   -> write a best-effort access_log row with source/client/target metadata
 ```
+
+An unknown SSH host key requires explicit confirmation in interactive mode.
+`--server` is non-interactive and rejects unknown keys; pre-populate
+`~/.ssh/known_hosts` through a trusted channel before using it in automation.
 
 A host only accepts those certificates once it trusts the Vault SSH CA. Onboard
 a new host once with `vctl trust-ca` (it installs the CA public key as
@@ -275,7 +282,7 @@ Two optional daemons run *on* the servers (not the workstation). Both authentica
 
 | Daemon | Unit / docs | Vault policy → DB role | Writes |
 |---|---|---|---|
-| Kernel-audit collector + session registrar | `deploy/audit/` (`vctl-collect`, `vctl-watch-sessions`) | `vctl-collector` → `vctl-rw` | `audit_session`, `kernel_event` |
+| Kernel-audit collector + session registrar | `deploy/audit/` (`vctl-collect`, `vctl-watch-sessions`) | `vctl-collector` -> `vctl-audit-ingest` | `audit_session`, `kernel_event` |
 | Node status agent | `deploy/node/` (`vctl-node-agent`) | `vctl-node` → `vctl-status` | `server_status` |
 
 **Per-person session audit.** A login-time stamper records the offered SSH certificate serial, so Tetragon-captured process activity links back to the human who logged in — not just the shared OS login user. Read the joined timeline with:
@@ -341,6 +348,11 @@ db_port: 5432
 db_name: vctl
 db_role_ro: vctl-ro
 db_role_rw: vctl-rw
+db_role_identity: vctl-identity
+db_role_audit_ro: vctl-audit-ro
+db_role_audit_write: vctl-audit-writer
+db_role_audit_ingest: vctl-audit-ingest
+db_role_prune: vctl-pruner
 db_role_status: vctl-status
 db_role_migrate: vctl-migrator
 db_migration_owner: vctl_owner
@@ -375,6 +387,7 @@ PG_ADMIN_PASS=<root-password> ./deploy/vault/setup.sh
 
 # Create a userpass account for a teammate.
 vault write auth/userpass/users/<id> password=<once> policies=vctl-user
+# Add vctl-ssh and/or vctl-auditor only when that person needs those capabilities.
 
 # Initial inventory load with a vctl-admin token.
 vctl sync --migrate

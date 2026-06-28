@@ -1,33 +1,33 @@
 ---
-- name: reload sshd
-  # Service name differs by distro: sshd (RHEL) / ssh (Debian·Ubuntu) — try both.
-  ansible.builtin.shell: systemctl reload sshd 2>/dev/null || systemctl reload ssh
-  changed_when: true
+- name: Reload sshd
+  ansible.builtin.systemd:
+    name: "{{ vctl_host_sshd_service }}"
+    state: reloaded
 
-- name: daemon-reload
+- name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
 
 # Restart the services that SHOULD be running so a new binary / unit / drop-in
 # actually takes effect (state: started alone never restarts a live service, so
 # a deploy could otherwise leave the old process running). Only the should-run
-# set is restarted — collector is included only when install_collect, so a
+# set is restarted — collector is included only when vctl_host_install_collect, so a
 # node-only host never gets collector started here. Defined after daemon-reload
 # so the reloaded unit is in effect before the restart (handlers run in file order).
-- name: restart vctl services
+- name: Restart vctl services
   ansible.builtin.systemd:
     name: "{{ item }}"
     state: restarted
-  loop: "{{ ['vctl-node-agent'] + ((['vctl-watch-sessions'] + (['vctl-collect'] if install_collect | bool else [])) if audit_stack | bool else []) }}"
-  when: enable_services | bool and (vctl_secret_id.stat.exists | default(false))
+  loop: "{{ vctl_host_services }}"
+  when: vctl_host_enable_services | bool and (vctl_host_secret_id.stat.exists | default(false))
 
-- name: restart journald
+- name: Restart journald
   ansible.builtin.service:
     name: systemd-journald
     state: restarted
 
 # Tetragon reloads tracingpolicies from /etc/tetragon/tetragon.tp.d on restart.
-- name: restart tetragon
+- name: Restart tetragon
   ansible.builtin.systemd:
     name: tetragon
     state: restarted

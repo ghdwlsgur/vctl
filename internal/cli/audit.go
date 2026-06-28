@@ -29,7 +29,7 @@ This is the inventory-level audit. The authoritative record of every signing
 request lives in the Vault file audit device on the Vault pod
 (/vault/audit/vault_audit.log) - use it for forensic / tamper-evident review.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return withAuditStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
 				entries, err := st.AccessLog(cmd.Context(), limit, host, user, sourceIP)
 				if err != nil {
 					return err

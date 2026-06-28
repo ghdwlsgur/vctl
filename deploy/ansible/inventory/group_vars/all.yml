@@ -1,5 +1,5 @@
 ---
-# Non-sensitive shared defaults. Per-network sre_lb_ip lives in the inventory
+# Non-sensitive shared defaults. Per-network vctl_host_sre_lb_ip lives in the inventory
 # group vars (kept out of git) or is passed with -e. Real internal IPs are never
 # committed — see hosts.example.ini.
 ansible_python_interpreter: /usr/bin/python3

@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -46,7 +47,12 @@ Run from a CronJob. Use --dry-run to preview counts.
 				return fmt.Errorf("kernel retention days must be > 0 (got %d); set --days or kernel_retention_days", days)
 			}
 
-			st, err := a.OpenStore(ctx, !dryRun) // RW to delete; RO suffices for dry-run
+			var st *store.Store
+			if dryRun {
+				st, err = a.OpenAuditStore(ctx)
+			} else {
+				st, err = a.OpenPruneStore(ctx)
+			}
 			if err != nil {
 				return err
 			}

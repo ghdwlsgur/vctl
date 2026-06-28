@@ -13,6 +13,9 @@ var version = "dev"
 func main() {
 	cli.Version = version
 	if err := cli.Execute(); err != nil {
+		if code, ok := cli.ChildExitCode(err); ok {
+			os.Exit(code)
+		}
 		ui.Errorf(os.Stderr, "%v", err)
 		os.Exit(1)
 	}

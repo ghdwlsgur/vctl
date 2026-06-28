@@ -45,7 +45,7 @@ so use it only for automation/bootstrap, never for day-to-day human access.`,
 			// the cached token to the approle.
 			if m != "approle" {
 				if id := a.Vault.Identity(ctx); id != "" {
-					if st, err := a.OpenStore(ctx, true); err == nil {
+					if st, err := a.OpenIdentityStore(ctx); err == nil {
 						if err := st.RecordSeenUser(ctx, id, Version); err != nil {
 							ui.Warnf(os.Stderr, "rbac: could not register identity %q: %v", id, err)
 						}

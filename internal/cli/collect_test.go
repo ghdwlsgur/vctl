@@ -9,7 +9,7 @@ func TestMapTetra(t *testing.T) {
 	exec := tetraEvent{
 		NodeName: "h1",
 		ProcessExec: &tetraExec{
-			Process: tetraProcess{PID: 10, UID: 0, CWD: "/root", Binary: "/usr/bin/id", Arguments: "-u", CgroupID: "12345"},
+			Process: tetraProcess{PID: 10, UID: 0, CWD: "/root", Binary: "/usr/bin/id", Arguments: "--token secret -u", CgroupID: "12345"},
 			Parent:  tetraProcess{PID: 9},
 		},
 	}
@@ -18,7 +18,7 @@ func TestMapTetra(t *testing.T) {
 		t.Fatal("exec should map")
 	}
 	if ev.Kind != "exec" || ev.Hostname != "h1" || ev.Binary != "/usr/bin/id" ||
-		ev.PID != 10 || ev.PPID != 9 || ev.CgroupID != 12345 {
+		ev.PID != 10 || ev.PPID != 9 || ev.CgroupID != 12345 || ev.Args != "--token [REDACTED] -u" {
 		t.Fatalf("exec mapping wrong: %+v", ev)
 	}
 

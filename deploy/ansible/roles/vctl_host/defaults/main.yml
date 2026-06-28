@@ -1,62 +1,78 @@
 ---
 # vctl_host role defaults. Override per group in inventory/group_vars or with -e.
-state: present
+vctl_host_state: "{{ state | default('present') }}"
+
+# Distribution service name used by the validated sshd reload handler.
+vctl_host_sshd_service: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
 
 # Release binary (linux/amd64), placed under the playbook's files/ (gitignored).
 #   gh release download vX.Y.Z -p 'vctl_*_linux_amd64.tar.gz' && tar -xzf … -C files/
-vctl_bin_src: "{{ playbook_dir }}/files/vctl"
-vctl_bin_dest: /usr/local/bin/vctl
+vctl_host_bin_src: "{{ vctl_bin_src | default(playbook_dir + '/files/vctl') }}"
+vctl_host_bin_dest: "{{ vctl_bin_dest | default('/usr/local/bin/vctl') }}"
 
 # Daemon scope.
-#   install_collect=false installs the collector unit but does NOT enable it (it
+#   vctl_host_install_collect=false installs the collector unit but does NOT enable it (it
 #   needs Tetragon) — use for a Tetragon-free rollout of node-agent + watch.
-install_collect: true
-enable_services: true
+vctl_host_install_collect: "{{ install_collect | default(true) }}"
+vctl_host_enable_services: "{{ enable_services | default(true) }}"
 
-# audit_stack=true (default): full stack — collector/watch-sessions (DB write) +
-#   node-agent → uses the vctl-host AppRole (vctl-rw + vctl-status).
-# audit_stack=false: node-agent ONLY (status heartbeat, no DB write) → uses the
+# vctl_host_audit_stack=true (default): full stack — collector/watch-sessions (DB write) +
+#   node-agent -> uses the vctl-host AppRole (audit ingest + vctl-status).
+# vctl_host_audit_stack=false: node-agent ONLY (status heartbeat, no DB write) → uses the
 #   least-privilege vctl-node AppRole (vctl-status only); watch/collect are not
 #   enabled. Set false for hosts you only want liveness from.
-audit_stack: true
+vctl_host_audit_stack: "{{ audit_stack | default(true) }}"
 # Derived: which AppRole the host authenticates with (least privilege per scope).
-vctl_approle: "{{ 'vctl-host' if audit_stack | bool else 'vctl-node' }}"
+vctl_host_approle: >-
+  {{ vctl_approle | default('vctl-host' if vctl_host_audit_stack | bool else 'vctl-node') }}
 
 # Per-host AppRole secret_id is minted from the control node's Vault token.
-provision_secret_id: true
+vctl_host_provision_secret_id: "{{ provision_secret_id | default(true) }}"
+# Vault AppRole secret IDs expire after 30 days. Rotate on a successful play
+# before that deadline so a later daemon restart can still authenticate.
+vctl_host_secret_rotation_days: 21
 
 # Tetragon (kernel-event source for the collector). Bare VMs: systemd install
-# here. k8s nodes: set install_tetragon=false and run a DaemonSet instead.
-install_tetragon: true
-tetragon_version: v1.1.2
-tetragon_url: "https://github.com/cilium/tetragon/releases/download/{{ tetragon_version }}/tetragon-{{ tetragon_version }}-amd64.tar.gz"
+# here. k8s nodes: set vctl_host_install_tetragon=false and run a DaemonSet instead.
+vctl_host_install_tetragon: "{{ install_tetragon | default(true) }}"
+vctl_host_tetragon_version: "{{ tetragon_version | default('v1.1.2') }}"
+vctl_host_tetragon_archive: "tetragon-{{ vctl_host_tetragon_version }}-amd64.tar.gz"
+vctl_host_tetragon_url: >-
+  {{ tetragon_url | default('https://github.com/cilium/tetragon/releases/download/' +
+     vctl_host_tetragon_version + '/' + vctl_host_tetragon_archive) }}
 # Pin the release digest per version (e.g. "sha256:…"). Empty = no verification
 # (acceptable only for the public HTTPS URL; set before fronting an internal mirror).
-tetragon_sha256: ""
+vctl_host_tetragon_sha256: "{{ tetragon_sha256 | default('') }}"
 
 # Verbose SRE tracingpolicy (security_file_open + tcp_connect for a narrow command
 # set) is high-volume — opt-in, "canary only". When false, exec/exit still flow
 # from Tetragon's base sensor (no policy needed); the verbose policy is removed.
-install_verbose_tracingpolicy: false
+vctl_host_install_verbose_tracingpolicy: "{{ install_verbose_tracingpolicy | default(false) }}"
 
 # REQUIRED (no default — internal IPs are not baked into the repo): the LB that
 # fronts *.sre.local for this host's network. Set per group in group_vars or with
-# -e sre_lb_ip=<ip>. Asserted non-empty before use.
-sre_lb_ip: ""
+# -e vctl_host_sre_lb_ip=<ip>. Asserted non-empty before use.
+vctl_host_sre_lb_ip: "{{ sre_lb_ip | default('') }}"
 
 # Vault and Postgres may sit behind different LBs on some networks (e.g. incheon
 # reaches Vault via the local ingress but Postgres via a WireGuard-gateway proxy).
-# Both default to sre_lb_ip, so single-LB networks (seoul) need only sre_lb_ip.
+# Both default to vctl_host_sre_lb_ip, so single-LB networks (seoul) need only vctl_host_sre_lb_ip.
 # Override per group when the two endpoints differ.
-vault_lb_ip: "{{ sre_lb_ip }}"
-pg_lb_ip: "{{ sre_lb_ip }}"
+vctl_host_vault_lb_ip: "{{ vault_lb_ip | default(vctl_host_sre_lb_ip) }}"
+vctl_host_pg_lb_ip: "{{ pg_lb_ip | default(vctl_host_sre_lb_ip) }}"
 
 # Inventory hostname the node-agent reports under. Defaults to the Ansible
 # inventory_hostname; override per host when the vctl inventory name can't be an
 # Ansible alias (e.g. tenant-prefixed "[admin]-wireguard-gw-incheon").
-vctl_node_hostname: "{{ inventory_hostname }}"
+vctl_host_node_hostname: "{{ vctl_node_hostname | default(inventory_hostname) }}"
 
 # Canonical unit/script sources live in deploy/audit and deploy/node (one source
 # of truth — not duplicated into the role).
-vctl_audit_src: "{{ playbook_dir }}/../audit"
-vctl_node_src: "{{ playbook_dir }}/../node"
+vctl_host_audit_src: "{{ vctl_audit_src | default(playbook_dir + '/../audit') }}"
+vctl_host_node_src: "{{ vctl_node_src | default(playbook_dir + '/../node') }}"
+
+vctl_host_services: >-
+  {{ ['vctl-node-agent'] +
+     ((['vctl-watch-sessions'] +
+       (['vctl-collect'] if vctl_host_install_collect | bool else []))
+      if vctl_host_audit_stack | bool else []) }}

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,21 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/agent"
 )
+
+// CommandExitError carries a child exit status through Cobra without terminating
+// inside RunE, so deferred signal/context cleanup still runs.
+type CommandExitError struct{ Code int }
+
+func (e *CommandExitError) Error() string { return fmt.Sprintf("child exited with status %d", e.Code) }
+
+// ChildExitCode extracts an exit status returned by vctl exec.
+func ChildExitCode(err error) (int, bool) {
+	var exitErr *CommandExitError
+	if !errors.As(err, &exitErr) {
+		return 0, false
+	}
+	return exitErr.Code, true
+}
 
 func execCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -53,7 +69,7 @@ vctl renews or re-authenticates the token while the child process is alive.
 
 			if err := child.Run(); err != nil {
 				if ee, ok := err.(*exec.ExitError); ok {
-					os.Exit(ee.ExitCode())
+					return &CommandExitError{Code: ee.ExitCode()}
 				}
 				return err
 			}

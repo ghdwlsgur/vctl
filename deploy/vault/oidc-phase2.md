@@ -28,9 +28,10 @@ vault write auth/oidc/role/vctl \
   groups_claim="groups" \
   policies="vctl-user"
 
-# 4. Optional: map GitLab groups to Vault external groups.
-#    sre-team -> vctl-user
-#    sre-admins -> vctl-admin
+# 4. Map GitLab groups to Vault external groups (Terraform groups.tf does this).
+#    vctl-ssh-users -> vctl-ssh
+#    vctl-auditors  -> vctl-auditor
+#    vctl-admins    -> vctl-admin + vctl-ssh + vctl-auditor
 ```
 
 After the Vault side is ready, switch the client default:

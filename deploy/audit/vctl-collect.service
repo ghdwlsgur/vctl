@@ -2,7 +2,7 @@
 # Privileged: holds Vault AppRole creds (the only place on the host with DB write).
 #
 # Install: /etc/systemd/system/vctl-collect.service ; systemctl enable --now vctl-collect
-# Creds:   /etc/vctl/role-id, /etc/vctl/secret-id (AppRole -> vctl-rw)
+# Creds:   /etc/vctl/role-id, /etc/vctl/secret-id (AppRole -> vctl-audit-ingest)
 #
 # Tetragon export here uses its gRPC stream via `tetra getevents`. Adjust the
 # socket/path to your Tetragon install.

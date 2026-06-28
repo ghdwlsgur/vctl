@@ -3,20 +3,20 @@
 # sshd/PAM changes validate (sshd -t) before reload; the AppRole secret_id is
 # never baked (minted per host from the control node); state=absent rolls back.
 - name: Assert Vault/Postgres LB IPs are provided
-  when: state == 'present'
+  when: vctl_host_state == 'present'
   ansible.builtin.assert:
     that:
-      - vault_lb_ip | length > 0
-      - pg_lb_ip | length > 0
+      - vctl_host_vault_lb_ip | length > 0
+      - vctl_host_pg_lb_ip | length > 0
     fail_msg: >-
-      An LB fronting *.sre.local is required. Set sre_lb_ip (covers both Vault
-      and Postgres) in inventory/group_vars or -e sre_lb_ip=<ip>; or set
-      vault_lb_ip and pg_lb_ip separately when they differ (e.g. incheon).
+      An LB fronting *.sre.local is required. Set vctl_host_sre_lb_ip (covers both Vault
+      and Postgres) in inventory/group_vars or -e vctl_host_sre_lb_ip=<ip>; or set
+      vctl_host_vault_lb_ip and vctl_host_pg_lb_ip separately when they differ (e.g. incheon).
 
 - name: Install / onboard
-  when: state == 'present'
+  when: vctl_host_state == 'present'
   ansible.builtin.import_tasks: present.yml
 
 - name: Roll back
-  when: state == 'absent'
+  when: vctl_host_state == 'absent'
   ansible.builtin.import_tasks: absent.yml
