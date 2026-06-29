@@ -99,12 +99,16 @@ func (s *Store) Close() {
 	}
 }
 
-// extraIPsCol renders servers.extra_ips (inet[]) as a text[] of bare host
-// addresses so it scans straight into Server.ExtraIPs ([]string). Prefix is the
-// table alias plus a dot ("" for an unqualified query, "srv." for a join).
-func extraIPsCol(prefix string) string {
-	return `coalesce((SELECT array_agg(host(x)) FROM unnest(` + prefix + `extra_ips) AS x), ARRAY[]::text[])`
+// ipArrayCol renders an inet[] column as a text[] of bare host addresses so it
+// scans straight into a []string. expr is the column reference (optionally
+// table-qualified), e.g. "extra_ips", "srv.extra_ips", "ss.observed_ips".
+func ipArrayCol(expr string) string {
+	return `coalesce((SELECT array_agg(host(x)) FROM unnest(` + expr + `) AS x), ARRAY[]::text[])`
 }
+
+// extraIPsCol is ipArrayCol for servers.extra_ips. prefix is the table alias
+// plus a dot ("" for an unqualified query, "srv." for a join).
+func extraIPsCol(prefix string) string { return ipArrayCol(prefix + "extra_ips") }
 
 var selectCols = `hostname, host(ip), ssh_port, ssh_user, coalesce(jump_via,''), dc, ca_role, ca_key_version, last_seen_up, ` + extraIPsCol("")
 
@@ -152,20 +156,13 @@ func (s *Store) Resolve(ctx context.Context, query string) (*Server, []Server, e
 		return sv, nil, nil
 	}
 
-	var (
-		where string
-		arg   string
-	)
+	where := `hostname ILIKE '%'||$1||'%'`
 	if net.ParseIP(query) != nil {
 		// Match the address across primary, operator-curated, and observed sets.
 		where = `host(ip)=$1 OR $1::inet = ANY(extra_ips) OR hostname IN ` +
 			`(SELECT hostname FROM server_status WHERE $1::inet = ANY(observed_ips))`
-		arg = query
-	} else {
-		where = `hostname ILIKE '%'||$1||'%'`
-		arg = query
 	}
-	rows, err := s.pool.Query(ctx, `SELECT `+selectCols+` FROM servers WHERE `+where+` ORDER BY hostname`, arg)
+	rows, err := s.pool.Query(ctx, `SELECT `+selectCols+` FROM servers WHERE `+where+` ORDER BY hostname`, query)
 	if err != nil {
 		return nil, nil, err
 	}
