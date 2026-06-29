@@ -5,7 +5,21 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
+
+func scanRBACGroup(r pgx.Rows) (RBACGroup, error) {
+	var g RBACGroup
+	err := r.Scan(&g.Name, &g.Description, &g.Members, &g.Commands)
+	return g, err
+}
+
+func scanSeenUser(r pgx.Rows) (SeenUser, error) {
+	var u SeenUser
+	err := r.Scan(&u.Username, &u.Version, &u.LastSeen)
+	return u, err
+}
 
 // RBACGroup is a named permission group in the app-layer RBAC (layer 2).
 type RBACGroup struct {
@@ -31,24 +45,11 @@ func (s *Store) RBACGroupDelete(ctx context.Context, name string) error {
 
 // RBACGroups lists all groups with member/grant counts.
 func (s *Store) RBACGroups(ctx context.Context) ([]RBACGroup, error) {
-	rows, err := s.pool.Query(ctx, `
+	return queryAndCollect(ctx, s.pool, `
 		SELECT g.name, g.description,
 		       (SELECT count(*) FROM rbac_members m WHERE m.group_name = g.name),
 		       (SELECT count(*) FROM rbac_grants  r WHERE r.group_name = g.name)
-		FROM rbac_groups g ORDER BY g.name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []RBACGroup
-	for rows.Next() {
-		var g RBACGroup
-		if err := rows.Scan(&g.Name, &g.Description, &g.Members, &g.Commands); err != nil {
-			return nil, err
-		}
-		out = append(out, g)
-	}
-	return out, rows.Err()
+		FROM rbac_groups g ORDER BY g.name`, nil, scanRBACGroup)
 }
 
 // RBACGroupExists reports whether a group is defined.
@@ -103,23 +104,18 @@ func (s *Store) RBACGroupsForUser(ctx context.Context, user string) ([]string, e
 // RBACCommandsForUser returns the set of commands granted to a user via any of
 // their groups. '*' in the set means all commands.
 func (s *Store) RBACCommandsForUser(ctx context.Context, user string) (map[string]bool, error) {
-	rows, err := s.pool.Query(ctx, `
+	cmds, err := queryAndCollect(ctx, s.pool, `
 		SELECT DISTINCT r.command FROM rbac_grants r
 		JOIN rbac_members m ON m.group_name = r.group_name
-		WHERE m.username = $1`, user)
+		WHERE m.username = $1`, []any{user}, scanString)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]bool{}
-	for rows.Next() {
-		var c string
-		if err := rows.Scan(&c); err != nil {
-			return nil, err
-		}
+	out := make(map[string]bool, len(cmds))
+	for _, c := range cmds {
 		out[c] = true
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // SeenUser is a person who has logged in, with the vctl version they last used.
@@ -146,21 +142,9 @@ func (s *Store) RecordSeenUser(ctx context.Context, username, version string) er
 
 // SeenUsers lists everyone recorded at login, with version and last-seen time.
 func (s *Store) SeenUsers(ctx context.Context) ([]SeenUser, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT username, coalesce(vctl_version, ''), last_seen FROM seen_users ORDER BY username`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []SeenUser
-	for rows.Next() {
-		var u SeenUser
-		if err := rows.Scan(&u.Username, &u.Version, &u.LastSeen); err != nil {
-			return nil, err
-		}
-		out = append(out, u)
-	}
-	return out, rows.Err()
+	return queryAndCollect(ctx, s.pool,
+		`SELECT username, coalesce(vctl_version, ''), last_seen FROM seen_users ORDER BY username`,
+		nil, scanSeenUser)
 }
 
 // RBACCandidateUsers returns known usernames to offer in the interactive
@@ -175,26 +159,17 @@ func (s *Store) RBACCandidateUsers(ctx context.Context) ([]string, error) {
 		`SELECT DISTINCT username FROM seen_users`,
 	}
 	for _, q := range sources {
-		rows, err := s.pool.Query(ctx, q)
+		users, err := queryAndCollect(ctx, s.pool, q, nil, scanString)
 		if err != nil {
 			if strings.Contains(err.Error(), "42P01") { // table not migrated yet
 				continue
 			}
 			return nil, err
 		}
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				rows.Close()
-				return nil, err
-			}
+		for _, v := range users {
 			if v != "" {
 				set[v] = true
 			}
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 	}
 	out := make([]string, 0, len(set))
@@ -206,18 +181,5 @@ func (s *Store) RBACCandidateUsers(ctx context.Context) ([]string, error) {
 }
 
 func (s *Store) rbacStrings(ctx context.Context, q, arg string) ([]string, error) {
-	rows, err := s.pool.Query(ctx, q, arg)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, rows.Err()
+	return queryAndCollect(ctx, s.pool, q, []any{arg}, scanString)
 }
