@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // mcp exposes the read-only inventory over the Model Context Protocol (stdio)
@@ -70,16 +70,19 @@ type mcpError struct {
 }
 
 func serveMCP(ctx context.Context, in io.Reader, out io.Writer) error {
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	// A streaming decoder reads one JSON value per call regardless of size, so a
+	// large frame can't trip a line-length cap (a bufio.Scanner would terminate
+	// the session on a token over its max). Whitespace/newlines between frames
+	// are skipped by the decoder.
+	dec := json.NewDecoder(in)
 	enc := json.NewEncoder(out)
-	for sc.Scan() {
-		if len(strings.TrimSpace(sc.Text())) == 0 {
-			continue
-		}
+	for {
 		var req mcpRequest
-		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
-			continue // ignore unparseable frames
+		if err := dec.Decode(&req); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
 		}
 		resp, respond := dispatchMCP(ctx, &req)
 		if !respond {
@@ -89,7 +92,6 @@ func serveMCP(ctx context.Context, in io.Reader, out io.Writer) error {
 			return err
 		}
 	}
-	return sc.Err()
 }
 
 func dispatchMCP(ctx context.Context, req *mcpRequest) (mcpResponse, bool) {
@@ -105,6 +107,9 @@ func dispatchMCP(ctx context.Context, req *mcpRequest) (mcpResponse, bool) {
 	case "tools/list":
 		resp.Result = map[string]any{"tools": mcpTools()}
 	case "tools/call":
+		if notification {
+			return resp, false // a request, not a notification — don't run a side-effecting tool whose result would be discarded
+		}
 		resp.Result = mcpCallTool(ctx, req.Params)
 	case "ping":
 		resp.Result = map[string]any{}
@@ -216,23 +221,23 @@ func mcpToolSSHExec(ctx context.Context, host, command string, timeout int) (str
 	if strings.TrimSpace(host) == "" || strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("host and command are required")
 	}
-	if timeout <= 0 || timeout > 600 {
+	if timeout <= 0 {
 		timeout = 60
+	}
+	if timeout > 600 {
+		timeout = 600 // clamp to the documented max rather than resetting to default
 	}
 	var out map[string]any
 	err := withMCPStore(ctx, false, func(a *app.App, st *store.Store) error {
 		// app-RBAC ssh gate (Layer 2), mirroring enforceRBAC; Vault cert signing
-		// is the Layer-1 gate enforced when SignSSH runs below.
-		pols, _ := a.Vault.TokenPolicies(ctx)
-		if !hasAdminPolicy(pols) {
-			id := a.Vault.Identity(ctx)
-			cmds, rerr := st.RBACCommandsForUser(ctx, id)
-			if rerr != nil && !isUninitializedRBAC(rerr) {
-				return rerr
-			}
-			if !cmds["*"] && !cmds["ssh"] {
-				return fmt.Errorf("rbac: 'ssh' not permitted for %q (needs vctl-ssh-users/admin + an rbac grant; the read-only AppRole cannot ssh)", id)
-			}
+		// is the Layer-1 gate enforced when SignSSH runs below. loadUserAuth fails
+		// closed on a Vault policy-lookup error (no silent admin-misclassification).
+		ua, err := loadUserAuth(ctx, a, st)
+		if err != nil {
+			return err
+		}
+		if !ua.allows("ssh") {
+			return fmt.Errorf("rbac: 'ssh' not permitted for %q (needs vctl-ssh-users/admin + an rbac grant; the read-only AppRole cannot ssh)", ua.identity)
 		}
 
 		target, err := resolveServer(ctx, st, host)
@@ -246,24 +251,25 @@ func mcpToolSSHExec(ctx context.Context, host, command string, timeout int) (str
 		setHostKeyConfirmation(tgt, false) // non-interactive: never prompt to confirm host keys
 		setAutoAddHostKey(tgt, true)       // record an unknown host key on first use (accept-new) instead of failing
 
-		sign, certSerial := signAndTrackSerial(ctx, a)
-
+		// Bound signing+dial+exec by the per-command timeout (sign closes over runCtx).
 		runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
+		sign, certSerial := signAndTrackSerial(runCtx, a)
 		res, connInfo, runErr := sshc.Run(runCtx, tgt, sign, command)
 
-		// best-effort central access log (own audit-writer store; never fatal)
-		_ = a.LogAccess(ctx, accessEntry(a.Vault.Identity(ctx), tgt, connInfo, certSerial(), runErr))
-
-		if runErr != nil {
-			return runErr
+		// best-effort central access log; surface a failure (mirrors `vctl ssh`)
+		// so an automated SSH never runs without a trace silently.
+		if logErr := a.LogAccess(ctx, accessEntry(ua.identity, tgt, connInfo, certSerial(), runErr)); logErr != nil {
+			ui.Warnf(os.Stderr, "access log not recorded: %v", logErr)
 		}
-		out = map[string]any{
-			"host":      target.Hostname,
-			"addr":      tgt.Addr,
-			"exit_code": res.ExitCode,
-			"stdout":    res.Stdout,
-			"stderr":    res.Stderr,
+
+		// Return structured output in-band, including partial stdout/stderr on a
+		// timeout and the error itself, so the agent can diagnose rather than lose it.
+		out = map[string]any{"host": target.Hostname, "addr": tgt.Addr, "stdout": res.Stdout, "stderr": res.Stderr}
+		if runErr != nil {
+			out["error"] = runErr.Error()
+		} else {
+			out["exit_code"] = res.ExitCode
 		}
 		return nil
 	})
@@ -350,23 +356,16 @@ func mcpToolResolve(ctx context.Context, query string) (string, error) {
 func mcpToolWhoami(ctx context.Context) (string, error) {
 	var out map[string]any
 	err := withMCPStore(ctx, false, func(a *app.App, st *store.Store) error {
-		id := a.Vault.Identity(ctx)
-		pols, _ := a.Vault.TokenPolicies(ctx)
-		admin := hasAdminPolicy(pols)
-		out = map[string]any{"identity": id, "policies": pols, "admin": admin}
-		if admin {
-			out["rbac_commands"] = []string{"*"}
-			return nil
-		}
-		cmds, err := st.RBACCommandsForUser(ctx, id)
+		ua, err := loadUserAuth(ctx, a, st)
 		if err != nil {
-			if isUninitializedRBAC(err) {
-				out["rbac_commands"] = []string{}
-				return nil
-			}
 			return err
 		}
-		out["rbac_commands"] = slices.Sorted(maps.Keys(cmds))
+		out = map[string]any{"identity": ua.identity, "policies": ua.policies, "admin": ua.admin}
+		if ua.admin {
+			out["rbac_commands"] = []string{"*"}
+		} else {
+			out["rbac_commands"] = slices.Sorted(maps.Keys(ua.commands))
+		}
 		return nil
 	})
 	if err != nil {
