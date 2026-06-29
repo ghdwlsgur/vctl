@@ -1,12 +1,50 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/store"
 )
+
+// userAuth is a snapshot of the caller's identity and authorization, shared by
+// enforceRBAC, the MCP ssh gate, and whoami so the three agree on admin status
+// and granted commands.
+type userAuth struct {
+	identity string
+	policies []string
+	admin    bool
+	commands map[string]bool // app-RBAC grants (nil when admin or RBAC uninitialized)
+}
+
+// loadUserAuth reads the caller's Vault policies (failing closed on a lookup
+// error) and, for non-admins, their app-RBAC command grants.
+func loadUserAuth(ctx context.Context, a *app.App, st *store.Store) (userAuth, error) {
+	pols, err := a.Vault.TokenPolicies(ctx)
+	if err != nil {
+		return userAuth{}, fmt.Errorf("rbac: token lookup: %w", err)
+	}
+	ua := userAuth{identity: a.Vault.Identity(ctx), policies: pols, admin: hasAdminPolicy(pols)}
+	if ua.admin {
+		return ua, nil
+	}
+	cmds, err := st.RBACCommandsForUser(ctx, ua.identity)
+	if err != nil && !isUninitializedRBAC(err) {
+		return ua, err
+	}
+	ua.commands = cmds
+	return ua, nil
+}
+
+// allows reports whether the caller may run the named gated command.
+func (ua userAuth) allows(name string) bool {
+	return ua.admin || ua.commands["*"] || ua.commands[name]
+}
 
 // PostgreSQL command grants are an additional client policy. Vault policies are
 // the authoritative boundary for SSH signing, audit reads, and database roles.

@@ -96,7 +96,12 @@ func Run(ctx context.Context, t *Target, sign SignFunc, command string) (RunResu
 	go func() { done <- sess.Run(command) }()
 	select {
 	case <-ctx.Done():
+		// SIGKILL is best-effort (OpenSSH ignores signals on non-PTY exec), so
+		// close the session to actually unblock sess.Run, then wait for the
+		// goroutine to stop writing the buffers before reading them (no race).
 		_ = sess.Signal(ssh.SIGKILL)
+		_ = sess.Close()
+		<-done
 		return RunResult{Stdout: stdout.String(), Stderr: stderr.String()}, info, ctx.Err()
 	case runErr := <-done:
 		res := RunResult{Stdout: stdout.String(), Stderr: stderr.String()}
