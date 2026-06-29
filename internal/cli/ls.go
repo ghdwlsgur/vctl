@@ -40,6 +40,30 @@ func lsCmd() *cobra.Command {
 	return cmd
 }
 
+// ipCell renders the primary address plus any additional ones (operator-set
+// extra_ips and node-agent observed_ips), deduped, so a multi-homed host shows
+// every address that `vctl ssh --server <ip>` will match. Extras are muted.
+func ipCell(s store.ServerWithStatus) string {
+	seen := map[string]bool{s.IP: true}
+	var extra []string
+	add := func(ips []string) {
+		for _, ip := range ips {
+			if ip != "" && !seen[ip] {
+				seen[ip] = true
+				extra = append(extra, ip)
+			}
+		}
+	}
+	add(s.ExtraIPs)
+	if s.Status != nil {
+		add(s.Status.ObservedIPs)
+	}
+	if len(extra) == 0 {
+		return s.IP
+	}
+	return s.IP + " " + ui.Muted("+"+strings.Join(extra, " +"))
+}
+
 // renderInventory prints the inventory grouped by DC. Each DC gets a header with
 // its reachable/total count, and every host row leads with a colored status dot
 // (the same up/stale/down decision as the `vctl ssh` picker), so the fleet reads
@@ -58,7 +82,7 @@ func renderInventory(w io.Writer, servers []store.ServerWithStatus) {
 			jump = ui.Muted("direct")
 		}
 		host[i] = ui.Truncate(s.Hostname, 40)
-		cells[i] = []string{s.IP, s.User, jump, liveStatus(s), agentStatus(s.Status)}
+		cells[i] = []string{ipCell(s), s.User, jump, liveStatus(s), agentStatus(s.Status)}
 		if n := lipgloss.Width(host[i]); n > widths[0] {
 			widths[0] = n
 		}

@@ -20,6 +20,7 @@ type ServerStatus struct {
 	Load1           *float64
 	MemoryUsedPct   *float64
 	DiskRootUsedPct *float64
+	ObservedIPs     []string // non-loopback IPv4 the agent sees on the host's NICs
 }
 
 // ServerWithStatus combines operator-managed inventory with observed runtime state.
@@ -34,9 +35,9 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO server_status
 			(hostname, last_seen_at, agent_version, os, kernel, uptime_seconds, load1,
-			 memory_used_pct, disk_root_used_pct, updated_at)
+			 memory_used_pct, disk_root_used_pct, observed_ips, updated_at)
 		SELECT $1, now(), NULLIF($2,''), NULLIF($3,''), NULLIF($4,''), NULLIF($5::bigint,0), $6,
-		       $7, $8, now()
+		       $7, $8, coalesce($9::inet[],'{}'), now()
 		WHERE EXISTS (SELECT 1 FROM servers WHERE hostname=$1)
 		ON CONFLICT (hostname) DO UPDATE SET
 			last_seen_at=EXCLUDED.last_seen_at,
@@ -47,9 +48,10 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 			load1=EXCLUDED.load1,
 			memory_used_pct=EXCLUDED.memory_used_pct,
 			disk_root_used_pct=EXCLUDED.disk_root_used_pct,
+			observed_ips=EXCLUDED.observed_ips,
 			updated_at=now()`,
 		st.Hostname, st.AgentVersion, st.OS, st.Kernel, st.UptimeSeconds, st.Load1,
-		st.MemoryUsedPct, st.DiskRootUsedPct)
+		st.MemoryUsedPct, st.DiskRootUsedPct, st.ObservedIPs)
 	if err != nil {
 		return false, err
 	}
@@ -60,7 +62,8 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStatus, error) {
 	q := `SELECT ` + prefixedSelectCols("srv") + `,
 		       coalesce(ss.hostname,''), ss.last_seen_at, coalesce(ss.agent_version,''), coalesce(ss.os,''), coalesce(ss.kernel,''),
-		       coalesce(ss.uptime_seconds,0), ss.load1, ss.memory_used_pct, ss.disk_root_used_pct
+		       coalesce(ss.uptime_seconds,0), ss.load1, ss.memory_used_pct, ss.disk_root_used_pct,
+		       coalesce((SELECT array_agg(host(x)) FROM unnest(ss.observed_ips) AS x), ARRAY[]::text[])
 		FROM servers srv
 		LEFT JOIN server_status ss ON ss.hostname = srv.hostname`
 	var args []any
@@ -80,9 +83,10 @@ func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStat
 		var st ServerStatus
 		var lastSeen sql.NullTime
 		var load1, memoryUsed, diskUsed sql.NullFloat64
+		var observedIPs []string
 		err := r.Scan(&item.Hostname, &item.IP, &item.Port, &item.User, &item.JumpVia, &item.DC, &item.CARole,
-			&item.CAKeyVersion, &item.LastSeenUp, &statusHost, &lastSeen, &st.AgentVersion, &st.OS, &st.Kernel,
-			&st.UptimeSeconds, &load1, &memoryUsed, &diskUsed)
+			&item.CAKeyVersion, &item.LastSeenUp, &item.ExtraIPs, &statusHost, &lastSeen, &st.AgentVersion, &st.OS, &st.Kernel,
+			&st.UptimeSeconds, &load1, &memoryUsed, &diskUsed, &observedIPs)
 		if err != nil {
 			return item, err
 		}
@@ -94,6 +98,7 @@ func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStat
 			st.Load1 = nullFloatPtr(load1)
 			st.MemoryUsedPct = nullFloatPtr(memoryUsed)
 			st.DiskRootUsedPct = nullFloatPtr(diskUsed)
+			st.ObservedIPs = observedIPs
 			item.Status = &st
 		}
 		return item, nil
@@ -110,5 +115,5 @@ func nullFloatPtr(v sql.NullFloat64) *float64 {
 func prefixedSelectCols(alias string) string {
 	p := alias + "."
 	return p + "hostname, host(" + p + "ip), " + p + "ssh_port, " + p + "ssh_user, coalesce(" + p + "jump_via,''), " +
-		p + "dc, " + p + "ca_role, " + p + "ca_key_version, " + p + "last_seen_up"
+		p + "dc, " + p + "ca_role, " + p + "ca_key_version, " + p + "last_seen_up, " + extraIPsCol(p)
 }

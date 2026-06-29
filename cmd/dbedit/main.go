@@ -4,6 +4,7 @@
 //
 //	go run ./cmd/dbedit <hostname>=<value> [<hostname>=<value> ...]      # dc (default)
 //	go run ./cmd/dbedit -col user <hostname>=<value> [ ... ]             # ssh user
+//	go run ./cmd/dbedit -col ips  <hostname>=<ip,ip,...> [ ... ]         # extra IPs
 package main
 
 import (
@@ -18,20 +19,21 @@ import (
 )
 
 func main() {
-	col := flag.String("col", "dc", "field to set: dc | user | name (name renames the host)")
+	col := flag.String("col", "dc", "field to set: dc | user | name (rename) | ips (extra IPs, comma-separated)")
 	flag.Parse()
 
 	set, ok := map[string]func(context.Context, *store.Store, string, string) (bool, error){
 		"dc":   func(ctx context.Context, st *store.Store, h, v string) (bool, error) { return st.SetDC(ctx, h, v) },
 		"user": func(ctx context.Context, st *store.Store, h, v string) (bool, error) { return st.SetUser(ctx, h, v) },
 		"name": func(ctx context.Context, st *store.Store, h, v string) (bool, error) { return st.Rename(ctx, h, v) },
+		"ips":  func(ctx context.Context, st *store.Store, h, v string) (bool, error) { return st.SetExtraIPs(ctx, h, splitIPs(v)) },
 	}[*col]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "unknown -col %q (want dc|user|name)\n", *col)
+		fmt.Fprintf(os.Stderr, "unknown -col %q (want dc|user|name|ips)\n", *col)
 		os.Exit(2)
 	}
 	if flag.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "usage: dbedit [-col dc|user|name] <hostname>=<value> [<hostname>=<value> ...]\n")
+		fmt.Fprintf(os.Stderr, "usage: dbedit [-col dc|user|name|ips] <hostname>=<value> [<hostname>=<value> ...]\n")
 		os.Exit(2)
 	}
 
@@ -75,4 +77,15 @@ func main() {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "fatal:", err)
 	os.Exit(1)
+}
+
+// splitIPs parses a comma-separated IP list, trimming blanks (so "" clears).
+func splitIPs(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

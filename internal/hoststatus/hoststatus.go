@@ -5,6 +5,7 @@ package hoststatus
 import (
 	"bufio"
 	"io"
+	"net"
 	"os"
 	"runtime"
 	"strconv"
@@ -26,7 +27,34 @@ func Collect(hostname, agentVersion string) store.ServerStatus {
 		Load1:           load1(),
 		MemoryUsedPct:   memoryUsedPct(),
 		DiskRootUsedPct: diskUsedPct("/"),
+		ObservedIPs:     localIPv4s(),
 	}
+}
+
+// localIPv4s returns the host's non-loopback, non-link-local IPv4 addresses
+// across all interfaces, so a multi-homed host (extra NICs, floating VIPs) is
+// reachable via `vctl ssh --server <ip>` on any of them.
+func localIPv4s() []string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var ips []string
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		v4 := ip.To4()
+		if v4 == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		ips = append(ips, v4.String())
+	}
+	return ips
 }
 
 func kernelVersion() string {

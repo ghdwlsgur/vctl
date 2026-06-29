@@ -24,6 +24,18 @@ func (s *Store) SetUser(ctx context.Context, hostname, user string) (bool, error
 	return tag.RowsAffected() > 0, nil
 }
 
+// SetExtraIPs replaces a server's operator-curated additional addresses (VIPs,
+// extra NICs). `vctl sync` preserves extra_ips, so this is the deliberate edit
+// path (cmd/dbedit) for hosts whose node-agent can't auto-report (e.g. probe-only
+// LBs). Pass bare IPs; an empty slice clears them. Returns whether a row matched.
+func (s *Store) SetExtraIPs(ctx context.Context, hostname string, ips []string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE servers SET extra_ips=coalesce($2::inet[],'{}'), updated_at=now() WHERE hostname=$1`, hostname, ips)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // Rename changes a server's hostname (the inventory key) and, in the same
 // transaction, repoints any host that jumped via the old name so jump chains
 // stay intact. Audit rows keyed by the old name remain as historical records
