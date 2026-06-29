@@ -29,13 +29,15 @@ func main() {
 		"ips": func(ctx context.Context, st *store.Store, h, v string) (bool, error) {
 			return st.SetExtraIPs(ctx, h, splitIPs(v))
 		},
+		"del": func(ctx context.Context, st *store.Store, h, _ string) (bool, error) { return st.Delete(ctx, h) },
 	}[*col]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "unknown -col %q (want dc|user|name|ips)\n", *col)
+		fmt.Fprintf(os.Stderr, "unknown -col %q (want dc|user|name|ips|del)\n", *col)
 		os.Exit(2)
 	}
 	if flag.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "usage: dbedit [-col dc|user|name|ips] <hostname>=<value> [<hostname>=<value> ...]\n")
+		fmt.Fprintf(os.Stderr, "usage: dbedit [-col dc|user|name|ips] <hostname>=<value> [ ... ]\n")
+		fmt.Fprintf(os.Stderr, "       dbedit -col del <hostname> [ ... ]   # remove from inventory\n")
 		os.Exit(2)
 	}
 
@@ -56,7 +58,10 @@ func main() {
 	rc := 0
 	for _, arg := range flag.Args() {
 		host, val, ok := strings.Cut(arg, "=")
-		if !ok || host == "" || val == "" {
+		if !ok {
+			host = arg // del takes a bare hostname (no =value)
+		}
+		if host == "" || (*col != "del" && val == "") {
 			fmt.Fprintf(os.Stderr, "skip %q (need host=value)\n", arg)
 			rc = 1
 			continue
@@ -69,6 +74,8 @@ func main() {
 		case !updated:
 			fmt.Fprintf(os.Stderr, "MISS %s (no such host)\n", host)
 			rc = 1
+		case *col == "del":
+			fmt.Printf("OK   %s deleted\n", host)
 		default:
 			fmt.Printf("OK   %s %s -> %s\n", host, *col, val)
 		}
