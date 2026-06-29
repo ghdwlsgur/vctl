@@ -62,8 +62,7 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStatus, error) {
 	q := `SELECT ` + prefixedSelectCols("srv") + `,
 		       coalesce(ss.hostname,''), ss.last_seen_at, coalesce(ss.agent_version,''), coalesce(ss.os,''), coalesce(ss.kernel,''),
-		       coalesce(ss.uptime_seconds,0), ss.load1, ss.memory_used_pct, ss.disk_root_used_pct,
-		       coalesce((SELECT array_agg(host(x)) FROM unnest(ss.observed_ips) AS x), ARRAY[]::text[])
+		       coalesce(ss.uptime_seconds,0), ss.load1, ss.memory_used_pct, ss.disk_root_used_pct, ` + ipArrayCol("ss.observed_ips") + `
 		FROM servers srv
 		LEFT JOIN server_status ss ON ss.hostname = srv.hostname`
 	var args []any
