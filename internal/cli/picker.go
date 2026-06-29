@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -52,7 +53,9 @@ var (
 type pickerModel struct {
 	title    string
 	cands    []store.ServerWithStatus
-	filtered []int // indices into cands matching the query, in order
+	filtered []int    // indices into cands matching the query+DC, in order
+	dcs      []string // DC tabs; index 0 is "" = all DCs, rest sorted
+	dcIdx    int      // selected DC tab (←/→)
 	query    string
 	cursor   int // index into filtered
 	offset   int // first visible index into filtered
@@ -65,6 +68,7 @@ func newPickerModel(cands []store.ServerWithStatus, title string) pickerModel {
 	m := pickerModel{
 		title:  title,
 		cands:  cands,
+		dcs:    distinctDCs(cands),
 		height: pickerViewport,
 		width:  100,
 		chosen: -1,
@@ -76,12 +80,31 @@ func newPickerModel(cands []store.ServerWithStatus, title string) pickerModel {
 	return m
 }
 
+// distinctDCs returns the sorted distinct DC labels of cands, with "" (all DCs)
+// at index 0 so ←/→ can cycle through "all" then each DC.
+func distinctDCs(cands []store.ServerWithStatus) []string {
+	seen := map[string]bool{}
+	var dcs []string
+	for _, c := range cands {
+		if c.DC != "" && !seen[c.DC] {
+			seen[c.DC] = true
+			dcs = append(dcs, c.DC)
+		}
+	}
+	slices.Sort(dcs)
+	return append([]string{""}, dcs...)
+}
+
 func (m pickerModel) Init() tea.Cmd { return nil }
 
 func (m *pickerModel) refilter() {
 	q := strings.ToLower(strings.TrimSpace(m.query))
+	dc := m.dcs[m.dcIdx] // "" = all DCs
 	m.filtered = m.filtered[:0]
 	for i, c := range m.cands {
+		if dc != "" && c.DC != dc {
+			continue
+		}
 		if q == "" || matchServer(c, q) {
 			m.filtered = append(m.filtered, i)
 		}
@@ -140,6 +163,18 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor++
 			m.clampScroll()
 			return m, nil
+		case tea.KeyLeft:
+			if len(m.dcs) > 1 {
+				m.dcIdx = (m.dcIdx - 1 + len(m.dcs)) % len(m.dcs)
+				m.refilter()
+			}
+			return m, nil
+		case tea.KeyRight:
+			if len(m.dcs) > 1 {
+				m.dcIdx = (m.dcIdx + 1) % len(m.dcs)
+				m.refilter()
+			}
+			return m, nil
 		case tea.KeyBackspace:
 			if m.query != "" {
 				r := []rune(m.query)
@@ -172,8 +207,23 @@ func (m pickerModel) View() string {
 	b.WriteString(pickDimStyle.Render("Search: "))
 	b.WriteString(m.query)
 	b.WriteString("\n")
-	b.WriteString(pickDimStyle.Render("↑↓ move, type to filter, enter confirm, esc cancel"))
-	b.WriteString("\n\n")
+	help := "↑↓ move, type to filter, enter confirm, esc cancel"
+	if len(m.dcs) > 2 {
+		help = "↑↓ move, ←→ DC, type to filter, enter confirm, esc cancel"
+	}
+	b.WriteString(pickDimStyle.Render(help))
+	b.WriteString("\n")
+	if len(m.dcs) > 2 {
+		label := m.dcs[m.dcIdx]
+		if label == "" {
+			label = "all DCs"
+		}
+		b.WriteString(pickDimStyle.Render("DC ‹ "))
+		b.WriteString(pickCursorStyle.Render(label))
+		b.WriteString(pickDimStyle.Render(fmt.Sprintf(" ›  %d/%d", m.dcIdx+1, len(m.dcs))))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 
 	if len(m.filtered) == 0 {
 		b.WriteString(pickDimStyle.Render("  (no matches)"))
