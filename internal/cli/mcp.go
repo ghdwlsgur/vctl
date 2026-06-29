@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -162,6 +163,15 @@ func mcpTools() []mcpTool {
 				"user":  map[string]any{"type": "string", "description": "filter by Vault user"},
 			}),
 		},
+		{
+			Name:        "vctl_ssh_exec",
+			Description: "Run a shell command on an inventory host over SSH (non-interactive) and return stdout, stderr, and exit code. Resolves the host like vctl ssh (fuzzy hostname or IP, plus jump chain) and authenticates with a Vault-signed certificate. Requires an ssh-capable identity (vctl-ssh-users or admin) AND app-RBAC 'ssh'; the shared read-only AppRole cannot ssh, and an expired session errors instead of prompting.",
+			InputSchema: obj(map[string]any{
+				"host":            map[string]any{"type": "string", "description": "hostname (fuzzy/exact) or IP of the target"},
+				"command":         map[string]any{"type": "string", "description": "shell command to run on the host"},
+				"timeout_seconds": map[string]any{"type": "integer", "description": "max seconds for the command (default 60, max 600)"},
+			}, "host", "command"),
+		},
 	}
 }
 
@@ -191,9 +201,84 @@ func runMCPTool(ctx context.Context, name string, args map[string]any) (string, 
 		return mcpToolWhoami(ctx)
 	case "vctl_access_log":
 		return mcpToolAccessLog(ctx, argInt(args, "limit", 20), argString(args, "host"), argString(args, "user"))
+	case "vctl_ssh_exec":
+		return mcpToolSSHExec(ctx, argString(args, "host"), argString(args, "command"), argInt(args, "timeout_seconds", 60))
 	default:
 		return "", fmt.Errorf("unknown tool %q", name)
 	}
+}
+
+// mcpToolSSHExec runs a command on a host over SSH, enforcing the same two-layer
+// gate as `vctl ssh`: the Vault SSH policy (cert signing) plus app-layer RBAC.
+// It runs as the current identity — the read-only AppRole cannot sign certs, so
+// an ssh-capable OIDC session (vctl-ssh-users / admin) must be active.
+func mcpToolSSHExec(ctx context.Context, host, command string, timeout int) (string, error) {
+	if strings.TrimSpace(host) == "" || strings.TrimSpace(command) == "" {
+		return "", fmt.Errorf("host and command are required")
+	}
+	if timeout <= 0 || timeout > 600 {
+		timeout = 60
+	}
+	var out map[string]any
+	err := withMCPStore(ctx, false, func(a *app.App, st *store.Store) error {
+		// app-RBAC ssh gate (Layer 2), mirroring enforceRBAC; Vault cert signing
+		// is the Layer-1 gate enforced when SignSSH runs below.
+		pols, _ := a.Vault.TokenPolicies(ctx)
+		if !hasAdminPolicy(pols) {
+			id := a.Vault.Identity(ctx)
+			cmds, rerr := st.RBACCommandsForUser(ctx, id)
+			if rerr != nil && !isUninitializedRBAC(rerr) {
+				return rerr
+			}
+			if !cmds["*"] && !cmds["ssh"] {
+				return fmt.Errorf("rbac: 'ssh' not permitted for %q (needs vctl-ssh-users/admin + an rbac grant; the read-only AppRole cannot ssh)", id)
+			}
+		}
+
+		target, err := resolveServer(ctx, st, host)
+		if err != nil {
+			return err
+		}
+		tgt, err := buildTarget(ctx, st, target, a.Cfg.SSHDirectFirst)
+		if err != nil {
+			return err
+		}
+		setHostKeyConfirmation(tgt, false) // non-interactive: never prompt to confirm host keys
+
+		var lastSerial string
+		sign := func(role, pub string, principals, extensions []string) (string, error) {
+			cert, serr := a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign, extensions)
+			if serr == nil {
+				if s := sshc.CertSerial(cert); s != "" {
+					lastSerial = s
+				}
+			}
+			return cert, serr
+		}
+
+		runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
+		res, connInfo, runErr := sshc.Run(runCtx, tgt, sign, command)
+
+		// best-effort central access log (own audit-writer store; never fatal)
+		_ = a.LogAccess(ctx, accessEntry(a.Vault.Identity(ctx), tgt, connInfo, lastSerial, runErr))
+
+		if runErr != nil {
+			return runErr
+		}
+		out = map[string]any{
+			"host":      target.Hostname,
+			"addr":      tgt.Addr,
+			"exit_code": res.ExitCode,
+			"stdout":    res.Stdout,
+			"stderr":    res.Stderr,
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return toJSON(out)
 }
 
 // ---- tool handlers ----

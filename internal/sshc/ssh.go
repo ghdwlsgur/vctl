@@ -6,6 +6,7 @@
 package sshc
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -58,6 +59,53 @@ func Connect(ctx context.Context, t *Target, sign SignFunc) (ConnectionInfo, err
 	}
 	defer cleanup()
 	return info, shell(client)
+}
+
+// RunResult is the outcome of a one-shot remote command (no PTY).
+type RunResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+// Run executes a single command on the target non-interactively, capturing
+// stdout/stderr/exit code. It reuses dialTarget, so the jump chain and
+// Vault-signed-cert auth are identical to Connect — this is the path automation
+// and AI agents (vctl mcp) use instead of an interactive shell. A non-zero exit
+// is returned in RunResult.ExitCode with a nil error (the command ran); only a
+// transport/connection failure returns a non-nil error.
+func Run(ctx context.Context, t *Target, sign SignFunc, command string) (RunResult, ConnectionInfo, error) {
+	client, cleanup, info, err := dialTarget(ctx, t, sign)
+	if err != nil {
+		return RunResult{}, info, err
+	}
+	defer cleanup()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		return RunResult{}, info, err
+	}
+	defer sess.Close()
+
+	var stdout, stderr bytes.Buffer
+	sess.Stdout = &stdout
+	sess.Stderr = &stderr
+
+	done := make(chan error, 1)
+	go func() { done <- sess.Run(command) }()
+	select {
+	case <-ctx.Done():
+		_ = sess.Signal(ssh.SIGKILL)
+		return RunResult{Stdout: stdout.String(), Stderr: stderr.String()}, info, ctx.Err()
+	case runErr := <-done:
+		res := RunResult{Stdout: stdout.String(), Stderr: stderr.String()}
+		var ee *ssh.ExitError
+		if errors.As(runErr, &ee) {
+			res.ExitCode = ee.ExitStatus() // command ran, non-zero exit
+			return res, info, nil
+		}
+		return res, info, runErr
+	}
 }
 
 // dialTarget prefers direct SSH, then falls back to the configured jump chain.
