@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,7 @@ type Server struct {
 	CARole       string
 	CAKeyVersion int
 	LastSeenUp   *time.Time
+	ExtraIPs     []string // additional addresses the host answers on (VIPs, extra NICs)
 }
 
 type Store struct {
@@ -97,13 +99,20 @@ func (s *Store) Close() {
 	}
 }
 
-const selectCols = `hostname, host(ip), ssh_port, ssh_user, coalesce(jump_via,''), dc, ca_role, ca_key_version, last_seen_up`
+// extraIPsCol renders servers.extra_ips (inet[]) as a text[] of bare host
+// addresses so it scans straight into Server.ExtraIPs ([]string). Prefix is the
+// table alias plus a dot ("" for an unqualified query, "srv." for a join).
+func extraIPsCol(prefix string) string {
+	return `coalesce((SELECT array_agg(host(x)) FROM unnest(` + prefix + `extra_ips) AS x), ARRAY[]::text[])`
+}
+
+var selectCols = `hostname, host(ip), ssh_port, ssh_user, coalesce(jump_via,''), dc, ca_role, ca_key_version, last_seen_up, ` + extraIPsCol("")
 
 func scanServer(row interface {
 	Scan(dest ...any) error
 }) (Server, error) {
 	var sv Server
-	err := row.Scan(&sv.Hostname, &sv.IP, &sv.Port, &sv.User, &sv.JumpVia, &sv.DC, &sv.CARole, &sv.CAKeyVersion, &sv.LastSeenUp)
+	err := row.Scan(&sv.Hostname, &sv.IP, &sv.Port, &sv.User, &sv.JumpVia, &sv.DC, &sv.CARole, &sv.CAKeyVersion, &sv.LastSeenUp, &sv.ExtraIPs)
 	return sv, err
 }
 
@@ -134,14 +143,29 @@ func collectRows[T any](rows pgx.Rows, scan func(pgx.Rows) (T, error)) ([]T, err
 
 func scanServerRow(r pgx.Rows) (Server, error) { return scanServer(r) }
 
-// Resolve tries exact match first, then fuzzy hostname matching.
+// Resolve tries exact hostname match first, then — if the query is an IP — any
+// host answering on that address (primary ip, operator-set extra_ips, or
+// node-agent observed_ips), and otherwise fuzzy hostname matching.
 // One match returns server; multiple matches return candidates.
 func (s *Store) Resolve(ctx context.Context, query string) (*Server, []Server, error) {
 	if sv, err := s.Get(ctx, query); err == nil {
 		return sv, nil, nil
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT `+selectCols+` FROM servers WHERE hostname ILIKE '%'||$1||'%' ORDER BY hostname`, query)
+
+	var (
+		where string
+		arg   string
+	)
+	if net.ParseIP(query) != nil {
+		// Match the address across primary, operator-curated, and observed sets.
+		where = `host(ip)=$1 OR $1::inet = ANY(extra_ips) OR hostname IN ` +
+			`(SELECT hostname FROM server_status WHERE $1::inet = ANY(observed_ips))`
+		arg = query
+	} else {
+		where = `hostname ILIKE '%'||$1||'%'`
+		arg = query
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+selectCols+` FROM servers WHERE `+where+` ORDER BY hostname`, arg)
 	if err != nil {
 		return nil, nil, err
 	}
