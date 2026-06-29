@@ -195,7 +195,7 @@ vctl rbac users                    # everyone who has logged in, with their vctl
 vctl ssh <host>
   -> reuse or refresh a Vault token
   -> read database/creds/vctl-ro for short-lived Postgres credentials
-  -> resolve the host and jump chain from Postgres inventory
+  -> resolve the host (by hostname, or by IP — primary/extra/observed) and jump chain from Postgres inventory
   -> generate an in-memory ed25519 key
   -> request a short-lived certificate from ssh/sign/<role>
   -> open a native SSH session with direct or jump-chain routing
@@ -204,7 +204,14 @@ vctl ssh <host>
 
 未知の SSH host key は対話モードで fingerprint の確認が必要です。非対話の
 `--server` は未知の key を拒否するため、自動化前に信頼できる経路で
-`~/.ssh/known_hosts` を準備してください。
+`~/.ssh/known_hosts` を準備してください。MCP サーバ(`vctl mcp`)は未知の key を
+初回接続時に記録(accept-new)し、エージェントがオンボーディング直後のホストにも
+到達できるようにします。ただし*不一致*の既知 key は常に拒否します。
+
+複数のアドレス(プライマリ NIC に加えてフローティング VIP や追加 NIC)を持つホストは、
+そのいずれでも到達できます。`vctl ssh --server <ip>` はプライマリ `ip`、運用者が設定した
+`extra_ips`(`dbedit -col ips`)、node-agent の `observed_ips` のいずれかに一致し、
+`vctl list` が追加 IP も表示します。対話ピッカーは ←/→ でデータセンター別に絞り込めます。
 
 ホストが Vault SSH CA を信頼して初めて、これらの証明書を受け入れます。新しいホストは `vctl trust-ca` で一度オンボーディングします(通常の SSH 接続を通じて CA 公開鍵を `TrustedUserCAKeys` としてインストールし、sshd を再読み込みします)。
 
@@ -274,6 +281,31 @@ vctl session <cert-serial> --json   # machine-readable export (e.g. for an agent
 
 リソース制限、journald の上限、ゴールデンイメージへの焼き込みに関するガイダンスは `deploy/audit/README.md` と `deploy/node/README.md` にあります。
 
+## MCP (AI エージェント)
+
+`vctl mcp` は stdio ベースの Model Context Protocol サーバ(JSON-RPC 2.0、追加依存なし)を
+起動し、Claude Code のような AI エージェントがインベントリをツールとして使えるようにします。
+一度だけ接続します。
+
+```bash
+claude mcp add vctl -- vctl mcp
+```
+
+| ツール | 用途 |
+|---|---|
+| `vctl_list` | インベントリ(hostname、プライマリ + 追加 IP、DC、user、jump、liveness)、DC フィルタ可 |
+| `vctl_resolve` | hostname(あいまい)または IP(primary/extra/observed)をレコードに解決 |
+| `vctl_whoami` | 現在の識別情報、ポリシー、管理者か、許可された RBAC コマンド |
+| `vctl_access_log` | 最近の SSH アクセス記録(監査読み取り権限が必要) |
+| `vctl_ssh_exec` | ホストでコマンドを SSH 実行し stdout/stderr/exit を返す |
+
+ツールは現在の vctl 識別情報で動作するため、Vault ポリシーとアプリ層 RBAC がそのまま適用されます。
+`vctl_ssh_exec` は `vctl ssh` と同じくゲートされ(Vault `vctl-ssh` ポリシー + アプリ RBAC `ssh`)、
+同じ jump chain で Vault 署名証明書を用いて接続します。認証は AppRole に固定され、セッションが
+失効すると非対話的に再認証するかエラーになるだけで、stdio チャネルを壊すログインプロンプトを
+出しません。読み取り専用 AppRole は SSH 証明書に署名できないため、`vctl_ssh_exec` には ssh
+可能なアクティブセッション(`vctl login`)が必要です。読み取りツールはどちらでも動作します。
+
 ## Commands
 
 | Command | Description |
@@ -282,8 +314,9 @@ vctl session <cert-serial> --json   # machine-readable export (e.g. for an agent
 | `vctl token` | 更新または再認証後に有効な Vault トークンを出力する |
 | `vctl exec -- <cmd>` | `VAULT_TOKEN` と `VAULT_ADDR` を渡して子プロセスを実行する |
 | `vctl agent [--sink <path>]` | トークンを生かし続け、シンクファイルに書き出す |
-| `vctl ssh [host] [--server <host>]` | 完全一致、あいまい一致、または対話的なホスト選択で接続する。`--server` は完全一致で解決し、非対話的に接続する(スクリプト/エージェント向け) |
-| `vctl list [--dc <dc>]` | インベントリのホストを一覧表示する |
+| `vctl ssh [host] [--server <host>]` | 完全一致、あいまい一致、IP、対話的な選択で接続する(ピッカーは ←/→ で DC フィルタ)。`--server` は完全一致または IP で解決し、非対話的に接続する(スクリプト/エージェント向け) |
+| `vctl list [--dc <dc>]` | インベントリのホストを一覧表示する(プライマリ + 追加 IP、liveness/agent 状態) |
+| `vctl mcp` | インベントリを AI エージェントに公開する読み取り専用 MCP サーバ(stdio)。`vctl_ssh_exec` でホストのコマンド実行も可能。呼び出し元の識別情報で動作 — RBAC 適用 |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | アプリ層のコマンド RBAC を管理する(admin)。`assign`/`grant` は対話的なピッカー |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | 中央の SSH アクセス監査行を表示する |
 | `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | vctl ssh が動作するようホストに Vault SSH CA の信頼をインストールする(一度きりのオンボーディング) |
@@ -412,7 +445,7 @@ git push origin v0.1.7
 
 ```text
 cmd/vctl              entrypoint
-cmd/dbedit            maintenance tool for operator-managed inventory columns (dc)
+cmd/dbedit            maintenance tool for operator-managed inventory (-col dc|user|name|ips|del)
 internal/config       generic loader (config.go) + org-specific defaults (defaults_sre.go) + embedded CA
 internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
 internal/store        Postgres inventory, app-layer RBAC, access/session/kernel audit, host status (verify-full TLS)
@@ -420,7 +453,7 @@ internal/sshc         native SSH client with cert signer, jump chains, PTY, and 
 internal/syncx        ssh config parsing and host probing
 internal/hoststatus   node-agent host metrics collection (/proc, syscall) with pure, testable parsers
 internal/strutil      tiny shared string helpers
-internal/cli          Cobra commands (incl. app-layer RBAC: vctl rbac)
+internal/cli          Cobra commands (incl. app-layer RBAC: vctl rbac, MCP server: vctl mcp)
 deploy/vault          policies (incl. RBAC vctl-admin/user + vctl-admins group), DB engine bootstrap, OIDC guide
 deploy/audit          host kernel-audit stack: collector, session registrar, Tetragon, retention
 deploy/node           host node-agent systemd unit and install notes

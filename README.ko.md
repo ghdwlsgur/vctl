@@ -203,7 +203,7 @@ Vault의 `vctl-ssh` 정책도 가져야 합니다. 따라서 CLI를 수정하거
 vctl ssh <host>
   -> Vault 토큰 재사용 또는 갱신/재인증
   -> 짧은 수명의 Postgres 자격 증명을 database/creds/vctl-ro에서 읽음
-  -> Postgres 인벤토리에서 호스트와 jump chain 해석
+  -> 인벤토리에서 호스트(hostname 또는 IP — primary/extra/observed)와 jump chain 해석
   -> 메모리에서 ed25519 키 생성
   -> ssh/sign/<role>로 짧은 수명의 인증서 요청
   -> direct 또는 jump-chain 경로로 native SSH 세션 열기
@@ -212,7 +212,14 @@ vctl ssh <host>
 
 처음 보는 SSH host key는 인터랙티브 모드에서 fingerprint 확인을 요구합니다.
 비대화형 `--server`는 미등록 key를 거부하므로 자동화 전에 신뢰 가능한 경로로
-`~/.ssh/known_hosts`를 준비해야 합니다.
+`~/.ssh/known_hosts`를 준비해야 합니다. MCP 서버(`vctl mcp`)는 처음 보는 key를
+첫 접속 시 기록(accept-new)해 에이전트가 갓 온보딩한 호스트에도 접근할 수 있게
+합니다. 단 *불일치*하는 기존 key는 항상 거부합니다.
+
+여러 주소(primary NIC + 플로팅 VIP나 추가 NIC)를 가진 호스트는 그중 무엇으로도
+접속됩니다. `vctl ssh --server <ip>`는 primary `ip`, 운영자가 지정한 `extra_ips`
+(`dbedit -col ips`), node-agent의 `observed_ips` 중 하나와 매칭하며, `vctl list`가
+추가 IP를 함께 표시합니다. 인터랙티브 픽커는 ←/→로 데이터센터별 필터링도 됩니다.
 
 ## Access Audit
 
@@ -248,6 +255,30 @@ vctl audit --source-ip 192.0.2.10
 
 이 감사 테이블은 운영 메타데이터입니다. 인증서 서명 요청의 authoritative record는 여전히 Vault audit device입니다.
 
+## MCP (AI 에이전트)
+
+`vctl mcp`는 stdio 기반 Model Context Protocol 서버(JSON-RPC 2.0, 추가 의존성 없음)를
+실행해 Claude Code 같은 AI 에이전트가 인벤토리를 도구로 쓰게 합니다. 한 번만 연결하면 됩니다.
+
+```bash
+claude mcp add vctl -- vctl mcp
+```
+
+| 도구 | 용도 |
+|---|---|
+| `vctl_list` | 인벤토리(hostname, primary + extra IP, DC, user, jump, liveness), DC 필터 옵션 |
+| `vctl_resolve` | hostname(fuzzy) 또는 IP(primary/extra/observed)를 레코드로 해석 |
+| `vctl_whoami` | 현재 신원, 정책, 관리자 여부, 허용된 RBAC 커맨드 |
+| `vctl_access_log` | 최근 SSH 접속 기록(감사 읽기 권한 필요) |
+| `vctl_ssh_exec` | 호스트에서 명령을 SSH로 실행하고 stdout/stderr/exit 반환 |
+
+도구는 현재 vctl 신원으로 동작하므로 Vault 정책과 앱 계층 RBAC가 그대로 적용됩니다.
+`vctl_ssh_exec`는 `vctl ssh`와 동일하게 게이트되며(Vault `vctl-ssh` 정책 + 앱 RBAC `ssh`)
+같은 jump chain으로 Vault 서명 인증서를 써서 접속합니다. 인증은 AppRole로 고정돼, 세션이
+만료되면 비대화형으로 재인증하거나 에러를 낼 뿐 stdio 채널을 깨뜨릴 로그인 프롬프트를 띄우지
+않습니다. 읽기 전용 AppRole은 SSH 인증서를 서명할 수 없으므로 `vctl_ssh_exec`에는 ssh
+가능한 활성 세션(`vctl login`)이 필요하고, 읽기 도구는 어느 쪽이든 동작합니다.
+
 ## Commands
 
 | Command | Description |
@@ -256,8 +287,9 @@ vctl audit --source-ip 192.0.2.10
 | `vctl token` | 갱신 또는 재인증 후 유효한 Vault 토큰을 출력합니다 |
 | `vctl exec -- <cmd>` | 자식 프로세스를 `VAULT_TOKEN`, `VAULT_ADDR`와 함께 실행합니다 |
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |
-| `vctl ssh [host] [--server <host>]` | exact, fuzzy, interactive host 선택으로 접속합니다. `--server`는 정확히 해석해 비대화형으로 접속합니다(스크립트/에이전트용) |
-| `vctl list [--dc <dc>]` | 인벤토리 호스트를 나열합니다 |
+| `vctl ssh [host] [--server <host>]` | exact, fuzzy, IP, interactive 선택으로 접속합니다(픽커는 ←/→로 DC 필터). `--server`는 정확히 또는 IP로 해석해 비대화형으로 접속합니다(스크립트/에이전트용) |
+| `vctl list [--dc <dc>]` | 인벤토리 호스트를 나열합니다(primary + extra IP, liveness/agent 상태) |
+| `vctl mcp` | 인벤토리를 AI 에이전트에 노출하는 읽기 전용 MCP 서버(stdio). `vctl_ssh_exec`로 호스트 명령 실행도 가능. 호출자 신원으로 동작 — RBAC 적용 |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | 앱 계층 커맨드 RBAC 관리(관리자). `assign`/`grant`은 인터랙티브 픽커 |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | 중앙 SSH 접근 감사 row를 보여줍니다 |
 | `vctl node-agent [--interval 5m]` | 이미 등록된 인벤토리 호스트의 가벼운 런타임 상태를 보고합니다 |
@@ -386,7 +418,7 @@ git push origin v0.1.7
 
 ```text
 cmd/vctl              entrypoint
-cmd/dbedit            maintenance tool for operator-managed inventory columns (dc)
+cmd/dbedit            maintenance tool for operator-managed inventory (-col dc|user|name|ips|del)
 internal/config       generic loader (config.go) + org-specific defaults (defaults_sre.go) + embedded CA
 internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
 internal/store        Postgres inventory, app-layer RBAC, access/session/kernel audit, host status (verify-full TLS)
@@ -394,6 +426,6 @@ internal/sshc         native SSH client with cert signer, jump chains, PTY, and 
 internal/syncx        ssh config parsing and host probing
 internal/hoststatus   node-agent host metrics collection (/proc, syscall) with pure, testable parsers
 internal/strutil      tiny shared string helpers
-internal/cli          Cobra commands (incl. app-layer RBAC: vctl rbac)
+internal/cli          Cobra commands (incl. app-layer RBAC: vctl rbac, MCP server: vctl mcp)
 deploy/vault          policies (incl. RBAC vctl-admin/user + vctl-admins group), DB engine bootstrap, OIDC guide
 ```
