@@ -218,7 +218,7 @@ must independently carry `vctl-ssh`, so direct Vault API calls cannot bypass it.
 vctl ssh <host>
   -> reuse or refresh a Vault token
   -> read database/creds/vctl-ro for short-lived Postgres credentials
-  -> resolve the host and jump chain from Postgres inventory
+  -> resolve the host (by hostname, or by IP — primary, extra, or observed) and jump chain from Postgres inventory
   -> generate an in-memory ed25519 key
   -> request a short-lived certificate from ssh/sign/<role>
   -> open a native SSH session with direct or jump-chain routing
@@ -228,6 +228,15 @@ vctl ssh <host>
 An unknown SSH host key requires explicit confirmation in interactive mode.
 `--server` is non-interactive and rejects unknown keys; pre-populate
 `~/.ssh/known_hosts` through a trusted channel before using it in automation.
+The MCP server (`vctl mcp`) records an unknown key on first use (accept-new) so
+an agent can reach freshly onboarded hosts; a *mismatched* known key is always
+rejected.
+
+A host answering on several addresses (a primary NIC plus floating VIPs or extra
+NICs) is reachable by any of them: `vctl ssh --server <ip>` matches the primary
+`ip`, an operator-set `extra_ips` (via `dbedit -col ips`), or a node-agent
+`observed_ips`, and `vctl list` shows the extras. The interactive picker also
+filters by datacenter with ←/→.
 
 A host only accepts those certificates once it trusts the Vault SSH CA. Onboard
 a new host once with `vctl trust-ca` (it installs the CA public key as
@@ -301,6 +310,32 @@ The collector ingests `process_exec`/`process_exit` from Tetragon; events link t
 
 Resource limits, journald caps, and the golden-image bake guidance live in `deploy/audit/README.md` and `deploy/node/README.md`.
 
+## MCP (AI agents)
+
+`vctl mcp` runs a Model Context Protocol server over stdio (JSON-RPC 2.0, no
+extra dependency) so an AI agent like Claude Code can use the inventory as
+tools. Wire it in once:
+
+```bash
+claude mcp add vctl -- vctl mcp
+```
+
+| Tool | Purpose |
+|---|---|
+| `vctl_list` | inventory (hostname, primary + extra IPs, DC, user, jump, liveness), optional DC filter |
+| `vctl_resolve` | resolve a hostname (fuzzy) or IP (primary/extra/observed) to its record |
+| `vctl_whoami` | current identity, policies, admin status, allowed RBAC commands |
+| `vctl_access_log` | recent SSH access records (needs audit-read) |
+| `vctl_ssh_exec` | run a command on a host over SSH and return stdout/stderr/exit |
+
+Tools run as your current vctl identity, so Vault policies and app-layer RBAC
+still apply. `vctl_ssh_exec` is gated exactly like `vctl ssh` (Vault `vctl-ssh`
+policy + app RBAC `ssh`) and connects with a Vault-signed certificate over the
+same jump chain. Auth is pinned to AppRole so a lapsed session re-authenticates
+non-interactively or errors — it never emits a login prompt that would corrupt
+the stdio channel. The read-only AppRole cannot sign SSH certs, so `vctl_ssh_exec`
+needs an active ssh-capable session (`vctl login`); the read tools work either way.
+
 ## Commands
 
 | Command | Description |
@@ -309,8 +344,9 @@ Resource limits, journald caps, and the golden-image bake guidance live in `depl
 | `vctl token` | Print a valid Vault token after renewal or re-authentication |
 | `vctl exec -- <cmd>` | Run a child process with `VAULT_TOKEN` and `VAULT_ADDR` |
 | `vctl agent [--sink <path>]` | Keep a token alive and write it to sink files |
-| `vctl ssh [host] [--server <host>]` | Connect by exact, fuzzy, or interactive host selection; `--server` resolves exactly and connects non-interactively (scripts/agents) |
-| `vctl list [--dc <dc>]` | List inventory hosts |
+| `vctl ssh [host] [--server <host>]` | Connect by exact, fuzzy, IP, or interactive selection (picker filters by DC with ←/→); `--server` resolves exactly or by IP and connects non-interactively (scripts/agents) |
+| `vctl list [--dc <dc>]` | List inventory hosts (primary + extra IPs, liveness/agent status) |
+| `vctl mcp` | Run a read-only MCP server (stdio) exposing the inventory to AI agents; `vctl_ssh_exec` also runs commands on hosts. Runs as your identity — RBAC applies |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | Manage app-layer command RBAC (admin); `assign`/`grant` are interactive pickers |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | Show central SSH access audit rows |
 | `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | Install Vault SSH CA trust on a host so vctl ssh works (one-time onboarding) |
@@ -446,7 +482,7 @@ The release workflow uses pinned GitHub Actions, runs tests and Trivy, scans the
 
 ```text
 cmd/vctl              entrypoint
-cmd/dbedit            maintenance tool for operator-managed inventory columns (dc)
+cmd/dbedit            maintenance tool for operator-managed inventory (-col dc|user|name|ips|del)
 internal/config       generic loader (config.go) + org-specific defaults (defaults_sre.go) + embedded CA
 internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
 internal/store        Postgres inventory, app-layer RBAC, access/session/kernel audit, host status (verify-full TLS)
@@ -454,7 +490,7 @@ internal/sshc         native SSH client with cert signer, jump chains, PTY, and 
 internal/syncx        ssh config parsing and host probing
 internal/hoststatus   node-agent host metrics collection (/proc, syscall) with pure, testable parsers
 internal/strutil      tiny shared string helpers
-internal/cli          Cobra commands (incl. app-layer RBAC: vctl rbac)
+internal/cli          Cobra commands (incl. app-layer RBAC: vctl rbac, MCP server: vctl mcp)
 deploy/vault          policies (incl. RBAC vctl-admin/user + vctl-admins group), DB engine bootstrap, OIDC guide
 deploy/audit          host kernel-audit stack: collector, session registrar, Tetragon, retention
 deploy/node           host node-agent systemd unit and install notes
