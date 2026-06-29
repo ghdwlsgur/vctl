@@ -245,23 +245,14 @@ func mcpToolSSHExec(ctx context.Context, host, command string, timeout int) (str
 		}
 		setHostKeyConfirmation(tgt, false) // non-interactive: never prompt to confirm host keys
 
-		var lastSerial string
-		sign := func(role, pub string, principals, extensions []string) (string, error) {
-			cert, serr := a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign, extensions)
-			if serr == nil {
-				if s := sshc.CertSerial(cert); s != "" {
-					lastSerial = s
-				}
-			}
-			return cert, serr
-		}
+		sign, certSerial := signAndTrackSerial(ctx, a)
 
 		runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
 		res, connInfo, runErr := sshc.Run(runCtx, tgt, sign, command)
 
 		// best-effort central access log (own audit-writer store; never fatal)
-		_ = a.LogAccess(ctx, accessEntry(a.Vault.Identity(ctx), tgt, connInfo, lastSerial, runErr))
+		_ = a.LogAccess(ctx, accessEntry(a.Vault.Identity(ctx), tgt, connInfo, certSerial(), runErr))
 
 		if runErr != nil {
 			return runErr
@@ -421,14 +412,23 @@ func mcpToolAccessLog(ctx context.Context, limit int, host, user string) (string
 
 // ---- helpers ----
 
-// withMCPStore opens the read store with auth pinned to AppRole so a lapsed
-// session re-auths non-interactively (or errors) and never prompts on stdio.
-func withMCPStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) error) error {
+// mcpApp builds the app with auth pinned to AppRole so a lapsed session re-auths
+// non-interactively (or errors) and never emits a login prompt that would
+// corrupt the stdio JSON-RPC channel.
+func mcpApp() (*app.App, error) {
 	a, err := app.New()
+	if err != nil {
+		return nil, err
+	}
+	a.Cfg.AuthMethod = "approle"
+	return a, nil
+}
+
+func withMCPStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) error) error {
+	a, err := mcpApp()
 	if err != nil {
 		return err
 	}
-	a.Cfg.AuthMethod = "approle"
 	st, err := a.OpenStore(ctx, rw)
 	if err != nil {
 		return err
@@ -438,11 +438,10 @@ func withMCPStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) 
 }
 
 func withMCPAuditStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
-	a, err := app.New()
+	a, err := mcpApp()
 	if err != nil {
 		return err
 	}
-	a.Cfg.AuthMethod = "approle"
 	st, err := a.OpenStoreRole(ctx, a.Cfg.DBRoleAuditRO)
 	if err != nil {
 		return err
