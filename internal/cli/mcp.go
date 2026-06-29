@@ -244,6 +244,7 @@ func mcpToolSSHExec(ctx context.Context, host, command string, timeout int) (str
 			return err
 		}
 		setHostKeyConfirmation(tgt, false) // non-interactive: never prompt to confirm host keys
+		setAutoAddHostKey(tgt, true)       // record an unknown host key on first use (accept-new) instead of failing
 
 		sign, certSerial := signAndTrackSerial(ctx, a)
 

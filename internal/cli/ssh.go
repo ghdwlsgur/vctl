@@ -101,6 +101,15 @@ func setHostKeyConfirmation(t *sshc.Target, enabled bool) {
 	}
 }
 
+// setAutoAddHostKey toggles accept-new host-key recording along the whole jump
+// chain — for non-interactive agents (vctl mcp) that can't prompt.
+func setAutoAddHostKey(t *sshc.Target, enabled bool) {
+	for t != nil {
+		t.AutoAddHostKey = enabled
+		t = t.Jump
+	}
+}
+
 // resolveServer resolves a host non-interactively for --server (scripts/agents):
 // exact or unique match only, never a picker. Ambiguous or missing host errors out
 // with the candidate list so the caller can pick an exact name.

@@ -39,6 +39,7 @@ type Target struct {
 	Role           string // ssh/sign/<role>
 	SkipDirect     bool   // connect through Jump without first trying the target directly
 	ConfirmHostKey bool   // allow an interactive prompt for a previously unknown host key
+	AutoAddHostKey bool   // non-interactive: record an unknown host key on first use (accept-new) instead of rejecting
 	Jump           *Target
 }
 
@@ -222,7 +223,7 @@ func clientConfig(t *Target, sign SignFunc, extensions []string) (*ssh.ClientCon
 	return &ssh.ClientConfig{
 		User:            t.User,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: hostKeyCallback(t.ConfirmHostKey),
+		HostKeyCallback: hostKeyCallback(t.ConfirmHostKey, t.AutoAddHostKey),
 		// Prefer ed25519 to match OpenSSH's default host-key order. x/crypto's
 		// default prefers ECDSA/RSA, so vctl would negotiate a different host
 		// key type than `ssh` and trip a false "knownhosts: key mismatch" when

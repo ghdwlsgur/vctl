@@ -16,10 +16,12 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// hostKeyCallback verifies host keys with ~/.ssh/known_hosts.
-// Unknown hosts require an explicit terminal confirmation. Non-interactive
-// callers reject them. Mismatched known keys are always rejected.
-func hostKeyCallback(confirmUnknown bool) ssh.HostKeyCallback {
+// hostKeyCallback verifies host keys with ~/.ssh/known_hosts. For an unknown
+// host: autoAdd records the key on first use (accept-new, no prompt — for
+// non-interactive agents like vctl mcp); otherwise confirmUnknown allows a
+// terminal prompt, and a non-interactive caller without autoAdd rejects it.
+// A mismatched known key is always rejected (MITM/replaced host).
+func hostKeyCallback(confirmUnknown, autoAdd bool) ssh.HostKeyCallback {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return rejectHostKey(fmt.Errorf("home directory lookup: %w", err))
@@ -42,6 +44,10 @@ func hostKeyCallback(confirmUnknown bool) ssh.HostKeyCallback {
 		}
 		var ke *knownhosts.KeyError
 		if errors.As(err, &ke) && len(ke.Want) == 0 {
+			// Unknown host (no recorded key — not a mismatch).
+			if autoAdd {
+				return appendKnownHost(khPath, hostname, remote, key) // accept-new (TOFU)
+			}
 			if !confirmUnknown || !term.IsTerminal(int(os.Stdin.Fd())) {
 				return fmt.Errorf("unknown SSH host key for %s (%s); connect interactively once to verify it", hostname, ssh.FingerprintSHA256(key))
 			}
