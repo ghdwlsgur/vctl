@@ -57,7 +57,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		sessionCmd(), sessionStartCmd(), collectCmd(),
 		gate(pruneCmd(), "prune", classMutate),
 		watchSessionsCmd(), nodeAgentCmd(),
-		rbacCmd(),
+		rbacCmd(), mcpCmd(),
 	)
 	return root.Execute()
 }
