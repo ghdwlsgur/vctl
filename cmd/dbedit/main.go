@@ -26,7 +26,9 @@ func main() {
 		"dc":   func(ctx context.Context, st *store.Store, h, v string) (bool, error) { return st.SetDC(ctx, h, v) },
 		"user": func(ctx context.Context, st *store.Store, h, v string) (bool, error) { return st.SetUser(ctx, h, v) },
 		"name": func(ctx context.Context, st *store.Store, h, v string) (bool, error) { return st.Rename(ctx, h, v) },
-		"ips":  func(ctx context.Context, st *store.Store, h, v string) (bool, error) { return st.SetExtraIPs(ctx, h, splitIPs(v)) },
+		"ips": func(ctx context.Context, st *store.Store, h, v string) (bool, error) {
+			return st.SetExtraIPs(ctx, h, splitIPs(v))
+		},
 	}[*col]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "unknown -col %q (want dc|user|name|ips)\n", *col)
