@@ -54,19 +54,7 @@ Non-interactive (scripts/agents):
 				}
 				setHostKeyConfirmation(tgt, server == "")
 
-				// Capture the most recent Vault-signed cert serial so the access
-				// audit row maps to a specific issued certificate. On a jump chain
-				// the target is signed last, so this ends up holding its serial.
-				var lastSerial string
-				sign := func(role, pub string, principals []string, extensions []string) (string, error) {
-					cert, err := a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign, extensions)
-					if err == nil {
-						if s := sshc.CertSerial(cert); s != "" {
-							lastSerial = s
-						}
-					}
-					return cert, err
-				}
+				sign, certSerial := signAndTrackSerial(ctx, a)
 
 				vaultUser := a.Vault.Identity(ctx)
 
@@ -75,7 +63,7 @@ Non-interactive (scripts/agents):
 
 				// Best-effort central access log. Never fails the SSH: audit
 				// loss is logged to stderr but the connection result is returned as-is.
-				entry := accessEntry(vaultUser, tgt, connInfo, lastSerial, connErr)
+				entry := accessEntry(vaultUser, tgt, connInfo, certSerial(), connErr)
 				if logErr := a.LogAccess(ctx, entry); logErr != nil {
 					ui.Warnf(os.Stderr, "access log not recorded: %v", logErr)
 				}
@@ -85,6 +73,25 @@ Non-interactive (scripts/agents):
 	}
 	cmd.Flags().StringVar(&server, "server", "", "exact inventory host to connect to (non-interactive; for scripts/agents)")
 	return cmd
+}
+
+// signAndTrackSerial returns a SignFunc that signs public keys via Vault and a
+// getter for the most recent issued cert serial. On a jump chain the target is
+// signed last, so the getter ends up holding the target's serial — used to map
+// the access-audit row to a specific certificate. Shared by `vctl ssh` and the
+// MCP vctl_ssh_exec tool.
+func signAndTrackSerial(ctx context.Context, a *app.App) (sshc.SignFunc, func() string) {
+	var serial string
+	fn := func(role, pub string, principals, extensions []string) (string, error) {
+		cert, err := a.Vault.SignSSH(ctx, role, pub, principals, a.Cfg.SSHSign, extensions)
+		if err == nil {
+			if s := sshc.CertSerial(cert); s != "" {
+				serial = s
+			}
+		}
+		return cert, err
+	}
+	return fn, func() string { return serial }
 }
 
 func setHostKeyConfirmation(t *sshc.Target, enabled bool) {
