@@ -2,6 +2,17 @@ package store
 
 import "context"
 
+// Delete removes a server from the inventory. Use when a host is
+// decommissioned (e.g. a deleted VM). Audit/access rows keyed by the hostname
+// remain as historical records. Returns whether a row matched.
+func (s *Store) Delete(ctx context.Context, hostname string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=$1`, hostname)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // SetDC updates a server's datacenter label. DC is operator-managed and `vctl
 // sync` would overwrite it from IP heuristics, so this is the deliberate manual
 // edit path (used by cmd/dbedit). Returns whether a row matched.
