@@ -147,6 +147,23 @@ func collectRows[T any](rows pgx.Rows, scan func(pgx.Rows) (T, error)) ([]T, err
 
 func scanServerRow(r pgx.Rows) (Server, error) { return scanServer(r) }
 
+// queryAndCollect runs a query and drains the rows through scan, closing them —
+// the one-shot Query+collectRows used across the store.
+func queryAndCollect[T any](ctx context.Context, pool *pgxpool.Pool, q string, args []any, scan func(pgx.Rows) (T, error)) ([]T, error) {
+	rows, err := pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	return collectRows(rows, scan)
+}
+
+// scanString scans a single text column (the common one-column query shape).
+func scanString(r pgx.Rows) (string, error) {
+	var v string
+	err := r.Scan(&v)
+	return v, err
+}
+
 // Resolve tries exact hostname match first, then — if the query is an IP — any
 // host answering on that address (primary ip, operator-set extra_ips, or
 // node-agent observed_ips), and otherwise fuzzy hostname matching.
