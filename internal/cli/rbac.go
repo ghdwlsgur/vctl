@@ -417,7 +417,7 @@ func rbacWhoamiCmd() *cobra.Command {
 					return err
 				}
 				ui.Section(os.Stdout, "rbac whoami")
-				fmt.Fprintf(os.Stdout, "identity: %s\n", valueOrDash(user))
+				fmt.Fprintf(os.Stdout, "identity: %s\n", ui.OrDash(user))
 				if isAdmin {
 					fmt.Fprintf(os.Stdout, "admin:    %s (vctl-admin/sre-admin — bypasses command RBAC)\n", ui.OK("yes"))
 				} else {

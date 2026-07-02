@@ -116,8 +116,8 @@ func printSessions(sessions []store.AuditSession) error {
 	rows := make([][]string, 0, len(sessions))
 	for _, s := range sessions {
 		rows = append(rows, []string{
-			s.StartedAt.Local().Format(ui.TimeLayout),
-			valueOrDash(s.VaultUser), s.Hostname, valueOrDash(s.LoginUser),
+			s.StartedAt.Local().Format(ui.TimeLayout) + " " + ui.Ago(s.StartedAt),
+			ui.OrDash(s.VaultUser), s.Hostname, ui.OrDash(s.LoginUser),
 			s.CertSerial, dur(s.StartedAt, s.EndedAt),
 		})
 	}
@@ -132,10 +132,10 @@ type sessionDetailOptions struct {
 
 func printTimeline(sessions []store.AuditSession, events map[int64][]store.KernelEvent, opts sessionDetailOptions) error {
 	for _, s := range sessions {
-		ui.Section(os.Stdout, fmt.Sprintf("%s on %s (%s)", valueOrDash(s.VaultUser), s.Hostname, s.CertSerial))
-		ui.Infof(os.Stdout, "login=%s source=%s started=%s dur=%s",
-			valueOrDash(s.LoginUser), valueOrDash(s.SourceIP),
-			s.StartedAt.Local().Format(ui.TimeLayout), dur(s.StartedAt, s.EndedAt))
+		ui.Section(os.Stdout, fmt.Sprintf("%s on %s (%s)", ui.OrDash(s.VaultUser), s.Hostname, s.CertSerial))
+		ui.Infof(os.Stdout, "login=%s source=%s started=%s %s dur=%s",
+			ui.OrDash(s.LoginUser), ui.OrDash(s.SourceIP),
+			s.StartedAt.Local().Format(ui.TimeLayout), ui.Ago(s.StartedAt), dur(s.StartedAt, s.EndedAt))
 		if s.Summary != "" {
 			ui.Infof(os.Stdout, "summary: %s", s.Summary)
 		}

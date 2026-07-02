@@ -40,22 +40,22 @@ request lives in the Vault file audit device on the Vault pod
 				}
 				rows := make([][]string, 0, len(entries))
 				for _, e := range entries {
-					result := ui.Fail("fail")
+					result := ui.Dot(ui.StateFail) + " fail"
 					if e.OK {
-						result = ui.OK("ok")
+						result = ui.Dot(ui.StateOK) + " ok"
 					}
 					row := []string{
-						e.SignedAt.Local().Format(ui.TimeLayout),
-						valueOrDash(e.VaultUser),
+						e.SignedAt.Local().Format(ui.TimeLayout) + " " + ui.Ago(e.SignedAt),
+						ui.OrDash(e.VaultUser),
 						e.Hostname,
-						valueOrDash(e.SourceIP),
-						valueOrDash(e.ClientUser),
-						valueOrDash(e.TargetAddr),
-						valueOrDash(e.JumpVia),
+						ui.OrDash(e.SourceIP),
+						ui.OrDash(e.ClientUser),
+						ui.OrDash(e.TargetAddr),
+						ui.OrDash(e.JumpVia),
 						result,
 					}
 					if detail {
-						row = append(row, valueOrDash(e.ClientHost), valueOrDash(e.SourceAddr), valueOrDash(e.CertSerial), valueOrDash(e.Error))
+						row = append(row, ui.OrDash(e.ClientHost), ui.OrDash(e.SourceAddr), ui.OrDash(e.CertSerial), ui.OrDash(e.Error))
 					}
 					rows = append(rows, row)
 				}
@@ -74,11 +74,4 @@ request lives in the Vault file audit device on the Vault pod
 	cmd.Flags().IntVarP(&limit, "limit", "n", 50, "max rows to show")
 	cmd.Flags().BoolVar(&detail, "detail", false, "show client host, source address, cert serial, and error")
 	return cmd
-}
-
-func valueOrDash(s string) string {
-	if s == "" {
-		return ui.Muted("-")
-	}
-	return s
 }

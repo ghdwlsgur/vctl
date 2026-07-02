@@ -3,10 +3,12 @@ package ui
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/term"
 )
 
 // TimeLayout is the local timestamp layout shared by audit/session output.
@@ -49,6 +51,10 @@ type KV struct {
 	Key   string
 	Value string
 	State State
+	// Raw, when set, is printed verbatim as the value instead of Badge(State,
+	// Value) — for values that carry their own styling (e.g. an embedded Bar)
+	// that must not be re-wrapped. State still drives the leading dot.
+	Raw string
 }
 
 type State int
@@ -85,19 +91,93 @@ func OK(s string) string   { return okStyle.Render(s) }
 func Warn(s string) string { return warnStyle.Render(s) }
 func Fail(s string) string { return failStyle.Render(s) }
 
+// Dot returns a status glyph carrying the state color: a filled ● for ok/warn
+// (green/yellow), a hollow ○ for fail (red), and a blank for plain rows so
+// dotted and undotted lines still align. It is the shared liveness glyph used
+// across list, the ssh picker, status, and the audit result column.
+func Dot(state State) string {
+	switch state {
+	case StateOK:
+		return okStyle.Render("●")
+	case StateWarn:
+		return warnStyle.Render("●")
+	case StateFail:
+		return failStyle.Render("○")
+	default:
+		return " "
+	}
+}
+
+// OrDash returns s, or a muted "-" when s is empty, for table cells where a
+// blank would read as missing data rather than "not set".
+func OrDash(s string) string {
+	if s == "" {
+		return mutedStyle.Render("-")
+	}
+	return s
+}
+
+// Bar renders a fixed-width coverage meter (done/total) as filled/empty blocks,
+// e.g. "████████░░░░". The filled portion is green, the remainder muted.
+func Bar(done, total, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	filled := 0
+	if total > 0 {
+		filled = done * width / total
+	}
+	if filled > width {
+		filled = width
+	}
+	return okStyle.Render(strings.Repeat("█", filled)) + mutedStyle.Render(strings.Repeat("░", width-filled))
+}
+
+// Ago renders a muted "(3m ago)" relative time for pairing next to an absolute
+// timestamp. Returns "" for a zero time.
+func Ago(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return mutedStyle.Render("(" + CompactDuration(time.Since(t)) + " ago)")
+}
+
+// Section prints a section header. On a terminal it renders the picker-style
+// "▌ title ────" rule filling the line; when the writer is not a terminal
+// (pipes, logs, CI) it prints just "▌ title" so redirected output stays clean.
 func Section(w io.Writer, title string) {
-	fmt.Fprintln(w, Title(title))
+	head := titleStyle.Render("▌ " + title)
+	if cols := terminalWidth(w); cols > 0 {
+		if rule := cols - lipgloss.Width(head) - 1; rule > 0 {
+			fmt.Fprintln(w, head+" "+mutedStyle.Render(strings.Repeat("─", rule)))
+			return
+		}
+	}
+	fmt.Fprintln(w, head)
+}
+
+// terminalWidth returns the column count when w is a terminal, else 0.
+func terminalWidth(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok || !term.IsTerminal(int(f.Fd())) {
+		return 0
+	}
+	cols, _, err := term.GetSize(int(f.Fd()))
+	if err != nil {
+		return 0
+	}
+	return cols
 }
 
 // logf writes a tagged status line; the four level helpers differ only by tag.
-func logf(w io.Writer, tag, format string, args ...interface{}) {
+func logf(w io.Writer, tag, format string, args ...any) {
 	fmt.Fprintf(w, "%s %s\n", tag, fmt.Sprintf(format, args...))
 }
 
-func Successf(w io.Writer, format string, args ...interface{}) { logf(w, OK("OK"), format, args...) }
-func Warnf(w io.Writer, format string, args ...interface{})    { logf(w, Warn("WARN"), format, args...) }
-func Errorf(w io.Writer, format string, args ...interface{})   { logf(w, Fail("ERR"), format, args...) }
-func Infof(w io.Writer, format string, args ...interface{})    { logf(w, Muted("--"), format, args...) }
+func Successf(w io.Writer, format string, args ...any) { logf(w, OK("OK"), format, args...) }
+func Warnf(w io.Writer, format string, args ...any)    { logf(w, Warn("WARN"), format, args...) }
+func Errorf(w io.Writer, format string, args ...any)   { logf(w, Fail("ERR"), format, args...) }
+func Infof(w io.Writer, format string, args ...any)    { logf(w, Muted("--"), format, args...) }
 
 func Badge(state State, text string) string {
 	switch state {
@@ -121,7 +201,11 @@ func KVs(w io.Writer, rows []KV) {
 	}
 	for _, row := range rows {
 		key := PadRight(labelStyle.Render(row.Key), width)
-		fmt.Fprintf(w, "%s  %s\n", key, Badge(row.State, row.Value))
+		val := row.Raw
+		if val == "" {
+			val = Badge(row.State, row.Value)
+		}
+		fmt.Fprintf(w, "%s  %s %s\n", key, Dot(row.State), val)
 	}
 }
 
@@ -177,7 +261,7 @@ func joinPadded(cells []string, widths []int) string {
 func joinRule(widths []int) string {
 	parts := make([]string, len(widths))
 	for i, width := range widths {
-		parts[i] = strings.Repeat("-", width)
+		parts[i] = strings.Repeat("─", width)
 	}
 	return strings.Join(parts, "  ")
 }

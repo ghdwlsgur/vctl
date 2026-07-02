@@ -23,7 +23,7 @@ func statusCmd() *cobra.Command {
 					{Key: "Auth method", Value: a.Cfg.AuthMethod},
 				}
 				if a.Vault.HasValidToken() {
-					rows = append(rows, ui.KV{Key: "Token", Value: "valid (cached)", State: ui.StateOK})
+					rows = append(rows, ui.KV{Key: "Token", Value: fmt.Sprintf("valid · %s left", ui.CompactDuration(a.Vault.TTL())), State: ui.StateOK})
 				} else {
 					rows = append(rows, ui.KV{Key: "Token", Value: "missing; run 'vctl login'", State: ui.StateWarn})
 					ui.KVs(os.Stdout, rows)
@@ -49,8 +49,13 @@ func statusCmd() *cobra.Command {
 						withAgent++
 					}
 				}
-				rows = append(rows, ui.KV{Key: "Inventory DB", Value: fmt.Sprintf("OK (%d hosts)", len(servers)), State: ui.StateOK})
-				rows = append(rows, ui.KV{Key: "Node agents", Value: fmt.Sprintf("%d reporting", withAgent), State: agentCoverageState(len(servers), withAgent)})
+				rows = append(rows, ui.KV{Key: "Inventory DB", Value: fmt.Sprintf("OK · %d hosts", len(servers)), State: ui.StateOK})
+				agentState := agentCoverageState(len(servers), withAgent)
+				rows = append(rows, ui.KV{
+					Key:   "Node agents",
+					State: agentState,
+					Raw:   fmt.Sprintf("%s  %s", ui.Badge(agentState, fmt.Sprintf("%d/%d reporting", withAgent, len(servers))), ui.Bar(withAgent, len(servers), 12)),
+				})
 				ui.KVs(os.Stdout, rows)
 				return nil
 			})
