@@ -21,11 +21,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache: true
 
       - name: Check formatting
-        run: test -z "$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))"
+        run: |
+          unformatted="$(find . -name '*.go' -not -path './vendor/*' -print0 | xargs -0 gofmt -l)"
+          test -z "$unformatted"
 
       - name: Vet
         run: go vet ./...
@@ -35,6 +37,26 @@ jobs:
 
       - name: Build
         run: go build ./cmd/vctl
+
+  windows:
+    name: Windows Build
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.26.5"
+          cache: true
+
+      - name: Build Windows CLI
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          go build -trimpath -o dist/vctl.exe ./cmd/vctl
+          & ./dist/vctl.exe --version
 
   trivy:
     name: Trivy

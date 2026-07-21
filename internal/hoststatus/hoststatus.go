@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
@@ -141,14 +140,5 @@ func parseMemUsedPct(r io.Reader) *float64 {
 		return nil
 	}
 	used := (total - available) / total * 100
-	return &used
-}
-
-func diskUsedPct(path string) *float64 {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(path, &st); err != nil || st.Blocks == 0 {
-		return nil
-	}
-	used := float64(st.Blocks-st.Bavail) / float64(st.Blocks) * 100
 	return &used
 }

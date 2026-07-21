@@ -117,6 +117,9 @@ vctl agent
 # Install
 brew install ghdwlsgur/vctl/vctl
 
+# Windows (after the first Chocolatey package is approved)
+choco install vctl
+
 # Login — GitLab SSO by default (per-person identity), zero config needed
 vctl login
 
@@ -459,7 +462,7 @@ git tag -a v0.1.7 -m "Release v0.1.7"
 git push origin v0.1.7
 ```
 
-The release workflow uses pinned GitHub Actions, runs tests and Trivy, scans the distroless image, publishes GitHub Release artifacts, updates Homebrew, and pushes GHCR tags.
+The release workflow uses pinned GitHub Actions, runs tests and Trivy, scans the distroless image, publishes GitHub Release artifacts (including Windows zip and Chocolatey nupkg), updates Homebrew, optionally pushes to Chocolatey when `CHOCOLATEY_API_KEY` is configured, and pushes GHCR tags.
 
 ## Security Notes
 

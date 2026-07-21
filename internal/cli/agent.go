@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"os/signal"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -33,7 +32,7 @@ func agentCmd() *cobra.Command {
 			}
 			all := append([]string{a.Cfg.SinkPath}, sinks...)
 
-			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 			defer stop()
 
 			m := &agent.Manager{App: a, Sinks: all}
