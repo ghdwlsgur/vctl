@@ -3,8 +3,8 @@
 # 신규 VM 의 cloud-init(trust-vault-ssh-ca.yaml)과 동일 효과의 "기존 서버" 버전.
 #
 # 멱등 + 안전:
-#   - CA '공개키'만 배포(비밀 아님). 기존 authorized_keys/키 접근은 그대로 보존(추가만).
-#   - sshd_config 변경은 'sshd -t' 로 검증 후에만 reload → 잘못된 설정으로 sshd 깨지지 않음.
+#   - CA '공개키'만 배포(비밀 아님). 기존 일반 authorized_keys/키 접근은 복구용으로 보존.
+#   - system-wide drop-in을 설치하고 'sshd -t' 검증 후에만 reload.
 #
 # 실행:
 #   ansible-playbook -i inventory.ini trust-vault-ssh-ca.yml            # 전체
@@ -15,8 +15,9 @@
   become: true
   gather_facts: true
   vars:
-    ca_pub_src: files/vault_ssh_ca.pub
-    ca_pub_dest: /etc/ssh/vault_ssh_ca.pub
+    ca_pub_src: files/vault-ca.pub
+    ca_pub_dest: /etc/ssh/vault-ca.pub
+    ca_dropin_dest: /etc/ssh/sshd_config.d/10-vault-ca.conf
     state: present # absent 로 롤백
   tasks:
     - name: Install Vault SSH CA public key
@@ -29,24 +30,52 @@
         mode: "0644"
       notify: Reload sshd
 
-    - name: Ensure TrustedUserCAKeys in sshd_config (validated)
+    - name: Ensure sshd drop-in directory exists
+      when: state == 'present'
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install system-wide TrustedUserCAKeys drop-in
+      when: state == 'present'
+      ansible.builtin.copy:
+        dest: "{{ ca_dropin_dest }}"
+        content: "TrustedUserCAKeys {{ ca_pub_dest }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload sshd
+
+    - name: Validate merged sshd configuration
+      when: state == 'present'
+      ansible.builtin.command: sshd -t
+      changed_when: false
+
+    - name: Remove legacy TrustedUserCAKeys directives from main config
       when: state == 'present'
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
-        regexp: '^#?\s*TrustedUserCAKeys'
-        line: "TrustedUserCAKeys {{ ca_pub_dest }}"
+        regexp: '^\s*TrustedUserCAKeys\s+'
+        state: absent
         validate: "sshd -t -f %s"
       notify: Reload sshd
 
     # --- 롤백 ---
-    - name: Remove TrustedUserCAKeys (rollback)
+    - name: Remove TrustedUserCAKeys drop-in (rollback)
       when: state == 'absent'
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^TrustedUserCAKeys\s+{{ ca_pub_dest }}'
+      ansible.builtin.file:
+        path: "{{ ca_dropin_dest }}"
         state: absent
-        validate: "sshd -t -f %s"
       notify: Reload sshd
+
+    - name: Remove Vault SSH CA public key (rollback)
+      when: state == 'absent'
+      ansible.builtin.file:
+        path: "{{ ca_pub_dest }}"
+        state: absent
 
   handlers:
     - name: Reload sshd

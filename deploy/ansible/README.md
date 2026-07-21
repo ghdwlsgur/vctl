@@ -6,7 +6,7 @@ truth — no duplicated copies here) plus the SSH CA trust.
 
 | Playbook | What it does |
 |---|---|
-| `trust-vault-ssh-ca.yml` | Install the Vault SSH CA public key as `TrustedUserCAKeys` so `vctl ssh` works (same as `vctl trust-ca`, in bulk). |
+| `trust-vault-ssh-ca.yml` | Install the operator-supplied `files/vault-ca.pub` as system-wide `TrustedUserCAKeys` in `/etc/ssh/sshd_config.d/10-vault-ca.conf` (same as `vctl trust-ca`, in bulk). |
 | `site.yml` | Install node-agent (runtime status) by default. The collector + watch-sessions audit stack, `vctl-host` AppRole, and Tetragon are explicit opt-ins via `vctl_host_audit_stack=true`. |
 
 ## Prerequisites
@@ -24,6 +24,9 @@ truth — no duplicated copies here) plus the SSH CA trust.
 - The release **linux binary** placed at `files/vctl` (gitignored):
   `gh release download vX.Y.Z -p 'vctl_*_linux_amd64.tar.gz' && tar -xzf … -C files/`
   (or switch the play to install the `.deb`/`.rpm` from the release).
+- The current Vault SSH CA **public key** placed at `files/vault-ca.pub`
+  (gitignored). Verify its fingerprint through a trusted channel before running
+  `trust-vault-ssh-ca.yml`.
 - Hosts already trust the SSH CA (`trust-vault-ssh-ca.yml` or `vctl trust-ca`).
   This is a system-wide sshd `TrustedUserCAKeys` trust, not a copy in each
   account's `authorized_keys`. Keep host clocks NTP-synchronized: a clock that
