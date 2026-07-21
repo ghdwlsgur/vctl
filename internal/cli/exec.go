@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -64,8 +63,8 @@ vctl renews or re-authenticates the token while the child process is alive.
 				"VAULT_TOKEN="+a.Vault.Token(),
 			)
 			// Let the child process receive SIGINT.
-			signal.Ignore(syscall.SIGINT)
-			defer signal.Reset(syscall.SIGINT)
+			signal.Ignore(os.Interrupt)
+			defer signal.Reset(os.Interrupt)
 
 			if err := child.Run(); err != nil {
 				if ee, ok := err.(*exec.ExitError); ok {

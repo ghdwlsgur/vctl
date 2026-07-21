@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>vctl</id>
+    <version>__VERSION__</version>
+    <title>vctl</title>
+    <authors>Innogrid SRE Team</authors>
+    <owners>Innogrid SRE Team</owners>
+    <projectUrl>https://github.com/ghdwlsgur/vctl</projectUrl>
+    <projectSourceUrl>https://github.com/ghdwlsgur/vctl</projectSourceUrl>
+    <packageSourceUrl>https://github.com/ghdwlsgur/vctl/tree/main/deploy/chocolatey</packageSourceUrl>
+    <docsUrl>https://github.com/ghdwlsgur/vctl#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/ghdwlsgur/vctl/issues</bugTrackerUrl>
+    <licenseUrl>https://github.com/ghdwlsgur/vctl/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>Vault-backed infrastructure access CLI for inventory, short-lived SSH certificates, and access auditing.</description>
+    <summary>Vault-backed infrastructure access CLI</summary>
+    <releaseNotes>https://github.com/ghdwlsgur/vctl/releases/tag/v__VERSION__</releaseNotes>
+    <tags>vctl vault ssh infrastructure cli windows</tags>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

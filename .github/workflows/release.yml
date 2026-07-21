@@ -23,7 +23,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache: true
 
       - name: Set release version
@@ -93,3 +93,48 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
             ghcr.io/${{ github.repository }}:${{ env.RELEASE_VERSION }}
             ghcr.io/${{ github.repository }}:latest
+
+  chocolatey:
+    name: Chocolatey
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: goreleaser
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Download release checksums
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          New-Item -ItemType Directory -Force dist | Out-Null
+          gh release download $env:GITHUB_REF_NAME --pattern checksums.txt --dir dist
+          $archive = "vctl_${version}_windows_amd64.zip"
+          $line = Get-Content dist/checksums.txt | Where-Object { $_ -match "  $([regex]::Escape($archive))$" }
+          if (-not $line) { throw "checksum not found for $archive" }
+          $checksum = ($line -split '\s+')[0]
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+          "WINDOWS_AMD64_CHECKSUM=$checksum" >> $env:GITHUB_ENV
+
+      - name: Pack Chocolatey package
+        shell: pwsh
+        run: ./deploy/chocolatey/pack.ps1 -Version $env:RELEASE_VERSION -Checksum64 $env:WINDOWS_AMD64_CHECKSUM -OutputDirectory dist/chocolatey
+
+      - name: Verify Chocolatey install
+        shell: pwsh
+        run: |
+          choco install vctl --source "$(Resolve-Path dist/chocolatey)" --version $env:RELEASE_VERSION --yes --no-progress
+          vctl --version
+          choco uninstall vctl --yes --no-progress
+
+      - name: Attach package to GitHub release
+        shell: pwsh
+        run: gh release upload $env:GITHUB_REF_NAME (Get-ChildItem dist/chocolatey/*.nupkg).FullName --clobber
+
+      - name: Publish to Chocolatey Community Repository
+        if: env.CHOCOLATEY_API_KEY != ''
+        shell: pwsh
+        run: choco push (Get-ChildItem dist/chocolatey/*.nupkg).FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
