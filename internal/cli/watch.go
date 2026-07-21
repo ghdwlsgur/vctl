@@ -28,6 +28,14 @@ type sessionMarker struct {
 	Started   string `json:"started"` // RFC3339 login time — stable session key across restarts
 }
 
+// sessionRecorder is the narrow store seam used by the marker scanner. Keeping
+// it smaller than *store.Store makes the outage behavior directly testable and
+// prevents the scanner from growing unrelated database responsibilities.
+type sessionRecorder interface {
+	RecordSession(context.Context, store.AuditSession) (int64, error)
+	EndSession(context.Context, int64, string) error
+}
+
 func watchSessionsCmd() *cobra.Command {
 	var (
 		dir      string
@@ -56,15 +64,22 @@ itself stays credential-free.
 				seen := map[string]int64{} // marker path -> session id
 				scan := func() error { return scanMarkers(ctx, st, dir, seen) }
 
-				// First scan fails fast (a silently-idle daemon would record nothing
-				// forever); in the loop the dir may transiently vanish, so warn
-				// (rate-limited) instead of crashing.
+				if once {
+					return scan()
+				}
+
+				// A Vault/DB outage must not turn every pending marker into a retry
+				// storm. Emit at most one warning per minute and exponentially back
+				// off scans from the normal interval to five minutes. Any successful
+				// pass resets the interval immediately.
 				var lastWarn time.Time
-				return runPeriodic(ctx, once, true, interval, 5*time.Second, scan, func(err error) {
+				return runWatchLoop(ctx, interval, 5*time.Minute, scan, func(err error) {
 					if time.Since(lastWarn) > time.Minute {
 						ui.Warnf(os.Stderr, "%v (retrying)", err)
 						lastWarn = time.Now()
 					}
+				}, func(ctx context.Context, delay time.Duration) bool {
+					return waitForContext(ctx, jitterWatchDelay(delay))
 				})
 			})
 		},
@@ -100,7 +115,7 @@ func reconcileStaleSessions(ctx context.Context, st *store.Store) {
 // scanMarkers turns new login markers in dir into audit_session rows and closes
 // sessions whose leader has exited. seen maps marker path -> session id across
 // calls. A dir-read error is wrapped with the path for the caller.
-func scanMarkers(ctx context.Context, st *store.Store, dir string, seen map[string]int64) error {
+func scanMarkers(ctx context.Context, st sessionRecorder, dir string, seen map[string]int64) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("watch %s: %w", dir, err)
@@ -125,8 +140,10 @@ func scanMarkers(ctx context.Context, st *store.Store, dir string, seen map[stri
 			CgroupID: cgroupID(m.LeaderPID), StartedAt: started,
 		})
 		if err != nil {
-			ui.Warnf(os.Stderr, "record session %s: %v", e.Name(), err)
-			continue
+			// A backend outage affects every marker. Stop after the first failed
+			// write so one scan produces one Vault/DB attempt and one aggregate
+			// warning instead of N attempts and N log lines.
+			return fmt.Errorf("record session %s: %w", e.Name(), err)
 		}
 		seen[path] = id
 		ui.Infof(os.Stderr, "session %d started: %s on %s (serial %s)", id, m.Login, m.Host, m.Serial)
@@ -135,7 +152,7 @@ func scanMarkers(ctx context.Context, st *store.Store, dir string, seen map[stri
 }
 
 // closeIfEnded ends a session whose leader process has exited and removes its marker.
-func closeIfEnded(ctx context.Context, st *store.Store, path string, seen map[string]int64) {
+func closeIfEnded(ctx context.Context, st sessionRecorder, path string, seen map[string]int64) {
 	m, err := readMarker(path)
 	if err != nil || processAlive(m.LeaderPID) {
 		return
