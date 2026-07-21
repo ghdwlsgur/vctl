@@ -13,6 +13,53 @@
 - Host agents (optional): low-resource daemons report per-person kernel session activity and runtime host status into Postgres, attributed to whoever logged in — the agent-less Vault pattern applied server-side.
 - Hardened release path: CI runs tests, Trivy scans, distroless image scans, GoReleaser, Homebrew updates, and GHCR publishing.
 
+## How to install
+
+### macOS
+
+Install with Homebrew on Apple Silicon or Intel Macs:
+
+```bash
+brew install ghdwlsgur/vctl/vctl
+```
+
+### Windows
+
+Install from the Chocolatey Community Repository in an Administrator PowerShell:
+
+```powershell
+choco install vctl
+vctl --version
+```
+
+New Chocolatey packages may remain unavailable until their first community
+moderation is approved. Windows `amd64` and `arm64` ZIP archives are also
+available on the [GitHub Releases](https://github.com/ghdwlsgur/vctl/releases/latest) page.
+
+### Linux
+
+Download the latest package for your architecture with the GitHub CLI. Replace
+`amd64` with `arm64` where needed.
+
+Debian and Ubuntu:
+
+```bash
+gh release download --repo ghdwlsgur/vctl --pattern 'vctl_*_linux_amd64.deb'
+sudo apt install ./vctl_*_linux_amd64.deb
+```
+
+RHEL, Rocky Linux, AlmaLinux, and Fedora:
+
+```bash
+gh release download --repo ghdwlsgur/vctl --pattern 'vctl_*_linux_amd64.rpm'
+sudo dnf install ./vctl_*_linux_amd64.rpm
+```
+
+For other distributions, download the `linux_amd64.tar.gz` or
+`linux_arm64.tar.gz` archive from
+[GitHub Releases](https://github.com/ghdwlsgur/vctl/releases/latest), extract
+`vctl`, and place it in a directory on `PATH` such as `/usr/local/bin`.
+
 ## Architecture
 
 ```mermaid
@@ -114,12 +161,6 @@ vctl agent
 ## New User Flow
 
 ```bash
-# Install
-brew install ghdwlsgur/vctl/vctl
-
-# Windows (after the first Chocolatey package is approved)
-choco install vctl
-
 # Login — GitLab SSO by default (per-person identity), zero config needed
 vctl login
 
