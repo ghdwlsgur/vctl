@@ -7,15 +7,15 @@ truth — no duplicated copies here) plus the SSH CA trust.
 | Playbook | What it does |
 |---|---|
 | `trust-vault-ssh-ca.yml` | Install the Vault SSH CA public key as `TrustedUserCAKeys` so `vctl ssh` works (same as `vctl trust-ca`, in bulk). |
-| `site.yml` | Install the full host stack: collector + watch-sessions (kernel/session audit) **and** node-agent (runtime status), with one `vctl-host` AppRole credential, Tetragon (bare VMs), DNS, and log caps. |
+| `site.yml` | Install node-agent (runtime status) by default. The collector + watch-sessions audit stack, `vctl-host` AppRole, and Tetragon are explicit opt-ins via `vctl_host_audit_stack=true`. |
 
 ## Prerequisites
 
 - The AppRole the host uses exists in Vault (see the `vault-iac` repo). Which one
   depends on `vctl_host_audit_stack`:
-  - `vctl_host_audit_stack=true` (default) -> **`vctl-host`** (`vctl-audit-ingest` + `vctl-status`):
+  - `vctl_host_audit_stack=true` (explicit opt-in) -> **`vctl-host`** (`vctl-audit-ingest` + `vctl-status`):
     full stack (collector + watch-sessions + node-agent).
-  - `vctl_host_audit_stack=false` → **`vctl-node`** (`vctl-status` only): node-agent ONLY,
+  - `vctl_host_audit_stack=false` (default) → **`vctl-node`** (`vctl-status` only): node-agent ONLY,
     no DB write — least privilege for liveness-only hosts.
   The playbook reads the role's `role_id` and mints a per-host `secret_id` from the
   **control node's** `VAULT_ADDR`/`VAULT_TOKEN`, so run with a token allowed to do
@@ -25,6 +25,9 @@ truth — no duplicated copies here) plus the SSH CA trust.
   `gh release download vX.Y.Z -p 'vctl_*_linux_amd64.tar.gz' && tar -xzf … -C files/`
   (or switch the play to install the `.deb`/`.rpm` from the release).
 - Hosts already trust the SSH CA (`trust-vault-ssh-ca.yml` or `vctl trust-ca`).
+  This is a system-wide sshd `TrustedUserCAKeys` trust, not a copy in each
+  account's `authorized_keys`. Keep host clocks NTP-synchronized: a clock that
+  lags the Vault signer causes sshd to reject a fresh certificate as `not yet valid`.
 
 ## Run (canary first, then waves)
 
@@ -34,6 +37,9 @@ ansible-playbook -i inventory.ini site.yml -l <canary>
 
 # a wave / group
 ansible-playbook -i inventory.ini site.yml -l seoul_wave1
+
+# explicit full audit-stack canary (never enable fleet-wide implicitly)
+ansible-playbook -i inventory.ini site.yml -l <canary> -e vctl_host_audit_stack=true
 
 # non-seoul networks: point hosts at the right LB for *.sre.local
 ansible-playbook -i inventory.ini site.yml -l incheon_onprem -e vctl_host_sre_lb_ip=<lb-ip>

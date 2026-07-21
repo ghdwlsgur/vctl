@@ -16,12 +16,12 @@ vctl_host_bin_dest: "{{ vctl_bin_dest | default('/usr/local/bin/vctl') }}"
 vctl_host_install_collect: "{{ install_collect | default(true) }}"
 vctl_host_enable_services: "{{ enable_services | default(true) }}"
 
-# vctl_host_audit_stack=true (default): full stack — collector/watch-sessions (DB write) +
+# vctl_host_audit_stack=true (explicit opt-in): full stack — collector/watch-sessions (DB write) +
 #   node-agent -> uses the vctl-host AppRole (audit ingest + vctl-status).
 # vctl_host_audit_stack=false: node-agent ONLY (status heartbeat, no DB write) → uses the
 #   least-privilege vctl-node AppRole (vctl-status only); watch/collect are not
-#   enabled. Set false for hosts you only want liveness from.
-vctl_host_audit_stack: "{{ audit_stack | default(true) }}"
+#   enabled. This is the fleet-safe default; opt in to audit per canary/group.
+vctl_host_audit_stack: "{{ audit_stack | default(false) }}"
 # Derived: which AppRole the host authenticates with (least privilege per scope).
 vctl_host_approle: >-
   {{ vctl_approle | default('vctl-host' if vctl_host_audit_stack | bool else 'vctl-node') }}
