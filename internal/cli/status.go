@@ -35,7 +35,7 @@ func statusCmd() *cobra.Command {
 				} else {
 					rows = append(rows, ui.KV{Key: "SSH CA", Value: fmt.Sprintf("OK (%.40s...)", ca), State: ui.StateOK})
 				}
-				st, err := a.OpenStore(ctx, false)
+				st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
 				if err != nil {
 					rows = append(rows, ui.KV{Key: "Inventory DB", Value: "connection failed (" + err.Error() + ")", State: ui.StateFail})
 					ui.KVs(os.Stdout, rows)
