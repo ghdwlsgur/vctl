@@ -18,6 +18,23 @@ func TestNullIfEmpty(t *testing.T) {
 	}
 }
 
+func TestMergeAddresses(t *testing.T) {
+	got := mergeAddresses("10.0.0.1", []string{"10.0.0.2", "10.0.0.1", ""}, []string{"10.0.0.2", "192.168.1.9"})
+	want := []string{"10.0.0.1", "10.0.0.2", "192.168.1.9"}
+	if len(got) != len(want) {
+		t.Fatalf("mergeAddresses = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("mergeAddresses[%d] = %q, want %q (full %v)", i, got[i], want[i], got)
+		}
+	}
+	// Primary must always come first even when it also appears in a later set.
+	if got[0] != "10.0.0.1" {
+		t.Fatalf("primary not first: %v", got)
+	}
+}
+
 // testStore connects to a throwaway Postgres named by VCTL_TEST_DSN and applies
 // migrations. Skips when the env var is unset so unit runs need no database.
 //
@@ -93,6 +110,46 @@ func TestSessionEventRoundTrip(t *testing.T) {
 	}
 	if _, err := st.PruneSessions(ctx, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("PruneSessions: %v", err)
+	}
+}
+
+// TestListInventoryMergesObservedIPs confirms `vctl list` sees agent-observed
+// addresses without pulling the full runtime status: ListInventory folds
+// observed_ips into Addresses. Integration — needs VCTL_TEST_DSN.
+func TestListInventoryMergesObservedIPs(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	host := "inv-host-" + time.Now().Format("150405.000000")
+	dc := "inv-dc-" + time.Now().Format("150405.000000")
+
+	if err := st.Upsert(ctx, Server{
+		Hostname: host, IP: "192.0.2.50", Port: 22, User: "ubuntu", DC: dc,
+		CARole: "sre-core", ExtraIPs: []string{"192.0.2.51"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if _, err := st.UpsertServerStatus(ctx, ServerStatus{
+		Hostname: host, AgentVersion: "test", ObservedIPs: []string{"192.0.2.52", "192.0.2.50"},
+	}); err != nil {
+		t.Fatalf("UpsertServerStatus: %v", err)
+	}
+
+	rows, err := st.ListInventory(ctx, dc)
+	if err != nil {
+		t.Fatalf("ListInventory: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	got := rows[0].Addresses
+	want := []string{"192.0.2.50", "192.0.2.51", "192.0.2.52"} // primary, extra, observed; dedup drops the repeat
+	if len(got) != len(want) {
+		t.Fatalf("Addresses = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Addresses[%d] = %q, want %q (full %v)", i, got[i], want[i], got)
+		}
 	}
 }
 
