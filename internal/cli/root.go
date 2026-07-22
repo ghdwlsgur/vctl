@@ -82,24 +82,21 @@ func withApp(fn func(*app.App) error) error {
 // new-app + open-store + defer-close preamble repeated by every store-backed
 // command into one call.
 func withStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) error) error {
-	a, err := newApp()
-	if err != nil {
-		return err
+	p := app.PurposeInventoryRead
+	if rw {
+		p = app.PurposeInventoryWrite
 	}
-	st, err := a.OpenStore(ctx, rw)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	return fn(a, st)
+	return withPurposeStore(ctx, p, fn)
 }
 
-func withRoleStore(ctx context.Context, open func(*app.App, context.Context) (*store.Store, error), fn func(*app.App, *store.Store) error) error {
+// withPurposeStore builds the app, opens the store for one purpose, runs fn, and
+// closes it afterward — the shared preamble for every store-backed command.
+func withPurposeStore(ctx context.Context, p app.Purpose, fn func(*app.App, *store.Store) error) error {
 	a, err := newApp()
 	if err != nil {
 		return err
 	}
-	st, err := open(a, ctx)
+	st, err := a.OpenStore(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -108,13 +105,9 @@ func withRoleStore(ctx context.Context, open func(*app.App, context.Context) (*s
 }
 
 func withAuditStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
-	return withRoleStore(ctx, func(a *app.App, ctx context.Context) (*store.Store, error) {
-		return a.OpenAuditStore(ctx)
-	}, fn)
+	return withPurposeStore(ctx, app.PurposeAuditRead, fn)
 }
 
 func withAuditIngestStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
-	return withRoleStore(ctx, func(a *app.App, ctx context.Context) (*store.Store, error) {
-		return a.OpenAuditIngestStore(ctx)
-	}, fn)
+	return withPurposeStore(ctx, app.PurposeAuditIngest, fn)
 }

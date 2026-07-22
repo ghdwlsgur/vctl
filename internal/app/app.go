@@ -187,46 +187,60 @@ func (a *App) loginUserpass(ctx context.Context) error {
 	return nil
 }
 
-// OpenStore ensures login, requests dynamic DB credentials, and opens Postgres.
-// rw selects the write role for sync/admin paths; otherwise it uses the read role.
-func (a *App) OpenStore(ctx context.Context, rw bool) (*store.Store, error) {
-	role := a.Cfg.DBRoleRO
-	if rw {
-		role = a.Cfg.DBRoleRW
+// Purpose names why a store is being opened. Each purpose maps to a specific
+// Vault database role, so callers ask for a capability ("read inventory",
+// "write audit") rather than naming a role string. The mapping lives in one
+// place (roleFor), which is the only spot that knows the role names.
+type Purpose int
+
+const (
+	PurposeInventoryRead Purpose = iota
+	PurposeInventoryWrite
+	PurposeStatus
+	PurposeIdentity
+	PurposeAuditRead
+	PurposeAuditWrite
+	PurposeAuditIngest
+	PurposePrune
+	PurposeMigrate
+)
+
+// roleFor maps a purpose to its configured Vault database role.
+func (a *App) roleFor(p Purpose) string {
+	switch p {
+	case PurposeInventoryWrite:
+		return a.Cfg.DBRoleRW
+	case PurposeStatus:
+		return a.Cfg.DBRoleStatus
+	case PurposeIdentity:
+		return a.Cfg.DBRoleIdentity
+	case PurposeAuditRead:
+		return a.Cfg.DBRoleAuditRO
+	case PurposeAuditWrite:
+		return a.Cfg.DBRoleAuditWrite
+	case PurposeAuditIngest:
+		return a.Cfg.DBRoleAuditIngest
+	case PurposePrune:
+		return a.Cfg.DBRolePrune
+	case PurposeMigrate:
+		return a.Cfg.DBRoleMigrate
+	default: // PurposeInventoryRead
+		return a.Cfg.DBRoleRO
 	}
-	return a.OpenStoreRole(ctx, role)
 }
 
-// OpenStatusStore opens Postgres with the narrow node-agent status role.
-func (a *App) OpenStatusStore(ctx context.Context) (*store.Store, error) {
-	return a.OpenStoreRole(ctx, a.Cfg.DBRoleStatus)
-}
-
-func (a *App) OpenIdentityStore(ctx context.Context) (*store.Store, error) {
-	return a.OpenStoreRole(ctx, a.Cfg.DBRoleIdentity)
-}
-
-func (a *App) OpenAuditStore(ctx context.Context) (*store.Store, error) {
-	return a.OpenStoreRole(ctx, a.Cfg.DBRoleAuditRO)
-}
-
-func (a *App) OpenAuditWriterStore(ctx context.Context) (*store.Store, error) {
-	return a.OpenStoreRole(ctx, a.Cfg.DBRoleAuditWrite)
-}
-
-func (a *App) OpenAuditIngestStore(ctx context.Context) (*store.Store, error) {
-	return a.OpenStoreRole(ctx, a.Cfg.DBRoleAuditIngest)
-}
-
-func (a *App) OpenPruneStore(ctx context.Context) (*store.Store, error) {
-	return a.OpenStoreRole(ctx, a.Cfg.DBRolePrune)
+// OpenStore ensures login, requests dynamic DB credentials for the purpose's
+// Vault role, and opens Postgres.
+func (a *App) OpenStore(ctx context.Context, p Purpose) (*store.Store, error) {
+	return a.openRole(ctx, a.roleFor(p))
 }
 
 // LogAccess records one SSH access attempt to the central audit table using
-// write credentials. It is best-effort: it opens a short-lived RW store, inserts
-// one row, and returns any error for the caller to log without failing the SSH.
+// write credentials. It is best-effort: it opens a short-lived audit-write
+// store, inserts one row, and returns any error for the caller to log without
+// failing the SSH.
 func (a *App) LogAccess(ctx context.Context, entry store.AccessEntry) error {
-	st, err := a.OpenAuditWriterStore(ctx)
+	st, err := a.OpenStore(ctx, PurposeAuditWrite)
 	if err != nil {
 		return err
 	}
@@ -234,8 +248,8 @@ func (a *App) LogAccess(ctx context.Context, entry store.AccessEntry) error {
 	return st.LogAccess(ctx, entry)
 }
 
-// OpenStoreRole opens Postgres with a specific Vault database role.
-func (a *App) OpenStoreRole(ctx context.Context, role string) (*store.Store, error) {
+// openRole opens Postgres with a specific Vault database role.
+func (a *App) openRole(ctx context.Context, role string) (*store.Store, error) {
 	// getCreds runs before each new pool connection. It re-establishes the Vault
 	// session if the token lapsed, then issues a fresh dynamic DB credential, so
 	// a daemon holding the pool for hours never outlives a credential lease.

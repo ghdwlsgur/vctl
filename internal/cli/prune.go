@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -49,9 +50,9 @@ Run from a CronJob. Use --dry-run to preview counts.
 
 			var st *store.Store
 			if dryRun {
-				st, err = a.OpenAuditStore(ctx)
+				st, err = a.OpenStore(ctx, app.PurposeAuditRead)
 			} else {
-				st, err = a.OpenPruneStore(ctx)
+				st, err = a.OpenStore(ctx, app.PurposePrune)
 			}
 			if err != nil {
 				return err

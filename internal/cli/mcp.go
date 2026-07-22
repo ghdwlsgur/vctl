@@ -421,7 +421,11 @@ func withMCPStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) 
 	if err != nil {
 		return err
 	}
-	st, err := a.OpenStore(ctx, rw)
+	p := app.PurposeInventoryRead
+	if rw {
+		p = app.PurposeInventoryWrite
+	}
+	st, err := a.OpenStore(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -434,7 +438,7 @@ func withMCPAuditStore(ctx context.Context, fn func(*app.App, *store.Store) erro
 	if err != nil {
 		return err
 	}
-	st, err := a.OpenStoreRole(ctx, a.Cfg.DBRoleAuditRO)
+	st, err := a.OpenStore(ctx, app.PurposeAuditRead)
 	if err != nil {
 		return err
 	}

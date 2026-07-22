@@ -62,7 +62,7 @@ func enforceRBAC(cmd *cobra.Command) error {
 // if a decision actually needs it (a non-admin mutate), then closed.
 func newAuthorizer(a *app.App) *authz.Authorizer {
 	return authz.New(a.Vault, func(ctx context.Context) (authz.GrantSource, func(), error) {
-		st, err := a.OpenStore(ctx, false)
+		st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
 		if err != nil {
 			return nil, nil, err
 		}
