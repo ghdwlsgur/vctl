@@ -124,9 +124,13 @@ func TestListInventoryMergesObservedIPs(t *testing.T) {
 
 	if err := st.Upsert(ctx, Server{
 		Hostname: host, IP: "192.0.2.50", Port: 22, User: "ubuntu", DC: dc,
-		CARole: "sre-core", ExtraIPs: []string{"192.0.2.51"},
+		CARole: "sre-core",
 	}); err != nil {
 		t.Fatalf("Upsert: %v", err)
+	}
+	// extra_ips are operator-curated via their own path, not sync-derived Upsert.
+	if _, err := st.SetExtraIPs(ctx, host, []string{"192.0.2.51"}); err != nil {
+		t.Fatalf("SetExtraIPs: %v", err)
 	}
 	if _, err := st.UpsertServerStatus(ctx, ServerStatus{
 		Hostname: host, AgentVersion: "test", ObservedIPs: []string{"192.0.2.52", "192.0.2.50"},

@@ -42,6 +42,11 @@ func scanSession(row interface {
 // so started_at MUST be the stable login time from the marker — not now() — or a
 // watch-sessions restart would re-insert the same session as a new row and leave
 // the old one un-ended. When StartedAt is zero we fall back to now() (legacy).
+//
+// On conflict the nullable fields are COALESCEd (EXCLUDED first, existing
+// second): a re-record that arrives without the vault_user/cert_serial (e.g. a
+// restart that only re-sees the pid) refreshes what it knows without wiping the
+// attribution the first record already captured.
 func (s *Store) RecordSession(ctx context.Context, a AuditSession) (int64, error) {
 	var started any
 	if !a.StartedAt.IsZero() {
@@ -53,8 +58,10 @@ func (s *Store) RecordSession(ctx context.Context, a AuditSession) (int64, error
 			(cert_serial, vault_user, hostname, login_user, source_ip, session_leader_pid, cgroup_id, summary, started_at)
 		VALUES ($1,$2,$3,$4,NULLIF($5,'')::inet,$6,$7,$8, COALESCE($9, now()))
 		ON CONFLICT (hostname, session_leader_pid, started_at) DO UPDATE SET
-			cert_serial=EXCLUDED.cert_serial, vault_user=EXCLUDED.vault_user,
-			login_user=EXCLUDED.login_user, source_ip=EXCLUDED.source_ip,
+			cert_serial=COALESCE(EXCLUDED.cert_serial, audit_session.cert_serial),
+			vault_user=COALESCE(EXCLUDED.vault_user, audit_session.vault_user),
+			login_user=COALESCE(EXCLUDED.login_user, audit_session.login_user),
+			source_ip=COALESCE(EXCLUDED.source_ip, audit_session.source_ip),
 			cgroup_id=EXCLUDED.cgroup_id
 		RETURNING id`,
 		nullIfEmpty(a.CertSerial), nullIfEmpty(a.VaultUser), nullIfEmpty(a.Hostname),
