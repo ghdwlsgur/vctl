@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/syncx"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -27,7 +28,7 @@ func syncCmd() *cobra.Command {
 			}
 
 			if doMigrate {
-				mst, err := a.OpenStoreRole(ctx, a.Cfg.DBRoleMigrate)
+				mst, err := a.OpenStore(ctx, app.PurposeMigrate)
 				if err != nil {
 					return err
 				}
@@ -39,7 +40,7 @@ func syncCmd() *cobra.Command {
 				ui.Successf(os.Stderr, "schema migration complete")
 			}
 
-			st, err := a.OpenStore(ctx, true) // write role
+			st, err := a.OpenStore(ctx, app.PurposeInventoryWrite)
 			if err != nil {
 				return err
 			}

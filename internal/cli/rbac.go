@@ -5,13 +5,13 @@ import (
 	"maps"
 	"os"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/authz"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -42,7 +42,7 @@ func rbacUsersCmd() *cobra.Command {
 			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				users, err := st.SeenUsers(cmd.Context())
 				if err != nil {
-					if isUninitializedRBAC(err) {
+					if authz.IsUninitializedRBAC(err) {
 						return fmt.Errorf("rbac: not initialized yet — an admin must run 'vctl sync --migrate' first")
 					}
 					return err
@@ -307,7 +307,7 @@ func rbacMemberRemoveCmd() *cobra.Command {
 // grantableList is the multi-select menu for command grants: every gated
 // command plus "*" (all), sorted.
 func grantableList() []string {
-	return append([]string{"*"}, slices.Sorted(maps.Keys(gatedCommands))...)
+	return authz.Grantable()
 }
 
 func rbacGrantCmd() *cobra.Command {
@@ -351,7 +351,7 @@ func rbacGrantCmd() *cobra.Command {
 				if len(args) == 2 {
 					c := args[1]
 					if c != "*" {
-						if _, known := gatedCommands[c]; !known {
+						if _, known := authz.ClassOf(c); !known {
 							return fmt.Errorf("unknown command %q. Grantable: %s, or '*'", c, knownCommands())
 						}
 					}
@@ -407,13 +407,13 @@ func rbacWhoamiCmd() *cobra.Command {
 			return withStore(ctx, false, func(a *app.App, st *store.Store) error {
 				user := a.Vault.Identity(ctx)
 				pols, _ := a.Vault.TokenPolicies(ctx)
-				isAdmin := hasAdminPolicy(pols)
+				isAdmin := authz.HasAdminPolicy(pols)
 				groups, err := st.RBACGroupsForUser(ctx, user)
-				if err != nil && !isUninitializedRBAC(err) {
+				if err != nil && !authz.IsUninitializedRBAC(err) {
 					return err
 				}
 				cmds, err := st.RBACCommandsForUser(ctx, user)
-				if err != nil && !isUninitializedRBAC(err) {
+				if err != nil && !authz.IsUninitializedRBAC(err) {
 					return err
 				}
 				ui.Section(os.Stdout, "rbac whoami")
@@ -441,11 +441,11 @@ func rbacCheckCmd() *cobra.Command {
 			return withStore(ctx, false, func(a *app.App, st *store.Store) error {
 				want := args[0]
 				pols, _ := a.Vault.TokenPolicies(ctx)
-				if hasAdminPolicy(pols) {
+				if authz.HasAdminPolicy(pols) {
 					fmt.Fprintf(os.Stdout, "%s %q (admin bypass)\n", ui.OK("allow"), want)
 					return nil
 				}
-				if gatedCommands[want] == classRead {
+				if c, _ := authz.ClassOf(want); c == classRead {
 					fmt.Fprintf(os.Stdout, "%s %q (read — default allow)\n", ui.OK("allow"), want)
 					return nil
 				}
@@ -465,12 +465,7 @@ func rbacCheckCmd() *cobra.Command {
 }
 
 func knownCommands() string {
-	out := make([]string, 0, len(gatedCommands))
-	for c := range gatedCommands {
-		out = append(out, c)
-	}
-	sort.Strings(out)
-	return strings.Join(out, ", ")
+	return strings.Join(authz.GatedCommands(), ", ")
 }
 
 func joinOrDash(ss []string) string {

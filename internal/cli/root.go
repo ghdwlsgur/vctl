@@ -13,8 +13,41 @@ import (
 // Version is injected by main for --version output.
 var Version = "dev"
 
-// Execute runs the root command.
+// Dependencies are the externally-injectable collaborators of the command tree.
+// The zero value uses production defaults (app.New); tests supply a fake NewApp
+// to exercise commands without a real Vault or config.
+type Dependencies struct {
+	// NewApp builds the App that commands use. Defaults to app.New.
+	NewApp func() (*app.App, error)
+}
+
+func (d Dependencies) withDefaults() Dependencies {
+	if d.NewApp == nil {
+		d.NewApp = app.New
+	}
+	return d
+}
+
+// appFactory is the injection point behind the package-level newApp() that every
+// command calls. NewRoot points it at the resolved Dependencies. It is package
+// state (not threaded through each command) to keep the seam bounded; callers
+// build one tree at a time, so it is not safe for concurrent NewRoot calls.
+var appFactory = app.New
+
+func newApp() (*app.App, error) { return appFactory() }
+
+// Execute builds the production command tree and runs it.
 func Execute() error {
+	return NewRoot(Dependencies{}).Execute()
+}
+
+// NewRoot builds the vctl command tree with the given dependencies. Split out
+// from Execute so tests can construct the tree — check wiring, flags, arg rules,
+// help/version output — and run commands with a fake app, instead of only being
+// reachable through main with a real Vault.
+func NewRoot(deps Dependencies) *cobra.Command {
+	appFactory = deps.withDefaults().NewApp
+
 	root := &cobra.Command{
 		Version: Version,
 		Use:     "vctl",
@@ -59,11 +92,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		watchSessionsCmd(), nodeAgentCmd(),
 		rbacCmd(), mcpCmd(),
 	)
-	return root.Execute()
-}
-
-func newApp() (*app.App, error) {
-	return app.New()
+	return root
 }
 
 // withApp builds the app and runs fn with it — for commands that need the app
@@ -82,24 +111,21 @@ func withApp(fn func(*app.App) error) error {
 // new-app + open-store + defer-close preamble repeated by every store-backed
 // command into one call.
 func withStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) error) error {
-	a, err := newApp()
-	if err != nil {
-		return err
+	p := app.PurposeInventoryRead
+	if rw {
+		p = app.PurposeInventoryWrite
 	}
-	st, err := a.OpenStore(ctx, rw)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	return fn(a, st)
+	return withPurposeStore(ctx, p, fn)
 }
 
-func withRoleStore(ctx context.Context, open func(*app.App, context.Context) (*store.Store, error), fn func(*app.App, *store.Store) error) error {
+// withPurposeStore builds the app, opens the store for one purpose, runs fn, and
+// closes it afterward — the shared preamble for every store-backed command.
+func withPurposeStore(ctx context.Context, p app.Purpose, fn func(*app.App, *store.Store) error) error {
 	a, err := newApp()
 	if err != nil {
 		return err
 	}
-	st, err := open(a, ctx)
+	st, err := a.OpenStore(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -108,13 +134,9 @@ func withRoleStore(ctx context.Context, open func(*app.App, context.Context) (*s
 }
 
 func withAuditStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
-	return withRoleStore(ctx, func(a *app.App, ctx context.Context) (*store.Store, error) {
-		return a.OpenAuditStore(ctx)
-	}, fn)
+	return withPurposeStore(ctx, app.PurposeAuditRead, fn)
 }
 
 func withAuditIngestStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
-	return withRoleStore(ctx, func(a *app.App, ctx context.Context) (*store.Store, error) {
-		return a.OpenAuditIngestStore(ctx)
-	}, fn)
+	return withPurposeStore(ctx, app.PurposeAuditIngest, fn)
 }

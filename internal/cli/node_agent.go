@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -33,7 +34,7 @@ database role for low-risk, low-resource status reporting.`,
 			if err != nil {
 				return err
 			}
-			st, err := a.OpenStatusStore(ctx)
+			st, err := a.OpenStore(ctx, app.PurposeStatus)
 			if err != nil {
 				return err
 			}
