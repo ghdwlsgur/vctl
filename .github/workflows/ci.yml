@@ -38,6 +38,42 @@ jobs:
       - name: Build
         run: go build ./cmd/vctl
 
+  integration:
+    name: Store Integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vctl
+          POSTGRES_PASSWORD: vctl
+          POSTGRES_DB: vctl_test
+        ports:
+          - 5432:5432
+        # Gate the test step on Postgres actually accepting connections.
+        options: >-
+          --health-cmd "pg_isready -U vctl -d vctl_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.26.5"
+          cache: true
+
+      # internal/store integration tests skip themselves unless VCTL_TEST_DSN is
+      # set; point them at the service container so migrations and queries run
+      # for real instead of being silently skipped.
+      - name: Store integration tests
+        env:
+          VCTL_TEST_DSN: postgres://vctl:vctl@localhost:5432/vctl_test?sslmode=disable
+        run: go test -v -count=1 ./internal/store/...
+
   windows:
     name: Windows Build
     runs-on: windows-latest

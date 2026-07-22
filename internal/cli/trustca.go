@@ -117,7 +117,7 @@ func resolveTrustTarget(ctx context.Context, a *app.App, arg, loginAs string, po
 		return user, hostpart, portStr, nil
 	}
 
-	st, err := a.OpenStore(ctx, false)
+	st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
 	if err != nil {
 		return "", "", "", err
 	}

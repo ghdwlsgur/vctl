@@ -49,7 +49,7 @@ func main() {
 	if err := a.EnsureLogin(ctx); err != nil {
 		fatal(err)
 	}
-	st, err := a.OpenStore(ctx, true)
+	st, err := a.OpenStore(ctx, app.PurposeInventoryWrite)
 	if err != nil {
 		fatal(err)
 	}

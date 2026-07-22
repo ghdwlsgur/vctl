@@ -2,95 +2,48 @@ package cli
 
 import (
 	"context"
-	"fmt"
-	"slices"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/authz"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
-// userAuth is a snapshot of the caller's identity and authorization, shared by
-// enforceRBAC, the MCP ssh gate, and whoami so the three agree on admin status
-// and granted commands.
-type userAuth struct {
-	identity string
-	policies []string
-	admin    bool
-	commands map[string]bool // app-RBAC grants (nil when admin or RBAC uninitialized)
-}
+// The RBAC decision logic lives in internal/authz. This file holds only the
+// cobra wiring: tagging commands with their class (gate), the persistent gate
+// hook (enforceRBAC), and the two constructors that adapt an *app.App into an
+// authz.Authorizer for the CLI (lazy store) and the MCP server (open store).
 
-// loadUserAuth reads the caller's Vault policies (failing closed on a lookup
-// error) and, for non-admins, their app-RBAC command grants.
-func loadUserAuth(ctx context.Context, a *app.App, st *store.Store) (userAuth, error) {
-	pols, err := a.Vault.TokenPolicies(ctx)
-	if err != nil {
-		return userAuth{}, fmt.Errorf("rbac: token lookup: %w", err)
-	}
-	ua := userAuth{identity: a.Vault.Identity(ctx), policies: pols, admin: hasAdminPolicy(pols)}
-	if ua.admin {
-		return ua, nil
-	}
-	cmds, err := st.RBACCommandsForUser(ctx, ua.identity)
-	if err != nil && !isUninitializedRBAC(err) {
-		return ua, err
-	}
-	ua.commands = cmds
-	return ua, nil
-}
-
-// allows reports whether the caller may run the named gated command.
-func (ua userAuth) allows(name string) bool {
-	return ua.admin || ua.commands["*"] || ua.commands[name]
-}
-
-// PostgreSQL command grants are an additional client policy. Vault policies are
-// the authoritative boundary for SSH signing, audit reads, and database roles.
+// Class aliases keep the command tree readable (gate(cmd, "ssh", classMutate))
+// while the canonical class values live in authz.
 const (
-	classRead   = "read"
-	classMutate = "mutate"
-	classAdmin  = "admin"
+	classRead   = authz.ClassRead
+	classMutate = authz.ClassMutate
+	classAdmin  = authz.ClassAdmin
 )
 
-var gatedCommands = map[string]string{
-	"ssh":      classMutate,
-	"exec":     classMutate,
-	"sync":     classMutate,
-	"prune":    classMutate,
-	"trust-ca": classMutate,
-	"list":     classRead,
-	"status":   classRead,
-	"audit":    classRead,
-	"session":  classRead,
-}
-
-func gate(cmd *cobra.Command, name, class string) *cobra.Command {
+// gate tags a command with its RBAC name and class so the persistent pre-run
+// hook can enforce it. The class round-trips through cobra annotations as a
+// string.
+func gate(cmd *cobra.Command, name string, class authz.Class) *cobra.Command {
 	if cmd.Annotations == nil {
 		cmd.Annotations = map[string]string{}
 	}
 	cmd.Annotations["rbac.command"] = name
-	cmd.Annotations["rbac.class"] = class
+	cmd.Annotations["rbac.class"] = string(class)
 	return cmd
 }
 
-func hasAdminPolicy(pols []string) bool {
-	return slices.Contains(pols, "vctl-admin") || slices.Contains(pols, "sre-admin")
-}
-
-func isUninitializedRBAC(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "42P01")
-}
-
+// enforceRBAC is the persistent pre-run gate. It authenticates, then asks the
+// authorizer whether the current identity may run this command. Ungated
+// commands carry no annotation and pass straight through.
 func enforceRBAC(cmd *cobra.Command) error {
 	name := cmd.Annotations["rbac.command"]
 	if name == "" {
 		return nil
 	}
-	class := cmd.Annotations["rbac.class"]
 	ctx := cmd.Context()
-
 	a, err := newApp()
 	if err != nil {
 		return err
@@ -98,38 +51,27 @@ func enforceRBAC(cmd *cobra.Command) error {
 	if err := a.EnsureLogin(ctx); err != nil {
 		return err
 	}
-	pols, err := a.Vault.TokenPolicies(ctx)
-	if err != nil {
-		return fmt.Errorf("rbac: token lookup: %w", err)
-	}
-	if hasAdminPolicy(pols) {
-		return nil
-	}
-	if class == classRead {
-		return nil
-	}
-	if class == classAdmin {
-		return fmt.Errorf("rbac: '%s' is admin-only (needs vctl-admin or sre-admin)", name)
-	}
+	return newAuthorizer(a).Check(ctx, authz.Command{
+		Name:  name,
+		Class: authz.Class(cmd.Annotations["rbac.class"]),
+	})
+}
 
-	user := a.Vault.Identity(ctx)
-	if user == "" {
-		return fmt.Errorf("rbac: cannot determine your identity — run 'vctl login'")
-	}
-	st, err := a.OpenStore(ctx, false)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	commands, err := st.RBACCommandsForUser(ctx, user)
-	if err != nil {
-		if isUninitializedRBAC(err) {
-			return fmt.Errorf("rbac: not initialized yet — an admin must run 'vctl sync --migrate' first")
+// newAuthorizer wires the CLI's lazy authorizer: Vault supplies policies, and
+// the read-only inventory store — the source of command grants — is opened only
+// if a decision actually needs it (a non-admin mutate), then closed.
+func newAuthorizer(a *app.App) *authz.Authorizer {
+	return authz.New(a.Vault, func(ctx context.Context) (authz.GrantSource, func(), error) {
+		st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
+		if err != nil {
+			return nil, nil, err
 		}
-		return err
-	}
-	if commands["*"] || commands[name] {
-		return nil
-	}
-	return fmt.Errorf("rbac: '%s' not permitted for %q — ask an admin to grant it:\n  vctl rbac grant <group> %s", name, user, name)
+		return st, func() { st.Close() }, nil
+	})
+}
+
+// mcpAuthorizer wires an authorizer over a store the MCP handler already holds,
+// so a tool call reuses its open connection instead of opening another.
+func mcpAuthorizer(a *app.App, st *store.Store) *authz.Authorizer {
+	return authz.NewWithGrants(a.Vault, st)
 }

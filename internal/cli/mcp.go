@@ -14,10 +14,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
-	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
-	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // mcp exposes the read-only inventory over the Model Context Protocol (stdio)
@@ -230,42 +229,35 @@ func mcpToolSSHExec(ctx context.Context, host, command string, timeout int) (str
 	var out map[string]any
 	err := withMCPStore(ctx, false, func(a *app.App, st *store.Store) error {
 		// app-RBAC ssh gate (Layer 2), mirroring enforceRBAC; Vault cert signing
-		// is the Layer-1 gate enforced when SignSSH runs below. loadUserAuth fails
-		// closed on a Vault policy-lookup error (no silent admin-misclassification).
-		ua, err := loadUserAuth(ctx, a, st)
+		// is the Layer-1 gate enforced when the connector signs below. Snapshot
+		// fails closed on a Vault policy-lookup error (no silent admin-misclassification).
+		az, err := mcpAuthorizer(a, st).Snapshot(ctx)
 		if err != nil {
 			return err
 		}
-		if !ua.allows("ssh") {
-			return fmt.Errorf("rbac: 'ssh' not permitted for %q (needs vctl-ssh-users/admin + an rbac grant; the read-only AppRole cannot ssh)", ua.identity)
+		if !az.Allows("ssh") {
+			return fmt.Errorf("rbac: 'ssh' not permitted for %q (needs vctl-ssh-users/admin + an rbac grant; the read-only AppRole cannot ssh)", az.Identity)
 		}
 
-		target, err := resolveServer(ctx, st, host)
+		target, err := access.ResolveServer(ctx, st, host)
 		if err != nil {
 			return err
 		}
-		tgt, err := buildTarget(ctx, st, target, a.Cfg.SSHDirectFirst)
+		tgt, err := access.BuildTarget(ctx, st, target, a.Cfg.SSHDirectFirst)
 		if err != nil {
 			return err
 		}
-		setHostKeyConfirmation(tgt, false) // non-interactive: never prompt to confirm host keys
-		setAutoAddHostKey(tgt, true)       // record an unknown host key on first use (accept-new) instead of failing
 
-		// Bound signing+dial+exec by the per-command timeout (sign closes over runCtx).
-		runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-		defer cancel()
-		sign, certSerial := signAndTrackSerial(runCtx, a)
-		res, connInfo, runErr := sshc.Run(runCtx, tgt, sign, command)
-
-		// best-effort central access log; surface a failure (mirrors `vctl ssh`)
-		// so an automated SSH never runs without a trace silently.
-		if logErr := a.LogAccess(ctx, accessEntry(ua.identity, tgt, connInfo, certSerial(), runErr)); logErr != nil {
-			ui.Warnf(os.Stderr, "access log not recorded: %v", logErr)
-		}
+		// HostKeyAcceptNew: a non-interactive agent can't confirm a host key, so
+		// record an unknown one on first use. Execute bounds signing+dial+run by
+		// the per-command timeout and always records the attempt to the audit log.
+		res, runErr := newConnector(a).Execute(ctx,
+			access.Request{Target: tgt, HostKey: access.HostKeyAcceptNew},
+			command, time.Duration(timeout)*time.Second)
 
 		// Return structured output in-band, including partial stdout/stderr on a
 		// timeout and the error itself, so the agent can diagnose rather than lose it.
-		out = map[string]any{"host": target.Hostname, "addr": tgt.Addr, "stdout": res.Stdout, "stderr": res.Stderr}
+		out = map[string]any{"host": res.Host, "addr": res.Addr, "stdout": res.Stdout, "stderr": res.Stderr}
 		if runErr != nil {
 			out["error"] = runErr.Error()
 		} else {
@@ -356,15 +348,15 @@ func mcpToolResolve(ctx context.Context, query string) (string, error) {
 func mcpToolWhoami(ctx context.Context) (string, error) {
 	var out map[string]any
 	err := withMCPStore(ctx, false, func(a *app.App, st *store.Store) error {
-		ua, err := loadUserAuth(ctx, a, st)
+		az, err := mcpAuthorizer(a, st).Snapshot(ctx)
 		if err != nil {
 			return err
 		}
-		out = map[string]any{"identity": ua.identity, "policies": ua.policies, "admin": ua.admin}
-		if ua.admin {
+		out = map[string]any{"identity": az.Identity, "policies": az.Policies, "admin": az.Admin}
+		if az.Admin {
 			out["rbac_commands"] = []string{"*"}
 		} else {
-			out["rbac_commands"] = slices.Sorted(maps.Keys(ua.commands))
+			out["rbac_commands"] = slices.Sorted(maps.Keys(az.Commands))
 		}
 		return nil
 	})
@@ -429,7 +421,11 @@ func withMCPStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) 
 	if err != nil {
 		return err
 	}
-	st, err := a.OpenStore(ctx, rw)
+	p := app.PurposeInventoryRead
+	if rw {
+		p = app.PurposeInventoryWrite
+	}
+	st, err := a.OpenStore(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -442,7 +438,7 @@ func withMCPAuditStore(ctx context.Context, fn func(*app.App, *store.Store) erro
 	if err != nil {
 		return err
 	}
-	st, err := a.OpenStoreRole(ctx, a.Cfg.DBRoleAuditRO)
+	st, err := a.OpenStore(ctx, app.PurposeAuditRead)
 	if err != nil {
 		return err
 	}
