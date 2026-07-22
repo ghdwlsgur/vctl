@@ -23,7 +23,7 @@ func lsCmd() *cobra.Command {
 		Short:   "List accessible inventory hosts",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
-				servers, err := st.ListWithStatus(cmd.Context(), dc)
+				servers, err := st.ListInventory(cmd.Context(), dc)
 				if err != nil {
 					return err
 				}
@@ -40,28 +40,15 @@ func lsCmd() *cobra.Command {
 	return cmd
 }
 
-// ipCell renders the primary address plus any additional ones (operator-set
-// extra_ips and node-agent observed_ips), deduped, so a multi-homed host shows
-// every address that `vctl ssh --server <ip>` will match. Extras are muted.
-func ipCell(s store.ServerWithStatus) string {
-	seen := map[string]bool{s.IP: true}
-	var extra []string
-	add := func(ips []string) {
-		for _, ip := range ips {
-			if ip != "" && !seen[ip] {
-				seen[ip] = true
-				extra = append(extra, ip)
-			}
-		}
+// ipCell renders the primary address plus any additional ones the host answers
+// on, so a multi-homed host shows every address that `vctl ssh --server <ip>`
+// will match. The store already merged and deduped them (primary first); extras
+// are muted.
+func ipCell(r store.InventoryRow) string {
+	if len(r.Addresses) <= 1 {
+		return r.IP
 	}
-	add(s.ExtraIPs)
-	if s.Status != nil {
-		add(s.Status.ObservedIPs)
-	}
-	if len(extra) == 0 {
-		return s.IP
-	}
-	return s.IP + " " + ui.Muted("+"+strings.Join(extra, " +"))
+	return r.Addresses[0] + " " + ui.Muted("+"+strings.Join(r.Addresses[1:], " +"))
 }
 
 // renderInventory prints the inventory grouped by DC. Runtime liveness is
@@ -71,7 +58,7 @@ func ipCell(s store.ServerWithStatus) string {
 //
 // Servers arrive already sorted by (dc, hostname) from ListWithStatus, so a
 // single pass can detect group boundaries.
-func renderInventory(w io.Writer, servers []store.ServerWithStatus) {
+func renderInventory(w io.Writer, servers []store.InventoryRow) {
 	host := make([]string, len(servers))
 	cells := make([][]string, len(servers)) // ip, user, jump
 	widths := make([]int, 4)                // host + the three cells above

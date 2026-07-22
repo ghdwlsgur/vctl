@@ -209,6 +209,64 @@ func (s *Store) List(ctx context.Context, dc string) ([]Server, error) {
 	return collectRows(rows, scanServerRow)
 }
 
+// InventoryRow is one inventory host together with the full set of addresses it
+// answers on — primary IP, operator-set extra IPs, and agent-observed IPs —
+// deduped with the primary first. It carries no runtime status: `vctl list` is
+// an inventory view, so it renders addresses without pulling load/memory/
+// liveness. Status-aware views (the ssh picker, `vctl status`) use
+// ListWithStatus instead.
+type InventoryRow struct {
+	Server
+	Addresses []string
+}
+
+// ListInventory returns inventory rows (optionally filtered by DC) with their
+// merged address set. It LEFT JOINs server_status only for observed_ips — the
+// one runtime field an inventory listing needs so `vctl ssh --server <ip>`
+// matches — not the full status row.
+func (s *Store) ListInventory(ctx context.Context, dc string) ([]InventoryRow, error) {
+	q := `SELECT ` + prefixedSelectCols("srv") + `, ` + ipArrayCol("ss.observed_ips") + `
+		FROM servers srv
+		LEFT JOIN server_status ss ON ss.hostname = srv.hostname`
+	var args []any
+	if dc != "" {
+		q += ` WHERE srv.dc=$1`
+		args = append(args, dc)
+	}
+	q += ` ORDER BY srv.dc, srv.hostname`
+	return queryAndCollect(ctx, s.pool, q, args, func(r pgx.Rows) (InventoryRow, error) {
+		var row InventoryRow
+		var observed []string
+		err := r.Scan(&row.Hostname, &row.IP, &row.Port, &row.User, &row.JumpVia, &row.DC,
+			&row.CARole, &row.CAKeyVersion, &row.LastSeenUp, &row.ExtraIPs, &observed)
+		if err != nil {
+			return row, err
+		}
+		row.Addresses = mergeAddresses(row.IP, row.ExtraIPs, observed)
+		return row, nil
+	})
+}
+
+// mergeAddresses returns the primary address first, then the extra and observed
+// sets, deduplicated and with empties dropped.
+func mergeAddresses(primary string, sets ...[]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(ip string) {
+		if ip != "" && !seen[ip] {
+			seen[ip] = true
+			out = append(out, ip)
+		}
+	}
+	add(primary)
+	for _, set := range sets {
+		for _, ip := range set {
+			add(ip)
+		}
+	}
+	return out
+}
+
 // AccessEntry is one row of the inventory-level SSH access audit.
 type AccessEntry struct {
 	VaultUser  string
