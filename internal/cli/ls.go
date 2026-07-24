@@ -51,24 +51,38 @@ func ipCell(r store.InventoryRow) string {
 	return r.Addresses[0] + " " + ui.Muted("+"+strings.Join(r.Addresses[1:], " +"))
 }
 
-// renderInventory prints the inventory grouped by DC. Runtime liveness is
-// intentionally omitted: list is an inventory view, while `vctl status` owns
-// operational state. Column widths are computed across all rows so groups stay
-// aligned.
+// agentCell reports node-agent liveness for the inventory listing: a fresh
+// heartbeat (within statusFreshnessWindow) is "up", an older one is "stale",
+// and a host that has never reported is a muted "no-agent". Full metrics stay
+// in `vctl status`; this is just the at-a-glance agent flag `vctl list` needs.
+func agentCell(r store.InventoryRow) string {
+	if r.AgentSeen == nil {
+		return ui.Muted("no-agent")
+	}
+	if time.Since(*r.AgentSeen) <= statusFreshnessWindow {
+		return ui.OK("up")
+	}
+	return ui.Warn("stale " + ui.CompactDuration(time.Since(*r.AgentSeen)))
+}
+
+// renderInventory prints the inventory grouped by DC, with a node-agent liveness
+// column (up/stale/no-agent) so agent-reporting hosts stand out. Full runtime
+// metrics stay in `vctl status`. Column widths are computed across all rows so
+// groups stay aligned.
 //
-// Servers arrive already sorted by (dc, hostname) from ListWithStatus, so a
-// single pass can detect group boundaries.
+// Servers arrive already sorted by (dc, hostname) from the store, so a single
+// pass can detect group boundaries.
 func renderInventory(w io.Writer, servers []store.InventoryRow) {
 	host := make([]string, len(servers))
-	cells := make([][]string, len(servers)) // ip, user, jump
-	widths := make([]int, 4)                // host + the three cells above
+	cells := make([][]string, len(servers)) // agent, ip, user, jump
+	widths := make([]int, 5)                // host + the four cells above
 	for i, s := range servers {
 		jump := s.JumpVia
 		if jump == "" {
 			jump = ui.Muted("direct")
 		}
 		host[i] = ui.Truncate(s.Hostname, 40)
-		cells[i] = []string{ipCell(s), s.User, jump}
+		cells[i] = []string{agentCell(s), ipCell(s), s.User, jump}
 		if n := lipgloss.Width(host[i]); n > widths[0] {
 			widths[0] = n
 		}
