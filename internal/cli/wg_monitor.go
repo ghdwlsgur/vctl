@@ -15,6 +15,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/authz"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -31,14 +32,20 @@ type monTarget struct {
 }
 
 func wgMonitorCmd() *cobra.Command {
-	var intervalSec, timeoutSec int
+	var (
+		intervalSec, timeoutSec int
+		syncFirst, all          bool
+	)
 	cmd := &cobra.Command{
 		Use:   "monitor [host...]",
 		Short: "Live WireGuard traffic monitor (per-tunnel throughput, handshakes)",
 		Long: `monitor polls the given gateways (or all previously synced ones) with
 'wg show' on an interval and shows live per-peer throughput (rx/tx deltas) and
 handshake freshness — a top(1) for WireGuard tunnels. Reads live over SSH; it
-does not write to the DB. Non-interactive stdout prints a single snapshot.`,
+does not write to the DB. Non-interactive stdout prints a single snapshot.
+
+--sync runs one collection into the DB before monitoring (so the very first run
+has data). Because that writes, it additionally requires the 'wg-sync' grant.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			a, err := newApp()
@@ -51,12 +58,12 @@ does not write to the DB. Non-interactive stdout prints a single snapshot.`,
 			}
 			defer st.Close()
 
-			hosts, err := wgMonitorHosts(ctx, st, args)
+			hosts, err := wgMonitorHosts(ctx, st, args, all)
 			if err != nil {
 				return err
 			}
 			if len(hosts) == 0 {
-				return fmt.Errorf("no gateways to monitor: pass host names or run 'vctl wg sync' first")
+				return fmt.Errorf("no gateways to monitor: pass host names, --all, or run 'vctl wg sync' first")
 			}
 			targets := make([]monTarget, 0, len(hosts))
 			for i := range hosts {
@@ -75,6 +82,12 @@ does not write to the DB. Non-interactive stdout prints a single snapshot.`,
 			interval := time.Duration(intervalSec) * time.Second
 			timeout := time.Duration(timeoutSec) * time.Second
 
+			if syncFirst {
+				if err := wgSyncBeforeMonitor(ctx, a, conn, targets, timeout); err != nil {
+					return err
+				}
+			}
+
 			if !term.IsTerminal(int(os.Stdout.Fd())) {
 				return wgMonitorSnapshot(ctx, conn, targets, timeout)
 			}
@@ -85,12 +98,48 @@ does not write to the DB. Non-interactive stdout prints a single snapshot.`,
 	}
 	cmd.Flags().IntVar(&intervalSec, "interval", 2, "poll interval (seconds)")
 	cmd.Flags().IntVar(&timeoutSec, "timeout", 10, "per-poll SSH timeout (seconds)")
+	cmd.Flags().BoolVar(&syncFirst, "sync", false, "collect into the DB once before monitoring (needs the wg-sync grant)")
+	cmd.Flags().BoolVar(&all, "all", false, "with no host args, target every inventory host")
 	return gate(cmd, "wg", classRead)
+}
+
+// wgSyncBeforeMonitor runs one collection of the monitor targets into the DB,
+// used by `wg monitor --sync`. Monitoring is read-only, so this write path is
+// gated at runtime by the same 'wg-sync' permission the sync command carries —
+// keeping the two-layer RBAC model intact even though the command is classRead.
+func wgSyncBeforeMonitor(ctx context.Context, a *app.App, conn *access.Connector, targets []monTarget, timeout time.Duration) error {
+	if err := newAuthorizer(a).Check(ctx, authz.Command{Name: "wg-sync", Class: classMutate}); err != nil {
+		return err
+	}
+	st, err := a.OpenStore(ctx, app.PurposeInventoryWrite)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	var withWG int
+	for _, t := range targets {
+		res, err := conn.Execute(ctx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wgCollectCmd, timeout)
+		if err != nil {
+			ui.Warnf(os.Stderr, "%s: %v", t.name, err)
+			continue
+		}
+		ifaces, peers, statuses := parseWGCollect(t.name, res.Stdout)
+		if len(ifaces) == 0 {
+			continue
+		}
+		if err := st.WGReplaceHost(ctx, t.name, ifaces, peers, statuses); err != nil {
+			ui.Warnf(os.Stderr, "%s: store: %v", t.name, err)
+			continue
+		}
+		withWG++
+	}
+	ui.Successf(os.Stderr, "pre-sync: %d/%d gateways collected", withWG, len(targets))
+	return nil
 }
 
 // wgMonitorHosts picks gateways: explicit args, else the hosts already present
 // in wg_interfaces (previously synced gateways).
-func wgMonitorHosts(ctx context.Context, st *store.Store, args []string) ([]store.Server, error) {
+func wgMonitorHosts(ctx context.Context, st *store.Store, args []string, all bool) ([]store.Server, error) {
 	if len(args) > 0 {
 		out := make([]store.Server, 0, len(args))
 		for _, q := range args {
@@ -118,6 +167,11 @@ func wgMonitorHosts(ctx context.Context, st *store.Store, args []string) ([]stor
 			continue
 		}
 		out = append(out, *sv)
+	}
+	// Fresh DB (no synced gateways yet): --all falls back to the whole inventory
+	// so `wg monitor --sync --all` works as a zero-setup first run.
+	if len(out) == 0 && all {
+		return st.List(ctx, "")
 	}
 	return out, nil
 }
