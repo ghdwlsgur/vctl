@@ -300,7 +300,8 @@ function render(topo){
     g.addEventListener("mousemove",ev=>{
       tip.innerHTML=`<b>${esc(name)}</b><br><span class="t">${esc(o.kind)}${o.ip?` · underlay ${esc(o.ip)}`:""}${o.tunnelIp?` · tunnel ${esc(o.tunnelIp)}`:""}${o.observed?` · observed ${esc(o.observed)}`:""}</span>`+
         (o.parent?`<br>runs on <b>${esc(parentName(o.parent))}</b>`:"")+
-        (o.kind==="inventory-candidate"?`<br><span class="t">inferred from unique observed endpoint IP</span>`:"");
+        (o.kind==="inventory-candidate"?`<br><span class="t">inferred from unique observed endpoint IP</span>`:"")+
+        ((o.warnings||[]).map(w=>`<br><span style="color:var(--warn)">! ${esc(w)}</span>`).join(""));
       tip.style.display="block";tip.style.left=(ev.clientX+14)+"px";tip.style.top=(ev.clientY+10)+"px";
     });
     g.addEventListener("mouseleave",()=>{tip.style.display="none"});

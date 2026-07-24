@@ -44,7 +44,8 @@ type wgNode struct {
 	TunnelIP string    `json:"tunnelIp,omitempty"`
 	Observed string    `json:"observed,omitempty"` // observed UDP endpoint; never implies physical placement
 	Parent   string    `json:"parent,omitempty"`   // physical inventory host for a VM endpoint
-	Ifaces   []wgIface `json:"ifaces,omitempty"`   // gateway interfaces, name-sorted
+	Warnings []string  `json:"warnings,omitempty"`
+	Ifaces   []wgIface `json:"ifaces,omitempty"` // gateway interfaces, name-sorted
 }
 
 // wgEdge is one tunnel: a peer entry, resolved to the far-end gateway when both
@@ -127,23 +128,42 @@ func buildWGTopology(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, ser
 	for _, a := range annotations {
 		annotationByKey[a.PublicKey] = a
 	}
-	annotationByHost := map[string]store.WGEndpointAnnotation{}
-	for _, i := range ifaces {
+	sortedIfaces := append([]store.WGInterfaceRow{}, ifaces...)
+	sort.Slice(sortedIfaces, func(i, j int) bool {
+		if sortedIfaces[i].Host != sortedIfaces[j].Host {
+			return sortedIfaces[i].Host < sortedIfaces[j].Host
+		}
+		return sortedIfaces[i].Iface < sortedIfaces[j].Iface
+	})
+	annotationsByHost := map[string][]store.WGEndpointAnnotation{}
+	for _, i := range sortedIfaces {
 		a, ok := annotationByKey[i.PublicKey]
 		if !ok {
 			continue
 		}
-		merged := annotationByHost[i.Host]
-		merged.PublicKey = firstNonEmpty(merged.PublicKey, a.PublicKey)
-		merged.Label = firstNonEmpty(merged.Label, a.Label)
-		merged.Kind = firstNonEmpty(merged.Kind, a.Kind)
-		merged.UnderlayIP = firstNonEmpty(merged.UnderlayIP, a.UnderlayIP)
-		merged.TunnelIP = firstNonEmpty(merged.TunnelIP, a.TunnelIP)
-		merged.Site = firstNonEmpty(merged.Site, a.Site)
-		merged.InventoryHost = firstNonEmpty(merged.InventoryHost, a.InventoryHost)
-		merged.ParentHostname = firstNonEmpty(merged.ParentHostname, a.ParentHostname)
-		merged.Note = firstNonEmpty(merged.Note, a.Note)
-		annotationByHost[i.Host] = merged
+		annotationsByHost[i.Host] = append(annotationsByHost[i.Host], a)
+	}
+	annotationByHost := map[string]store.WGEndpointAnnotation{}
+	annotationWarnings := map[string][]string{}
+	for host, candidates := range annotationsByHost {
+		selected := candidates[0]
+		for _, candidate := range candidates[1:] {
+			if wgAnnotationSpecificity(candidate) > wgAnnotationSpecificity(selected) {
+				selected = candidate
+			}
+		}
+		for _, candidate := range candidates {
+			if wgAnnotationPlacementConflict(selected, candidate) {
+				annotationWarnings[host] = []string{
+					"conflicting endpoint annotations across WG interfaces; using the most specific placement",
+				}
+				break
+			}
+		}
+		// A collected host may own several WG interfaces. Their tunnel addresses
+		// are interface state, not one host-level scalar.
+		selected.TunnelIP = ""
+		annotationByHost[host] = selected
 	}
 	endpointIPCount := map[string]int{}
 	for _, p := range peers {
@@ -207,7 +227,8 @@ func buildWGTopology(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, ser
 	for _, host := range gatewayHosts {
 		n := wgNode{
 			ID: host, Label: host, Kind: "gateway",
-			DC: dcOf(host), IP: byHost[host].IP, Ifaces: ifByHost[host],
+			DC: dcOf(host), IP: byHost[host].IP,
+			Warnings: annotationWarnings[host], Ifaces: ifByHost[host],
 		}
 		if a, ok := annotationByHost[host]; ok {
 			n = enrichEndpoint(n, a)
@@ -377,6 +398,36 @@ func buildWGTopology(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, ser
 }
 
 func physicalHostNodeID(hostname string) string { return "host|" + hostname }
+
+func wgAnnotationSpecificity(a store.WGEndpointAnnotation) int {
+	score := 0
+	if a.ParentHostname != "" {
+		score += 16
+	}
+	if a.InventoryHost != "" {
+		score += 8
+	}
+	if a.UnderlayIP != "" {
+		score += 4
+	}
+	if a.Site != "" {
+		score += 2
+	}
+	if a.Label != "" {
+		score++
+	}
+	return score
+}
+
+func wgAnnotationPlacementConflict(a, b store.WGEndpointAnnotation) bool {
+	different := func(x, y string) bool { return x != "" && y != "" && x != y }
+	return different(a.Label, b.Label) ||
+		different(a.Kind, b.Kind) ||
+		different(a.UnderlayIP, b.UnderlayIP) ||
+		different(a.Site, b.Site) ||
+		different(a.InventoryHost, b.InventoryHost) ||
+		different(a.ParentHostname, b.ParentHostname)
+}
 
 func wgEndpointIP(endpoint string) string {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))

@@ -263,6 +263,32 @@ func TestBuildWGTopologyMergesAnnotationAcrossHostInterfaces(t *testing.T) {
 	}
 }
 
+func TestBuildWGTopologyWarnsOnConflictingHostInterfaceAnnotations(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{Host: "multi-gw", Iface: "wg0", PublicKey: "WG0KEY"}},
+		{WGInterface: store.WGInterface{Host: "multi-gw", Iface: "wg1", PublicKey: "WG1KEY"}},
+	}
+	servers := []store.Server{
+		{Hostname: "multi-gw", IP: "192.168.201.12", DC: "seoul-onprem"},
+		{Hostname: "compute-01", IP: "172.16.0.31", DC: "seoul-onprem"},
+		{Hostname: "compute-02", IP: "172.16.0.32", DC: "seoul-onprem"},
+	}
+	annotations := []store.WGEndpointAnnotation{
+		{PublicKey: "WG0KEY", Kind: "vm", ParentHostname: "compute-01", TunnelIP: "10.0.90.1"},
+		{PublicKey: "WG1KEY", Kind: "vm", ParentHostname: "compute-02", TunnelIP: "10.0.91.1"},
+	}
+
+	topo, _ := buildWGTopology(ifaces, nil, servers, annotations)
+
+	node := topologyNode(topo, "multi-gw")
+	if node == nil || len(node.Warnings) == 0 {
+		t.Fatalf("conflicting host annotations were silently merged: %+v", node)
+	}
+	if node.TunnelIP != "" {
+		t.Fatalf("interface-specific tunnel IP leaked into host-level node: %+v", node)
+	}
+}
+
 func TestBuildWGTopologySeparatesPhysicalHostFromItsWGEndpoint(t *testing.T) {
 	ifaces := []store.WGInterfaceRow{
 		{WGInterface: store.WGInterface{
