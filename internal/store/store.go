@@ -211,21 +211,24 @@ func (s *Store) List(ctx context.Context, dc string) ([]Server, error) {
 
 // InventoryRow is one inventory host together with the full set of addresses it
 // answers on — primary IP, operator-set extra IPs, and agent-observed IPs —
-// deduped with the primary first. It carries no runtime status: `vctl list` is
-// an inventory view, so it renders addresses without pulling load/memory/
-// liveness. Status-aware views (the ssh picker, `vctl status`) use
-// ListWithStatus instead.
+// deduped with the primary first. It also carries the node-agent heartbeat
+// (AgentSeen/AgentVersion, nil when no agent has ever reported) so `vctl list`
+// can show which hosts have a live agent. Full runtime metrics (load/memory/
+// disk) stay in the status-aware views (the ssh picker, `vctl status`).
 type InventoryRow struct {
 	Server
-	Addresses []string
+	Addresses    []string
+	AgentSeen    *time.Time // last node-agent heartbeat; nil = no agent
+	AgentVersion string
 }
 
 // ListInventory returns inventory rows (optionally filtered by DC) with their
-// merged address set. It LEFT JOINs server_status only for observed_ips — the
-// one runtime field an inventory listing needs so `vctl ssh --server <ip>`
-// matches — not the full status row.
+// merged address set and the node-agent heartbeat. It LEFT JOINs server_status
+// for observed_ips (so `vctl ssh --server <ip>` matches) plus last_seen_at and
+// agent_version (so the listing can flag agent liveness) — not the full metrics.
 func (s *Store) ListInventory(ctx context.Context, dc string) ([]InventoryRow, error) {
-	q := `SELECT ` + prefixedSelectCols("srv") + `, ` + ipArrayCol("ss.observed_ips") + `
+	q := `SELECT ` + prefixedSelectCols("srv") + `, ` + ipArrayCol("ss.observed_ips") + `,
+		ss.last_seen_at, coalesce(ss.agent_version,'')
 		FROM servers srv
 		LEFT JOIN server_status ss ON ss.hostname = srv.hostname`
 	var args []any
@@ -238,7 +241,8 @@ func (s *Store) ListInventory(ctx context.Context, dc string) ([]InventoryRow, e
 		var row InventoryRow
 		var observed []string
 		err := r.Scan(&row.Hostname, &row.IP, &row.Port, &row.User, &row.JumpVia, &row.DC,
-			&row.CARole, &row.CAKeyVersion, &row.LastSeenUp, &row.ExtraIPs, &observed)
+			&row.CARole, &row.CAKeyVersion, &row.LastSeenUp, &row.ExtraIPs, &observed,
+			&row.AgentSeen, &row.AgentVersion)
 		if err != nil {
 			return row, err
 		}
