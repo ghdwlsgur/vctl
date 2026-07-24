@@ -40,8 +40,8 @@ func scanIPAllocation(row interface {
 
 func scanIPAllocRow(r pgx.Rows) (IPAllocation, error) { return scanIPAllocation(r) }
 
-// ipAllocCols selects every column with nullable text/inet coalesced to '' so a
-// row scans straight into IPAllocation without null handling.
+// ipAllocCols selects every column with nullable text/inet coalesced to an
+// empty string so a row scans straight into IPAllocation without null handling.
 const ipAllocCols = `host(ip), owner, kind, label, coalesce(hostname,''), coalesce(os,''), ` +
 	`coalesce(project,''), coalesce(farm,''), coalesce(host(farm_vip),''), coalesce(rack,''), ` +
 	`coalesce(location,''), coalesce(wg_tunnel,''), status, note`
