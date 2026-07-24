@@ -73,6 +73,34 @@ func TestParseWGCollect(t *testing.T) {
 	}
 }
 
+func TestWGMermaid(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{Host: "hub", Iface: "wg0", ListenPort: 51820, PublicKey: "HUBKEY"}},
+		{WGInterface: store.WGInterface{Host: "leaf", Iface: "wg0", ListenPort: 51820, PublicKey: "LEAFKEY"}},
+	}
+	peers := []store.WGPeerRow{
+		{WGPeer: store.WGPeer{Host: "hub", Iface: "wg0", PeerPubKey: "LEAFKEY", AllowedIPs: []string{"10.0.0.2/32"}}},
+		{WGPeer: store.WGPeer{Host: "leaf", Iface: "wg0", PeerPubKey: "HUBKEY", AllowedIPs: []string{"10.0.0.1/32"}}},
+		{WGPeer: store.WGPeer{Host: "hub", Iface: "wg0", PeerPubKey: "EXTKEY", Endpoint: "1.2.3.4:51820", AllowedIPs: []string{"10.3.0.0/24"}}},
+	}
+	out := wgMermaid(ifaces, peers)
+
+	for _, want := range []string{"graph LR", `subgraph hub["hub"]`, `subgraph leaf["leaf"]`, `hub_wg0["wg0 :51820"]`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("mermaid missing %q\n%s", want, out)
+		}
+	}
+	// resolved edge appears exactly once (bidirectional collapse): only one
+	// edge should point into leaf_wg0, and leaf must not emit its reverse edge.
+	if c := strings.Count(out, "| leaf_wg0"); c != 1 {
+		t.Errorf("expected exactly one edge into leaf_wg0, got %d\n%s", c, out)
+	}
+	// external node defined with endpoint label + edge to it
+	if !strings.Contains(out, `1.2.3.4:51820`) || !strings.Contains(out, "ext_") {
+		t.Errorf("external node/edge missing\n%s", out)
+	}
+}
+
 func fieldsOf(ifaces []store.WGInterface, peers []store.WGPeer) []string {
 	var out []string
 	for _, i := range ifaces {
