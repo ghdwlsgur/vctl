@@ -427,6 +427,9 @@ func TestWGServeDashboardUsesOrthogonalTunnelRoutes(t *testing.T) {
 
 	for _, want := range []string{
 		"function orthogonalRoute(",
+		"sourceLaneY",
+		"sourceLaneX",
+		"Math.min(14,84/radius)",
 		"언더레이",
 		"언더레이 + WireGuard",
 	} {
@@ -434,8 +437,8 @@ func TestWGServeDashboardUsesOrthogonalTunnelRoutes(t *testing.T) {
 			t.Errorf("dashboard is missing %q", want)
 		}
 	}
-	if strings.Contains(html, "`M ${src.x} ${src.y} Q ") {
-		t.Error("WireGuard tunnels must not use quadratic curves")
+	if strings.Contains(html, " Q ") || strings.Contains(html, " C ") {
+		t.Error("WireGuard tunnels must not use quadratic or cubic curves")
 	}
 }
 

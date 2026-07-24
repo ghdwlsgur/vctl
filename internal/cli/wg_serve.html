@@ -167,20 +167,25 @@ function posById(id){return nodes.get(id)||aggMap.get(id)||null}
 
 // Orthogonal routing keeps the architectural underlay readable and makes each
 // WireGuard tunnel traceable using only straight segments and 90-degree bends.
-// `lane` shifts the shared corridor so tunnels leaving one gateway fan out.
-function orthogonalRoute(src,tgt,lane=0){
-  const dx=tgt.x-src.x,dy=tgt.y-src.y,gap=14;
+// `lane` fans tunnels out immediately after a shared port. The spread is
+// capped so a high peer count cannot push a route behind either endpoint.
+function orthogonalRoute(src,tgt,lane=0,laneCount=1){
+  const dx=tgt.x-src.x,dy=tgt.y-src.y;
+  const radius=Math.max(1,(laneCount-1)/2);
+  const offset=lane*Math.min(14,84/radius);
   if(Math.abs(dx)>=Math.abs(dy)){
-    const bendX=(src.x+tgt.x)/2+lane*gap;
+    const bendX=(src.x+tgt.x)/2;
+    const sourceLaneY=src.y+offset,targetLaneY=tgt.y+offset;
     return {
-      d:`M ${src.x} ${src.y} H ${bendX} V ${tgt.y} H ${tgt.x}`,
-      label:{x:bendX,y:(src.y+tgt.y)/2}
+      d:`M ${src.x} ${src.y} V ${sourceLaneY} H ${bendX} V ${targetLaneY} H ${tgt.x} V ${tgt.y}`,
+      label:{x:bendX,y:(sourceLaneY+targetLaneY)/2}
     };
   }
-  const bendY=(src.y+tgt.y)/2+lane*gap;
+  const bendY=(src.y+tgt.y)/2;
+  const sourceLaneX=src.x+offset,targetLaneX=tgt.x+offset;
   return {
-    d:`M ${src.x} ${src.y} V ${bendY} H ${tgt.x} V ${tgt.y}`,
-    label:{x:(src.x+tgt.x)/2,y:bendY}
+    d:`M ${src.x} ${src.y} H ${sourceLaneX} V ${bendY} H ${targetLaneX} V ${tgt.y} H ${tgt.x}`,
+    label:{x:(sourceLaneX+targetLaneX)/2,y:bendY}
   };
 }
 
@@ -294,7 +299,7 @@ function render(topo){
     const src=anchor(s,e.iface,{x:t.x,y:t.y}), tgt=anchor(t,e.iface,{x:s.x,y:s.y});
     const seen=sourceSeen.get(e.source)||0,total=sourceCounts.get(e.source)||1;
     sourceSeen.set(e.source,seen+1);
-    const route=orthogonalRoute(src,tgt,seen-(total-1)/2),d=route.d;
+    const route=orthogonalRoute(src,tgt,seen-(total-1)/2,total),d=route.d;
     e.color=ifColor(e.iface); e.width=e.iface==="wg2"?2.5:1.6;
     e.path=el("path",{class:"edge wg-only",d,stroke:e.color,"stroke-width":e.width},gE);
     e.hit=el("path",{class:"edge-hit wg-only",d},gE);
