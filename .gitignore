@@ -10,3 +10,4 @@ bin/
 /vault-iac
 /vctl-postgres
 /dbedit
+seed/
