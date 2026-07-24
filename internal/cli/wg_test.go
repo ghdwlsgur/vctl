@@ -422,6 +422,23 @@ func hasTopologyLink(topo wgTopology, source, target, kind string) bool {
 	return false
 }
 
+func TestWGServeDashboardUsesOrthogonalTunnelRoutes(t *testing.T) {
+	html := string(wgServeHTML)
+
+	for _, want := range []string{
+		"function orthogonalRoute(",
+		"언더레이",
+		"언더레이 + WireGuard",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("dashboard is missing %q", want)
+		}
+	}
+	if strings.Contains(html, "`M ${src.x} ${src.y} Q ") {
+		t.Error("WireGuard tunnels must not use quadratic curves")
+	}
+}
+
 func TestComputeRate(t *testing.T) {
 	t0 := time.Unix(1_000_000, 0)
 	prev := wgSample{rx: 1000, tx: 500, at: t0}

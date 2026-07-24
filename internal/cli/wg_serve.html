@@ -72,11 +72,11 @@
   .node.agg .nm{fill:var(--ink2);font-size:11px}
   .port .plab{font-size:9px}
   /* graph — WireGuard overlay */
-  .edge{fill:none;stroke-linecap:round}
+  .edge{fill:none;stroke-linecap:square;stroke-linejoin:miter}
   .edge-hit{stroke:transparent;stroke-width:14;fill:none;cursor:pointer}
   .iflab{font-size:10px;font-weight:600}
   .iflab.sub{fill:var(--muted);font-size:8.5px;font-weight:400}
-  .mode-host .wg-only{display:none}
+  .mode-underlay .wg-only{display:none}
   @media (prefers-reduced-motion:reduce){ .pkt{display:none} }
 </style>
 </head>
@@ -86,8 +86,8 @@
   <span class="sub" id="meta">connecting…</span>
   <span class="health" id="health">live state pending</span>
   <div class="layers">
-    <button id="lb-host">호스트</button>
-    <button id="lb-full" class="on">호스트+WireGuard</button>
+    <button id="lb-underlay">언더레이</button>
+    <button id="lb-full" class="on">언더레이 + WireGuard</button>
   </div>
   <div class="legend">
     <span><span class="dotv host"></span>physical host</span>
@@ -139,7 +139,7 @@ const ifColor=i=>IFCOL[i]||"#8888884d";
 const zoneKey=dc=>dc?String(dc).split("-")[0]:"other";
 
 const nodes=new Map(), aggMap=new Map(), edges=new Map();
-let stats={}, selected=null, dots=[], hostMode=false, curTopo=null;
+let stats={}, selected=null, dots=[], underlayOnly=false, curTopo=null;
 const svg=document.getElementById("svg"), tip=document.getElementById("tip");
 
 function kindOf(topo,id){const n=topo.nodes.find(n=>n.id===id);return n?n.kind:"external"}
@@ -164,6 +164,25 @@ function anchor(n,iface,to){
   return boundary(n,to);
 }
 function posById(id){return nodes.get(id)||aggMap.get(id)||null}
+
+// Orthogonal routing keeps the architectural underlay readable and makes each
+// WireGuard tunnel traceable using only straight segments and 90-degree bends.
+// `lane` shifts the shared corridor so tunnels leaving one gateway fan out.
+function orthogonalRoute(src,tgt,lane=0){
+  const dx=tgt.x-src.x,dy=tgt.y-src.y,gap=14;
+  if(Math.abs(dx)>=Math.abs(dy)){
+    const bendX=(src.x+tgt.x)/2+lane*gap;
+    return {
+      d:`M ${src.x} ${src.y} H ${bendX} V ${tgt.y} H ${tgt.x}`,
+      label:{x:bendX,y:(src.y+tgt.y)/2}
+    };
+  }
+  const bendY=(src.y+tgt.y)/2+lane*gap;
+  return {
+    d:`M ${src.x} ${src.y} V ${bendY} H ${tgt.x} V ${tgt.y}`,
+    label:{x:(src.x+tgt.x)/2,y:bendY}
+  };
+}
 
 // ---- layout: gateways + aggregates grouped into per-dc zone boxes side by side;
 //              externals hang just outside their gateway's zone box. ----
@@ -262,21 +281,25 @@ function render(topo){
   (topo.links||[]).forEach(lk=>{
     const s=posById(lk.source),t=posById(lk.target); if(!s||!t)return;
     const a=boundary(s,{x:t.x,y:t.y}),b=boundary(t,{x:s.x,y:s.y});
-    el("path",{class:`link ${lk.kind||"management"}`,d:`M ${a.x} ${a.y} L ${b.x} ${b.y}`},gL);
+    el("path",{class:`link ${lk.kind||"management"}`,d:orthogonalRoute(a,b).d},gL);
   });
 
-  // WireGuard tunnels
+  // WireGuard tunnels. Connections from the same source get separate routing
+  // lanes, centered around the direct corridor, to reduce stacked segments.
+  const sourceCounts=new Map(),sourceSeen=new Map();
+  topo.edges.forEach(e=>sourceCounts.set(e.source,(sourceCounts.get(e.source)||0)+1));
   topo.edges.forEach(e=>{
     const s=nodes.get(e.source),t=nodes.get(e.target);
     if(!s||!t)return;
     const src=anchor(s,e.iface,{x:t.x,y:t.y}), tgt=anchor(t,e.iface,{x:s.x,y:s.y});
-    const mx=(src.x+tgt.x)/2,my=(src.y+tgt.y)/2,dx=tgt.x-src.x,dy=tgt.y-src.y,L=Math.hypot(dx,dy)||1,off=Math.min(28,L*0.12);
-    const cxp=mx-dy/L*off,cyp=my+dx/L*off,d=`M ${src.x} ${src.y} Q ${cxp} ${cyp} ${tgt.x} ${tgt.y}`;
+    const seen=sourceSeen.get(e.source)||0,total=sourceCounts.get(e.source)||1;
+    sourceSeen.set(e.source,seen+1);
+    const route=orthogonalRoute(src,tgt,seen-(total-1)/2),d=route.d;
     e.color=ifColor(e.iface); e.width=e.iface==="wg2"?2.5:1.6;
     e.path=el("path",{class:"edge wg-only",d,stroke:e.color,"stroke-width":e.width},gE);
     e.hit=el("path",{class:"edge-hit wg-only",d},gE);
-    el("text",{class:"iflab wg-only",x:cxp,y:cyp-5,"text-anchor":"middle",fill:e.color},gE).textContent=e.iface;
-    if(e.allowed)el("text",{class:"iflab sub wg-only",x:cxp,y:cyp+6,"text-anchor":"middle"},gE).textContent=e.allowed.length>34?e.allowed.slice(0,33)+"…":e.allowed;
+    el("text",{class:"iflab wg-only",x:route.label.x,y:route.label.y-5,"text-anchor":"middle",fill:e.color},gE).textContent=e.iface;
+    if(e.allowed)el("text",{class:"iflab sub wg-only",x:route.label.x,y:route.label.y+6,"text-anchor":"middle"},gE).textContent=e.allowed.length>34?e.allowed.slice(0,33)+"…":e.allowed;
     e.len=e.path.getTotalLength();
     const show=(ev)=>{const st=stats[e.id]||{};const[hs]=fmtHS(st.hs);
       tip.innerHTML=`<b style="color:${e.color}">${esc(e.iface)}</b> ${esc(s.label)} ⇄ ${esc(t.label)}`+
@@ -328,7 +351,7 @@ function render(topo){
 let acc={},last=performance.now();
 function step(dt){
   const gD=svg._gD; if(!gD)return;
-  if(hostMode){ if(dots.length){dots=[];gD.innerHTML=""} return; }
+  if(underlayOnly){ if(dots.length){dots=[];gD.innerHTML=""} return; }
   edges.forEach(e=>{
     const st=stats[e.id]; if(!st)return;
     const stale=st.hs!=null&&(st.hs<0||st.hs>600);
@@ -389,13 +412,13 @@ function updateMeta(topo,at){
 }
 
 // ---- layer toggle ----
-function setMode(host){
-  hostMode=host;
-  document.documentElement.classList.toggle("mode-host",host);
-  document.getElementById("lb-host").classList.toggle("on",host);
-  document.getElementById("lb-full").classList.toggle("on",!host);
+function setMode(onlyUnderlay){
+  underlayOnly=onlyUnderlay;
+  document.documentElement.classList.toggle("mode-underlay",onlyUnderlay);
+  document.getElementById("lb-underlay").classList.toggle("on",onlyUnderlay);
+  document.getElementById("lb-full").classList.toggle("on",!onlyUnderlay);
 }
-document.getElementById("lb-host").addEventListener("click",()=>setMode(true));
+document.getElementById("lb-underlay").addEventListener("click",()=>setMode(true));
 document.getElementById("lb-full").addEventListener("click",()=>setMode(false));
 
 // ---- wiring: injected BOOT (demo) or live fetch + SSE ----
