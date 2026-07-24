@@ -5,449 +5,426 @@
 <title>vctl · WireGuard live</title>
 <style>
   :root{
-    --bg:#1a1a19; --panel:#232322; --line:#3a3a38; --zone:#1f2320;
-    --ink:#e8e8e6; --ink2:#a8a8a4; --muted:#6e6e6a;
-    --wg0:#3987e5; --wg1:#d95926; --wg2:#199e70; --wg3:#c98500; --wg100:#6e6e6a; --pers:#d55181;
-    --ok:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+    --bg:#0d1117; --panel:#161b22; --line:#232b36; --ring:#2d3745;
+    --ink:#e6edf3; --ink2:#9aa7b4; --muted:#5c6773; --acc:#f0883e;
+    --c0:#4c8dff; --c1:#ef6f53; --c2:#35c07d; --c3:#f2c94c; --c4:#cf6fb8; --c5:#8b97a6;
+    --c6:#7bc2e8; --c7:#b8a1ff;
+    --ok:#3fb950; --warn:#e3b341; --crit:#f85149;
   }
   *{box-sizing:border-box} html,body{height:100%}
   body{margin:0;background:var(--bg);color:var(--ink);
-       font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;display:flex;flex-direction:column}
+    font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;display:flex;flex-direction:column}
   header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-  header h1{font-size:14px;margin:0;font-weight:600}
-  header .sub{color:var(--ink2)}
-  .demo{font-size:11px;color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:1px 6px}
-  .health{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--muted)}
-  .health.ok{color:var(--ok);border-color:var(--ok)}
-  .health.fail{color:var(--crit);border-color:var(--crit)}
-  .layers{display:flex;gap:4px}
-  .layers button{font:inherit;font-size:11px;color:var(--ink2);background:#1f1f1e;border:1px solid var(--line);
-                 padding:3px 9px;border-radius:5px;cursor:pointer}
-  .layers button.on{color:var(--ink);background:#2e2e2c;border-color:#555}
-  .legend{display:flex;gap:12px;margin-left:auto;color:var(--ink2);flex-wrap:wrap}
-  .legend span{display:inline-flex;align-items:center;gap:5px}
-  .dotv{width:14px;height:3px;border-radius:2px;display:inline-block}
-  .dotv.box{width:11px;height:9px;border-radius:2px}
-  .dotv.host{width:13px;height:10px;border-radius:2px;background:#202a24;border:1px solid #547060}
-  .dotv.vm{width:11px;height:9px;border-radius:2px;background:#26303c;border:1px solid #41546b}
-  .dotv.dash{width:11px;height:9px;border-radius:2px;background:transparent;border:1px dashed var(--muted)}
-  .dotv.place{height:0;background:transparent;border-top:2px dashed #6d8d79}
-  .dotv.net{height:0;background:transparent;border-top:1px dashed #647285}
-  .dotv.mgmt{height:0;background:transparent;border-top:1px solid var(--muted)}
-  main{flex:1;display:flex;min-height:0}
-  #stage{flex:1;min-width:0}
-  svg{display:block;width:100%;height:100%}
-  aside{width:340px;border-left:1px solid var(--line);background:var(--panel);
-        overflow-y:auto;padding:10px 12px}
-  aside h2{font-size:12px;color:var(--ink2);margin:6px 0 8px;font-weight:600;
-           text-transform:uppercase;letter-spacing:.06em}
-  table{width:100%;border-collapse:collapse}
-  td,th{padding:3px 4px;text-align:left;font-size:12px;white-space:nowrap}
-  th{color:var(--muted);font-weight:500;border-bottom:1px solid var(--line)}
-  td.num{text-align:right;font-variant-numeric:tabular-nums}
-  tr.sel td{background:#2e2e2c}
-  .hs-ok{color:var(--ok)} .hs-warn{color:var(--warn)} .hs-crit{color:var(--crit)}
-  .tdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
-  #tip{position:fixed;pointer-events:none;background:#111;border:1px solid var(--line);
-       padding:7px 9px;border-radius:6px;font-size:12px;display:none;z-index:10;max-width:360px}
-  #tip .t{color:var(--ink2)}
-  .err{color:var(--crit);font-size:12px;margin-top:8px;white-space:pre-wrap}
-  /* graph — base (host/network) layer */
-  .zone rect{fill:var(--zone);stroke:var(--line);stroke-width:1}
-  .zone text{fill:var(--muted);font-size:11px;letter-spacing:.04em}
-  .wanlab{fill:var(--muted);font-size:10px;opacity:.35;letter-spacing:.12em}
-  .link{stroke:var(--muted);stroke-width:1;fill:none;opacity:.5}
-  .link.placement{stroke:#6d8d79;stroke-dasharray:4 3;opacity:.85}
-  .link.network{stroke:#647285;stroke-dasharray:2 3;opacity:.7}
-  .node rect{fill:#26303c;stroke:#41546b;stroke-width:1.5}
-  .node.physical-host rect{fill:#202a24;stroke:#547060;stroke-width:1.5}
-  .node.physical-host .nm{fill:#b9d1c0;font-weight:600}
-  .node.vm rect,.node.inventory-candidate rect{fill:#26303c;stroke:#55708d}
-  .node.device rect{fill:#302b24;stroke:#786a52}
-  .node.external rect{fill:#2c2c2a;stroke:var(--line)}
-  .node.agg rect{fill:#242422;stroke:#4a4a47;stroke-width:1;stroke-dasharray:4 3}
-  .node .nm{fill:var(--ink);font-size:12px}
-  .node .sub2{fill:var(--muted);font-size:9px}
-  .node.external .nm{fill:var(--ink2);font-size:11px}
-  .node.agg .nm{fill:var(--ink2);font-size:11px}
-  .port .plab{font-size:9px}
-  /* graph — WireGuard overlay */
-  .edge{fill:none;stroke-linecap:square;stroke-linejoin:miter}
-  .edge-hit{stroke:transparent;stroke-width:14;fill:none;cursor:pointer}
-  .iflab{font-size:10px;font-weight:600}
-  .iflab.sub{fill:var(--muted);font-size:8.5px;font-weight:400}
-  .mode-underlay .wg-only{display:none}
-  @media (prefers-reduced-motion:reduce){ .pkt{display:none} }
+  header b{color:var(--acc)}
+  #meta{color:var(--ink2);font-size:12px}
+  .health{margin-left:auto;font-size:11.5px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .health.ok{color:var(--ok)} .health.fail{color:var(--crit)}
+  #legend{display:flex;gap:13px;flex-wrap:wrap;padding:7px 16px;border-bottom:1px solid var(--line);
+    color:var(--ink2);font-size:11.5px;align-items:center}
+  #legend .i{display:inline-flex;align-items:center;gap:6px}
+  #legend .dt{width:9px;height:9px;border-radius:50%;border:2px solid var(--panel);box-shadow:0 0 0 1px var(--line)}
+  main{flex:1;overflow:auto}
+  svg#net{display:block;margin:0 auto}
+  #errs{color:var(--crit);font-size:11px;white-space:pre-wrap;padding:0 16px 8px}
+
+  .zone{fill:var(--panel);fill-opacity:.28;stroke:var(--ring);stroke-width:1.3;stroke-dasharray:6 5}
+  .zlab{fill:var(--ink2);font-size:12.5px;font-weight:700;letter-spacing:.06em}
+  .zsub{fill:var(--muted);font-size:10.5px}
+  .hbox{fill:var(--panel);fill-opacity:.6;stroke:var(--ring);stroke-width:1.2}
+  .htit{fill:var(--ink2);font-size:10.5px;font-weight:700}
+  .nbox{fill:var(--panel);stroke:var(--ring);stroke-width:1.3}
+  .nbox.hub{stroke:var(--acc);stroke-width:1.8}
+  .nbox.vmb{stroke:var(--acc);stroke-width:1.1}
+  .nbox.band{stroke-width:1}
+  .nbox.ext{stroke-dasharray:5 4}
+  .ntit{fill:var(--ink);font-size:12px;font-weight:700}
+  .nsub{fill:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
+  .btit{fill:var(--ink);font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+  .bsub{fill:var(--muted);font-size:9.5px}
+  .plab{font-size:9px;font-weight:700}
+  .natlab{fill:var(--muted);font-size:10px;font-weight:700;letter-spacing:.14em}
+  .warnb{fill:var(--warn);font-size:9.5px}
+
+  .tun{fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;opacity:.8}
+  .tun.dash{stroke-dasharray:6 5}
+  .flow{fill:none;stroke-width:1.8;stroke-linecap:round;stroke-dasharray:5 16;opacity:0}
+  .flow.on{opacity:.95;animation:fl linear infinite}
+  @keyframes fl{to{stroke-dashoffset:-42}}
+  .grey{fill:none;stroke:var(--ring);stroke-width:1.4;opacity:.9}
+  .nat{stroke:var(--ring);stroke-width:2;stroke-dasharray:3 6}
+  .pdot{stroke:var(--panel);stroke-width:2}
+  .sdot{stroke:var(--panel);stroke-width:1.6}
+  .jdot{fill:var(--ring)}
+  .hot{cursor:pointer}
+  @media (prefers-reduced-motion:reduce){.flow{display:none}}
+  #tip{position:fixed;pointer-events:none;z-index:30;background:var(--panel);border:1px solid var(--ring);
+    border-radius:8px;padding:7px 10px;font-size:11.5px;box-shadow:0 8px 24px rgba(0,0,0,.5);
+    opacity:0;transition:opacity .1s;max-width:300px}
+  #tip .t{font-weight:700;margin-bottom:2px} #tip .m{color:var(--muted)}
 </style>
 </head>
 <body>
 <header>
-  <h1>WireGuard <span class="sub">live traffic · site zones</span></h1>
-  <span class="sub" id="meta">connecting…</span>
-  <span class="health" id="health">live state pending</span>
-  <div class="layers">
-    <button id="lb-underlay">언더레이</button>
-    <button id="lb-full" class="on">언더레이 + WireGuard</button>
-  </div>
-  <div class="legend">
-    <span><span class="dotv host"></span>physical host</span>
-    <span><span class="dotv vm"></span>VM / endpoint</span>
-    <span><span class="dotv dash"></span>host network /24</span>
-    <span><span class="dotv place"></span>runs on</span>
-    <span><span class="dotv net"></span>attached network</span>
-    <span><span class="dotv mgmt"></span>management path</span>
-    <span class="wg-only"><span class="dotv" style="background:var(--wg0)"></span>wg0</span>
-    <span class="wg-only"><span class="dotv" style="background:var(--wg1)"></span>wg1</span>
-    <span class="wg-only"><span class="dotv" style="background:var(--wg2)"></span>wg2</span>
-    <span class="wg-only"><span class="dotv" style="background:var(--wg3)"></span>wg3</span>
-    <span class="wg-only"><span class="dotv" style="background:var(--wg100)"></span>wg100</span>
-    <span class="wg-only"><span class="dotv" style="background:var(--pers)"></span>personal</span>
-    <span class="wg-only"><span class="dotv" style="background:var(--crit)"></span>stale</span>
-  </div>
+  <b>WireGuard</b> <span>배선도 · live</span>
+  <span id="meta">loading…</span>
+  <span class="health" id="health">connecting…</span>
 </header>
-<main>
-  <div id="stage"><svg id="svg"></svg></div>
-  <aside>
-    <h2>tunnels</h2>
-    <table id="tbl"><thead>
-      <tr><th>tunnel</th><th class="num">rx/s</th><th class="num">tx/s</th><th>hs</th></tr>
-    </thead><tbody></tbody></table>
-    <h2>endpoints / physical hosts</h2>
-    <table id="ntbl"><thead>
-      <tr><th>endpoint</th><th>kind</th><th>runs on</th></tr>
-    </thead><tbody></tbody></table>
-    <div class="err" id="errs"></div>
-  </aside>
-</main>
+<div id="legend"></div>
+<main><svg id="net"></svg></main>
+<pre id="errs"></pre>
 <div id="tip"></div>
 <script>
 "use strict";
-// Single branch between demo and live page: an injected BOOT (window.WG_BOOT)
-// replays a topology + synthetic stat frames; otherwise fetch /topology + SSE.
-const BOOT = window.WG_BOOT || null;
-
+// Wiring-diagram renderer: hub iface ports -> NAT -> per-zone endpoints (nested in
+// physical hosts) -> reachable-CIDR bands with per-iface dots. Orthogonal elbows,
+// per-iface colours, live flow/handshake from SSE. Fully driven by /topology+/events;
+// an injected window.WG_BOOT ({topology, frames}) replays a snapshot instead.
+const BOOT=window.WG_BOOT||null;
 const SVGNS="http://www.w3.org/2000/svg";
-const el=(n,at,parent)=>{const e=document.createElementNS(SVGNS,n);for(const k in at)e.setAttribute(k,at[k]);if(parent)parent.appendChild(e);return e};
+const mk=(t,a,p)=>{const e=document.createElementNS(SVGNS,t);for(const k in a)e.setAttribute(k,a[k]);if(p)p.appendChild(e);return e};
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const fmtRate=b=>{if(!b||b<1)return"·";const k=1024;return b>=k*k*k?(b/k/k/k).toFixed(1)+"G/s":b>=k*k?(b/k/k).toFixed(1)+"M/s":b>=k?(b/k).toFixed(1)+"K/s":b.toFixed(0)+"B/s"};
-const fmtHS=s=>{if(s==null||s<0)return["no-hs","hs-crit"];if(s<=180)return["up","hs-ok"];const m=Math.round(s/60);return[m<120?"idle "+m+"m":"idle "+Math.round(m/60)+"h","hs-warn"]};
+const cssv=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const PALETTE=["--c0","--c1","--c2","--c3","--c5","--c4","--c6","--c7"];
+const ifColMap=new Map();
+const ifColor=i=>{if(!ifColMap.has(i))ifColMap.set(i,cssv(PALETTE[ifColMap.size%PALETTE.length]));return ifColMap.get(i)};
+const fmtRate=b=>{if(!b||b<1)return"·";const k=1024;return b>=k*k?(b/k/k).toFixed(1)+"M/s":b>=k?(b/k).toFixed(1)+"K/s":b.toFixed(0)+"B/s"};
+const hsState=s=>s==null||s<0?"crit":s<=180?"ok":"warn";
+const hsLabel=s=>s==null||s<0?"no-handshake":s<=180?`up · ${s}s`:`idle · ${Math.round(s/60)}m`;
+const zoneKey=dc=>dc?String(dc).split("-")[0]:"etc";
+const svg=document.getElementById("net"), tip=document.getElementById("tip");
+let stats={}, tunnels=[], statusDots=new Map(), curTopo=null;
 
-// tunnel identity == line colour (iface -> colour); unknown ifaces fall back to grey.
-const IFCOL={wg0:"#3987e5",wg1:"#d95926",wg2:"#199e70",wg3:"#c98500",wg100:"#6e6e6a","wg-personal":"#d55181"};
-const ifColor=i=>IFCOL[i]||"#8888884d";
-// zone key = dc prefix before the first "-" ("incheon-idc" -> "incheon"); "" -> "other".
-const zoneKey=dc=>dc?String(dc).split("-")[0]:"other";
+function hot(el,fn){el.classList.add("hot");
+  el.addEventListener("mouseenter",ev=>{const[t,m]=fn();tip.innerHTML=`<div class="t">${esc(t)}</div><div class="m">${esc(m)}</div>`;tip.style.opacity=1;mv(ev);});
+  el.addEventListener("mousemove",mv); el.addEventListener("mouseleave",()=>tip.style.opacity=0);}
+function mv(ev){let x=ev.clientX+12,y=ev.clientY+12;if(x+290>innerWidth)x=ev.clientX-290;tip.style.left=x+"px";tip.style.top=y+"px";}
 
-const nodes=new Map(), aggMap=new Map(), edges=new Map();
-let stats={}, selected=null, dots=[], underlayOnly=false, curTopo=null;
-const svg=document.getElementById("svg"), tip=document.getElementById("tip");
-
-function kindOf(topo,id){const n=topo.nodes.find(n=>n.id===id);return n?n.kind:"external"}
-const NSIZE={
-  gateway:[156,44],vm:[156,42],"inventory-candidate":[156,42],
-  device:[146,38],"physical-host":[224,104],agg:[150,38],external:[140,32]
-};
-const nodeSize=n=>{const s=NSIZE[n.kind]||NSIZE.gateway;return[s[0],n._layoutH||s[1]]};
-const parentName=id=>String(id||"").replace(/^host\|/,"");
-
-// where the segment from a box centre toward `to` exits the box edge.
-function boundary(n,to){
-  const dx=to.x-n.x,dy=to.y-n.y,hw=n.w/2,hh=n.h/2;
-  const sx=Math.abs(dx)<1e-6?Infinity:hw/Math.abs(dx);
-  const sy=Math.abs(dy)<1e-6?Infinity:hh/Math.abs(dy);
-  const s=Math.min(sx,sy);
-  return {x:n.x+dx*s,y:n.y+dy*s};
-}
-// tunnel anchor: gateway ports (WAN-gap edge) when the iface exists, else box edge.
-function anchor(n,iface,to){
-  if(n.ports&&n.ports[iface])return n.ports[iface];
-  return boundary(n,to);
-}
-function posById(id){return nodes.get(id)||aggMap.get(id)||null}
-
-// Orthogonal routing keeps the architectural underlay readable and makes each
-// WireGuard tunnel traceable using only straight segments and 90-degree bends.
-// `lane` fans tunnels out immediately after a shared port. The spread is
-// capped so a high peer count cannot push a route behind either endpoint.
-function orthogonalRoute(src,tgt,lane=0,laneCount=1){
-  const dx=tgt.x-src.x,dy=tgt.y-src.y;
-  const radius=Math.max(1,(laneCount-1)/2);
-  const offset=lane*Math.min(14,84/radius);
-  if(Math.abs(dx)>=Math.abs(dy)){
-    const bendX=(src.x+tgt.x)/2;
-    const sourceLaneY=src.y+offset,targetLaneY=tgt.y+offset;
-    return {
-      d:`M ${src.x} ${src.y} V ${sourceLaneY} H ${bendX} V ${targetLaneY} H ${tgt.x} V ${tgt.y}`,
-      label:{x:bendX,y:(sourceLaneY+targetLaneY)/2}
-    };
+// ---------- model prep: dedup same-IP gateways, pick hub ----------
+function prep(topo){
+  const N=new Map(topo.nodes.map(n=>[n.id,{...n}]));
+  const alias=new Map(), byIp={};
+  for(const n of N.values())if(n.kind==="gateway"&&n.ip)(byIp[n.ip]=byIp[n.ip]||[]).push(n);
+  for(const ip in byIp){const g=byIp[ip];if(g.length<2)continue;
+    g.sort((a,b)=>a.label.length-b.label.length||(a.id<b.id?-1:1));
+    for(const d of g.slice(1)){alias.set(d.id,g[0].id);N.delete(d.id);}}
+  const eseen=new Set(), E=[];
+  for(const e of topo.edges){
+    const s=alias.get(e.source)||e.source, t=alias.get(e.target)||e.target;
+    if(s===t)continue;
+    const k=[s,t,e.iface,e.allowed].join("~"); if(eseen.has(k))continue; eseen.add(k);
+    E.push({...e,source:s,target:t});
   }
-  const bendY=(src.y+tgt.y)/2;
-  const sourceLaneX=src.x+offset,targetLaneX=tgt.x+offset;
-  return {
-    d:`M ${src.x} ${src.y} H ${sourceLaneX} V ${bendY} H ${targetLaneX} V ${tgt.y} H ${tgt.x}`,
-    label:{x:(sourceLaneX+targetLaneX)/2,y:bendY}
-  };
+  let hub=null;
+  for(const n of N.values())if(n.kind==="gateway"&&(n.ifaces||[]).length>((hub&&hub.ifaces||[]).length||0))hub=n;
+  return {N,E,hub};
 }
+const cidrs=a=>String(a||"").split(",").map(s=>s.trim()).filter(s=>s&&!/\/32$|\/128$/.test(s));
+const slash32=a=>String(a||"").split(",").map(s=>s.trim()).find(s=>/\/32$/.test(s))||"";
 
-// ---- layout: gateways + aggregates grouped into per-dc zone boxes side by side;
-//              externals hang just outside their gateway's zone box. ----
-function layout(topo,W,H){
-  const validParents=new Set(topo.nodes.filter(n=>n.kind==="physical-host").map(n=>n.id));
-  const placed=topo.nodes.filter(n=>n.parent&&validParents.has(n.parent));
-  const placedIDs=new Set(placed.map(n=>n.id));
-  const childrenByParent=new Map();
-  placed.forEach(n=>{if(!childrenByParent.has(n.parent))childrenByParent.set(n.parent,[]);childrenByParent.get(n.parent).push(n)});
-  childrenByParent.forEach((children,parentID)=>{
-    const parent=topo.nodes.find(n=>n.id===parentID);
-    if(parent)parent._layoutH=Math.max(104,44+children.length*50);
-  });
-  const roots=topo.nodes.filter(n=>n.kind!=="external"&&!placedIDs.has(n.id));
-  const aggs=topo.aggs||[];
-  const zmap=new Map();
-  const add=(k,kind,ref)=>{if(!zmap.has(k))zmap.set(k,{key:k,members:[],endpoints:0,networks:0});const z=zmap.get(k);z.members.push({kind,ref});if(kind==="node")z.endpoints++;else z.networks++};
-  roots.forEach(n=>add(zoneKey(n.dc),"node",n));
-  aggs.forEach(a=>add(zoneKey(a.dc),"agg",a));
-  const zones=[...zmap.values()].sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0);
-  const NZ=Math.max(zones.length,1), M=Math.min(150,W*0.13), bandW=(W-2*M)/NZ;
-  const nodeZone=new Map();
-  zones.forEach((z,zi)=>{
-    const cx=M+bandW*(zi+0.5);
-    z.cx=cx; z.idx=zi; z.portRight=cx<W/2; z.outerLeft=zi<NZ/2;
-    z.x0=cx-bandW*0.32; z.x1=cx+bandW*0.32; z.y0=H*0.11; z.y1=H*0.82;
-    const gap=12,heights=z.members.map(mem=>mem.kind==="node"?nodeSize(mem.ref)[1]:NSIZE.agg[1]);
-    const total=heights.reduce((a,b)=>a+b,0)+gap*Math.max(0,heights.length-1);
-    let y=Math.max(z.y0+30,(z.y0+z.y1-total)/2);
-    z.members.forEach((mem,i)=>{
-      const o=mem.ref,[w,h]=mem.kind==="node"?nodeSize(o):NSIZE.agg;
-      o.x=cx;o.y=y+h/2;o.w=w;o.h=h;y+=h+gap;
-      if(mem.kind==="node"){
-        nodeZone.set(o.id,z);
-        const ifs=o.ifaces||[]; o.ports={}; o.portRight=z.portRight;
-        const edgeX=z.portRight?o.x+o.w/2:o.x-o.w/2;
-        ifs.forEach((f,k)=>{o.ports[f.name]={x:edgeX,y:o.y-o.h/2+o.h*(k+0.5)/Math.max(ifs.length,1)}});
-      }
-    });
-  });
-  // VM/device endpoints with a parent are nested inside the physical-host box.
-  childrenByParent.forEach((children,parentID)=>{
-    const parent=topo.nodes.find(n=>n.id===parentID); if(!parent)return;
-    const z=nodeZone.get(parentID); children.sort((a,b)=>a.label.localeCompare(b.label));
-    children.forEach((n,i)=>{
-      const[w,h]=nodeSize(n);n.w=w;n.h=h;n.x=parent.x;
-      n.y=parent.y-parent.h/2+42+h/2+i*50;
-      n.ports={};n.portRight=parent.portRight;
-      const edgeX=n.portRight?n.x+n.w/2:n.x-n.w/2;
-      (n.ifaces||[]).forEach((f,k)=>{n.ports[f.name]={x:edgeX,y:n.y-n.h/2+n.h*(k+0.5)/Math.max(n.ifaces.length,1)}});
-      if(z)nodeZone.set(n.id,z);
-    });
-  });
-  // externals -> the zone of the gateway they connect to, stacked in an outer column.
-  const perZone=new Map(); zones.forEach(z=>perZone.set(z,[]));
-  topo.nodes.filter(n=>n.kind==="external").forEach(n=>{
-    const e=topo.edges.find(e=>e.target===n.id||e.source===n.id);
-    let gwId=null; if(e)gwId=(kindOf(topo,e.source)!=="external")?e.source:e.target;
-    const z=(gwId&&nodeZone.get(gwId))||zones[0];
-    const[w,h]=NSIZE.external; n.w=w; n.h=h;
-    if(z)perZone.get(z).push(n); else {n.x=W*0.08;n.y=H*0.5;}
-  });
-  perZone.forEach((list,z)=>{
-    const colX=z.outerLeft?Math.max(60,z.x0-bandW*0.16):Math.min(W-60,z.x1+bandW*0.16);
-    const m=list.length;
-    list.forEach((node,i)=>{node.x=colX;node.y=H*0.13+(H*0.74)*((i+0.5)/Math.max(m,1))});
-  });
-  topo._zones=zones;
-}
-
+// ---------- render ----------
 function render(topo){
-  curTopo=topo;
-  const W=svg.clientWidth||1100,H=svg.clientHeight||660;
-  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
-  nodes.clear(); aggMap.clear(); edges.clear();
-  topo.nodes.forEach(n=>nodes.set(n.id,n));
-  (topo.aggs||[]).forEach(a=>aggMap.set(a.id,a));
-  layout(topo,W,H);
-  svg.innerHTML=""; dots=[];
-  const gZ=el("g",{},svg), gL=el("g",{},svg), gE=el("g",{},svg), gD=el("g",{class:"wg-only"},svg), gN=el("g",{},svg);
+  curTopo=topo; svg.innerHTML=""; tunnels=[]; statusDots=new Map();
+  const {N,E,hub}=prep(topo);
+  const gz=mk("g",{},svg),gg=mk("g",{},svg),gt=mk("g",{},svg),gf=mk("g",{},svg),gn=mk("g",{},svg),gd=mk("g",{},svg);
+  if(!hub){svg.setAttribute("viewBox","0 0 800 200");svg.setAttribute("width",800);svg.setAttribute("height",200);
+    mk("text",{x:40,y:60,class:"ntit"},gn).textContent="게이트웨이 없음 — 먼저 vctl wg sync 실행";return;}
 
-  // zone boxes summarize endpoint/host groups separately from host networks.
-  (topo._zones||[]).forEach(z=>{
-    const g=el("g",{class:"zone"},gZ);
-    el("rect",{x:z.x0,y:z.y0,width:z.x1-z.x0,height:z.y1-z.y0,rx:12,ry:12},g);
-    el("text",{x:z.x0+12,y:z.y0+18},g).textContent=`${z.key} · ${z.endpoints} endpoints · ${z.networks} networks`;
-  });
-  // WAN gap label between the first two zones
-  if((topo._zones||[]).length>=2){
-    const zs=topo._zones,gx=(zs[0].x1+zs[1].x0)/2,gy=H*0.42;
-    el("text",{class:"wanlab wg-only",x:gx,y:gy,"text-anchor":"middle",transform:`rotate(-90 ${gx} ${gy})`},gZ)
-      .textContent="public internet · NAT / WAN";
+  // hub spokes / mesh classification
+  const touch=new Map();
+  const T=id=>{if(!touch.has(id))touch.set(id,{fwd:[],rev:[]});return touch.get(id)};
+  for(const e of E){
+    if(e.source===hub.id)T(e.target).fwd.push(e);
+    else if(e.target===hub.id)T(e.source).rev.push(e);
+  }
+  const perIface=new Map();
+  for(const [oid,g] of touch){
+    if(g.fwd.length===0&&g.rev.length>0){ // only reverse view collected — synthesize
+      for(const e of g.rev)g.fwd.push({...e,source:hub.id,target:oid,_rev:true});
+      g.rev=[];
+    }
+    for(const e of g.fwd){if(!perIface.has(e.iface))perIface.set(e.iface,[]);perIface.get(e.iface).push({oid,e,back:g.rev});}
+  }
+  const meshIf=new Set();
+  for(const [ifc,list] of perIface)
+    if(list.length>=4&&list.every(s=>cidrs(s.e.allowed).length===0))meshIf.add(ifc);
+  const spokes=[],mesh=[];
+  for(const [ifc,list] of perIface)
+    for(const s of list)(meshIf.has(ifc)?mesh:spokes).push({...s,iface:ifc});
+  const hops=E.filter(e=>e.source!==hub.id&&e.target!==hub.id);
+
+  // geometry
+  const HUBX=310,HUBW=170,NATX=610;
+  const EPX=660,EPW=210,LANE0=900,BANDX=1010,BANDW=400,ZONE_R=BANDX+BANDW+24;
+  const hubIfaces=(hub.ifaces||[]).map(i=>i.name).sort();
+  const remoteIf=hubIfaces.filter(i=>!meshIf.has(i));
+  const hubH=Math.max(110,46+remoteIf.length*38);
+  const HUBY=150;
+  const ROWH=64,HOSTPAD=34;
+
+  // zone grouping on the right
+  const zmap=new Map();
+  const Z=k=>{if(!zmap.has(k))zmap.set(k,[]);return zmap.get(k)};
+  for(const s of spokes){const n=N.get(s.oid);Z(n?zoneKey(n.dc):"etc").push(s);}
+  const placed=new Set([hub.id,...spokes.map(s=>s.oid),...mesh.map(s=>s.oid)]);
+  for(const e of hops)for(const id of[e.source,e.target]){
+    const n=N.get(id);
+    if(n&&!placed.has(id)&&n.kind!=="external"&&zoneKey(n.dc)!==zoneKey(hub.dc)){
+      placed.add(id);Z(zoneKey(n.dc)).push({oid:id,e:null,iface:null,back:[]});}
+  }
+  const zones=[...zmap.entries()].sort((a,b)=>b[1].length-a[1].length);
+  let zy=110; const zoneGeo=[];
+  for(const [zk,list] of zones){
+    list.sort((a,b)=>String(a.iface||"~").localeCompare(String(b.iface||"~"))||String(a.oid).localeCompare(b.oid));
+    // rows + rough band space
+    let rows=0,bandRefs=0;const cs=new Set();
+    for(const s of list){rows+=(N.get(s.oid)?.parent?ROWH+HOSTPAD:ROWH)+14;
+      if(s.e)cidrs(s.e.allowed).forEach(c=>{cs.add(c);bandRefs++;});}
+    const bandH=[...cs].length?([...cs].length*56+bandRefs*6):0;
+    const h=52+Math.max(rows,bandH);
+    zoneGeo.push({zk,list,y:zy,h}); zy+=h+26;
+  }
+  const meshHeights=[...meshIf].map(ifc=>44+mesh.filter(s=>s.iface===ifc).length*19+26);
+  const leftH=HUBY+hubH+50+meshHeights.reduce((a,b)=>a+b,0)+hops.length*66+120;
+  const H=Math.max(zy+40,leftH,720), W=ZONE_R+20;
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  const drawW=Math.min(W,1500);
+  svg.setAttribute("width",drawW); svg.setAttribute("height",Math.round(drawW*H/W));
+
+  // hub zone + NAT
+  mk("rect",{x:40,y:70,width:520,height:H-120,rx:12,class:"zone"},gz);
+  mk("text",{x:56,y:94,class:"zlab"},gz).textContent=zoneKey(hub.dc)+" · hub";
+  mk("text",{x:56,y:109,class:"zsub"},gz).textContent=hub.dc||"";
+  mk("line",{x1:NATX,y1:80,x2:NATX,y2:H-60,class:"nat"},gz);
+  mk("text",{x:NATX,y:70,class:"natlab","text-anchor":"middle"},gz).textContent="NAT / WAN";
+
+  // local aggregate bands (inventory context) -> grey bus into hub
+  const aggm=new Map();
+  for(const a of (topo.aggs||[]))if(zoneKey(a.dc)===zoneKey(hub.dc)){
+    const c=aggm.get(a.cidr)||{cidr:a.cidr,count:0};c.count+=a.count;aggm.set(a.cidr,c);}
+  let ly=140;
+  const laggs=[...aggm.values()].sort((a,b)=>b.count-a.count).slice(0,6);
+  for(const a of laggs){
+    const r=mk("rect",{x:64,y:ly,width:180,height:42,rx:8,class:"nbox band"},gn);
+    mk("text",{x:78,y:ly+18,class:"btit"},gn).textContent=a.cidr;
+    mk("text",{x:78,y:ly+32,class:"bsub"},gn).textContent=`인벤토리 ×${a.count}`;
+    hot(r,()=>[a.cidr,`허브 사이트 로컬 대역 · 호스트 ${a.count}대`]);
+    mk("path",{d:`M244,${ly+21} H272`,class:"grey"},gg);
+    mk("circle",{cx:244,cy:ly+21,r:3,class:"jdot"},gd);
+    ly+=54;
+  }
+  if(laggs.length){
+    mk("path",{d:`M272,161 V${ly-33}`,class:"grey"},gg);
+    mk("path",{d:`M272,${HUBY+40} H${HUBX}`,class:"grey"},gg);
+    mk("circle",{cx:HUBX,cy:HUBY+40,r:3,class:"jdot"},gd);
   }
 
-  // Host/network relations under the tunnels.
-  (topo.links||[]).forEach(lk=>{
-    const s=posById(lk.source),t=posById(lk.target); if(!s||!t)return;
-    const a=boundary(s,{x:t.x,y:t.y}),b=boundary(t,{x:s.x,y:s.y});
-    el("path",{class:`link ${lk.kind||"management"}`,d:orthogonalRoute(a,b).d},gL);
+  // hub box + ports
+  mk("rect",{x:HUBX,y:HUBY,width:HUBW,height:hubH,rx:9,class:"nbox hub"},gn);
+  mk("text",{x:HUBX+12,y:HUBY+20,class:"ntit"},gn).textContent=hub.label.length>21?hub.label.slice(0,20)+"…":hub.label;
+  mk("text",{x:HUBX+12,y:HUBY+35,class:"nsub"},gn).textContent=hub.ip||"";
+  const hubPort=new Map();
+  remoteIf.forEach((ifc,i)=>{
+    const y=HUBY+56+i*38, col=ifColor(ifc), port=(hub.ifaces||[]).find(x=>x.name===ifc);
+    const d=mk("circle",{cx:HUBX+HUBW,cy:y,r:5.5,fill:col,class:"pdot hot"},gd);
+    hot(d,()=>[`${ifc} :${port?port.port:"?"}`,"허브 리슨 포트"]);
+    const t=mk("text",{x:HUBX+HUBW-10,y:y+3.5,class:"plab","text-anchor":"end"},gd);
+    t.textContent=ifc; t.setAttribute("fill",col);
+    hubPort.set(ifc,{x:HUBX+HUBW,y});
   });
 
-  // WireGuard tunnels. Connections from the same source get separate routing
-  // lanes, centered around the direct corridor, to reduce stacked segments.
-  const sourceCounts=new Map(),sourceSeen=new Map();
-  topo.edges.forEach(e=>sourceCounts.set(e.source,(sourceCounts.get(e.source)||0)+1));
-  topo.edges.forEach(e=>{
-    const s=nodes.get(e.source),t=nodes.get(e.target);
-    if(!s||!t)return;
-    const src=anchor(s,e.iface,{x:t.x,y:t.y}), tgt=anchor(t,e.iface,{x:s.x,y:s.y});
-    const seen=sourceSeen.get(e.source)||0,total=sourceCounts.get(e.source)||1;
-    sourceSeen.set(e.source,seen+1);
-    const route=orthogonalRoute(src,tgt,seen-(total-1)/2,total),d=route.d;
-    e.color=ifColor(e.iface); e.width=e.iface==="wg2"?2.5:1.6;
-    e.path=el("path",{class:"edge wg-only",d,stroke:e.color,"stroke-width":e.width},gE);
-    e.hit=el("path",{class:"edge-hit wg-only",d},gE);
-    el("text",{class:"iflab wg-only",x:route.label.x,y:route.label.y-5,"text-anchor":"middle",fill:e.color},gE).textContent=e.iface;
-    if(e.allowed)el("text",{class:"iflab sub wg-only",x:route.label.x,y:route.label.y+6,"text-anchor":"middle"},gE).textContent=e.allowed.length>34?e.allowed.slice(0,33)+"…":e.allowed;
-    e.len=e.path.getTotalLength();
-    const show=(ev)=>{const st=stats[e.id]||{};const[hs]=fmtHS(st.hs);
-      tip.innerHTML=`<b style="color:${e.color}">${esc(e.iface)}</b> ${esc(s.label)} ⇄ ${esc(t.label)}`+
-        `<br><span style="color:var(--ink2)">rx ${fmtRate(st.rx)}</span> · <span style="color:var(--ink)">tx ${fmtRate(st.tx)}</span> · ${hs}`+
-        (e.allowed?`<br><span class="t">${esc(e.allowed)}</span>`:"");
-      tip.style.display="block";tip.style.left=(ev.clientX+14)+"px";tip.style.top=(ev.clientY+10)+"px";
-      selected=e.id;syncTable()};
-    e.hit.addEventListener("mousemove",show);
-    e.hit.addEventListener("mouseleave",()=>{tip.style.display="none";selected=null;syncTable()});
-    edges.set(e.id,e);
-  });
+  // mesh stacks (hub-local /32 fan) on the left, vertical dots + single trunk
+  let my=HUBY+hubH+50;
+  for(const ifc of meshIf){
+    const list=mesh.filter(s=>s.iface===ifc);
+    const col=ifColor(ifc), bh=44+list.length*19;
+    const box=mk("rect",{x:64,y:my,width:200,height:bh,rx:9,class:"nbox"},gn);
+    mk("text",{x:76,y:my+18,class:"ntit"},gn).textContent=`${ifc} 메시 ×${list.length}`;
+    const port=(hub.ifaces||[]).find(x=>x.name===ifc);
+    mk("text",{x:76,y:my+32,class:"nsub"},gn).textContent=":"+(port?port.port:"?");
+    hot(box,()=>[`${ifc} 메시`,`허브 ↔ 로컬 피어 ${list.length}대 /32 팬아웃`]);
+    const pdx=HUBX+28+[...meshIf].indexOf(ifc)*22, pdy=HUBY+hubH;
+    const pd=mk("circle",{cx:pdx,cy:pdy,r:5.5,fill:col,class:"pdot hot"},gd);
+    hot(pd,()=>[`${ifc} :${port?port.port:"?"}`,"허브 메시 포트"]);
+    const pl=mk("text",{x:pdx+10,y:pdy-8,class:"plab"},gd); pl.textContent=ifc; pl.setAttribute("fill",col);
+    list.sort((a,b)=>slash32(a.e.allowed).localeCompare(slash32(b.e.allowed),undefined,{numeric:true}));
+    list.forEach((s,i)=>{
+      const n=N.get(s.oid), y=my+44+i*19;
+      const lbl=mk("text",{x:250,y:y+3,class:"bsub","text-anchor":"end"},gd);
+      lbl.textContent=((n?n.label:s.oid)||"").slice(0,24);
+      const dd=mk("circle",{cx:264,cy:y,r:4.5,fill:col,class:"sdot hot"},gd);
+      statusDots.set(s.e.id,dd);
+      hot(dd,()=>{const st=stats[s.e.id]||{};return[(n?n.label:s.oid),
+        `${slash32(s.e.allowed)} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
+      mk("path",{d:`M269,${y} H278`,class:"tun",stroke:col,"stroke-width":1.6},gt);
+    });
+    const trunk=`M278,${my+44+(list.length-1)*19} V${my+20} H${pdx} V${pdy+6}`;
+    const p=mk("path",{d:trunk,class:"tun",stroke:col,"stroke-width":2},gt);
+    hot(p,()=>[`${ifc} · 메시 ×${list.length}`,"허브 ↔ 로컬 피어 /32 팬아웃 — 점 hover로 개별 상태"]);
+    my+=bh+26;
+  }
 
-  // physical host containers first, then VM/gateway endpoints inside/on top.
-  const drawBox=(o,cls,name,sub)=>{
-    const g=el("g",{class:"node "+cls,transform:`translate(${o.x},${o.y})`},gN);
-    el("rect",{x:-o.w/2,y:-o.h/2,width:o.w,height:o.h,rx:8,ry:8},g);
-    const lab=name.length>22?name.slice(0,21)+"…":name;
-    const top=cls==="physical-host", nameY=top?-o.h/2+17:(sub?-2:4), subY=top?-o.h/2+30:11;
-    el("text",{class:"nm",y:nameY,"text-anchor":"middle"},g).textContent=lab;
-    if(sub)el("text",{class:"sub2",y:subY,"text-anchor":"middle"},g).textContent=sub;
-    g.addEventListener("mousemove",ev=>{
-      tip.innerHTML=`<b>${esc(name)}</b><br><span class="t">${esc(o.kind)}${o.ip?` · underlay ${esc(o.ip)}`:""}${o.tunnelIp?` · tunnel ${esc(o.tunnelIp)}`:""}${o.observed?` · observed ${esc(o.observed)}`:""}</span>`+
-        (o.parent?`<br>runs on <b>${esc(parentName(o.parent))}</b>`:"")+
-        (o.kind==="inventory-candidate"?`<br><span class="t">inferred from unique observed endpoint IP</span>`:"")+
-        ((o.warnings||[]).map(w=>`<br><span style="color:var(--warn)">! ${esc(w)}</span>`).join(""));
-      tip.style.display="block";tip.style.left=(ev.clientX+14)+"px";tip.style.top=(ev.clientY+10)+"px";
-    });
-    g.addEventListener("mouseleave",()=>{tip.style.display="none"});
-    return g;
-  };
-  topo.nodes.filter(n=>n.kind==="physical-host").forEach(n=>drawBox(n,"physical-host",n.label,n.ip||""));
-  topo.nodes.filter(n=>n.kind!=="physical-host"&&n.kind!=="external").forEach(n=>{
-    const g=drawBox(n,n.kind,n.label,n.ip||"");
-    (n.ifaces||[]).forEach(f=>{const p=n.ports[f.name],c=ifColor(f.name),pg=el("g",{class:"port wg-only"},g);
-      el("circle",{cx:p.x-n.x,cy:p.y-n.y,r:3,fill:c},pg);
-      const inside=n.portRight?-6:6;
-      el("text",{class:"plab",x:p.x-n.x+inside,y:p.y-n.y+3,"text-anchor":n.portRight?"end":"start",fill:c},pg).textContent=f.name;
-    });
-  });
-  (topo.aggs||[]).forEach(a=>drawBox(a,"agg",`${a.cidr} ×${a.count}`,a.dc));
-  topo.nodes.filter(n=>n.kind==="external").forEach(n=>{const g=drawBox(n,"external wg-only",n.label,"")});
-  svg._gD=gD;
-  syncNodes();
+  // right zones: endpoint rows (nested host boxes) + reachable bands
+  const epPos=new Map();
+  for(const zg of zoneGeo){
+    const bands={list:[],by:new Map()};
+    mk("rect",{x:EPX-24,y:zg.y,width:ZONE_R-(EPX-24)-16,height:zg.h,rx:12,class:"zone"},gz);
+    mk("text",{x:EPX-8,y:zg.y+22,class:"zlab"},gz).textContent=zg.zk;
+    mk("text",{x:BANDX,y:zg.y+22,class:"zsub"},gz).textContent="도달 대역";
+    let ry=zg.y+40, laneN=0;
+    for(const s of zg.list){
+      const n=N.get(s.oid); if(!n)continue;
+      const parent=n.parent&&N.get(n.parent);
+      let by=ry;
+      if(parent){
+        mk("rect",{x:EPX-10,y:ry,width:EPW+20,height:ROWH+HOSTPAD,rx:10,class:"hbox"},gn);
+        mk("text",{x:EPX+2,y:ry+16,class:"htit"},gn).textContent=(parent.label+(parent.ip?" · "+parent.ip:"")).slice(0,30);
+        by=ry+HOSTPAD-8;
+      }
+      const box=mk("rect",{x:EPX,y:by,width:EPW,height:ROWH-10,rx:8,class:"nbox"+(n.kind==="vm"?" vmb":"")},gn);
+      mk("text",{x:EPX+12,y:by+20,class:"ntit"},gn).textContent=n.label.length>23?n.label.slice(0,22)+"…":n.label;
+      mk("text",{x:EPX+12,y:by+36,class:"nsub"},gn).textContent=[n.ip,n.tunnelIp].filter(Boolean).join(" · ").slice(0,30);
+      if(n.warnings&&n.warnings.length)mk("text",{x:EPX+EPW-10,y:by+16,class:"warnb","text-anchor":"end"},gn).textContent="⚠";
+      hot(box,()=>[n.label,`${n.kind}${n.dc?" · "+n.dc:""}${n.observed?" · 관측 "+n.observed:""}${n.warnings?" · "+n.warnings.join("; "):""}`]);
+      const cy=by+(ROWH-10)/2;
+      epPos.set(s.oid,{inX:EPX,outX:EPX+EPW,rowY:cy});
+      if(s.iface&&s.e){
+        const col=ifColor(s.iface), port=hubPort.get(s.iface);
+        const din=mk("circle",{cx:EPX,cy:cy,r:5.5,fill:col,class:"pdot hot"},gd);
+        statusDots.set(s.e.id,din);
+        hot(din,()=>{const st=stats[s.e.id]||{};return[`${s.iface} · ${n.label}`,
+          `${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} · tx ${fmtRate(st.tx)}${s.back.length?" · 역방향 "+cidrs(s.back[0].allowed).join(","):""}`];});
+        if(port){
+          const lane=HUBX+HUBW+26+remoteIf.indexOf(s.iface)*16;
+          const d=`M${port.x+6},${port.y} H${lane} V${cy} H${EPX-6}`;
+          const base=mk("path",{d,class:"tun",stroke:col},gt);
+          const fl=mk("path",{d,class:"flow",stroke:col},gf);
+          tunnels.push({id:s.e.id,base,fl});
+          hot(base,()=>{const st=stats[s.e.id]||{};return[`${s.iface} → ${n.label}`,
+            `allowed ${s.e.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
+        }
+        const cs=cidrs(s.e.allowed);
+        if(cs.length){
+          mk("circle",{cx:EPX+EPW,cy:cy,r:5.5,fill:col,class:"pdot"},gd);
+          for(const c of cs){
+            let b=bands.by.get(c);
+            if(!b){b={cidr:c,refs:[]};bands.by.set(c,b);bands.list.push(b);}
+            b.refs.push({iface:s.iface,eid:s.e.id,fromX:EPX+EPW,fromY:cy,lane:LANE0+(laneN++%6)*15});
+          }
+        }
+      }
+      ry+=(parent?ROWH+HOSTPAD:ROWH)+14;
+    }
+    let byy=zg.y+40;
+    for(const b of bands.list){
+      const hgt=Math.max(44,20+b.refs.length*17);
+      const r=mk("rect",{x:BANDX,y:byy,width:BANDW,height:hgt,rx:8,class:"nbox band"},gn);
+      mk("text",{x:BANDX+14,y:byy+20,class:"btit"},gn).textContent=b.cidr;
+      hot(r,()=>[b.cidr,"도달: "+b.refs.map(r=>r.iface).join(", ")]);
+      b.refs.forEach((rf,i)=>{
+        const dy=byy+15+i*17, col=ifColor(rf.iface);
+        mk("circle",{cx:BANDX-12,cy:dy,r:5,fill:col,class:"pdot"},gd);
+        const d=`M${rf.fromX+6},${rf.fromY} H${rf.lane} V${dy} H${BANDX-18}`;
+        const base=mk("path",{d,class:"tun",stroke:col,"stroke-width":1.9},gt);
+        const fl=mk("path",{d,class:"flow",stroke:col},gf);
+        tunnels.push({id:rf.eid,base,fl});
+        hot(base,()=>{const st=stats[rf.eid]||{};return[`${rf.iface} → ${b.cidr}`,
+          `${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
+      });
+      byy+=hgt+12;
+    }
+  }
+
+  // second-hop edges: endpoint -> hub-zone node (left chip) or external (dashed chip)
+  let hy=my+8;
+  for(const e of hops){
+    const sp=epPos.get(e.source)||epPos.get(e.target);
+    const other=epPos.get(e.source)?e.target:e.source;
+    const tn=N.get(other), col=ifColor(e.iface);
+    if(!sp||!tn)continue;
+    if(tn.kind==="external"){
+      const cxx=BANDX+BANDW-170, cy=sp.rowY+30;
+      const r=mk("rect",{x:cxx,y:cy-14,width:170,height:30,rx:8,class:"nbox ext"},gn);
+      mk("text",{x:cxx+10,y:cy+4,class:"bsub"},gn).textContent=tn.label.slice(0,24);
+      hot(r,()=>[tn.label,`외부 endpoint (수집 관측) · allowed ${e.allowed}`]);
+      const d=`M${sp.outX+6},${sp.rowY} H${LANE0+96} V${cy} H${cxx-4}`;
+      const base=mk("path",{d,class:"tun dash",stroke:col,"stroke-width":1.7},gt);
+      hot(base,()=>{const st=stats[e.id]||{};return[`${e.iface} → ${tn.label}`,
+        `allowed ${e.allowed} · ${hsLabel(st.hs)} · 문서 미기재 종단`];});
+    }else if(zoneKey(tn.dc)===zoneKey(hub.dc)){
+      const bw2=200;
+      const bx2=mk("rect",{x:64,y:hy,width:bw2,height:52,rx:8,class:"nbox"+(tn.kind==="vm"?" vmb":"")},gn);
+      mk("text",{x:76,y:hy+20,class:"ntit"},gn).textContent=tn.label.length>20?tn.label.slice(0,19)+"…":tn.label;
+      mk("text",{x:76,y:hy+36,class:"nsub"},gn).textContent=[tn.ip,tn.tunnelIp].filter(Boolean).join(" · ");
+      hot(bx2,()=>[tn.label,`${tn.kind}${tn.dc?" · "+tn.dc:""}`]);
+      const cy2=hy+26;
+      const dd=mk("circle",{cx:64+bw2,cy:cy2,r:5.5,fill:col,class:"pdot hot"},gd);
+      statusDots.set(e.id,dd);
+      hot(dd,()=>{const st=stats[e.id]||{};return[`${e.iface} · ${tn.label}`,`${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
+      mk("circle",{cx:sp.inX,cy:sp.rowY+16,r:5,fill:col,class:"pdot"},gd);
+      const d=`M${64+bw2+6},${cy2} H${NATX-28} V${sp.rowY+16} H${sp.inX-6}`;
+      const base=mk("path",{d,class:"tun",stroke:col},gt);
+      const fl=mk("path",{d,class:"flow",stroke:col},gf);
+      tunnels.push({id:e.id,base,fl});
+      hot(base,()=>{const st=stats[e.id]||{};return[`${e.iface} ↔ ${tn.label}`,
+        `allowed ${e.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
+      hy+=66;
+    }
+  }
+  buildLegend(); applyStats();
+  // tighten the canvas to what was actually drawn
+  try{const bb=svg.getBBox();const H2=Math.min(H,bb.y+bb.height+30);
+    svg.setAttribute("viewBox",`0 0 ${W} ${H2}`);
+    svg.setAttribute("height",Math.round(drawW*H2/W));}catch(_){}
 }
 
-// ---- packet-flow animation ----
-// dot spawn rate & speed follow log10(rate); direction: tx source→target, rx reverse;
-// dot colour == tunnel colour; a stale tunnel turns red-dashed and freezes.
-let acc={},last=performance.now();
-function step(dt){
-  const gD=svg._gD; if(!gD)return;
-  if(underlayOnly){ if(dots.length){dots=[];gD.innerHTML=""} return; }
-  edges.forEach(e=>{
-    const st=stats[e.id]; if(!st)return;
-    const stale=st.hs!=null&&(st.hs<0||st.hs>600);
-    e.path.setAttribute("stroke",stale?"#d03b3b":e.color);
-    e.path.setAttribute("stroke-dasharray",stale?"6 5":"none");
-    if(stale)return;
-    [["tx",+1],["rx",-1]].forEach(([k,dir])=>{
-      const r=st[k]||0; if(r<1)return;
-      const per=Math.min(9,0.6+Math.log10(r+1)), key=e.id+k;
-      acc[key]=(acc[key]||0)+per*dt;
-      while(acc[key]>=1){acc[key]-=1;dots.push({e,dir,t:dir>0?0:1,sp:0.12+0.05*Math.log10(r+1),k})}
-    });
-  });
-  dots.forEach(d=>d.t+=d.dir*d.sp*dt);
-  dots=dots.filter(d=>d.t>=0&&d.t<=1);
-  gD.innerHTML="";
-  dots.forEach(d=>{const p=d.e.path.getPointAtLength(d.t*d.e.len);
-    el("circle",{class:"pkt",cx:p.x,cy:p.y,r:2.6,fill:d.e.color},gD)});
+function buildLegend(){
+  const ifs=new Set(); (curTopo.edges||[]).forEach(e=>ifs.add(e.iface));
+  document.getElementById("legend").innerHTML=[...ifs].sort().map(i=>
+    `<span class="i"><span class="dt" style="background:${ifColor(i)}"></span>${esc(i)}</span>`).join("")+
+    `<span class="i" style="color:var(--muted)">점=종단/도달 · 꺾쇠=터널 · 이중박스=물리⊃VM · 점선=외부/미상 · 발광=handshake 상태</span>`;
 }
-(function loop(now){const dt=Math.min(0.1,(now-last)/1000);last=now;step(dt);requestAnimationFrame(loop)})(last);
-
-// ---- side table ----
-function syncTable(){
-  const tb=document.querySelector("#tbl tbody"); tb.innerHTML="";
-  [...edges.values()].sort((a,b)=>{
-    const ra=(stats[a.id]?.rx||0)+(stats[a.id]?.tx||0), rb=(stats[b.id]?.rx||0)+(stats[b.id]?.tx||0);
-    return rb-ra;
-  }).forEach(e=>{
-    const st=stats[e.id]||{}, [hs,cls]=fmtHS(st.hs);
-    const tr=document.createElement("tr"); if(e.id===selected)tr.className="sel";
-    tr.innerHTML=`<td><span class="tdot" style="background:${e.color}"></span>${esc(e.iface)} · ${esc(nodes.get(e.target).label.slice(0,16))}</td>`+
-      `<td class="num">${fmtRate(st.rx)}</td><td class="num">${fmtRate(st.tx)}</td>`+
-      `<td class="${cls}">${hs}</td>`;
-    tb.appendChild(tr);
-  });
+function applyStats(){
+  for(const t of tunnels){
+    const st=stats[t.id];
+    if(st&&(st.rx>0||st.tx>0)){
+      const r=st.rx+st.tx;
+      t.fl.classList.add("on");
+      t.fl.style.animationDuration=Math.max(.5,2.6-Math.log10(r+1)*.38)+"s";
+      t.base.setAttribute("stroke-width",Math.min(4.6,2+Math.log10(r+1)*.5));
+    }else t.fl.classList.remove("on");
+  }
+  for(const [eid,dot] of statusDots){
+    const st=stats[eid]; if(!st)continue;
+    const c=cssv("--"+hsState(st.hs));
+    dot.setAttribute("stroke",c);
+    dot.style.filter=`drop-shadow(0 0 3px ${c})`;
+  }
 }
-
-function syncNodes(){
-  const tb=document.querySelector("#ntbl tbody");tb.innerHTML="";
-  [...nodes.values()]
-    .filter(n=>n.kind!=="external"&&n.kind!=="physical-host")
-    .sort((a,b)=>(a.dc||"").localeCompare(b.dc||"")||a.label.localeCompare(b.label))
-    .forEach(n=>{
-      const tr=document.createElement("tr");
-      tr.innerHTML=`<td>${esc(n.label.slice(0,20))}</td><td>${esc(n.kind)}</td>`+
-        `<td>${n.parent?esc(parentName(n.parent)):'<span class="sub">host unknown</span>'}</td>`;
-      tb.appendChild(tr);
-    });
-}
-
 function updateMeta(topo,at){
-  const gateways=topo.nodes.filter(n=>(n.ifaces||[]).length>0);
-  const gwN=gateways.length;
-  const keys=new Set(gateways.map(n=>zoneKey(n.dc)));
-  (topo.aggs||[]).forEach(a=>keys.add(zoneKey(a.dc)));
+  const zones=new Set(topo.nodes.filter(n=>n.dc).map(n=>zoneKey(n.dc)));
   document.getElementById("meta").textContent=
-    `${keys.size} sites · ${gwN} gateways · ${(topo.edges||[]).length} tunnels · ${new Date(at*1000).toLocaleTimeString()}`;
+    `${zones.size} sites · ${topo.nodes.filter(n=>n.kind==="gateway").length} gateways · ${topo.edges.length} tunnels · ${new Date(at*1000).toLocaleTimeString()}`;
 }
 
-// ---- layer toggle ----
-function setMode(onlyUnderlay){
-  underlayOnly=onlyUnderlay;
-  document.documentElement.classList.toggle("mode-underlay",onlyUnderlay);
-  document.getElementById("lb-underlay").classList.toggle("on",onlyUnderlay);
-  document.getElementById("lb-full").classList.toggle("on",!onlyUnderlay);
-}
-document.getElementById("lb-underlay").addEventListener("click",()=>setMode(true));
-document.getElementById("lb-full").addEventListener("click",()=>setMode(false));
-
-// ---- wiring: injected BOOT (demo) or live fetch + SSE ----
+// ---------- wiring: injected BOOT replay (demo) or live fetch + SSE ----------
 if(BOOT){
-  const topo=BOOT.topology; render(topo);
+  render(BOOT.topology);
   const frames=BOOT.frames||[]; let fi=0;
-  const apply=()=>{stats=frames.length?frames[fi%frames.length]:{};updateMeta(topo,Date.now()/1000);syncTable();fi++};
-  apply(); if(frames.length>1)setInterval(apply,2000);
-  window.addEventListener("resize",()=>render(topo));
+  const ap=()=>{stats=frames.length?frames[fi%frames.length]:{};updateMeta(BOOT.topology,Date.now()/1000);applyStats();fi++;};
+  ap(); if(frames.length>1)setInterval(ap,2000);
+  document.getElementById("health").textContent="demo replay";
 }else{
   fetch("topology").then(r=>r.json()).then(topo=>{
     render(topo);
     const es=new EventSource("events");
     es.onmessage=ev=>{
       const d=JSON.parse(ev.data); stats=d.edges||{};
-      updateMeta(topo,d.at);
-      const errN=Object.keys(d.errors||{}).length,health=document.getElementById("health");
-      health.className="health "+(errN?"fail":"ok");
-      health.textContent=errN?`${errN} poll failures`:"live polling healthy";
-      document.getElementById("errs").textContent=
-        Object.entries(d.errors||{}).map(([h,e])=>`! ${h}: ${e}`).join("\n");
-      syncTable();
+      updateMeta(topo,d.at); applyStats();
+      const errN=Object.keys(d.errors||{}).length, h=document.getElementById("health");
+      h.className="health "+(errN?"fail":"ok");
+      h.textContent=errN?`${errN} poll failures`:"live polling healthy";
+      document.getElementById("errs").textContent=Object.entries(d.errors||{}).map(([k,v])=>`! ${k}: ${v}`).join("\n");
     };
-    window.addEventListener("resize",()=>render(topo));
   });
 }
 </script>

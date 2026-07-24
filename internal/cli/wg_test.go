@@ -422,23 +422,27 @@ func hasTopologyLink(topo wgTopology, source, target, kind string) bool {
 	return false
 }
 
-func TestWGServeDashboardUsesOrthogonalTunnelRoutes(t *testing.T) {
+func TestWGServeDashboardWiringLayout(t *testing.T) {
 	html := string(wgServeHTML)
 
+	// The dashboard renders the approved wiring layout: hub iface ports feeding
+	// orthogonal elbows through NAT into per-zone endpoints and reachable-CIDR
+	// bands, with a /32 mesh stack and a WG_BOOT snapshot-replay contract.
 	for _, want := range []string{
-		"function orthogonalRoute(",
-		"sourceLaneY",
-		"sourceLaneX",
-		"Math.min(14,84/radius)",
-		"언더레이",
-		"언더레이 + WireGuard",
+		"window.WG_BOOT",
+		"hubPort",
+		"도달 대역",
+		"메시 ×",
+		"NAT / WAN",
+		`fetch("topology")`,
+		`EventSource("events")`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("dashboard is missing %q", want)
 		}
 	}
 	if strings.Contains(html, " Q ") || strings.Contains(html, " C ") {
-		t.Error("WireGuard tunnels must not use quadratic or cubic curves")
+		t.Error("WireGuard tunnels must stay orthogonal (no curves)")
 	}
 }
 
