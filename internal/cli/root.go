@@ -84,6 +84,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		gate(execCmd(), "exec", classMutate), agentCmd(),
 		gate(sshCmd(), "ssh", classMutate),
 		lsCmd(),
+		ipCmd(),
 		gate(syncCmd(), "sync", classMutate),
 		statusCmd(), auditCmd(),
 		gate(trustCACmd(), "trust-ca", classMutate), caCmd(),
