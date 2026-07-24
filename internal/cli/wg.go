@@ -31,7 +31,7 @@ func wgCmd() *cobra.Command {
 peers (topology edges) and per-peer runtime status, collected by SSHing into the
 gateways and running 'wg show'. No secrets are stored — only public keys.`,
 	}
-	cmd.AddCommand(wgSyncCmd(), wgGraphCmd(), wgMonitorCmd(), wgServeCmd())
+	cmd.AddCommand(wgSyncCmd(), wgGraphCmd(), wgMonitorCmd(), wgServeCmd(), wgEndpointCmd())
 	return cmd
 }
 

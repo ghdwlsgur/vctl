@@ -390,6 +390,8 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl agent [--sink <path>]` | Keep a token alive and write it to sink files |
 | `vctl ssh [host] [--server <host>]` | Connect by exact, fuzzy, IP, or interactive selection (picker filters by DC with ←/→); `--server` resolves exactly or by IP and connects non-interactively (scripts/agents) |
 | `vctl list [--dc <dc>]` | List inventory hosts (primary + extra IPs, liveness/agent status) |
+| `vctl wg sync\|graph\|monitor\|serve` | Collect and inspect WireGuard topology; `serve` shows live traffic, endpoint VMs, physical hosts, and host networks |
+| `vctl wg endpoint list\|set\|rm` | Map a WireGuard public key to a VM/device identity and, for VMs, its physical inventory host |
 | `vctl mcp` | Run a read-only MCP server (stdio) exposing the inventory to AI agents; `vctl_ssh_exec` also runs commands on hosts. Runs as your identity — RBAC applies |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | Manage app-layer command RBAC (admin); `assign`/`grant` are interactive pickers |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | Show central SSH access audit rows |

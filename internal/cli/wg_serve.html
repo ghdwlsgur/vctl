@@ -17,6 +17,9 @@
   header h1{font-size:14px;margin:0;font-weight:600}
   header .sub{color:var(--ink2)}
   .demo{font-size:11px;color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:1px 6px}
+  .health{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--muted)}
+  .health.ok{color:var(--ok);border-color:var(--ok)}
+  .health.fail{color:var(--crit);border-color:var(--crit)}
   .layers{display:flex;gap:4px}
   .layers button{font:inherit;font-size:11px;color:var(--ink2);background:#1f1f1e;border:1px solid var(--line);
                  padding:3px 9px;border-radius:5px;cursor:pointer}
@@ -25,7 +28,12 @@
   .legend span{display:inline-flex;align-items:center;gap:5px}
   .dotv{width:14px;height:3px;border-radius:2px;display:inline-block}
   .dotv.box{width:11px;height:9px;border-radius:2px}
+  .dotv.host{width:13px;height:10px;border-radius:2px;background:#202a24;border:1px solid #547060}
+  .dotv.vm{width:11px;height:9px;border-radius:2px;background:#26303c;border:1px solid #41546b}
   .dotv.dash{width:11px;height:9px;border-radius:2px;background:transparent;border:1px dashed var(--muted)}
+  .dotv.place{height:0;background:transparent;border-top:2px dashed #6d8d79}
+  .dotv.net{height:0;background:transparent;border-top:1px dashed #647285}
+  .dotv.mgmt{height:0;background:transparent;border-top:1px solid var(--muted)}
   main{flex:1;display:flex;min-height:0}
   #stage{flex:1;min-width:0}
   svg{display:block;width:100%;height:100%}
@@ -49,7 +57,13 @@
   .zone text{fill:var(--muted);font-size:11px;letter-spacing:.04em}
   .wanlab{fill:var(--muted);font-size:10px;opacity:.35;letter-spacing:.12em}
   .link{stroke:var(--muted);stroke-width:1;fill:none;opacity:.5}
+  .link.placement{stroke:#6d8d79;stroke-dasharray:4 3;opacity:.85}
+  .link.network{stroke:#647285;stroke-dasharray:2 3;opacity:.7}
   .node rect{fill:#26303c;stroke:#41546b;stroke-width:1.5}
+  .node.physical-host rect{fill:#202a24;stroke:#547060;stroke-width:1.5}
+  .node.physical-host .nm{fill:#b9d1c0;font-weight:600}
+  .node.vm rect,.node.inventory-candidate rect{fill:#26303c;stroke:#55708d}
+  .node.device rect{fill:#302b24;stroke:#786a52}
   .node.external rect{fill:#2c2c2a;stroke:var(--line)}
   .node.agg rect{fill:#242422;stroke:#4a4a47;stroke-width:1;stroke-dasharray:4 3}
   .node .nm{fill:var(--ink);font-size:12px}
@@ -70,13 +84,18 @@
 <header>
   <h1>WireGuard <span class="sub">live traffic · site zones</span></h1>
   <span class="sub" id="meta">connecting…</span>
+  <span class="health" id="health">live state pending</span>
   <div class="layers">
     <button id="lb-host">호스트</button>
     <button id="lb-full" class="on">호스트+WireGuard</button>
   </div>
   <div class="legend">
-    <span><span class="dotv box"></span>gateway</span>
-    <span><span class="dotv dash"></span>hosts /24</span>
+    <span><span class="dotv host"></span>physical host</span>
+    <span><span class="dotv vm"></span>VM / endpoint</span>
+    <span><span class="dotv dash"></span>host network /24</span>
+    <span><span class="dotv place"></span>runs on</span>
+    <span><span class="dotv net"></span>attached network</span>
+    <span><span class="dotv mgmt"></span>management path</span>
     <span class="wg-only"><span class="dotv" style="background:var(--wg0)"></span>wg0</span>
     <span class="wg-only"><span class="dotv" style="background:var(--wg1)"></span>wg1</span>
     <span class="wg-only"><span class="dotv" style="background:var(--wg2)"></span>wg2</span>
@@ -93,6 +112,10 @@
     <table id="tbl"><thead>
       <tr><th>tunnel</th><th class="num">rx/s</th><th class="num">tx/s</th><th>hs</th></tr>
     </thead><tbody></tbody></table>
+    <h2>endpoints / physical hosts</h2>
+    <table id="ntbl"><thead>
+      <tr><th>endpoint</th><th>kind</th><th>runs on</th></tr>
+    </thead><tbody></tbody></table>
     <div class="err" id="errs"></div>
   </aside>
 </main>
@@ -105,6 +128,7 @@ const BOOT = window.WG_BOOT || null;
 
 const SVGNS="http://www.w3.org/2000/svg";
 const el=(n,at,parent)=>{const e=document.createElementNS(SVGNS,n);for(const k in at)e.setAttribute(k,at[k]);if(parent)parent.appendChild(e);return e};
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmtRate=b=>{if(!b||b<1)return"·";const k=1024;return b>=k*k*k?(b/k/k/k).toFixed(1)+"G/s":b>=k*k?(b/k/k).toFixed(1)+"M/s":b>=k?(b/k).toFixed(1)+"K/s":b.toFixed(0)+"B/s"};
 const fmtHS=s=>{if(s==null||s<0)return["no-hs","hs-crit"];if(s<=180)return["up","hs-ok"];const m=Math.round(s/60);return[m<120?"idle "+m+"m":"idle "+Math.round(m/60)+"h","hs-warn"]};
 
@@ -119,7 +143,12 @@ let stats={}, selected=null, dots=[], hostMode=false, curTopo=null;
 const svg=document.getElementById("svg"), tip=document.getElementById("tip");
 
 function kindOf(topo,id){const n=topo.nodes.find(n=>n.id===id);return n?n.kind:"external"}
-const NSIZE={gateway:[156,44],agg:[150,38],external:[140,32]};
+const NSIZE={
+  gateway:[156,44],vm:[156,42],"inventory-candidate":[156,42],
+  device:[146,38],"physical-host":[224,104],agg:[150,38],external:[140,32]
+};
+const nodeSize=n=>{const s=NSIZE[n.kind]||NSIZE.gateway;return[s[0],n._layoutH||s[1]]};
+const parentName=id=>String(id||"").replace(/^host\|/,"");
 
 // where the segment from a box centre toward `to` exits the box edge.
 function boundary(n,to){
@@ -131,7 +160,7 @@ function boundary(n,to){
 }
 // tunnel anchor: gateway ports (WAN-gap edge) when the iface exists, else box edge.
 function anchor(n,iface,to){
-  if(n.kind==="gateway"&&n.ports&&n.ports[iface])return n.ports[iface];
+  if(n.ports&&n.ports[iface])return n.ports[iface];
   return boundary(n,to);
 }
 function posById(id){return nodes.get(id)||aggMap.get(id)||null}
@@ -139,37 +168,61 @@ function posById(id){return nodes.get(id)||aggMap.get(id)||null}
 // ---- layout: gateways + aggregates grouped into per-dc zone boxes side by side;
 //              externals hang just outside their gateway's zone box. ----
 function layout(topo,W,H){
-  const gws=topo.nodes.filter(n=>n.kind==="gateway");
+  const validParents=new Set(topo.nodes.filter(n=>n.kind==="physical-host").map(n=>n.id));
+  const placed=topo.nodes.filter(n=>n.parent&&validParents.has(n.parent));
+  const placedIDs=new Set(placed.map(n=>n.id));
+  const childrenByParent=new Map();
+  placed.forEach(n=>{if(!childrenByParent.has(n.parent))childrenByParent.set(n.parent,[]);childrenByParent.get(n.parent).push(n)});
+  childrenByParent.forEach((children,parentID)=>{
+    const parent=topo.nodes.find(n=>n.id===parentID);
+    if(parent)parent._layoutH=Math.max(104,44+children.length*50);
+  });
+  const roots=topo.nodes.filter(n=>n.kind!=="external"&&!placedIDs.has(n.id));
   const aggs=topo.aggs||[];
   const zmap=new Map();
-  const add=(k,kind,ref)=>{if(!zmap.has(k))zmap.set(k,{key:k,members:[],hosts:0});const z=zmap.get(k);z.members.push({kind,ref});z.hosts+=kind==="gw"?1:(ref.count||0)};
-  gws.forEach(g=>add(zoneKey(g.dc),"gw",g));
+  const add=(k,kind,ref)=>{if(!zmap.has(k))zmap.set(k,{key:k,members:[],endpoints:0,networks:0});const z=zmap.get(k);z.members.push({kind,ref});if(kind==="node")z.endpoints++;else z.networks++};
+  roots.forEach(n=>add(zoneKey(n.dc),"node",n));
   aggs.forEach(a=>add(zoneKey(a.dc),"agg",a));
   const zones=[...zmap.values()].sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0);
   const NZ=Math.max(zones.length,1), M=Math.min(150,W*0.13), bandW=(W-2*M)/NZ;
-  const gwZone=new Map();
+  const nodeZone=new Map();
   zones.forEach((z,zi)=>{
     const cx=M+bandW*(zi+0.5);
     z.cx=cx; z.idx=zi; z.portRight=cx<W/2; z.outerLeft=zi<NZ/2;
     z.x0=cx-bandW*0.32; z.x1=cx+bandW*0.32; z.y0=H*0.11; z.y1=H*0.82;
-    const m=z.members.length;
+    const gap=12,heights=z.members.map(mem=>mem.kind==="node"?nodeSize(mem.ref)[1]:NSIZE.agg[1]);
+    const total=heights.reduce((a,b)=>a+b,0)+gap*Math.max(0,heights.length-1);
+    let y=Math.max(z.y0+30,(z.y0+z.y1-total)/2);
     z.members.forEach((mem,i)=>{
-      const o=mem.ref,[w,h]=mem.kind==="gw"?NSIZE.gateway:NSIZE.agg;
-      o.x=cx; o.y=H*0.16+(H*0.62)*((i+0.5)/Math.max(m,1)); o.w=w; o.h=h;
-      if(mem.kind==="gw"){
-        gwZone.set(o.id,z);
+      const o=mem.ref,[w,h]=mem.kind==="node"?nodeSize(o):NSIZE.agg;
+      o.x=cx;o.y=y+h/2;o.w=w;o.h=h;y+=h+gap;
+      if(mem.kind==="node"){
+        nodeZone.set(o.id,z);
         const ifs=o.ifaces||[]; o.ports={}; o.portRight=z.portRight;
         const edgeX=z.portRight?o.x+o.w/2:o.x-o.w/2;
         ifs.forEach((f,k)=>{o.ports[f.name]={x:edgeX,y:o.y-o.h/2+o.h*(k+0.5)/Math.max(ifs.length,1)}});
       }
     });
   });
+  // VM/device endpoints with a parent are nested inside the physical-host box.
+  childrenByParent.forEach((children,parentID)=>{
+    const parent=topo.nodes.find(n=>n.id===parentID); if(!parent)return;
+    const z=nodeZone.get(parentID); children.sort((a,b)=>a.label.localeCompare(b.label));
+    children.forEach((n,i)=>{
+      const[w,h]=nodeSize(n);n.w=w;n.h=h;n.x=parent.x;
+      n.y=parent.y-parent.h/2+42+h/2+i*50;
+      n.ports={};n.portRight=parent.portRight;
+      const edgeX=n.portRight?n.x+n.w/2:n.x-n.w/2;
+      (n.ifaces||[]).forEach((f,k)=>{n.ports[f.name]={x:edgeX,y:n.y-n.h/2+n.h*(k+0.5)/Math.max(n.ifaces.length,1)}});
+      if(z)nodeZone.set(n.id,z);
+    });
+  });
   // externals -> the zone of the gateway they connect to, stacked in an outer column.
   const perZone=new Map(); zones.forEach(z=>perZone.set(z,[]));
   topo.nodes.filter(n=>n.kind==="external").forEach(n=>{
     const e=topo.edges.find(e=>e.target===n.id||e.source===n.id);
-    let gwId=null; if(e)gwId=(kindOf(topo,e.source)==="gateway")?e.source:e.target;
-    const z=(gwId&&gwZone.get(gwId))||zones[0];
+    let gwId=null; if(e)gwId=(kindOf(topo,e.source)!=="external")?e.source:e.target;
+    const z=(gwId&&nodeZone.get(gwId))||zones[0];
     const[w,h]=NSIZE.external; n.w=w; n.h=h;
     if(z)perZone.get(z).push(n); else {n.x=W*0.08;n.y=H*0.5;}
   });
@@ -192,11 +245,11 @@ function render(topo){
   svg.innerHTML=""; dots=[];
   const gZ=el("g",{},svg), gL=el("g",{},svg), gE=el("g",{},svg), gD=el("g",{class:"wg-only"},svg), gN=el("g",{},svg);
 
-  // zone boxes (label = "<dc> · N hosts")
+  // zone boxes summarize endpoint/host groups separately from host networks.
   (topo._zones||[]).forEach(z=>{
     const g=el("g",{class:"zone"},gZ);
     el("rect",{x:z.x0,y:z.y0,width:z.x1-z.x0,height:z.y1-z.y0,rx:12,ry:12},g);
-    el("text",{x:z.x0+12,y:z.y0+18},g).textContent=`${z.key} · ${z.hosts} hosts`;
+    el("text",{x:z.x0+12,y:z.y0+18},g).textContent=`${z.key} · ${z.endpoints} endpoints · ${z.networks} networks`;
   });
   // WAN gap label between the first two zones
   if((topo._zones||[]).length>=2){
@@ -205,11 +258,11 @@ function render(topo){
       .textContent="public internet · NAT / WAN";
   }
 
-  // management links (jump_via), thin muted, under the tunnels
+  // Host/network relations under the tunnels.
   (topo.links||[]).forEach(lk=>{
     const s=posById(lk.source),t=posById(lk.target); if(!s||!t)return;
     const a=boundary(s,{x:t.x,y:t.y}),b=boundary(t,{x:s.x,y:s.y});
-    el("path",{class:"link",d:`M ${a.x} ${a.y} L ${b.x} ${b.y}`},gL);
+    el("path",{class:`link ${lk.kind||"management"}`,d:`M ${a.x} ${a.y} L ${b.x} ${b.y}`},gL);
   });
 
   // WireGuard tunnels
@@ -226,9 +279,9 @@ function render(topo){
     if(e.allowed)el("text",{class:"iflab sub wg-only",x:cxp,y:cyp+6,"text-anchor":"middle"},gE).textContent=e.allowed.length>34?e.allowed.slice(0,33)+"…":e.allowed;
     e.len=e.path.getTotalLength();
     const show=(ev)=>{const st=stats[e.id]||{};const[hs]=fmtHS(st.hs);
-      tip.innerHTML=`<b style="color:${e.color}">${e.iface}</b> ${s.label} ⇄ ${t.label}`+
+      tip.innerHTML=`<b style="color:${e.color}">${esc(e.iface)}</b> ${esc(s.label)} ⇄ ${esc(t.label)}`+
         `<br><span style="color:var(--ink2)">rx ${fmtRate(st.rx)}</span> · <span style="color:var(--ink)">tx ${fmtRate(st.tx)}</span> · ${hs}`+
-        (e.allowed?`<br><span class="t">${e.allowed}</span>`:"");
+        (e.allowed?`<br><span class="t">${esc(e.allowed)}</span>`:"");
       tip.style.display="block";tip.style.left=(ev.clientX+14)+"px";tip.style.top=(ev.clientY+10)+"px";
       selected=e.id;syncTable()};
     e.hit.addEventListener("mousemove",show);
@@ -236,17 +289,26 @@ function render(topo){
     edges.set(e.id,e);
   });
 
-  // gateway + aggregate + external boxes
+  // physical host containers first, then VM/gateway endpoints inside/on top.
   const drawBox=(o,cls,name,sub)=>{
     const g=el("g",{class:"node "+cls,transform:`translate(${o.x},${o.y})`},gN);
     el("rect",{x:-o.w/2,y:-o.h/2,width:o.w,height:o.h,rx:8,ry:8},g);
     const lab=name.length>22?name.slice(0,21)+"…":name;
-    el("text",{class:"nm",y:sub?-2:4,"text-anchor":"middle"},g).textContent=lab;
-    if(sub)el("text",{class:"sub2",y:11,"text-anchor":"middle"},g).textContent=sub;
+    const top=cls==="physical-host", nameY=top?-o.h/2+17:(sub?-2:4), subY=top?-o.h/2+30:11;
+    el("text",{class:"nm",y:nameY,"text-anchor":"middle"},g).textContent=lab;
+    if(sub)el("text",{class:"sub2",y:subY,"text-anchor":"middle"},g).textContent=sub;
+    g.addEventListener("mousemove",ev=>{
+      tip.innerHTML=`<b>${esc(name)}</b><br><span class="t">${esc(o.kind)}${o.ip?` · underlay ${esc(o.ip)}`:""}${o.tunnelIp?` · tunnel ${esc(o.tunnelIp)}`:""}${o.observed?` · observed ${esc(o.observed)}`:""}</span>`+
+        (o.parent?`<br>runs on <b>${esc(parentName(o.parent))}</b>`:"")+
+        (o.kind==="inventory-candidate"?`<br><span class="t">inferred from unique observed endpoint IP</span>`:"");
+      tip.style.display="block";tip.style.left=(ev.clientX+14)+"px";tip.style.top=(ev.clientY+10)+"px";
+    });
+    g.addEventListener("mouseleave",()=>{tip.style.display="none"});
     return g;
   };
-  topo.nodes.filter(n=>n.kind==="gateway").forEach(n=>{
-    const g=drawBox(n,"gateway",n.label,n.ip||"");
+  topo.nodes.filter(n=>n.kind==="physical-host").forEach(n=>drawBox(n,"physical-host",n.label,n.ip||""));
+  topo.nodes.filter(n=>n.kind!=="physical-host"&&n.kind!=="external").forEach(n=>{
+    const g=drawBox(n,n.kind,n.label,n.ip||"");
     (n.ifaces||[]).forEach(f=>{const p=n.ports[f.name],c=ifColor(f.name),pg=el("g",{class:"port wg-only"},g);
       el("circle",{cx:p.x-n.x,cy:p.y-n.y,r:3,fill:c},pg);
       const inside=n.portRight?-6:6;
@@ -256,6 +318,7 @@ function render(topo){
   (topo.aggs||[]).forEach(a=>drawBox(a,"agg",`${a.cidr} ×${a.count}`,a.dc));
   topo.nodes.filter(n=>n.kind==="external").forEach(n=>{const g=drawBox(n,"external wg-only",n.label,"")});
   svg._gD=gD;
+  syncNodes();
 }
 
 // ---- packet-flow animation ----
@@ -295,16 +358,30 @@ function syncTable(){
   }).forEach(e=>{
     const st=stats[e.id]||{}, [hs,cls]=fmtHS(st.hs);
     const tr=document.createElement("tr"); if(e.id===selected)tr.className="sel";
-    tr.innerHTML=`<td><span class="tdot" style="background:${e.color}"></span>${e.iface} · ${nodes.get(e.target).label.slice(0,16)}</td>`+
+    tr.innerHTML=`<td><span class="tdot" style="background:${e.color}"></span>${esc(e.iface)} · ${esc(nodes.get(e.target).label.slice(0,16))}</td>`+
       `<td class="num">${fmtRate(st.rx)}</td><td class="num">${fmtRate(st.tx)}</td>`+
       `<td class="${cls}">${hs}</td>`;
     tb.appendChild(tr);
   });
 }
 
+function syncNodes(){
+  const tb=document.querySelector("#ntbl tbody");tb.innerHTML="";
+  [...nodes.values()]
+    .filter(n=>n.kind!=="external"&&n.kind!=="physical-host")
+    .sort((a,b)=>(a.dc||"").localeCompare(b.dc||"")||a.label.localeCompare(b.label))
+    .forEach(n=>{
+      const tr=document.createElement("tr");
+      tr.innerHTML=`<td>${esc(n.label.slice(0,20))}</td><td>${esc(n.kind)}</td>`+
+        `<td>${n.parent?esc(parentName(n.parent)):'<span class="sub">host unknown</span>'}</td>`;
+      tb.appendChild(tr);
+    });
+}
+
 function updateMeta(topo,at){
-  const gwN=topo.nodes.filter(n=>n.kind==="gateway").length;
-  const keys=new Set(topo.nodes.filter(n=>n.kind==="gateway").map(n=>zoneKey(n.dc)));
+  const gateways=topo.nodes.filter(n=>(n.ifaces||[]).length>0);
+  const gwN=gateways.length;
+  const keys=new Set(gateways.map(n=>zoneKey(n.dc)));
   (topo.aggs||[]).forEach(a=>keys.add(zoneKey(a.dc)));
   document.getElementById("meta").textContent=
     `${keys.size} sites · ${gwN} gateways · ${(topo.edges||[]).length} tunnels · ${new Date(at*1000).toLocaleTimeString()}`;
@@ -334,6 +411,9 @@ if(BOOT){
     es.onmessage=ev=>{
       const d=JSON.parse(ev.data); stats=d.edges||{};
       updateMeta(topo,d.at);
+      const errN=Object.keys(d.errors||{}).length,health=document.getElementById("health");
+      health.className="health "+(errN?"fail":"ok");
+      health.textContent=errN?`${errN} poll failures`:"live polling healthy";
       document.getElementById("errs").textContent=
         Object.entries(d.errors||{}).map(([h,e])=>`! ${h}: ${e}`).join("\n");
       syncTable();

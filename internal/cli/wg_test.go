@@ -102,6 +102,300 @@ func TestWGMermaid(t *testing.T) {
 	}
 }
 
+func TestBuildWGTopologyPlacesAnnotatedVMOnPhysicalHost(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{
+			Host: "wg-hub", Iface: "wg2", ListenPort: 51822, PublicKey: "HUBKEY",
+		}},
+	}
+	peers := []store.WGPeerRow{
+		{WGPeer: store.WGPeer{
+			Host: "wg-hub", Iface: "wg2", PeerPubKey: "VMKEY",
+			Endpoint: "198.51.100.10:51822", AllowedIPs: []string{"10.10.2.0/24"},
+		}},
+	}
+	servers := []store.Server{
+		{Hostname: "wg-hub", IP: "192.168.10.240", DC: "incheon-vm"},
+		{Hostname: "compute-01", IP: "172.16.0.31", DC: "seoul-onprem"},
+	}
+	annotations := []store.WGEndpointAnnotation{
+		{
+			PublicKey: "VMKEY", Label: "ai-platform-incheon-gw", Kind: "vm",
+			UnderlayIP: "10.10.2.192", TunnelIP: "10.0.92.1",
+			Site: "seoul", ParentHostname: "compute-01",
+		},
+	}
+
+	topo, _ := buildWGTopology(ifaces, peers, servers, annotations)
+
+	vm := topologyNode(topo, "endpoint|VMKEY")
+	if vm == nil {
+		t.Fatalf("annotated VM endpoint missing: %+v", topo.Nodes)
+	}
+	if vm.Label != "ai-platform-incheon-gw" || vm.Kind != "vm" ||
+		vm.Parent != "host|compute-01" || vm.IP != "10.10.2.192" || vm.TunnelIP != "10.0.92.1" {
+		t.Errorf("annotated VM = %+v", *vm)
+	}
+	host := topologyNode(topo, "host|compute-01")
+	if host == nil || host.Kind != "physical-host" {
+		t.Fatalf("physical parent host missing: %+v", topo.Nodes)
+	}
+	if !hasTopologyLink(topo, "endpoint|VMKEY", "host|compute-01", "placement") {
+		t.Errorf("VM placement link missing: %+v", topo.Links)
+	}
+	if !hasTopologyLink(topo, "endpoint|VMKEY", "agg|seoul-onprem|10.10.2.0/24", "network") {
+		t.Errorf("VM host-network link missing: %+v", topo.Links)
+	}
+}
+
+func TestBuildWGTopologyKeepsEndpointVisibleWhenParentIsUnknown(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{Host: "wg-hub", Iface: "wg2", PublicKey: "HUBKEY"}},
+	}
+	peers := []store.WGPeerRow{
+		{WGPeer: store.WGPeer{
+			Host: "wg-hub", Iface: "wg2", PeerPubKey: "VMKEY",
+			Endpoint: "198.51.100.10:51822",
+		}},
+	}
+	annotations := []store.WGEndpointAnnotation{
+		{
+			PublicKey: "VMKEY", Label: "orphan-vm", Kind: "vm",
+			UnderlayIP: "10.10.2.192", Site: "seoul", ParentHostname: "stale-compute-name",
+		},
+	}
+
+	topo, _ := buildWGTopology(ifaces, peers, nil, annotations)
+
+	vm := topologyNode(topo, "endpoint|VMKEY")
+	if vm == nil {
+		t.Fatal("annotated endpoint disappeared with an unknown parent")
+	}
+	if vm.Parent != "" || vm.DC != "seoul" {
+		t.Errorf("unknown parent must degrade to an unplaced site endpoint: %+v", *vm)
+	}
+	if hasTopologyLink(topo, vm.ID, "stale-compute-name", "placement") {
+		t.Errorf("invalid placement link emitted: %+v", topo.Links)
+	}
+}
+
+func TestBuildWGTopologyInheritsEndpointIdentityFromInventoryHost(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{Host: "wg-hub", Iface: "wg2", PublicKey: "HUBKEY"}},
+	}
+	peers := []store.WGPeerRow{
+		{WGPeer: store.WGPeer{Host: "wg-hub", Iface: "wg2", PeerPubKey: "VMKEY"}},
+	}
+	servers := []store.Server{
+		{Hostname: "ai-platform-incheon-gw", IP: "10.10.2.192", DC: "seoul-vm"},
+	}
+	annotations := []store.WGEndpointAnnotation{
+		{PublicKey: "VMKEY", Kind: "vm", InventoryHost: "ai-platform-incheon-gw"},
+	}
+
+	topo, _ := buildWGTopology(ifaces, peers, servers, annotations)
+
+	vm := topologyNode(topo, "endpoint|VMKEY")
+	if vm == nil || vm.Label != "ai-platform-incheon-gw" ||
+		vm.IP != "10.10.2.192" || vm.DC != "seoul-vm" {
+		t.Fatalf("inventory identity was not inherited: %+v", vm)
+	}
+}
+
+func TestBuildWGTopologyPlacesCollectedGatewayVMOnPhysicalHost(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{
+			Host: "sre-lb", Iface: "wg1", ListenPort: 51821, PublicKey: "SRELBKEY",
+		}},
+	}
+	servers := []store.Server{
+		{Hostname: "sre-lb", IP: "192.168.201.12", DC: "seoul-onprem"},
+		{Hostname: "compute-49", IP: "172.16.0.49", DC: "seoul-onprem"},
+	}
+	annotations := []store.WGEndpointAnnotation{
+		{
+			PublicKey: "SRELBKEY", Label: "sre-lb", Kind: "vm",
+			UnderlayIP: "192.168.201.12", Site: "seoul", InventoryHost: "sre-lb",
+			ParentHostname: "compute-49",
+		},
+	}
+
+	topo, _ := buildWGTopology(ifaces, nil, servers, annotations)
+
+	vm := topologyNode(topo, "sre-lb")
+	if vm == nil || vm.Kind != "vm" || vm.Parent != "host|compute-49" || len(vm.Ifaces) != 1 {
+		t.Fatalf("collected VM gateway not placed: %+v", vm)
+	}
+	host := topologyNode(topo, "host|compute-49")
+	if host == nil || host.Kind != "physical-host" {
+		t.Fatalf("physical parent host missing: %+v", topo.Nodes)
+	}
+	if !hasTopologyLink(topo, "sre-lb", "host|compute-49", "placement") {
+		t.Errorf("gateway VM placement link missing: %+v", topo.Links)
+	}
+	if !hasTopologyLink(topo, "sre-lb", "agg|seoul-onprem|192.168.201.0/24", "network") {
+		t.Errorf("gateway VM host-network link missing: %+v", topo.Links)
+	}
+}
+
+func TestBuildWGTopologyMergesAnnotationAcrossHostInterfaces(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{Host: "multi-gw", Iface: "wg0", PublicKey: "WG0KEY"}},
+		{WGInterface: store.WGInterface{Host: "multi-gw", Iface: "wg1", PublicKey: "WG1KEY"}},
+	}
+	servers := []store.Server{
+		{Hostname: "multi-gw", IP: "192.168.201.12", DC: "seoul-onprem"},
+		{Hostname: "compute-49", IP: "172.16.0.49", DC: "seoul-onprem"},
+	}
+	annotations := []store.WGEndpointAnnotation{
+		{
+			PublicKey: "WG1KEY", Label: "multi-gw-vm", Kind: "vm",
+			InventoryHost: "multi-gw", ParentHostname: "compute-49",
+		},
+	}
+
+	topo, _ := buildWGTopology(ifaces, nil, servers, annotations)
+
+	vm := topologyNode(topo, "multi-gw")
+	if vm == nil || vm.Label != "multi-gw-vm" || vm.Parent != "host|compute-49" ||
+		len(vm.Ifaces) != 2 {
+		t.Fatalf("host interface annotations were not merged: %+v", vm)
+	}
+}
+
+func TestBuildWGTopologySeparatesPhysicalHostFromItsWGEndpoint(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{
+			Host: "compute-49", Iface: "wg0", PublicKey: "COMPUTEKEY",
+		}},
+		{WGInterface: store.WGInterface{
+			Host: "guest-vm", Iface: "wg1", PublicKey: "GUESTKEY",
+		}},
+	}
+	servers := []store.Server{
+		{Hostname: "compute-49", IP: "172.16.0.49", DC: "seoul-onprem"},
+		{Hostname: "guest-vm", IP: "192.168.201.12", DC: "seoul-onprem"},
+	}
+	annotations := []store.WGEndpointAnnotation{
+		{
+			PublicKey: "GUESTKEY", Kind: "vm", InventoryHost: "guest-vm",
+			ParentHostname: "compute-49",
+		},
+	}
+
+	topo, _ := buildWGTopology(ifaces, nil, servers, annotations)
+
+	host := topologyNode(topo, "host|compute-49")
+	wgEndpoint := topologyNode(topo, "compute-49")
+	if host == nil || host.Kind != "physical-host" {
+		t.Fatalf("physical host node missing: %+v", topo.Nodes)
+	}
+	if wgEndpoint == nil || len(wgEndpoint.Ifaces) != 1 {
+		t.Fatalf("host's own WG endpoint was overwritten: %+v", topo.Nodes)
+	}
+}
+
+func TestBuildWGTopologyResolvesEndpointIPFromInventory(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{
+			Host: "wg-hub", Iface: "wg3", ListenPort: 51823, PublicKey: "HUBKEY",
+		}},
+	}
+	peers := []store.WGPeerRow{
+		{WGPeer: store.WGPeer{
+			Host: "wg-hub", Iface: "wg3", PeerPubKey: "GPUKEY",
+			Endpoint: "192.168.40.76:39047", AllowedIPs: []string{"10.0.93.7/32"},
+		}},
+	}
+	servers := []store.Server{
+		{Hostname: "wg-hub", IP: "192.168.10.240", DC: "incheon-vm"},
+		{Hostname: "gpu-worker-incheon", IP: "192.168.40.76", DC: "incheon-vm"},
+	}
+
+	topo, _ := buildWGTopology(ifaces, peers, servers, nil)
+
+	endpoint := topologyNode(topo, "inventory|gpu-worker-incheon")
+	if endpoint == nil {
+		t.Fatalf("inventory endpoint missing: %+v", topo.Nodes)
+	}
+	if endpoint.Label != "gpu-worker-incheon ?" || endpoint.Kind != "inventory-candidate" ||
+		endpoint.IP != "" || endpoint.DC != "" || endpoint.Observed != "192.168.40.76:39047" {
+		t.Errorf("resolved inventory endpoint = %+v", *endpoint)
+	}
+	if hasTopologyLink(topo, "inventory|gpu-worker-incheon", "agg|incheon-vm|192.168.40.0/24", "network") {
+		t.Errorf("inferred endpoint must not claim a physical network: %+v", topo.Links)
+	}
+}
+
+func TestBuildWGTopologyDoesNotResolveSharedNATEndpointAsPeer(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{Host: "wg-hub", Iface: "wg0", PublicKey: "HUBKEY"}},
+	}
+	peers := []store.WGPeerRow{
+		{WGPeer: store.WGPeer{Host: "wg-hub", Iface: "wg0", PeerPubKey: "PEER1", Endpoint: "192.168.10.1:10001"}},
+		{WGPeer: store.WGPeer{Host: "wg-hub", Iface: "wg0", PeerPubKey: "PEER2", Endpoint: "192.168.10.1:10002"}},
+	}
+	servers := []store.Server{
+		{Hostname: "incheon-edge", IP: "192.168.10.1", DC: "incheon-onprem"},
+	}
+
+	topo, _ := buildWGTopology(ifaces, peers, servers, nil)
+
+	if topologyNode(topo, "inventory|incheon-edge") != nil {
+		t.Fatal("shared NAT endpoint was incorrectly asserted as both peer identities")
+	}
+	if topologyNode(topo, "ext|PEER1") == nil || topologyNode(topo, "ext|PEER2") == nil {
+		t.Fatalf("shared NAT peers must remain external until annotated: %+v", topo.Nodes)
+	}
+}
+
+func TestBuildWGTopologyComposesAnnotationWithObservedEndpointCandidate(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{Host: "wg-hub", Iface: "wg3", PublicKey: "HUBKEY"}},
+	}
+	peers := []store.WGPeerRow{
+		{WGPeer: store.WGPeer{
+			Host: "wg-hub", Iface: "wg3", PeerPubKey: "GPUKEY",
+			Endpoint: "192.168.40.76:39047",
+		}},
+	}
+	servers := []store.Server{
+		{Hostname: "gpu-worker-incheon", IP: "192.168.40.76", DC: "incheon-vm"},
+	}
+	annotations := []store.WGEndpointAnnotation{
+		{PublicKey: "GPUKEY", Label: "gpu endpoint", Kind: "device"},
+	}
+
+	topo, _ := buildWGTopology(ifaces, peers, servers, annotations)
+
+	endpoint := topologyNode(topo, "endpoint|GPUKEY")
+	if endpoint == nil || endpoint.Label != "gpu endpoint" || endpoint.Kind != "device" ||
+		endpoint.Observed != "192.168.40.76:39047" {
+		t.Fatalf("annotation did not compose with observed endpoint candidate: %+v", endpoint)
+	}
+	if endpoint.IP != "" || endpoint.DC != "" {
+		t.Fatalf("observed endpoint candidate asserted physical placement: %+v", endpoint)
+	}
+}
+
+func topologyNode(topo wgTopology, id string) *wgNode {
+	for i := range topo.Nodes {
+		if topo.Nodes[i].ID == id {
+			return &topo.Nodes[i]
+		}
+	}
+	return nil
+}
+
+func hasTopologyLink(topo wgTopology, source, target, kind string) bool {
+	for _, link := range topo.Links {
+		if link.Source == source && link.Target == target && link.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
 func TestComputeRate(t *testing.T) {
 	t0 := time.Unix(1_000_000, 0)
 	prev := wgSample{rx: 1000, tx: 500, at: t0}
