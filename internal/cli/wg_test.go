@@ -3,6 +3,7 @@ package cli
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
@@ -98,6 +99,33 @@ func TestWGMermaid(t *testing.T) {
 	// external node defined with endpoint label + edge to it
 	if !strings.Contains(out, `1.2.3.4:51820`) || !strings.Contains(out, "ext_") {
 		t.Errorf("external node/edge missing\n%s", out)
+	}
+}
+
+func TestComputeRate(t *testing.T) {
+	t0 := time.Unix(1_000_000, 0)
+	prev := wgSample{rx: 1000, tx: 500, at: t0}
+	cur := wgSample{rx: 3000, tx: 1500, at: t0.Add(2 * time.Second)}
+	rx, tx := computeRate(prev, cur)
+	if rx != 1000 || tx != 500 { // (3000-1000)/2, (1500-500)/2
+		t.Errorf("rate = %v/%v, want 1000/500", rx, tx)
+	}
+	// counter reset: cur < prev -> 0, not negative
+	if r, _ := computeRate(wgSample{rx: 5000, at: t0}, wgSample{rx: 10, at: t0.Add(time.Second)}); r != 0 {
+		t.Errorf("reset rate = %v, want 0", r)
+	}
+	// non-positive dt -> 0
+	if r, _ := computeRate(prev, wgSample{rx: 9999, at: t0}); r != 0 {
+		t.Errorf("zero-dt rate = %v, want 0", r)
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	cases := map[int64]string{512: "512B", 2048: "2.0K", 5 * 1024 * 1024: "5.0M"}
+	for n, want := range cases {
+		if got := humanBytes(n); got != want {
+			t.Errorf("humanBytes(%d) = %q, want %q", n, got, want)
+		}
 	}
 }
 
