@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -25,12 +26,22 @@ var wgServeHTML []byte
 
 // --- topology (built once from the DB at startup) ---
 
+// wgIface is one WireGuard interface on a gateway (name + listen port), used to
+// draw per-tunnel ports on the gateway box.
+type wgIface struct {
+	Name string `json:"name"`
+	Port int    `json:"port"`
+}
+
 // wgNode is one vertex in the dashboard graph: a collected gateway interface's
 // host, or an external (uncollected) peer endpoint.
 type wgNode struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Kind  string `json:"kind"` // gateway | external
+	ID     string    `json:"id"`
+	Label  string    `json:"label"`
+	Kind   string    `json:"kind"`             // gateway | external
+	DC     string    `json:"dc"`               // datacenter/site of the gateway host; "" for external peers
+	IP     string    `json:"ip,omitempty"`     // gateway primary IP (from servers.ip)
+	Ifaces []wgIface `json:"ifaces,omitempty"` // gateway interfaces, name-sorted
 }
 
 // wgEdge is one tunnel: a peer entry, resolved to the far-end gateway when both
@@ -43,9 +54,28 @@ type wgEdge struct {
 	Allowed string `json:"allowed"`
 }
 
+// wgAgg is a set of non-gateway inventory hosts in one dc collapsed by their
+// primary-IP /24, so the dashboard can show "the rest of the site" without
+// hardcoding hosts. Only dcs that own at least one WG gateway are emitted.
+type wgAgg struct {
+	ID    string `json:"id"`
+	DC    string `json:"dc"`
+	CIDR  string `json:"cidr"`
+	Count int    `json:"count"`
+}
+
+// wgLink is a physical/management adjacency derived from servers.jump_via,
+// resolved so both ends are a gateway hostname or an aggregate node id.
+type wgLink struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+}
+
 type wgTopology struct {
 	Nodes []wgNode `json:"nodes"`
 	Edges []wgEdge `json:"edges"`
+	Aggs  []wgAgg  `json:"aggs"`
+	Links []wgLink `json:"links"`
 }
 
 // edgeStat is the live per-tunnel measurement pushed to browsers.
@@ -55,13 +85,44 @@ type edgeStat struct {
 	HS   int64   `json:"hs"` // seconds since last handshake, -1 = never
 }
 
-// buildWGTopology turns the collected interfaces/peers into a node/edge graph.
-// Peers whose public key matches another collected interface become a single
-// gateway↔gateway edge (canonical side = lexically smaller host); the rest hang
-// off their gateway as external nodes. It also returns the sample→edge mapping
-// the pollers use to attribute live rates.
-func buildWGTopology(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow) (wgTopology, map[tunnelKey]string) {
+// cidr24 masks an IPv4 address to its /24 network ("10.20.0.33" → "10.20.0.0/24").
+func cidr24(ip string) (string, bool) {
+	p := net.ParseIP(strings.TrimSpace(ip))
+	if p == nil {
+		return "", false
+	}
+	v4 := p.To4()
+	if v4 == nil {
+		return "", false
+	}
+	return fmt.Sprintf("%d.%d.%d.0/24", v4[0], v4[1], v4[2]), true
+}
+
+// buildWGTopology turns the collected interfaces/peers plus the server inventory
+// into the dashboard graph. Peers whose public key matches another collected
+// interface become a single gateway↔gateway edge (canonical side = lexically
+// smaller host); the rest hang off their gateway as external nodes. Gateway
+// nodes carry their dc/ip and interface list. Non-gateway hosts in any dc that
+// owns a gateway are collapsed into per-/24 aggregate nodes, and servers.jump_via
+// yields management links between gateways/aggregates. It also returns the
+// sample→edge mapping the pollers use to attribute live rates.
+func buildWGTopology(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, servers []store.Server) (wgTopology, map[tunnelKey]string) {
 	idx := pubIndex(ifaces)
+
+	byHost := make(map[string]store.Server, len(servers))
+	for _, s := range servers {
+		byHost[s.Hostname] = s
+	}
+	dcOf := func(host string) string { return byHost[host].DC }
+
+	// Interfaces grouped per gateway host (name-sorted for a stable port order).
+	ifByHost := map[string][]wgIface{}
+	for _, i := range ifaces {
+		ifByHost[i.Host] = append(ifByHost[i.Host], wgIface{Name: i.Iface, Port: i.ListenPort})
+	}
+	for h := range ifByHost {
+		sort.Slice(ifByHost[h], func(a, b int) bool { return ifByHost[h][a].Name < ifByHost[h][b].Name })
+	}
 
 	var topo wgTopology
 	nodeSeen := map[string]bool{}
@@ -71,8 +132,15 @@ func buildWGTopology(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow) (wg
 			topo.Nodes = append(topo.Nodes, n)
 		}
 	}
+	gwHosts := map[string]bool{}
 	for _, i := range ifaces {
-		addNode(wgNode{ID: i.Host, Label: i.Host, Kind: "gateway"})
+		gwHosts[i.Host] = true
+	}
+	for _, i := range ifaces {
+		addNode(wgNode{
+			ID: i.Host, Label: i.Host, Kind: "gateway",
+			DC: dcOf(i.Host), IP: byHost[i.Host].IP, Ifaces: ifByHost[i.Host],
+		})
 	}
 
 	edgeFor := map[tunnelKey]string{}
@@ -120,6 +188,72 @@ func buildWGTopology(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow) (wg
 			Iface: p.Iface, Allowed: strings.Join(p.AllowedIPs, ", "),
 		})
 	}
+
+	// Aggregate nodes: non-gateway inventory hosts, grouped by (dc, primary /24),
+	// but only in dcs that own at least one WG gateway.
+	dcWithGW := map[string]bool{}
+	for h := range gwHosts {
+		dcWithGW[dcOf(h)] = true
+	}
+	aggByKey := map[string]*wgAgg{}
+	aggOfHost := map[string]string{} // hostname → agg id (for link resolution)
+	for _, s := range servers {
+		if gwHosts[s.Hostname] || !dcWithGW[s.DC] {
+			continue
+		}
+		cidr, ok := cidr24(s.IP)
+		if !ok {
+			continue
+		}
+		id := "agg|" + s.DC + "|" + cidr
+		a := aggByKey[id]
+		if a == nil {
+			a = &wgAgg{ID: id, DC: s.DC, CIDR: cidr}
+			aggByKey[id] = a
+		}
+		a.Count++
+		aggOfHost[s.Hostname] = id
+	}
+	for _, a := range aggByKey {
+		topo.Aggs = append(topo.Aggs, *a)
+	}
+	sort.Slice(topo.Aggs, func(a, b int) bool { return topo.Aggs[a].ID < topo.Aggs[b].ID })
+
+	// Management links from servers.jump_via, each end resolved to a gateway
+	// hostname or the aggregate node the host belongs to; unresolved/self dropped.
+	resolve := func(host string) (string, bool) {
+		if gwHosts[host] {
+			return host, true
+		}
+		if id, ok := aggOfHost[host]; ok {
+			return id, true
+		}
+		return "", false
+	}
+	linkSeen := map[string]bool{}
+	for _, s := range servers {
+		if s.JumpVia == "" {
+			continue
+		}
+		src, ok1 := resolve(s.Hostname)
+		dst, ok2 := resolve(s.JumpVia)
+		if !ok1 || !ok2 || src == dst {
+			continue
+		}
+		key := src + "\x00" + dst
+		if linkSeen[key] {
+			continue
+		}
+		linkSeen[key] = true
+		topo.Links = append(topo.Links, wgLink{Source: src, Target: dst})
+	}
+	sort.Slice(topo.Links, func(a, b int) bool {
+		if topo.Links[a].Source != topo.Links[b].Source {
+			return topo.Links[a].Source < topo.Links[b].Source
+		}
+		return topo.Links[a].Target < topo.Links[b].Target
+	})
+
 	return topo, edgeFor
 }
 
@@ -216,7 +350,11 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 			if len(ifaces) == 0 {
 				return fmt.Errorf("no WireGuard data. Run 'vctl wg sync' first.")
 			}
-			topo, edgeFor := buildWGTopology(ifaces, peers)
+			servers, err := st.List(ctx, "")
+			if err != nil {
+				ui.Warnf(os.Stderr, "list servers for site grouping: %v", err)
+			}
+			topo, edgeFor := buildWGTopology(ifaces, peers, servers)
 
 			hosts, err := wgMonitorHosts(ctx, st, args, false)
 			if err != nil {
