@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>vctl · WireGuard live</title>
+<style>
+  :root{
+    --bg:#1a1a19; --panel:#232322; --line:#3a3a38;
+    --ink:#e8e8e6; --ink2:#a8a8a4; --muted:#6e6e6a;
+    --tx:#3987e5; --rx:#199e70;
+    --ok:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+  }
+  *{box-sizing:border-box} html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line)}
+  header h1{font-size:14px;margin:0;font-weight:600}
+  header .sub{color:var(--ink2)}
+  .legend{display:flex;gap:14px;margin-left:auto;color:var(--ink2);flex-wrap:wrap}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .dotv{width:9px;height:9px;border-radius:50%;display:inline-block}
+  main{flex:1;display:flex;min-height:0}
+  #stage{flex:1;min-width:0}
+  svg{display:block;width:100%;height:100%}
+  aside{width:340px;border-left:1px solid var(--line);background:var(--panel);
+        overflow-y:auto;padding:10px 12px}
+  aside h2{font-size:12px;color:var(--ink2);margin:6px 0 8px;font-weight:600;
+           text-transform:uppercase;letter-spacing:.06em}
+  table{width:100%;border-collapse:collapse}
+  td,th{padding:3px 4px;text-align:left;font-size:12px;white-space:nowrap}
+  th{color:var(--muted);font-weight:500;border-bottom:1px solid var(--line)}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr.sel td{background:#2e2e2c}
+  .hs-ok{color:var(--ok)} .hs-warn{color:var(--warn)} .hs-crit{color:var(--crit)}
+  #tip{position:fixed;pointer-events:none;background:#111;border:1px solid var(--line);
+       padding:7px 9px;border-radius:6px;font-size:12px;display:none;z-index:10;max-width:360px}
+  #tip .t{color:var(--ink2)}
+  .err{color:var(--crit);font-size:12px;margin-top:8px;white-space:pre-wrap}
+  /* graph */
+  .node circle{fill:#2c2c2a;stroke:var(--line);stroke-width:1.5}
+  .node.gateway circle{fill:#26303c;stroke:#41546b;stroke-width:2}
+  .node text{fill:var(--ink);font-size:12px}
+  .node.external text{fill:var(--ink2);font-size:11px}
+  .edge{stroke:#4a4a47;stroke-width:1.5;fill:none;cursor:pointer}
+  .edge.hot{stroke:#6a6a66}
+  .edge.stale{stroke:var(--crit);stroke-dasharray:5 4}
+  .edge-hit{stroke:transparent;stroke-width:14;fill:none;cursor:pointer}
+  .iflab{fill:var(--muted);font-size:10px}
+</style>
+</head>
+<body>
+<header>
+  <h1>WireGuard <span class="sub">live traffic</span></h1>
+  <span class="sub" id="meta">connecting…</span>
+  <div class="legend">
+    <span><span class="dotv" style="background:var(--tx)"></span>tx →</span>
+    <span><span class="dotv" style="background:var(--rx)"></span>← rx</span>
+    <span><span class="dotv" style="background:var(--ok)"></span>handshake&nbsp;up</span>
+    <span><span class="dotv" style="background:var(--warn)"></span>idle</span>
+    <span><span class="dotv" style="background:var(--crit)"></span>stale</span>
+  </div>
+</header>
+<main>
+  <div id="stage"><svg id="svg"></svg></div>
+  <aside>
+    <h2>tunnels</h2>
+    <table id="tbl"><thead>
+      <tr><th>tunnel</th><th class="num">rx/s</th><th class="num">tx/s</th><th>hs</th></tr>
+    </thead><tbody></tbody></table>
+    <div class="err" id="errs"></div>
+  </aside>
+</main>
+<div id="tip"></div>
+<script>
+"use strict";
+const SVGNS="http://www.w3.org/2000/svg";
+const el=(n,at,parent)=>{const e=document.createElementNS(SVGNS,n);for(const k in at)e.setAttribute(k,at[k]);if(parent)parent.appendChild(e);return e};
+const fmtRate=b=>{if(!b||b<1)return"·";const k=1024;return b>=k*k*k?(b/k/k/k).toFixed(1)+"G/s":b>=k*k?(b/k/k).toFixed(1)+"M/s":b>=k?(b/k).toFixed(1)+"K/s":b.toFixed(0)+"B/s"};
+const fmtHS=s=>{if(s==null||s<0)return["no-hs","hs-crit"];if(s<=180)return["up","hs-ok"];const m=Math.round(s/60);return[m<120?"idle "+m+"m":"idle "+Math.round(m/60)+"h","hs-warn"]};
+
+const nodes=new Map(), edges=new Map(); // id -> obj
+let stats={}, selected=null;
+
+// ---- layout: gateways spread horizontally, externals fanned per gateway ----
+function layout(topo,W,H){
+  const gws=topo.nodes.filter(n=>n.kind==="gateway");
+  const cx=W/2, cy=H/2;
+  gws.forEach((g,i)=>{g.x=W*(i+1)/(gws.length+1); g.y=cy;});
+  // group externals by their gateway (first edge that references them)
+  const extsOf={};
+  topo.nodes.filter(n=>n.kind==="external").forEach(n=>{
+    const e=topo.edges.find(e=>e.target===n.id||e.source===n.id);
+    const gw=e?(nodesKind(topo,e.source)==="gateway"?e.source:e.target):gws[0].id;
+    (extsOf[gw]=extsOf[gw]||[]).push(n);
+  });
+  for(const gwid in extsOf){
+    const g=topo.nodes.find(n=>n.id===gwid), list=extsOf[gwid];
+    const R=Math.min(H*0.36, 300), n=list.length;
+    list.forEach((node,i)=>{
+      // fan around the gateway, avoiding the horizontal band toward other gateways
+      const a=(-90+ (i-(n-1)/2)*(300/Math.max(n,4)))*Math.PI/180;
+      node.x=g.x+R*Math.cos(a); node.y=g.y+R*Math.sin(a);
+      node.x=Math.max(70,Math.min(W-70,node.x)); node.y=Math.max(46,Math.min(H-30,node.y));
+    });
+  }
+}
+function nodesKind(topo,id){const n=topo.nodes.find(n=>n.id===id);return n?n.kind:"external"}
+
+// ---- render ----
+const svg=document.getElementById("svg"), tip=document.getElementById("tip");
+let dots=[]; // {edge, dir:+1 tx / -1 rx, t}
+function render(topo){
+  const W=svg.clientWidth||960, H=svg.clientHeight||600;
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  layout(topo,W,H);
+  svg.innerHTML="";
+  const gE=el("g",{},svg), gDots=el("g",{},svg), gN=el("g",{},svg);
+  topo.nodes.forEach(n=>nodes.set(n.id,n));
+  topo.edges.forEach(e=>{
+    const s=nodes.get(e.source), t=nodes.get(e.target);
+    // gentle curve: control point offset perpendicular to the segment
+    const mx=(s.x+t.x)/2, my=(s.y+t.y)/2, dx=t.x-s.x, dy=t.y-s.y;
+    const L=Math.hypot(dx,dy)||1, off=Math.min(26, L*0.12);
+    const cxp=mx-dy/L*off, cyp=my+dx/L*off;
+    const d=`M ${s.x} ${s.y} Q ${cxp} ${cyp} ${t.x} ${t.y}`;
+    e.path=el("path",{class:"edge",d},gE);
+    e.hit=el("path",{class:"edge-hit",d},gE);
+    el("text",{class:"iflab",x:cxp,y:cyp-4,"text-anchor":"middle"},gE).textContent=e.iface;
+    e.len=e.path.getTotalLength();
+    const show=(ev)=>{const st=stats[e.id]||{};const[hs]=fmtHS(st.hs);
+      tip.innerHTML=`<b>${e.iface}</b> ${nodes.get(e.source).label} ⇄ ${nodes.get(e.target).label}`+
+        `<br><span style="color:var(--rx)">rx ${fmtRate(st.rx)}</span> · <span style="color:var(--tx)">tx ${fmtRate(st.tx)}</span> · ${hs}`+
+        (e.allowed?`<br><span class="t">${e.allowed}</span>`:"");
+      tip.style.display="block";tip.style.left=(ev.clientX+14)+"px";tip.style.top=(ev.clientY+10)+"px";
+      selected=e.id;syncTable()};
+    e.hit.addEventListener("mousemove",show);
+    e.hit.addEventListener("mouseleave",()=>{tip.style.display="none";selected=null;syncTable()});
+    edges.set(e.id,e);
+  });
+  topo.nodes.forEach(n=>{
+    const g=el("g",{class:"node "+n.kind,transform:`translate(${n.x},${n.y})`},gN);
+    el("circle",{r:n.kind==="gateway"?22:7},g);
+    const t=el("text",{y:n.kind==="gateway"?40:-12,"text-anchor":"middle"},g);
+    t.textContent=n.label.length>30?n.label.slice(0,29)+"…":n.label;
+  });
+  svg._gDots=gDots;
+}
+
+// ---- packet-flow animation ----
+// dot spawn rate & speed follow log10(rate); direction: tx source→target, rx reverse.
+let acc={};
+function step(dt){
+  const gDots=svg._gDots; if(!gDots)return;
+  edges.forEach(e=>{
+    const st=stats[e.id]; if(!st)return;
+    [["tx",+1],["rx",-1]].forEach(([k,dir])=>{
+      const r=st[k]||0; if(r<1)return;
+      const per=Math.min(8, 0.6+Math.log10(r+1));          // dots/sec
+      const key=e.id+k; acc[key]=(acc[key]||0)+per*dt;
+      while(acc[key]>=1){acc[key]-=1;dots.push({e,dir,t:dir>0?0:1,
+        sp:(0.12+0.05*Math.log10(r+1)),k});}
+    });
+    e.path.classList.toggle("stale", st.hs!=null&&(st.hs<0||st.hs>600));
+    e.path.classList.toggle("hot", (st.rx||0)+(st.tx||0)>1024);
+  });
+  dots.forEach(d=>d.t+=d.dir*d.sp*dt);
+  dots=dots.filter(d=>d.t>=0&&d.t<=1&&d.el!==false);
+  // draw
+  const gDotsEl=svg._gDots; gDotsEl.innerHTML="";
+  dots.forEach(d=>{
+    const p=d.e.path.getPointAtLength(d.t*d.e.len);
+    el("circle",{cx:p.x,cy:p.y,r:2.6,fill:d.k==="tx"?"var(--tx)":"var(--rx)"},gDotsEl);
+  });
+}
+let last=performance.now();
+(function loop(now){const dt=Math.min(0.1,(now-last)/1000);last=now;step(dt);requestAnimationFrame(loop)})(last);
+
+// ---- side table ----
+function syncTable(){
+  const tb=document.querySelector("#tbl tbody"); tb.innerHTML="";
+  [...edges.values()].sort((a,b)=>{
+    const ra=(stats[a.id]?.rx||0)+(stats[a.id]?.tx||0), rb=(stats[b.id]?.rx||0)+(stats[b.id]?.tx||0);
+    return rb-ra;
+  }).forEach(e=>{
+    const st=stats[e.id]||{}, [hs,cls]=fmtHS(st.hs);
+    const tr=document.createElement("tr"); if(e.id===selected)tr.className="sel";
+    tr.innerHTML=`<td>${e.iface} · ${nodes.get(e.target).label.slice(0,18)}</td>`+
+      `<td class="num">${fmtRate(st.rx)}</td><td class="num">${fmtRate(st.tx)}</td>`+
+      `<td class="${cls}">${hs}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+// ---- wiring ----
+fetch("topology").then(r=>r.json()).then(topo=>{
+  render(topo);
+  const es=new EventSource("events");
+  es.onmessage=ev=>{
+    const d=JSON.parse(ev.data); stats=d.edges||{};
+    document.getElementById("meta").textContent=
+      `${topo.nodes.filter(n=>n.kind==="gateway").length} gateways · ${topo.edges.length} tunnels · ${new Date(d.at*1000).toLocaleTimeString()}`;
+    document.getElementById("errs").textContent=
+      Object.entries(d.errors||{}).map(([h,e])=>`! ${h}: ${e}`).join("\n");
+    syncTable();
+  };
+  window.addEventListener("resize",()=>render(topo));
+});
+</script>
+</body>
+</html>
