@@ -82,6 +82,16 @@ GRANT USAGE,SELECT ON SEQUENCE audit_session_id_seq, kernel_event_id_seq TO vctl
 
 -- pruner: retention — count/delete audit rows, no rewrite.
 GRANT SELECT,DELETE ON audit_session, kernel_event TO vctl_pruner;
+
+-- Sequences: every write group needs USAGE on the serial PKs it inserts through
+-- (first surfaced 2026-07-25: rw upsert of a NEW server hit servers_id_seq 42501).
+-- Blanket-grant current sequences and default-privilege future ones so new
+-- migrations don't reintroduce the gap.
+GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO
+  vctl_rw, vctl_status, vctl_identity, vctl_audit_writer, vctl_audit_ingest;
+ALTER DEFAULT PRIVILEGES FOR ROLE vctl_owner IN SCHEMA public
+  GRANT USAGE,SELECT ON SEQUENCES TO
+  vctl_rw, vctl_status, vctl_identity, vctl_audit_writer, vctl_audit_ingest;
 SQL
 
 if [ -n "${PG_EXEC_POD}" ]; then
@@ -97,4 +107,4 @@ SQL
 fi
 
 echo "group roles ensured (vctl_ro/rw/status/identity/audit_ro/audit_writer/audit_ingest/pruner)."
-echo "Next: terraform apply (group-model database.tf), then postgres-orphan-cleanup.sh."
+echo "Next: terraform apply (group-model database.tf). Any legacy v-% orphan cleanup: see the incident runbook."
