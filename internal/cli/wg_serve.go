@@ -76,11 +76,22 @@ type wgLink struct {
 	Kind   string `json:"kind"` // management | placement | network
 }
 
+// wgVip is an operator-recorded virtual IP from the IPAM ledger (kind=dnat-vip):
+// not WireGuard state, but part of the tunnel picture (e.g. sre-lb's o11y DNAT
+// addresses riding wg1/wg3). The renderer attaches it to the matching endpoint.
+type wgVip struct {
+	IP    string `json:"ip"`
+	Label string `json:"label"`
+	Iface string `json:"iface,omitempty"`
+	Note  string `json:"note,omitempty"`
+}
+
 type wgTopology struct {
 	Nodes []wgNode `json:"nodes"`
 	Edges []wgEdge `json:"edges"`
 	Aggs  []wgAgg  `json:"aggs"`
 	Links []wgLink `json:"links"`
+	Vips  []wgVip  `json:"vips,omitempty"`
 }
 
 // edgeStat is the live per-tunnel measurement pushed to browsers.
@@ -542,6 +553,12 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 				ui.Warnf(os.Stderr, "list endpoint annotations (run vctl sync --migrate): %v", err)
 			}
 			topo, edgeFor := buildWGTopology(ifaces, peers, servers, annotations)
+			if vips, err := st.IPAllocList(ctx, "dnat-vip", "", ""); err == nil {
+				for _, v := range vips {
+					note := strings.TrimSpace(strings.TrimSpace(v.OS) + " " + strings.TrimSpace(v.Note))
+					topo.Vips = append(topo.Vips, wgVip{IP: v.IP, Label: v.Label, Iface: v.WGTunnel, Note: note})
+				}
+			}
 
 			hosts, err := wgMonitorHosts(ctx, st, args, false)
 			if err != nil {
