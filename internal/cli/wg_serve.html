@@ -96,6 +96,8 @@ const fmtRate=b=>{if(!b||b<1)return"·";const k=1024;return b>=k*k?(b/k/k).toFix
 const hsState=s=>s==null||s<0?"crit":s<=180?"ok":"warn";
 const hsLabel=s=>s==null||s<0?"no-handshake":s<=180?`up · ${s}s`:`idle · ${Math.round(s/60)}m`;
 const zoneKey=dc=>dc?String(dc).split("-")[0]:"etc";
+const ifCmp=(a,b)=>{const m=x=>/^(.*?)(\d*)$/.exec(String(x));const A=m(a),B=m(b);
+  return A[1]===B[1]?(parseInt(A[2]||"-1")-parseInt(B[2]||"-1")):(A[1]<B[1]?-1:1)};
 const svg=document.getElementById("net"), tip=document.getElementById("tip");
 let stats={}, tunnels=[], statusDots=new Map(), curTopo=null, focusIf=null;
 
@@ -164,8 +166,10 @@ function render(topo){
   const HUBX=310, HUBW=Math.max(170,hub.label.length*7.2+26), NATX=HUBX+HUBW+130;
   const epLabels=farSpokes.map(s=>(N.get(s.oid)||{}).label||"");
   const EPW=Math.min(320,Math.max(210,Math.max(0,...epLabels.map(l=>l.length))*7+26));
-  const EPX=NATX+50, LANE0=EPX+EPW+34, BANDX=LANE0+150, BANDW=400, ZONE_R=BANDX+BANDW+24;
-  const hubIfaces=(hub.ifaces||[]).map(i=>i.name).sort();
+  const hasExt=[...N.values()].some(n=>n.kind==="external");
+  const EPX=NATX+50, LANE0=EPX+EPW+34, BANDX=LANE0+150, BANDW=400;
+  const EXTX=BANDX+BANDW+28, ZONE_R=EXTX+(hasExt?196:-4)+(hasExt?16:0);
+  const hubIfaces=(hub.ifaces||[]).map(i=>i.name).sort(ifCmp);
   const remoteIf=hubIfaces.filter(i=>!meshIf.has(i));
   const hubH=Math.max(110,46+remoteIf.length*38);
   const HUBY=170;
@@ -193,15 +197,29 @@ function render(topo){
   const vipExtra=oid=>{const vs=vipsBy.get(oid);return vs?28+vs.length*17:0;};
 
   const zones=[...zmap.entries()].sort((a,b)=>b[1].length-a[1].length);
+  // cluster same-parent endpoints so one physical host box holds all its VMs
+  const clusterize=list=>{
+    list.sort((a,b)=>ifCmp(a.iface||"~",b.iface||"~")||String(a.oid).localeCompare(b.oid));
+    const out=[],by=new Map();
+    for(const s of list){
+      const pid=(N.get(s.oid)||{}).parent||null;
+      if(pid&&by.has(pid)){by.get(pid).items.push(s);continue;}
+      const cl={parent:pid?N.get(pid):null,items:[s]};
+      out.push(cl); if(pid)by.set(pid,cl);
+    }
+    return out;
+  };
+  const rowH=s=>ROWH-10+vipExtra(s.oid);
+  const clH=cl=>(cl.parent?HOSTPAD-6:0)+cl.items.reduce((a,s)=>a+rowH(s)+10,0);
   let zy=topSpokes.length?180:130; const zoneGeo=[];
   for(const [zk,list] of zones){
-    list.sort((a,b)=>String(a.iface||"~").localeCompare(String(b.iface||"~"))||String(a.oid).localeCompare(b.oid));
+    const clusters=clusterize(list);
     let rows=0,bandRefs=0;const cs=new Set();
-    for(const s of list){rows+=(N.get(s.oid)?.parent?ROWH+HOSTPAD:ROWH)+vipExtra(s.oid)+14;
-      if(s.e)cidrs(s.e.allowed).forEach(c=>{cs.add(c);bandRefs++;});}
+    for(const cl of clusters){rows+=clH(cl)+14;
+      for(const s of cl.items)if(s.e)cidrs(s.e.allowed).forEach(c=>{cs.add(c);bandRefs++;});}
     const bandH=[...cs].length?([...cs].length*56+bandRefs*6):0;
     const h=52+Math.max(rows,bandH);
-    zoneGeo.push({zk,list,y:zy,h}); zy+=h+26;
+    zoneGeo.push({zk,clusters,y:zy,h}); zy+=h+26;
   }
   const meshHeights=[...meshIf].map(ifc=>48+mesh.filter(s=>s.iface===ifc).length*20+44+180);
   const leftH=HUBY+hubH+84+meshHeights.reduce((a,b)=>a+b,0)+hops.length*180+160;
@@ -312,6 +330,7 @@ function render(topo){
   }
 
   // top chips: spokes living in the hub zone (e.g. roaming admin client)
+  const topPos=new Map();
   topSpokes.forEach((s,i)=>{
     const n=N.get(s.oid); if(!n)return;
     const col=ifColor(s.iface), cw=Math.max(200,n.label.length*7+26);
@@ -321,6 +340,7 @@ function render(topo){
     mk("text",{x:cx0+12,y:cy+20,class:"ntit"},g2).textContent=n.label;
     mk("text",{x:cx0+12,y:cy+36,class:"nsub"},g2).textContent=[n.ip,n.tunnelIp].filter(Boolean).join(" · ");
     hot(box,()=>[n.label,`${n.kind} · ${hub.dc?zoneKey(hub.dc):""} (허브 사이트로 다이얼인)`]); clickFocus(box,s.iface);
+    topPos.set(s.oid,{x:cx0,y:cy,k:1});
     const dd=mk("circle",{cx:cx0,cy:cy+25,r:5.5,fill:col,class:"pdot hot"},g2d);
     statusDots.set(s.e.id,dd);
     hot(dd,()=>{const st=stats[s.e.id]||{};return[`${s.iface} · ${n.label}`,`${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
@@ -345,16 +365,18 @@ function render(topo){
     mk("text",{x:EPX-8,y:zg.y+22,class:"zlab"},gz).textContent=zg.zk;
     mk("text",{x:BANDX,y:zg.y+22,class:"zsub"},gz).textContent="도달 대역";
     let ry=zg.y+40, epIdx=0;
-    for(const s of zg.list){
+    for(const cl of zg.clusters){
+    const parent=cl.parent;
+    if(parent){
+      const gp=mk("g",{},gn); gp.dataset.ifs=cl.items.map(x=>x.iface||"").filter(Boolean).join("|");
+      mk("rect",{x:EPX-10,y:ry,width:EPW+20,height:clH(cl),rx:10,class:"hbox"},gp);
+      mk("text",{x:EPX+2,y:ry+16,class:"htit"},gp).textContent=parent.label+(parent.ip?" · "+parent.ip:"");
+    }
+    let inY=parent?ry+HOSTPAD-6:ry;
+    for(const s of cl.items){
       const n=N.get(s.oid); if(!n)continue;
-      const parent=n.parent&&N.get(n.parent);
       const g2=grp(gn,s.iface||undefined), g2d=grp(gd,s.iface||undefined);
-      let by=ry;
-      if(parent){
-        mk("rect",{x:EPX-10,y:ry,width:EPW+20,height:ROWH+HOSTPAD+(vipsBy.get(s.oid)?28+vipsBy.get(s.oid).length*17:0),rx:10,class:"hbox"},g2);
-        mk("text",{x:EPX+2,y:ry+16,class:"htit"},g2).textContent=parent.label+(parent.ip?" · "+parent.ip:"");
-        by=ry+HOSTPAD-8;
-      }
+      let by=inY;
       const vips=vipsBy.get(s.oid)||[], vh=vips.length?28+vips.length*17:0;
       const box=mk("rect",{x:EPX,y:by,width:EPW,height:ROWH-10+vh,rx:8,class:"nbox"+(n.kind==="vm"?" vmb":"")},g2);
       mk("text",{x:EPX+12,y:by+20,class:"ntit"},g2).textContent=n.label;
@@ -417,7 +439,9 @@ function render(topo){
         }
         epIdx++;
       }
-      ry+=(parent?ROWH+HOSTPAD:ROWH)+vh+14;
+      inY+=rowH(s)+10;
+    }
+    ry+=clH(cl)+14;
     }
     // bands: grey underlay bus per endpoint + dashed per-tunnel colour into each dot
     let byy=zg.y+40;
@@ -447,24 +471,29 @@ function render(topo){
   // second-hop edges: grouped per far node (a pair may have one edge per side),
   // reach CIDRs land on the matching zone band when it exists, else chips below.
   let hy=my+8;
-  const hopBy=new Map(); const extHops=[];
+  const hopBy=new Map(), extHops=[], rest=[], leftPos=new Map();
   for(const e of hops){
     const sp=epPos.get(e.source)||epPos.get(e.target);
     const other=epPos.get(e.source)?e.target:e.source;
-    const tn=N.get(other); if(!sp||!tn)continue;
+    const tn=N.get(other);
+    if(!sp||!tn){rest.push(e);continue;}
     if(tn.kind==="external"){extHops.push({e,sp,tn});continue;}
     if(zoneKey(tn.dc)!==zoneKey(hub.dc))continue;
     if(!hopBy.has(other))hopBy.set(other,{tn,sp,edges:[]});
     hopBy.get(other).edges.push(e);
   }
+  let extIdx=0;
   for(const {e,sp,tn} of extHops){
     const col=ifColor(e.iface);
     const g2=grp(gn,e.iface), g2t=grp(gt,e.iface);
-    const cxx=BANDX+BANDW-170, cy=sp.rowY+30;
-    const r=mk("rect",{x:cxx,y:cy-14,width:170,height:30,rx:8,class:"nbox ext"},g2);
-    mk("text",{x:cxx+10,y:cy+4,class:"bsub"},g2).textContent=tn.label.slice(0,24);
+    const zg=zoneGeo.find(z=>sp.rowY>=z.y&&sp.rowY<=z.y+z.h)||zoneGeo[0];
+    const cy=zg.y+52+extIdx*44; extIdx++;
+    const r=mk("rect",{x:EXTX,y:cy-15,width:188,height:32,rx:8,class:"nbox ext"},g2);
+    mk("text",{x:EXTX+10,y:cy-1,class:"bsub"},g2).textContent=tn.label.slice(0,26);
+    mk("text",{x:EXTX,y:zg.y+22,class:"zsub"},g2).textContent=extIdx===1?"외부/미상":"";
     hot(r,()=>[tn.label,`외부 endpoint (수집 관측) · allowed ${e.allowed}`]);
-    const base=mk("path",{d:`M${sp.outX+6},${sp.rowY} H${LANE0+112} V${cy} H${cxx-4}`,class:"tun dash",stroke:col,"stroke-width":1.7},g2t);
+    mk("circle",{cx:EXTX,cy:cy,r:4.5,fill:col,class:"sdot"},g2);
+    const base=mk("path",{d:`M${sp.outX+6},${sp.rowY} H${LANE0+126} V${cy} H${EXTX-6}`,class:"tun dash",stroke:col,"stroke-width":1.7},g2t);
     hot(base,()=>{const st=stats[e.id]||{};return[`${e.iface} → ${tn.label}`,
       `allowed ${e.allowed} · ${hsLabel(st.hs)} · 문서 미기재 종단 · 클릭=포커스`]});
     clickFocus(base,e.iface);
@@ -476,6 +505,7 @@ function render(topo){
     mk("text",{x:76,y:hy+20,class:"ntit"},g2).textContent=tn.label;
     mk("text",{x:76,y:hy+36,class:"nsub"},g2).textContent=[tn.ip,tn.tunnelIp].filter(Boolean).join(" · ");
     hot(bx2,()=>[tn.label,`${tn.kind}${tn.dc?" · "+tn.dc:""}`]);
+    leftPos.set(oid,{x:64,y:hy,w:bw2,k:edges.length});
     const chipR=64+bw2;
     let below=0;
     edges.forEach((e,k)=>{
@@ -499,7 +529,7 @@ function render(topo){
         if(bp){ // e.g. personal → seoul 201/110/130: dot on the seoul band itself
           const dy=bp.y+15+bp.n*17; bp.n++;
           mk("circle",{cx:BANDX-12,cy:dy,r:5,fill:col,class:"pdot"},g2d);
-          const rp=mk("path",{d:`M${chipR+6},${hy+40} H${NATX-56-k*8} V${dy} H${BANDX-18}`,class:"reach",stroke:col},g2t);
+          const rp=mk("path",{d:`M${chipR+6},${hy+40} H${NATX-96-k*8} V${dy} H${BANDX-18}`,class:"reach",stroke:col},g2t);
           hot(rp,()=>[`${e.iface} → ${c}`,`${tn.label} 경유 도달 (피어측 AllowedIPs) · 클릭=포커스`]);
           clickFocus(rp,e.iface);
         }else{
@@ -514,6 +544,28 @@ function render(topo){
       });
     });
     hy+=66+below*48;
+  }
+  // chip-to-chip legs (both ends are chips, e.g. personal VM ↔ roaming client)
+  for(const e of rest){
+    const a=leftPos.get(e.source)||leftPos.get(e.target);
+    const bId=leftPos.get(e.source)?e.target:e.source;
+    const b=topPos.get(bId); if(!a||!b)continue;
+    const col=ifColor(e.iface);
+    const g2d=grp(gd,e.iface), g2t=grp(gt,e.iface), g2f=grp(gf,e.iface);
+    const ay=a.y+18+a.k*16; a.k++;
+    const byy=b.y+25+b.k*12; b.k++;
+    const dd=mk("circle",{cx:a.x+a.w,cy:ay,r:5.5,fill:col,class:"pdot hot"},g2d);
+    statusDots.set(e.id,dd);
+    hot(dd,()=>{const st=stats[e.id]||{};return[`${e.iface} · ${(N.get(bId)||{}).label||""}`,
+      `${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
+    mk("circle",{cx:b.x,cy:byy,r:5,fill:col,class:"pdot"},g2d);
+    const d=`M${a.x+a.w+6},${ay} H${b.x-34} V${byy} H${b.x-6}`;
+    const base=mk("path",{d,class:"tun",stroke:col},g2t);
+    const fl=mk("path",{d,class:"flow",stroke:col},g2f);
+    tunnels.push({id:e.id,base,fl});
+    hot(base,()=>{const st=stats[e.id]||{};return[`${e.iface} · ${(N.get(e.source)||{}).label||e.source} ↔ ${(N.get(e.target)||{}).label||e.target}`,
+      `allowed ${e.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)} · 클릭=포커스`]});
+    clickFocus(base,e.iface);
   }
   buildLegend(); applyStats(); setFocus(focusIf);
   try{const bb=svg.getBBox();const H2=Math.min(H,bb.y+bb.height+30);
@@ -538,7 +590,7 @@ svg.addEventListener("click",e=>{if(e.target===svg||e.target.classList.contains(
 function buildLegend(){
   const ifs=new Set(); (curTopo.edges||[]).forEach(e=>ifs.add(e.iface));
   const el=document.getElementById("legend");
-  el.innerHTML=[...ifs].sort().map(i=>
+  el.innerHTML=[...ifs].sort(ifCmp).map(i=>
     `<span class="i" data-if="${esc(i)}"><span class="dt" style="background:${ifColor(i)}"></span>${esc(i)}</span>`).join("");
   el.querySelectorAll(".i[data-if]").forEach(ch=>ch.addEventListener("click",()=>setFocus(focusIf===ch.dataset.if?null:ch.dataset.if)));
 }
