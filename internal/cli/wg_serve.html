@@ -203,17 +203,18 @@ function render(topo){
     const h=52+Math.max(rows,bandH);
     zoneGeo.push({zk,list,y:zy,h}); zy+=h+26;
   }
-  const meshHeights=[...meshIf].map(ifc=>44+mesh.filter(s=>s.iface===ifc).length*19+26);
-  const leftH=HUBY+hubH+50+meshHeights.reduce((a,b)=>a+b,0)+hops.length*66+120;
+  const meshHeights=[...meshIf].map(ifc=>48+mesh.filter(s=>s.iface===ifc).length*20+44+180);
+  const leftH=HUBY+hubH+84+meshHeights.reduce((a,b)=>a+b,0)+hops.length*180+160;
   const H=Math.max(zy+40,leftH,720), W=ZONE_R+20;
   svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
   const drawW=Math.min(W,1560);
   svg.setAttribute("width",drawW); svg.setAttribute("height",Math.round(drawW*H/W));
 
-  // zones: exactly two labels — hub zone (left) and far zones (right)
-  mk("rect",{x:40,y:90,width:NATX-90,height:H-140,rx:12,class:"zone"},gz);
+  // zones: exactly two labels — hub zone (left) and far zones (right).
+  // heights are fixed up after drawing, once actual content extents are known.
+  const leftZoneRect=mk("rect",{x:40,y:90,width:NATX-90,height:H-140,rx:12,class:"zone"},gz);
   mk("text",{x:56,y:114,class:"zlab"},gz).textContent=zoneKey(hub.dc);
-  mk("line",{x1:NATX,y1:100,x2:NATX,y2:H-60,class:"nat"},gz);
+  const natLine=mk("line",{x1:NATX,y1:100,x2:NATX,y2:H-60,class:"nat"},gz);
   mk("text",{x:NATX,y:90,class:"natlab","text-anchor":"middle"},gz).textContent="NAT / WAN";
 
   // local aggregate bands + grey bus into hub
@@ -237,16 +238,23 @@ function render(topo){
     mk("path",{d:`M272,${HUBY+40} H${HUBX}`,class:"grey"},gg);
     mk("circle",{cx:HUBX,cy:HUBY+40,r:3,class:"jdot"},gd);
   }
-  // per-tunnel reach onto local bands (from reverse allowed-ips), dashed colour
-  for(const s of spokes)for(const b of (s.back||[]))for(const c of cidrs(b.allowed)){
-    const lb=localBand.get(c); if(!lb)continue;
-    const col=ifColor(s.iface), off=lb.ref++;
-    const g2=grp(gt,s.iface);
-    const d=`M${lb.x+6+off*3},${lb.y+5+off*5} H${272-8-off*5}`;
-    const p=mk("path",{d,class:"reach",stroke:col},g2);
-    mk("circle",{cx:lb.x+6+off*3,cy:lb.y+5+off*5,r:3.5,fill:col,class:"sdot"},g2);
-    hot(p,()=>[`${s.iface} → ${c}`,`역방향 도달 — ${(N.get(s.oid)||{}).label||""} 쪽에서 이 터널로 진입`]);
-    clickFocus(p,s.iface);
+  // reverse-reach onto local bands: dashed colour elbow from the hub's left edge
+  // down to a dot on the band — "seoul 쪽이 이 터널로 이 대역에 도달"
+  {
+    const rif=new Map();
+    for(const s of spokes)for(const b of (s.back||[]))for(const c of cidrs(b.allowed)){
+      const lb=localBand.get(c); if(!lb)continue;
+      if(!rif.has(s.iface))rif.set(s.iface,rif.size);
+      const idx=rif.get(s.iface), col=ifColor(s.iface);
+      const lane=282+idx*10, hy2=HUBY+62+idx*14, k=lb.ref++;
+      const doty=lb.y-8+k*14, dotx=256;
+      const g2=grp(gt,s.iface), g2d=grp(gd,s.iface);
+      const d=`M${HUBX-6},${hy2} H${lane} V${doty} H${dotx+5}`;
+      const pth=mk("path",{d,class:"reach",stroke:col},g2);
+      mk("circle",{cx:dotx,cy:doty,r:4,fill:col,class:"sdot"},g2d);
+      hot(pth,()=>[`${s.iface} → ${c}`,`역방향 도달 — ${(N.get(s.oid)||{}).label||""} 측 AllowedIPs · 클릭=포커스`]);
+      clickFocus(pth,s.iface);
+    }
   }
 
   // hub box + ports (full label)
@@ -266,7 +274,7 @@ function render(topo){
   });
 
   // mesh stacks: full labels, dynamic width, generous spacing
-  let my=HUBY+hubH+84; let meshIdx=0;
+  let my=HUBY+hubH+84; let meshIdx=0; const meshGeo=new Map();
   for(const ifc of meshIf){
     const list=mesh.filter(s=>s.iface===ifc);
     const labels=list.map(s=>((N.get(s.oid)||{}).label||s.oid)+"");
@@ -297,7 +305,23 @@ function render(topo){
     const trunk=`M${lane},${my+48+(list.length-1)*20} V${my+20} H${pdx} V${pdy+6}`;
     const p=mk("path",{d:trunk,class:"tun",stroke:col,"stroke-width":2},g2t);
     hot(p,()=>[`${ifc} · 메시 ×${list.length}`,"허브 ↔ 로컬 피어 /32 팬아웃 · 클릭=포커스"]); clickFocus(p,ifc);
-    my+=bh+44;
+    meshGeo.set(ifc,{x:64+mw,y:my+bh/2});
+    // 피어측 AllowedIPs = 이 메시 뒤로 도달하는 대역 (역방향 수집)
+    const rset=[...new Set(list.flatMap(x=>(x.back||[]).flatMap(b=>cidrs(b.allowed))))];
+    let extra=0;
+    if(rset.length){
+      rset.forEach((c,i)=>{
+        const byy=my+bh+16+i*48;
+        const rb=mk("rect",{x:94,y:byy,width:mw-30,height:40,rx:8,class:"nbox band"},g2);
+        mk("text",{x:106,y:byy+18,class:"btit"},g2).textContent=c;
+        mk("text",{x:106,y:byy+32,class:"bsub"},g2).textContent="피어측 AllowedIPs 도달";
+        hot(rb,()=>[c,`${ifc} 메시 피어들이 터널로 도달하는 대역 (피어측 설정)`]);
+        mk("path",{d:`M80,${my+bh} V${byy+20} H88`,class:"reach",stroke:col},g2t);
+        mk("circle",{cx:94,cy:byy+20,r:4,fill:col,class:"sdot"},g2d);
+      });
+      extra=rset.length*48+16;
+    }
+    my+=bh+44+extra;
   }
 
   // top chips: spokes living in the hub zone (e.g. roaming admin client)
@@ -366,6 +390,14 @@ function render(topo){
         const wire=mk("path",{d:`M${EPX+20},${by+68+(vips.length-1)*17} V${by+58}`,class:"tun",stroke:vcol,"stroke-width":1.6},gvt);
         hot(wire,()=>[`DNAT VIP ×${vips.length}`,"IPAM 대장(ip_allocations) 기재 — WG 수집 밖 · 클릭=포커스"]);
         clickFocus(wire,vifc);
+        const mg=meshGeo.get(vifc);
+        if(mg){ // DNAT 목적지 = 해당 iface 메시 (수송은 상위 터널)
+          const d2=`M${EPX-6},${by+62} H${NATX-44} V${mg.y} H${mg.x+6}`;
+          const lp=mk("path",{d:d2,class:"reach",stroke:vcol},gvt);
+          hot(lp,()=>[`DNAT → ${vifc} 메시`,"상위 터널에 실려 허브 도착 후 메시로 팬아웃 (개별 매핑은 sre-lb iptables)"]);
+          clickFocus(lp,vifc);
+          mk("circle",{cx:EPX-6,cy:by+62,r:4,fill:vcol,class:"sdot"},gv);
+        }
       }
       const cy=by+(ROWH-10)/2;
       epPos.set(s.oid,{inX:EPX,outX:EPX+EPW,rowY:cy});
@@ -461,9 +493,25 @@ function render(topo){
       hot(base,()=>{const st=stats[e.id]||{};return[`${e.iface} ↔ ${tn.label}`,
         `allowed ${e.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)} · 클릭=포커스`]});
       clickFocus(base,e.iface);
-      hy+=66;
+      // 이 홉 뒤로 도달하는 대역 (allowed-ips, /32 제외)
+      const rcs=cidrs(e.allowed);
+      rcs.forEach((c,i)=>{
+        const byy=hy+64+i*48;
+        const rb=mk("rect",{x:94,y:byy,width:bw2-30,height:40,rx:8,class:"nbox band"},g2);
+        mk("text",{x:106,y:byy+18,class:"btit"},g2).textContent=c;
+        mk("text",{x:106,y:byy+32,class:"bsub"},g2).textContent=`${e.iface} 경유 도달`;
+        hot(rb,()=>[c,`${tn.label} 뒤로 ${e.iface} 터널이 실어 나르는 대역`]);
+        mk("path",{d:`M80,${hy+52} V${byy+20} H88`,class:"reach",stroke:col},g2t);
+        mk("circle",{cx:94,cy:byy+20,r:4,fill:col,class:"sdot"},g2d);
+      });
+      hy+=66+rcs.length*48;
     }
   }
+  // shrink the hub zone / NAT bar to actual left-column content, then the canvas
+  const leftMax=Math.max(ly,my,hy)+24, rightMax=zy;
+  const zoneBottom=Math.max(leftMax,HUBY+hubH+40);
+  leftZoneRect.setAttribute("height",Math.max(zoneBottom, Math.min(rightMax,H-50))-90);
+  natLine.setAttribute("y2",Math.max(zoneBottom,rightMax));
   buildLegend(); applyStats(); setFocus(focusIf);
   try{const bb=svg.getBBox();const H2=Math.min(H,bb.y+bb.height+30);
     svg.setAttribute("viewBox",`0 0 ${W} ${H2}`);
