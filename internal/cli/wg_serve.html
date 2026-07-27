@@ -51,7 +51,6 @@
   #legend .i:hover{border-color:var(--ring);background:var(--panel)}
   #legend .i:focus-visible,.view-controls button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   #legend .i.on{border-color:rgba(240,136,62,.62);background:rgba(240,136,62,.08);color:var(--ink)}
-  #legend .i.related{border-color:var(--ring);background:rgba(113,128,144,.08);color:var(--ink2)}
   #legend .dt{width:8px;height:8px;border-radius:50%;border:2px solid var(--panel);box-shadow:0 0 0 1px var(--line)}
   .tool-spacer{flex:1}
   #selection{display:none;align-items:center;gap:7px;padding:4px 8px;background:rgba(240,136,62,.07);
@@ -209,6 +208,45 @@ function hot(el,fn){el.classList.add("hot");
   el.addEventListener("mousemove",mv); el.addEventListener("mouseleave",()=>tip.style.opacity=0);}
 function mv(ev){let x=ev.clientX+12,y=ev.clientY+12;if(x+290>innerWidth)x=ev.clientX-290;tip.style.left=x+"px";tip.style.top=y+"px";}
 function clickFocus(el,ifc){el.addEventListener("click",ev=>{ev.stopPropagation();setFocus(focusIf===ifc?null:ifc);});}
+
+// ---------- shared glyphs ----------
+// Every box on the canvas is the same card: kind eyebrow, title, address line.
+// The hub passes its own sub text because it shows only an underlay address.
+// Returns the rect so callers can attach tooltips and focus clicks.
+function nodeCard(p,{x,y,w,h,node,sub,cls=""}){
+  const box=mk("rect",{x,y,width:w,height:h,rx:cls.includes("hub")?9:8,class:("nbox "+cls).trim()},p);
+  mk("text",{x:x+12,y:y+14,class:"nkind"},p).textContent=kindLabel(node.kind);
+  mk("text",{x:x+12,y:y+30,class:"ntit"},p).textContent=node.label;
+  mk("text",{x:x+12,y:y+46,class:"nsub"},p).textContent=
+    sub!==undefined?sub:[node.ip,node.tunnelIp].filter(Boolean).join(" · ");
+  return box;
+}
+
+// A tunnel's live bead: colour by interface, registered for stat updates, and
+// captioned with handshake age plus rx/tx. prefix/detail wrap that caption with
+// tunnel-specific text (a /32 mesh address, a reverse route), and cls picks the
+// bead style — "sdot" for the compact mesh stack, "pdot" everywhere else.
+// A drawn tunnel: the static run plus the animated flow twin that rides it,
+// registered for stat updates and wired so clicking the run focuses its
+// interface. title carries the arrow the calling section uses — "→" for a
+// dial-in leg, "↔" for a mesh or hop leg.
+function tunnelRun(gt,gf,{d,col,edge,iface,title}){
+  const base=mk("path",{d,class:"tun",stroke:col},gt);
+  const fl=mk("path",{d,class:"flow",stroke:col},gf);
+  tunnels.push({id:edge.id,base,fl});
+  hot(base,()=>{const st=stats[edge.id]||{};
+    return[title,`allowed ${edge.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} · tx ${fmtRate(st.tx)} · 클릭=포커스`]});
+  clickFocus(base,iface);
+  return base;
+}
+
+function statusDot(p,{cx,cy,r=5.5,eid,col,title,prefix="",detail="",cls="pdot"}){
+  const dot=mk("circle",{cx,cy,r,fill:col,class:cls+" hot"},p);
+  if(eid)statusDots.set(eid,dot);
+  hot(dot,()=>{const st=stats[eid]||{};
+    return[title,`${prefix}${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} · tx ${fmtRate(st.tx)}${detail}`];});
+  return dot;
+}
 
 // ---------- model prep: dedup same-IP gateways, pick hub ----------
 function prep(topo){
@@ -404,10 +442,7 @@ function render(topo){
 
   // hub box + ports (full label)
   const ghub=mk("g",{},gn); ghub.dataset.keep="1";
-  mk("rect",{x:HUBX,y:HUBY,width:HUBW,height:hubH,rx:9,class:"nbox hub"},ghub);
-  mk("text",{x:HUBX+12,y:HUBY+14,class:"nkind"},ghub).textContent=kindLabel(hub.kind);
-  mk("text",{x:HUBX+12,y:HUBY+31,class:"ntit"},ghub).textContent=hub.label;
-  mk("text",{x:HUBX+12,y:HUBY+47,class:"nsub"},ghub).textContent=hub.ip||"";
+  nodeCard(ghub,{x:HUBX,y:HUBY,w:HUBW,h:hubH,node:hub,sub:hub.ip||"",cls:"hub"});
   const hubPort=new Map();
   remoteIf.forEach((ifc,i)=>{
     const y=HUBY+56+i*38, col=ifColor(ifc), port=(hub.ifaces||[]).find(x=>x.name===ifc);
@@ -447,10 +482,8 @@ function render(topo){
       const n=N.get(s.oid), y=my+48+i*20;
       const lbl=mk("text",{x:dotX-12,y:y+3,class:"bsub","text-anchor":"end"},g2d);
       lbl.textContent=(n?n.label:s.oid)||"";
-      const dd=mk("circle",{cx:dotX,cy:y,r:4.5,fill:col,class:"sdot hot"},g2d);
-      statusDots.set(s.e.id,dd);
-      hot(dd,()=>{const st=stats[s.e.id]||{};return[(n?n.label:s.oid),
-        `${slash32(s.e.allowed)} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
+      statusDot(g2d,{cx:dotX,cy:y,r:4.5,cls:"sdot",eid:s.e.id,col,
+        title:(n?n.label:s.oid),prefix:slash32(s.e.allowed)+" · "});
       mk("path",{d:`M${dotX+5},${y} H${lane}`,class:"tun",stroke:col,"stroke-width":1.6},g2t);
     });
     const trunk=`M${lane},${my+48+(list.length-1)*20} V${my+20} H${pdx} V${pdy+6}`;
@@ -468,25 +501,15 @@ function render(topo){
     const cx0=EPX+i*(cw+24), cy=96;
     const g2=grp(gn,s.iface,{nodes:s.oid}), g2d=grp(gd,s.iface,{nodes:s.oid,eids:s.e.id}),
       g2t=grp(gt,s.iface,{eids:s.e.id}), g2f=grp(gf,s.iface,{eids:s.e.id});
-    const box=mk("rect",{x:cx0,y:cy,width:cw,height:50,rx:8,class:"nbox"},g2);
-    mk("text",{x:cx0+12,y:cy+13,class:"nkind"},g2).textContent=kindLabel(n.kind);
-    mk("text",{x:cx0+12,y:cy+28,class:"ntit"},g2).textContent=n.label;
-    mk("text",{x:cx0+12,y:cy+43,class:"nsub"},g2).textContent=[n.ip,n.tunnelIp].filter(Boolean).join(" · ");
+    const box=nodeCard(g2,{x:cx0,y:cy,w:cw,h:50,node:n});
     hot(box,()=>[n.label,`${n.kind} · ${hub.dc?zoneKey(hub.dc):""} (허브 사이트로 다이얼인)`]); clickFocus(box,s.iface);
     topPos.set(s.oid,{x:cx0,y:cy,k:1});
-    const dd=mk("circle",{cx:cx0,cy:cy+25,r:5.5,fill:col,class:"pdot hot"},g2d);
-    statusDots.set(s.e.id,dd);
-    hot(dd,()=>{const st=stats[s.e.id]||{};return[`${s.iface} · ${n.label}`,`${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
+    statusDot(g2d,{cx:cx0,cy:cy+25,eid:s.e.id,col,title:`${s.iface} · ${n.label}`});
     const port=hubPort.get(s.iface);
     if(port){
       const lane=HUBX+HUBW+26+remoteIf.indexOf(s.iface)*16;
       const d=`M${port.x+6},${port.y} H${lane} V${cy+25} H${cx0-6}`;
-      const base=mk("path",{d,class:"tun",stroke:col},g2t);
-      const fl=mk("path",{d,class:"flow",stroke:col},g2f);
-      tunnels.push({id:s.e.id,base,fl});
-      hot(base,()=>{const st=stats[s.e.id]||{};return[`${s.iface} → ${n.label}`,
-        `allowed ${s.e.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)} · 클릭=포커스`]});
-      clickFocus(base,s.iface);
+      tunnelRun(g2t,g2f,{d,col,edge:s.e,iface:s.iface,title:`${s.iface} → ${n.label}`});
     }
   });
 
@@ -513,11 +536,8 @@ function render(topo){
         g2d=grp(gd,s.iface||undefined,{nodes:s.oid,eids:s.e&&s.e.id});
       let by=inY;
       const vips=vipsBy.get(s.oid)||[], vh=vips.length?28+vips.length*17:0;
-      const box=mk("rect",{x:EPX,y:by,width:EPW,height:ROWH-10+vh,rx:8,class:"nbox"+(n.kind==="vm"?" vmb":"")},g2);
-      mk("text",{x:EPX+12,y:by+13,class:"nkind"},g2).textContent=kindLabel(n.kind);
-      mk("text",{x:EPX+12,y:by+29,class:"ntit"},g2).textContent=n.label;
-      mk("text",{x:EPX+12,y:by+45,class:"nsub"},g2).textContent=[n.ip,n.tunnelIp].filter(Boolean).join(" · ");
-      if(n.warnings&&n.warnings.length)mk("text",{x:EPX+EPW-12,y:by+45,class:"warnb","text-anchor":"end"},g2).textContent="WARNING";
+      const box=nodeCard(g2,{x:EPX,y:by,w:EPW,h:ROWH-10+vh,node:n,cls:n.kind==="vm"?"vmb":""});
+      if(n.warnings&&n.warnings.length)mk("text",{x:EPX+EPW-12,y:by+46,class:"warnb","text-anchor":"end"},g2).textContent="WARNING";
       hot(box,()=>[n.label,`${n.kind}${n.dc?" · "+n.dc:""}${n.observed?" · 관측 "+n.observed:""}${n.warnings?" · "+n.warnings.join("; "):""}`]);
       if(s.iface)clickFocus(box,s.iface);
       if(vips.length){ // ledger DNAT VIPs stacked vertically, beads on a wire
@@ -548,21 +568,14 @@ function render(topo){
       epPos.set(s.oid,{inX:EPX,outX:EPX+EPW,rowY:cy});
       if(s.iface&&s.e){
         const col=ifColor(s.iface), port=hubPort.get(s.iface);
-        const din=mk("circle",{cx:EPX,cy:cy,r:5.5,fill:col,class:"pdot hot"},g2d);
-        statusDots.set(s.e.id,din);
-        hot(din,()=>{const st=stats[s.e.id]||{};return[`${s.iface} · ${n.label}`,
-          `${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} · tx ${fmtRate(st.tx)}${s.back.length?" · 역방향 "+cidrs(s.back[0].allowed).join(","):""}`];});
+        const din=statusDot(g2d,{cx:EPX,cy,eid:s.e.id,col,title:`${s.iface} · ${n.label}`,
+          detail:s.back.length?" · 역방향 "+cidrs(s.back[0].allowed).join(","):""});
         clickFocus(din,s.iface);
         if(port){
           const g2t=grp(gt,s.iface,{eids:s.e.id}), g2f=grp(gf,s.iface,{eids:s.e.id});
           const lane=HUBX+HUBW+26+remoteIf.indexOf(s.iface)*16;
           const d=`M${port.x+6},${port.y} H${lane} V${cy} H${EPX-6}`;
-          const base=mk("path",{d,class:"tun",stroke:col},g2t);
-          const fl=mk("path",{d,class:"flow",stroke:col},g2f);
-          tunnels.push({id:s.e.id,base,fl});
-          hot(base,()=>{const st=stats[s.e.id]||{};return[`${s.iface} → ${n.label}`,
-            `allowed ${s.e.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)} · 클릭=포커스`]});
-          clickFocus(base,s.iface);
+          tunnelRun(g2t,g2f,{d,col,edge:s.e,iface:s.iface,title:`${s.iface} → ${n.label}`});
         }
         const cs=cidrs(s.e.allowed);
         if(cs.length){
@@ -644,10 +657,7 @@ function render(topo){
     const bw2=Math.max(200,tn.label.length*7+26);
     const g2=mk("g",{},gn); g2.dataset.ifs=edges.map(e=>e.iface).join("|");
     g2.dataset.nodes=JSON.stringify([oid]);g2.dataset.eids=JSON.stringify(edges.map(e=>e.id));
-    const bx2=mk("rect",{x:64,y:hy,width:bw2,height:52,rx:8,class:"nbox"+(tn.kind==="vm"?" vmb":"")},g2);
-    mk("text",{x:76,y:hy+13,class:"nkind"},g2).textContent=kindLabel(tn.kind);
-    mk("text",{x:76,y:hy+28,class:"ntit"},g2).textContent=tn.label;
-    mk("text",{x:76,y:hy+44,class:"nsub"},g2).textContent=[tn.ip,tn.tunnelIp].filter(Boolean).join(" · ");
+    const bx2=nodeCard(g2,{x:64,y:hy,w:bw2,h:52,node:tn,cls:tn.kind==="vm"?"vmb":""});
     hot(bx2,()=>[tn.label,`${tn.kind}${tn.dc?" · "+tn.dc:""}`]);
     leftPos.set(oid,{x:64,y:hy,w:bw2,k:edges.length});
     const chipR=64+bw2;
@@ -656,18 +666,11 @@ function render(topo){
       const col=ifColor(e.iface), cy2=hy+18+k*16;
       const g2d=grp(gd,e.iface,{nodes:[oid],eids:e.id}), g2t=grp(gt,e.iface,{eids:e.id}),
         g2f=grp(gf,e.iface,{eids:e.id});
-      const dd=mk("circle",{cx:chipR,cy:cy2,r:5.5,fill:col,class:"pdot hot"},g2d);
-      statusDots.set(e.id,dd);
-      hot(dd,()=>{const st=stats[e.id]||{};return[`${e.iface} · ${tn.label}`,`${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
+      const dd=statusDot(g2d,{cx:chipR,cy:cy2,eid:e.id,col,title:`${e.iface} · ${tn.label}`});
       clickFocus(dd,e.iface);
       mk("circle",{cx:sp.inX,cy:sp.rowY+16+k*12,r:5,fill:col,class:"pdot"},g2d);
       const d=`M${chipR+6},${cy2} H${EPX-38-k*10} V${sp.rowY+16+k*12} H${sp.inX-6}`;
-      const base=mk("path",{d,class:"tun",stroke:col},g2t);
-      const fl=mk("path",{d,class:"flow",stroke:col},g2f);
-      tunnels.push({id:e.id,base,fl});
-      hot(base,()=>{const st=stats[e.id]||{};return[`${e.iface} ↔ ${tn.label}`,
-        `allowed ${e.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)} · 클릭=포커스`]});
-      clickFocus(base,e.iface);
+      tunnelRun(g2t,g2f,{d,col,edge:e,iface:e.iface,title:`${e.iface} ↔ ${tn.label}`});
       // reach: onto an existing zone band when drawn there, else a chip below
       cidrs(e.allowed).forEach(c=>{
         const positions=bandPos.get(c)||[];
@@ -702,18 +705,12 @@ function render(topo){
       g2f=grp(gf,e.iface,{eids:e.id});
     const ay=a.y+18+a.k*16; a.k++;
     const byy=b.y+25+b.k*12; b.k++;
-    const dd=mk("circle",{cx:a.x+a.w,cy:ay,r:5.5,fill:col,class:"pdot hot"},g2d);
-    statusDots.set(e.id,dd);
-    hot(dd,()=>{const st=stats[e.id]||{};return[`${e.iface} · ${(N.get(bId)||{}).label||""}`,
-      `${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
+    statusDot(g2d,{cx:a.x+a.w,cy:ay,eid:e.id,col,
+      title:`${e.iface} · ${(N.get(bId)||{}).label||""}`});
     mk("circle",{cx:b.x,cy:byy,r:5,fill:col,class:"pdot"},g2d);
     const d=`M${a.x+a.w+6},${ay} H${b.x-34} V${byy} H${b.x-6}`;
-    const base=mk("path",{d,class:"tun",stroke:col},g2t);
-    const fl=mk("path",{d,class:"flow",stroke:col},g2f);
-    tunnels.push({id:e.id,base,fl});
-    hot(base,()=>{const st=stats[e.id]||{};return[`${e.iface} · ${(N.get(e.source)||{}).label||e.source} ↔ ${(N.get(e.target)||{}).label||e.target}`,
-      `allowed ${e.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)} · 클릭=포커스`]});
-    clickFocus(base,e.iface);
+    tunnelRun(g2t,g2f,{d,col,edge:e,iface:e.iface,
+      title:`${e.iface} · ${(N.get(e.source)||{}).label||e.source} ↔ ${(N.get(e.target)||{}).label||e.target}`});
   }
   buildLegend(); applyStats(); setFocus(focusIf);
   try{const bb=svg.getBBox();const H2=Math.min(H,bb.y+bb.height+30);
@@ -722,60 +719,31 @@ function render(topo){
     if(drawW>canvas.clientWidth-44)requestAnimationFrame(fitCanvas);}catch(_){}
 }
 
-// ---------- tunnel focus: follow the branch through non-hub transit nodes ----------
+// ---------- tunnel focus: the selected tunnel and nothing else ----------
+// Selecting an interface isolates that tunnel: its own edges, the nodes they
+// land on, the networks routed over them, and any DNAT VIP the interface owns.
+// It deliberately does not follow the branch onward through transit nodes — a
+// wg1 selection must not also light up wg9 on the far side of a relay.
 function focusClosure(seed){
   const result={ifaces:new Set(seed?[seed]:[]),nodes:new Set(),edges:new Set(),hubIfaces:new Set(),cidrs:new Set()};
   if(!seed||!curTopo)return result;
-  const {N,E,hub}=prep(curTopo);
+  const {E,hub}=prep(curTopo);
   if(!hub)return result;
-  const incident=new Map();
-  for(const e of E){
-    if(!incident.has(e.source))incident.set(e.source,[]);
-    if(!incident.has(e.target))incident.set(e.target,[]);
-    incident.get(e.source).push(e);incident.get(e.target).push(e);
-  }
-  // A hub iface name such as wg0 can also exist on many remote hosts. Seed only
-  // the edges attached to this topology's hub, then walk outward from there.
+  // A hub iface name such as wg0 can also exist on unrelated remote hosts. Keep
+  // only the edges attached to this topology's hub, so the selection stays one
+  // tunnel instead of every tunnel that happens to share the name.
   const hubOwns=(hub.ifaces||[]).some(i=>i.name===seed);
-  const seeds=E.filter(e=>e.iface===seed&&(!hubOwns||e.source===hub.id||e.target===hub.id));
-  const queue=[],visited=new Set(),vipIfacesSeen=new Set();
-  const includeVIPOwners=ifc=>{
-    if(vipIfacesSeen.has(ifc))return;
-    vipIfacesSeen.add(ifc);
-    for(const id of (vipFocusNodes.get(ifc)||[])){
-      result.nodes.add(id);
-      if(id!==hub.id&&!visited.has(id))queue.push(id);
-    }
-  };
-  const includeEdge=e=>{
-    result.edges.add(e.id);result.ifaces.add(e.iface);
+  for(const e of E){
+    if(e.iface!==seed)continue;
+    if(hubOwns&&e.source!==hub.id&&e.target!==hub.id)continue;
+    result.edges.add(e.id);
     result.nodes.add(e.source);result.nodes.add(e.target);
     for(const c of cidrs(e.allowed))result.cidrs.add(c);
     if(e.source===hub.id||e.target===hub.id)result.hubIfaces.add(e.iface);
-    includeVIPOwners(e.iface);
-  };
-  includeVIPOwners(seed);
-  for(const e of seeds)includeEdge(e);
-  // A hub fan-out interface represents several independent branches. Walking
-  // through every peer turns an exact wg0 selection into the whole connected
-  // component. Follow only point-to-point seeds, or an explicit DNAT/VIP owner
-  // such as wg3 → sre-lb. Non-hub seeds are already transit tunnel legs.
-  const seedPeers=new Set(seeds.map(e=>e.source===hub.id?e.target:e.source));
-  const hasVIPOwner=(vipFocusNodes.get(seed)||new Set()).size>0;
-  if(!hasVIPOwner&&(!hubOwns||seedPeers.size===1)){
-    for(const e of seeds)queue.push(e.source,e.target);
   }
-  while(queue.length){
-    const id=queue.shift();
-    if(visited.has(id)){continue;}
-    visited.add(id);
-    if(id===hub.id)continue;
-    for(const e of (incident.get(id)||[])){
-      includeEdge(e);
-      const other=e.source===id?e.target:e.source;
-      if(other!==hub.id&&!visited.has(other))queue.push(other);
-    }
-  }
+  // A VIP is labelled with the interface that fronts it, so it belongs to this
+  // tunnel's picture even though no edge carries it.
+  for(const id of (vipFocusNodes.get(seed)||[]))result.nodes.add(id);
   return result;
 }
 function setFocus(f){
@@ -808,19 +776,25 @@ function setFocus(f){
   }
   document.querySelectorAll("#legend .i[data-if]").forEach(ch=>{
     ch.classList.toggle("on",ch.dataset.if===f);
-    ch.classList.toggle("related",ch.dataset.if!==f&&focusIfaces.has(ch.dataset.if));
   });
   const all=document.querySelector("#legend .i[data-all]");
   if(all)all.classList.toggle("on",!f);
   const sel=document.getElementById("selection");
   sel.classList.toggle("on",!!f);
-  const hops=Math.max(0,focusIfaces.size-1);
-  sel.querySelector("b").textContent=f?(f+(hops?` +${hops} connected`:"")):"";
+  sel.querySelector("b").textContent=f||"";
 }
 svg.addEventListener("click",e=>{if(e.target===svg||e.target.classList.contains("zone"))setFocus(null);});
 
 function buildLegend(){
-  const ifs=new Set(); (curTopo.edges||[]).forEach(e=>ifs.add(e.iface));
+  // Build from the drawn canvas, not from every topology edge. The wiring layout
+  // only draws hub-adjacent geometry, so an interface whose tunnels never reach
+  // the hub has nothing to highlight — offering it a chip would dim the whole
+  // diagram and light nothing. Runs after render(), so the geometry is in place.
+  const ifs=new Set();
+  for(const el of svg.querySelectorAll("[data-ifc],[data-ifs]")){
+    if(el.dataset.ifc)ifs.add(el.dataset.ifc);
+    for(const i of (el.dataset.ifs||"").split("|"))if(i)ifs.add(i);
+  }
   const el=document.getElementById("legend");
   el.innerHTML=`<button type="button" class="i on" data-all>전체</button>`+[...ifs].sort(ifCmp).map(i=>
     `<button type="button" class="i" data-if="${esc(i)}"><span class="dt" style="background:${ifColor(i)}"></span>${esc(i)}</button>`).join("");
