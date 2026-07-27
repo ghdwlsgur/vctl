@@ -343,26 +343,12 @@ function attachVips(topo,N,spokes){
   return vipsBy;
 }
 
-// ---------- render ----------
-function render(topo){
-  curTopo=topo; svg.innerHTML=""; tunnels=[]; statusDots=new Map();vipFocusNodes=new Map();
-  const {N,E,hub}=prep(topo);
-  const gz=mk("g",{},svg),gg=mk("g",{},svg),gt=mk("g",{},svg),gf=mk("g",{},svg),gn=mk("g",{},svg),gd=mk("g",{},svg);
-  if(!hub){svg.setAttribute("viewBox","0 0 800 200");svg.setAttribute("width",800);svg.setAttribute("height",200);
-    mk("text",{x:40,y:60,class:"ntit"},gn).textContent="게이트웨이 없음 — 먼저 vctl wg sync 실행";return;}
-  const grp=(parent,ifc,meta={})=>{
-    const g=mk("g",{},parent);
-    if(ifc)g.dataset.ifc=ifc;
-    if(meta.nodes)g.dataset.nodes=JSON.stringify([].concat(meta.nodes).filter(Boolean));
-    if(meta.eids)g.dataset.eids=JSON.stringify([].concat(meta.eids).filter(Boolean));
-    if(meta.hubif)g.dataset.hubif=meta.hubif;
-    return g;
-  };
-
-  // hub-zone spokes become top chips; the rest go to right-hand zones
-  const {meshIf,spokes,mesh,hops,topSpokes,farSpokes}=wiringModel(N,E,hub);
-
-  // dynamic widths so full labels are visible
+// ---------- geometry: the layout grid, measured once ----------
+// Every column x, the hub's height, and each zone's box are derived from content
+// (longest label, peer counts, VIP stacks) rather than fixed, so this computes
+// them up front and hands the drawing phases one immutable record. rowH/clH ride
+// along because the zone drawing has to measure rows the same way this did.
+function wiringGeometry(topo,N,hub,{meshIf,mesh,hops,topSpokes,farSpokes},zmap,vipsBy){
   const HUBX=310, HUBW=Math.max(170,hub.label.length*7.2+26), NATX=HUBX+HUBW+130;
   const epNodes=farSpokes.map(s=>N.get(s.oid)||{});
   const epNeed=Math.max(0,...epNodes.map(n=>String(n.label||"").length*7+kindLabel(n.kind).length*5.2+48));
@@ -376,10 +362,7 @@ function render(topo){
   const HUBY=170;
   const ROWH=64,HOSTPAD=34;
 
-  const zmap=zoneBuckets(N,hub,{farSpokes,spokes,mesh,hops});
-  const vipsBy=attachVips(topo,N,spokes);
   const vipExtra=oid=>{const vs=vipsBy.get(oid);return vs?28+vs.length*17:0;};
-
   const zones=[...zmap.entries()].sort((a,b)=>b[1].length-a[1].length);
   // cluster same-parent endpoints so one physical host box holds all its VMs
   const clusterize=list=>{
@@ -408,27 +391,31 @@ function render(topo){
   const meshHeights=[...meshIf].map(ifc=>48+mesh.filter(s=>s.iface===ifc).length*20+44+180);
   const leftH=HUBY+hubH+84+meshHeights.reduce((a,b)=>a+b,0)+hops.length*180+160;
   const H=Math.max(zy+40,leftH,720), W=ZONE_R+20;
-  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
   const drawW=Math.min(W,1560);
-  sizeCanvas(drawW,Math.round(drawW*H/W));
+  return {HUBX,HUBW,NATX,EPW,EPX,LANE0,BANDX,BANDW,EXTX,ZONE_R,
+    remoteIf,hubH,HUBY,ROWH,HOSTPAD,zoneGeo,H,W,drawW,rowH,clH};
+}
 
-  // Architecture reading order. These quiet labels make the wiring scannable
-  // before the operator starts tracing individual coloured routes.
+// Column headings, the hub-zone box, and the NAT divider — the quiet backdrop
+// that makes the wiring scannable before anyone traces a coloured route.
+function drawChrome({gz},{ZONE_R,HUBX,NATX,EPX,BANDX,H},hub){
   mk("line",{x1:40,y1:64,x2:ZONE_R,y2:64,class:"lanerule"},gz);
   mk("text",{x:64,y:52,class:"lanehead"},gz).textContent="LOCAL FABRIC";
   mk("text",{x:HUBX,y:52,class:"lanehead"},gz).textContent="WIREGUARD HUB";
   mk("text",{x:NATX,y:52,class:"lanehead","text-anchor":"middle"},gz).textContent="EDGE / NAT";
   mk("text",{x:EPX,y:52,class:"lanehead"},gz).textContent="REMOTE ENDPOINTS";
   mk("text",{x:BANDX,y:52,class:"lanehead"},gz).textContent="ROUTED NETWORKS";
-
-  // zones: exactly two labels — hub zone (left) and far zones (right).
-  // heights are fixed up after drawing, once actual content extents are known.
-  const leftZoneRect=mk("rect",{x:40,y:90,width:NATX-90,height:H-140,rx:12,class:"zone"},gz);
+  // Exactly two zone labels: the hub zone here, the far zones with their rows.
+  mk("rect",{x:40,y:90,width:NATX-90,height:H-140,rx:12,class:"zone"},gz);
   mk("text",{x:56,y:114,class:"zlab"},gz).textContent=zoneKey(hub.dc);
-  const natLine=mk("line",{x1:NATX,y1:100,x2:NATX,y2:H-60,class:"nat"},gz);
+  mk("line",{x1:NATX,y1:100,x2:NATX,y2:H-60,class:"nat"},gz);
   mk("text",{x:NATX,y:90,class:"natlab","text-anchor":"middle"},gz).textContent="NAT / WAN";
+}
 
-  // local aggregate bands + grey bus into hub
+// The hub site's own networks: inventory /24s as bands on a grey bus into the
+// hub, plus the reverse-reach overlay. That overlay deliberately traces the same
+// path as the grey bus — it is route state on that wire, not second cabling.
+function drawLocalFabric({gg,gn,gd,gt,grp},{HUBX,HUBY},topo,N,hub,spokes){
   const aggm=new Map();
   for(const a of (topo.aggs||[]))if(zoneKey(a.dc)===zoneKey(hub.dc)){
     const c=aggm.get(a.cidr)||{cidr:a.cidr,count:0};c.count+=a.count;aggm.set(a.cidr,c);}
@@ -451,25 +438,24 @@ function render(topo){
     mk("path",{d:`M272,${HUBY+40} H${HUBX}`,class:"grey"},gg);
     mk("circle",{cx:HUBX,cy:HUBY+40,r:3,class:"jdot"},gd);
   }
-  // reverse-reach onto local bands: dashed colour elbow from the hub's left edge
-  // overlays the exact grey physical bus — it is route state on that wire, not
-  // a second piece of cabling.
-  {
-    for(const s of spokes)for(const b of (s.back||[]))for(const c of cidrs(b.allowed)){
-      const lb=localBand.get(c); if(!lb)continue;
-      const col=ifColor(s.iface);
-      const g2=grp(gt,s.iface,{eids:[s.e.id,b.id]}), g2d=grp(gd,s.iface,{eids:[s.e.id,b.id]});
-      lb.eids.add(s.e.id);lb.eids.add(b.id);lb.group.dataset.eids=JSON.stringify([...lb.eids]);
-      const d=`M${HUBX},${HUBY+40} H272 V${lb.y} H244`;
-      const pth=mk("path",{d,class:"reach",stroke:col},g2);
-      pth.dataset.overlay="local-bus";pth.dataset.cidr=c;
-      mk("circle",{cx:244,cy:lb.y,r:4,fill:col,class:"sdot"},g2d);
-      hot(pth,()=>[`${s.iface} → ${c}`,`역방향 도달 — ${(N.get(s.oid)||{}).label||""} 측 AllowedIPs · 클릭=포커스`]);
-      clickFocus(pth,s.iface);
-    }
+  for(const s of spokes)for(const b of (s.back||[]))for(const c of cidrs(b.allowed)){
+    const lb=localBand.get(c); if(!lb)continue;
+    const col=ifColor(s.iface);
+    const g2=grp(gt,s.iface,{eids:[s.e.id,b.id]}), g2d=grp(gd,s.iface,{eids:[s.e.id,b.id]});
+    lb.eids.add(s.e.id);lb.eids.add(b.id);lb.group.dataset.eids=JSON.stringify([...lb.eids]);
+    const d=`M${HUBX},${HUBY+40} H272 V${lb.y} H244`;
+    const pth=mk("path",{d,class:"reach",stroke:col},g2);
+    pth.dataset.overlay="local-bus";pth.dataset.cidr=c;
+    mk("circle",{cx:244,cy:lb.y,r:4,fill:col,class:"sdot"},g2d);
+    hot(pth,()=>[`${s.iface} → ${c}`,`역방향 도달 — ${(N.get(s.oid)||{}).label||""} 측 AllowedIPs · 클릭=포커스`]);
+    clickFocus(pth,s.iface);
   }
+}
 
-  // hub box + ports (full label)
+// The hub box and one listen port per remote interface. Returns where each port
+// sits so the tunnel phases can start their elbows exactly on it. The box is
+// marked keep so a focus never dims the thing everything else hangs off.
+function drawHub({gn,gd,grp},{HUBX,HUBW,HUBY,hubH,remoteIf},hub){
   const ghub=mk("g",{},gn); ghub.dataset.keep="1";
   nodeCard(ghub,{x:HUBX,y:HUBY,w:HUBW,h:hubH,node:hub,sub:hub.ip||"",cls:"hub"});
   const hubPort=new Map();
@@ -482,8 +468,14 @@ function render(topo){
     t.textContent=ifc; t.setAttribute("fill",col);
     hubPort.set(ifc,{x:HUBX+HUBW,y});
   });
+  return hubPort;
+}
 
-  // mesh stacks: full labels, dynamic width, generous spacing
+// Mesh interfaces collapse into one stacked box each: a /32 fan-out is a count,
+// not N separate boxes. Returns each stack's right-edge anchor (a DNAT VIP wire
+// lands there) and endY, the vertical cursor the hop chips continue from — the
+// left column is one running flow, so that hand-off has to be explicit.
+function drawMeshStacks({gn,gd,gt,grp},{HUBX,HUBY,hubH},N,hub,{meshIf,mesh}){
   let my=HUBY+hubH+84; let meshIdx=0; const meshGeo=new Map();
   for(const ifc of meshIf){
     const list=mesh.filter(s=>s.iface===ifc);
@@ -521,8 +513,13 @@ function render(topo){
     meshGeo.set(ifc,{x:64+mw,y:my+bh/2});
     my+=bh+44;
   }
+  return {meshGeo,endY:my};
+}
 
-  // top chips: spokes living in the hub zone (e.g. roaming admin client)
+// Spokes that live in the hub's own zone sit as a row of chips above the far
+// zones — a roaming admin client dialling into its own site, not a remote sub-
+// network. Returns their anchors so a chip-to-chip hop leg can find them.
+function drawTopChips({gn,gd,gt,gf,grp},{EPX,HUBX,HUBW,remoteIf},N,hub,topSpokes,hubPort){
   const topPos=new Map();
   topSpokes.forEach((s,i)=>{
     const n=N.get(s.oid); if(!n)return;
@@ -541,8 +538,16 @@ function render(topo){
       tunnelRun(g2t,g2f,{d,col,edge:s.e,iface:s.iface,title:`${s.iface} → ${n.label}`});
     }
   });
+  return topPos;
+}
 
-  // right zones: endpoint rows + bands (grey bus + per-tunnel dashed colour)
+// Each far zone: a box, its endpoint rows (VMs nested in their physical host),
+// the DNAT VIP stacks, and the reachable-CIDR bands on the right. Bands get a
+// grey underlay bus per endpoint lane with the per-tunnel colour dashed on top,
+// so one wire can carry several routes without drawing several wires. Returns
+// the endpoint anchors and band positions the hop phase attaches to.
+function drawZones({gz,gg,gn,gd,gt,gf,grp},geo,N,{vipsBy,meshGeo,hubPort}){
+  const {EPX,EPW,ZONE_R,BANDX,BANDW,LANE0,NATX,HUBX,HUBW,ROWH,HOSTPAD,remoteIf,zoneGeo,rowH,clH}=geo;
   const epPos=new Map(), bandPos=new Map();
   for(const zg of zoneGeo){
     const bands={list:[],by:new Map()};
@@ -652,9 +657,17 @@ function render(topo){
     }
   }
 
-  // second-hop edges: grouped per far node (a pair may have one edge per side),
-  // reach CIDRs land on the matching zone band when it exists, else chips below.
-  let hy=my+8;
+  return {epPos,bandPos};
+}
+
+// Edges that never touch the hub. Grouped per far node because a pair can be
+// collected from both sides, then drawn as chips continuing down the left column
+// from where the mesh stacks ended. A hop's reach CIDR lands on the matching zone
+// band when one was drawn, otherwise it gets its own chip underneath. The last
+// pass handles legs whose both ends are chips (a personal VM to a roaming client).
+function drawHops({gn,gd,gt,gf,grp},geo,N,hub,{hops,startY,epPos,bandPos,topPos}){
+  const {EPX,NATX,BANDX,EXTX,LANE0,zoneGeo}=geo;
+  let hy=startY+8;
   const hopBy=new Map(), extHops=[], rest=[], leftPos=new Map();
   for(const e of hops){
     const sp=epPos.get(e.source)||epPos.get(e.target);
@@ -741,6 +754,48 @@ function render(topo){
     tunnelRun(g2t,g2f,{d,col,edge:e,iface:e.iface,
       title:`${e.iface} · ${(N.get(e.source)||{}).label||e.source} ↔ ${(N.get(e.target)||{}).label||e.target}`});
   }
+}
+
+// ---------- render ----------
+function render(topo){
+  curTopo=topo; svg.innerHTML=""; tunnels=[]; statusDots=new Map();vipFocusNodes=new Map();
+  const {N,E,hub}=prep(topo);
+  const gz=mk("g",{},svg),gg=mk("g",{},svg),gt=mk("g",{},svg),gf=mk("g",{},svg),gn=mk("g",{},svg),gd=mk("g",{},svg);
+  if(!hub){svg.setAttribute("viewBox","0 0 800 200");svg.setAttribute("width",800);svg.setAttribute("height",200);
+    mk("text",{x:40,y:60,class:"ntit"},gn).textContent="게이트웨이 없음 — 먼저 vctl wg sync 실행";return;}
+  const grp=(parent,ifc,meta={})=>{
+    const g=mk("g",{},parent);
+    if(ifc)g.dataset.ifc=ifc;
+    if(meta.nodes)g.dataset.nodes=JSON.stringify([].concat(meta.nodes).filter(Boolean));
+    if(meta.eids)g.dataset.eids=JSON.stringify([].concat(meta.eids).filter(Boolean));
+    if(meta.hubif)g.dataset.hubif=meta.hubif;
+    return g;
+  };
+  // Paint targets, in z-order: zone chrome, grey bus, tunnels, flow animation,
+  // node boxes, dots. Each drawing phase appends to these, so their creation
+  // order here is what fixes what covers what.
+  const L={gz,gg,gt,gf,gn,gd,grp};
+
+  // Measure first, then draw. Each phase below returns the anchors the later ones
+  // need — hub ports, mesh anchors, endpoint rows, band slots — so the couplings
+  // between them are the arguments rather than a shared pool of locals.
+  const model=wiringModel(N,E,hub);
+  const {spokes,mesh,hops,topSpokes,farSpokes}=model;
+  const zmap=zoneBuckets(N,hub,{farSpokes,spokes,mesh,hops});
+  const vipsBy=attachVips(topo,N,spokes);
+  const geo=wiringGeometry(topo,N,hub,model,zmap,vipsBy);
+  const {H,W,drawW}=geo;
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  sizeCanvas(drawW,Math.round(drawW*H/W));
+
+  drawChrome(L,geo,hub);
+  drawLocalFabric(L,geo,topo,N,hub,spokes);
+  const hubPort=drawHub(L,geo,hub);
+  const {meshGeo,endY:meshEndY}=drawMeshStacks(L,geo,N,hub,model);
+  const topPos=drawTopChips(L,geo,N,hub,topSpokes,hubPort);
+  const {epPos,bandPos}=drawZones(L,geo,N,{vipsBy,meshGeo,hubPort});
+  drawHops(L,geo,N,hub,{hops,startY:meshEndY,epPos,bandPos,topPos});
+
   buildLegend(); applyStats(); setFocus(focusIf);
   try{const bb=svg.getBBox();const H2=Math.min(H,bb.y+bb.height+30);
     svg.setAttribute("viewBox",`0 0 ${W} ${H2}`);
