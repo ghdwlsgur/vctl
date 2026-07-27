@@ -2,45 +2,103 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>vctl · WireGuard live</title>
 <style>
   :root{
-    --bg:#0d1117; --panel:#161b22; --line:#232b36; --ring:#2d3745;
-    --ink:#e6edf3; --ink2:#9aa7b4; --muted:#5c6773; --acc:#f0883e;
+    color-scheme:dark;
+    --bg:#090d12; --chrome:#0e141b; --panel:#151c24; --panel2:#111820;
+    --line:#202a35; --ring:#344252;
+    --ink:#e8edf2; --ink2:#a9b5c2; --muted:#718090; --acc:#f0883e;
     --c0:#4c8dff; --c1:#ef6f53; --c2:#35c07d; --c3:#f2c94c; --c4:#cf6fb8; --c5:#8b97a6;
     --c6:#7bc2e8; --c7:#b8a1ff;
     --ok:#3fb950; --warn:#e3b341; --crit:#f85149;
+    --shadow:0 18px 50px rgba(0,0,0,.28);
   }
   *{box-sizing:border-box} html,body{height:100%}
   body{margin:0;background:var(--bg);color:var(--ink);
-    font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;display:flex;flex-direction:column}
-  header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-  header b{color:var(--acc)}
-  #meta{color:var(--ink2);font-size:12px}
-  .health{margin-left:auto;font-size:11.5px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+    font:13px/1.45 "SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    display:flex;flex-direction:column;overflow:hidden}
+  header{position:relative;z-index:5;display:flex;align-items:center;gap:24px;min-height:68px;
+    padding:10px 18px;background:rgba(14,20,27,.96);border-bottom:1px solid var(--line);
+    box-shadow:0 8px 30px rgba(0,0,0,.16)}
+  .brand{display:flex;align-items:center;gap:11px;min-width:250px}
+  .brandmark{display:grid;place-items:center;width:34px;height:34px;border:1px solid rgba(240,136,62,.42);
+    background:rgba(240,136,62,.08);color:var(--acc);font-size:14px;font-weight:800;letter-spacing:-.08em;
+    clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+  .eyebrow{color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.16em;text-transform:uppercase}
+  h1{margin:1px 0 0;font-size:15px;line-height:1.2;letter-spacing:-.02em}
+  h1 span{color:var(--ink2);font-weight:500}
+  #meta{display:flex;align-items:stretch;gap:6px;min-width:0}
+  .metric{min-width:74px;padding:5px 10px;border-left:1px solid var(--line)}
+  .metric:first-child{border-left:0}
+  .metric strong{display:block;color:var(--ink);font-size:13px;line-height:1.15;font-variant-numeric:tabular-nums}
+  .metric span{display:block;margin-top:2px;color:var(--muted);font-size:8.5px;letter-spacing:.1em;text-transform:uppercase}
+  .live-summary{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--ink2);font-size:10.5px;white-space:nowrap}
+  .live-summary .pulse{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+  .live-summary.ok .pulse{background:var(--ok);box-shadow:0 0 0 4px rgba(63,185,80,.09)}
+  .live-summary.warn .pulse{background:var(--warn);box-shadow:0 0 0 4px rgba(227,179,65,.09)}
+  .health{display:inline-flex;align-items:center;gap:7px;font-size:10.5px;padding:5px 10px;border-radius:4px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--muted);white-space:nowrap}
+  .health::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 7px currentColor}
   .health.ok{color:var(--ok)} .health.fail{color:var(--crit)}
-  #legend{display:flex;gap:10px;flex-wrap:wrap;padding:7px 16px;border-bottom:1px solid var(--line);
-    color:var(--ink2);font-size:11.5px;align-items:center}
-  #legend .i{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border:1px solid transparent;border-radius:999px;cursor:pointer}
-  #legend .i:hover{border-color:var(--ring)}
-  #legend .i.on{border-color:var(--acc);color:var(--ink)}
-  #legend .dt{width:9px;height:9px;border-radius:50%;border:2px solid var(--panel);box-shadow:0 0 0 1px var(--line)}
-  main{flex:1;overflow:auto}
-  svg#net{display:block;margin:0 auto}
-  #errs{color:var(--crit);font-size:11px;white-space:pre-wrap;padding:0 16px 8px}
+  #toolbar{position:relative;z-index:4;display:flex;align-items:center;gap:12px;min-height:43px;padding:6px 18px;
+    background:var(--chrome);border-bottom:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.12)}
+  .tool-label{color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.14em;white-space:nowrap}
+  #legend{display:flex;gap:5px;flex-wrap:wrap;color:var(--ink2);font-size:10.5px;align-items:center}
+  #legend .i{appearance:none;display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:3px 8px;
+    border:1px solid transparent;border-radius:4px;background:transparent;color:inherit;font:inherit;cursor:pointer}
+  #legend .i:hover{border-color:var(--ring);background:var(--panel)}
+  #legend .i:focus-visible,.view-controls button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+  #legend .i.on{border-color:rgba(240,136,62,.62);background:rgba(240,136,62,.08);color:var(--ink)}
+  #legend .i.related{border-color:var(--ring);background:rgba(113,128,144,.08);color:var(--ink2)}
+  #legend .dt{width:8px;height:8px;border-radius:50%;border:2px solid var(--panel);box-shadow:0 0 0 1px var(--line)}
+  .tool-spacer{flex:1}
+  #selection{display:none;align-items:center;gap:7px;padding:4px 8px;background:rgba(240,136,62,.07);
+    border:1px solid rgba(240,136,62,.32);border-radius:4px;color:var(--ink2);font-size:10px}
+  #selection.on{display:inline-flex}
+  #selection b{color:var(--acc)}
+  #selection button{appearance:none;border:0;background:transparent;color:var(--muted);font:inherit;cursor:pointer;padding:0 2px}
+  .status-key{display:flex;align-items:center;gap:10px;padding:0 12px;border-left:1px solid var(--line);
+    color:var(--muted);font-size:9.5px;white-space:nowrap}
+  .status-key span{display:inline-flex;align-items:center;gap:5px}
+  .status-key i{width:6px;height:6px;border-radius:50%;background:currentColor}
+  .status-key .up{color:var(--ok)} .status-key .idle{color:var(--warn)} .status-key .down{color:var(--crit)}
+  .view-controls{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+  .view-controls button{appearance:none;width:30px;height:28px;border:0;border-left:1px solid var(--line);
+    background:var(--panel2);color:var(--ink2);font:600 12px/1 inherit;cursor:pointer}
+  .view-controls button:first-child{border-left:0;width:auto;padding:0 9px;font-size:9px;letter-spacing:.06em}
+  .view-controls button:hover{background:var(--panel);color:var(--ink)}
+  main{position:relative;flex:1;overflow:auto;overscroll-behavior:contain;
+    background-color:var(--bg);
+    background-image:linear-gradient(rgba(113,128,144,.045) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(113,128,144,.045) 1px,transparent 1px),
+      radial-gradient(circle at 48% 0,rgba(76,141,255,.055),transparent 38%);
+    background-size:24px 24px,24px 24px,100% 100%}
+  main::before{content:"ARCHITECTURE CANVAS";position:sticky;left:16px;top:12px;z-index:2;display:inline-block;
+    padding:4px 7px;border:1px solid var(--line);background:rgba(9,13,18,.86);color:#526170;
+    font-size:8px;font-weight:700;letter-spacing:.14em;pointer-events:none}
+  svg#net{display:block;margin:-18px auto 0;transition:width .18s ease-out,height .18s ease-out}
+  #errs{position:absolute;z-index:10;right:16px;bottom:12px;max-width:min(560px,calc(100% - 32px));margin:0;
+    color:#ff9b96;background:rgba(39,15,17,.96);border:1px solid rgba(248,81,73,.35);border-radius:5px;
+    font-size:10.5px;white-space:pre-wrap;padding:8px 10px;box-shadow:var(--shadow)}
+  #errs:empty{display:none}
 
-  .zone{fill:var(--panel);fill-opacity:.28;stroke:var(--ring);stroke-width:1.3;stroke-dasharray:6 5}
-  .zlab{fill:var(--ink2);font-size:12.5px;font-weight:700;letter-spacing:.06em}
+  .zone{fill:var(--panel);fill-opacity:.34;stroke:var(--ring);stroke-width:1.1;stroke-dasharray:6 5}
+  .zlab{fill:var(--ink2);font-size:12px;font-weight:700;letter-spacing:.08em}
   .zsub{fill:var(--muted);font-size:10.5px}
-  .hbox{fill:var(--panel);fill-opacity:.6;stroke:var(--ring);stroke-width:1.2}
-  .htit{fill:var(--ink2);font-size:10.5px;font-weight:700}
-  .nbox{fill:var(--panel);stroke:var(--ring);stroke-width:1.3}
+  .lanehead{fill:#586675;font-size:9px;font-weight:700;letter-spacing:.14em}
+  .lanerule{stroke:var(--line);stroke-width:1}
+  .hbox{fill:var(--panel2);fill-opacity:.8;stroke:var(--ring);stroke-width:1.1}
+  .htit{fill:var(--ink2);font-size:9.5px;font-weight:700;letter-spacing:.03em}
+  .nbox{fill:var(--panel);stroke:var(--ring);stroke-width:1.2;filter:drop-shadow(0 5px 10px rgba(0,0,0,.18))}
   .nbox.hub{stroke:var(--acc);stroke-width:1.8}
   .nbox.vmb{stroke:var(--acc);stroke-width:1.1}
   .nbox.band{stroke-width:1}
   .nbox.ext{stroke-dasharray:5 4}
   .ntit{fill:var(--ink);font-size:12px;font-weight:700}
   .nsub{fill:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
+  .nkind{fill:var(--muted);font-size:7.8px;font-weight:700;letter-spacing:.1em;text-transform:uppercase}
   .btit{fill:var(--ink);font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
   .bsub{fill:var(--muted);font-size:9.5px}
   .plab{font-size:9px;font-weight:700}
@@ -60,22 +118,47 @@
   .jdot{fill:var(--ring)}
   .hot{cursor:pointer}
   .dim{opacity:.06;transition:opacity .15s}
-  @media (prefers-reduced-motion:reduce){.flow{display:none}}
+  @media (prefers-reduced-motion:reduce){.flow{display:none}svg#net{transition:none}}
   #tip{position:fixed;pointer-events:none;z-index:30;background:var(--panel);border:1px solid var(--ring);
-    border-radius:8px;padding:7px 10px;font-size:11.5px;box-shadow:0 8px 24px rgba(0,0,0,.5);
-    opacity:0;transition:opacity .1s;max-width:300px}
-  #tip .t{font-weight:700;margin-bottom:2px} #tip .m{color:var(--muted)}
+    border-radius:5px;padding:9px 11px;font-size:11px;box-shadow:var(--shadow);
+    opacity:0;transition:opacity .1s;max-width:340px}
+  #tip .t{font-weight:700;margin-bottom:3px;color:var(--ink)} #tip .m{color:var(--ink2);line-height:1.5}
+  @media(max-width:980px){
+    header{gap:12px;flex-wrap:wrap}.brand{min-width:210px}#meta{order:3;width:100%;border-top:1px solid var(--line);padding-top:7px}
+    .live-summary{margin-left:auto}.status-key{display:none}#toolbar{overflow-x:auto}.tool-spacer{min-width:12px}
+  }
 </style>
 </head>
 <body>
 <header>
-  <b>WireGuard</b> <span>배선도 · live</span>
-  <span id="meta">loading…</span>
-  <span class="health" id="health">connecting…</span>
+  <div class="brand">
+    <div class="brandmark">V/</div>
+    <div><div class="eyebrow">vctl network observability</div><h1>WireGuard <span>/ topology</span></h1></div>
+  </div>
+  <div id="meta" aria-label="토폴로지 요약">
+    <div class="metric"><strong id="site-count">–</strong><span>Sites</span></div>
+    <div class="metric"><strong id="gateway-count">–</strong><span>Gateways</span></div>
+    <div class="metric"><strong id="tunnel-count">–</strong><span>Tunnels</span></div>
+    <div class="metric"><strong id="updated-at">–</strong><span>Updated</span></div>
+  </div>
+  <div class="live-summary" id="live-summary"><i class="pulse"></i><span>터널 상태 대기 중</span></div>
+  <span class="health" id="health">연결 중</span>
 </header>
-<div id="legend"></div>
-<main><svg id="net"></svg></main>
-<pre id="errs"></pre>
+<div id="toolbar">
+  <span class="tool-label">INTERFACES</span>
+  <div id="legend" aria-label="인터페이스 필터"></div>
+  <span id="selection"><b></b> 선택됨 <button type="button" aria-label="선택 해제">×</button></span>
+  <span class="tool-spacer"></span>
+  <div class="status-key" aria-label="터널 상태 범례">
+    <span class="up"><i></i>active</span><span class="idle"><i></i>idle</span><span class="down"><i></i>down</span>
+  </div>
+  <div class="view-controls" aria-label="화면 배율">
+    <button type="button" id="zoom-fit" title="화면에 맞춤">FIT</button>
+    <button type="button" id="zoom-out" aria-label="축소">−</button>
+    <button type="button" id="zoom-in" aria-label="확대">+</button>
+  </div>
+</div>
+<main id="canvas"><svg id="net" role="img" aria-label="WireGuard 네트워크 아키텍처"></svg><pre id="errs"></pre></main>
 <div id="tip"></div>
 <script>
 "use strict";
@@ -98,8 +181,28 @@ const hsLabel=s=>s==null||s<0?"no-handshake":s<=180?`up · ${s}s`:`idle · ${Mat
 const zoneKey=dc=>dc?String(dc).split("-")[0]:"etc";
 const ifCmp=(a,b)=>{const m=x=>/^(.*?)(\d*)$/.exec(String(x));const A=m(a),B=m(b);
   return A[1]===B[1]?(parseInt(A[2]||"-1")-parseInt(B[2]||"-1")):(A[1]<B[1]?-1:1)};
-const svg=document.getElementById("net"), tip=document.getElementById("tip");
+const kindLabel=k=>({"gateway":"WG HUB","physical-host":"PHYSICAL HOST",vm:"VIRTUAL MACHINE",
+  device:"DEVICE",external:"EXTERNAL PEER"}[k]||String(k||"ENDPOINT").replaceAll("-"," ").toUpperCase());
+const svg=document.getElementById("net"), tip=document.getElementById("tip"), canvas=document.getElementById("canvas");
 let stats={}, tunnels=[], statusDots=new Map(), curTopo=null, focusIf=null;
+let focusIfaces=new Set(),focusNodes=new Set(),focusEdges=new Set(),focusHubIfaces=new Set();
+let focusCIDRs=new Set();
+let vipFocusNodes=new Map();
+let canvasBase={w:800,h:200},zoom=1;
+
+function sizeCanvas(w,h){
+  canvasBase={w,h};
+  svg.setAttribute("width",Math.round(w*zoom));
+  svg.setAttribute("height",Math.round(h*zoom));
+}
+function setZoom(next){
+  zoom=Math.max(.55,Math.min(1.8,next));
+  sizeCanvas(canvasBase.w,canvasBase.h);
+}
+function fitCanvas(){
+  const room=Math.max(320,canvas.clientWidth-44);
+  setZoom(Math.min(1,room/canvasBase.w));
+}
 
 function hot(el,fn){el.classList.add("hot");
   el.addEventListener("mouseenter",ev=>{const[t,m]=fn();tip.innerHTML=`<div class="t">${esc(t)}</div><div class="m">${esc(m)}</div>`;tip.style.opacity=1;mv(ev);});
@@ -131,12 +234,19 @@ const slash32=a=>String(a||"").split(",").map(s=>s.trim()).find(s=>/\/32$/.test(
 
 // ---------- render ----------
 function render(topo){
-  curTopo=topo; svg.innerHTML=""; tunnels=[]; statusDots=new Map();
+  curTopo=topo; svg.innerHTML=""; tunnels=[]; statusDots=new Map();vipFocusNodes=new Map();
   const {N,E,hub}=prep(topo);
   const gz=mk("g",{},svg),gg=mk("g",{},svg),gt=mk("g",{},svg),gf=mk("g",{},svg),gn=mk("g",{},svg),gd=mk("g",{},svg);
   if(!hub){svg.setAttribute("viewBox","0 0 800 200");svg.setAttribute("width",800);svg.setAttribute("height",200);
     mk("text",{x:40,y:60,class:"ntit"},gn).textContent="게이트웨이 없음 — 먼저 vctl wg sync 실행";return;}
-  const grp=(parent,ifc)=>{const g=mk("g",{},parent);if(ifc)g.dataset.ifc=ifc;return g};
+  const grp=(parent,ifc,meta={})=>{
+    const g=mk("g",{},parent);
+    if(ifc)g.dataset.ifc=ifc;
+    if(meta.nodes)g.dataset.nodes=JSON.stringify([].concat(meta.nodes).filter(Boolean));
+    if(meta.eids)g.dataset.eids=JSON.stringify([].concat(meta.eids).filter(Boolean));
+    if(meta.hubif)g.dataset.hubif=meta.hubif;
+    return g;
+  };
 
   // hub spokes / mesh classification
   const touch=new Map();
@@ -164,8 +274,9 @@ function render(topo){
 
   // dynamic widths so full labels are visible
   const HUBX=310, HUBW=Math.max(170,hub.label.length*7.2+26), NATX=HUBX+HUBW+130;
-  const epLabels=farSpokes.map(s=>(N.get(s.oid)||{}).label||"");
-  const EPW=Math.min(320,Math.max(210,Math.max(0,...epLabels.map(l=>l.length))*7+26));
+  const epNodes=farSpokes.map(s=>N.get(s.oid)||{});
+  const epNeed=Math.max(0,...epNodes.map(n=>String(n.label||"").length*7+kindLabel(n.kind).length*5.2+48));
+  const EPW=Math.min(340,Math.max(220,epNeed));
   const hasExt=[...N.values()].some(n=>n.kind==="external");
   const EPX=NATX+50, LANE0=EPX+EPW+34, BANDX=LANE0+150, BANDW=400;
   const EXTX=BANDX+BANDW+28, ZONE_R=EXTX+(hasExt?196:-4)+(hasExt?16:0);
@@ -192,7 +303,13 @@ function render(topo){
     for(const s of spokes){const n=N.get(s.oid);if(!n)continue;
       const tok=String(n.label).split(/[\s(]/)[0];
       if(tok&&v.label.includes(tok)&&(!best||tok.length>best.tok))best={oid:s.oid,tok:tok.length};}
-    if(best){if(!vipsBy.has(best.oid))vipsBy.set(best.oid,[]);vipsBy.get(best.oid).push(v);}
+    if(best){
+      if(!vipsBy.has(best.oid))vipsBy.set(best.oid,[]);vipsBy.get(best.oid).push(v);
+      if(v.iface){
+        if(!vipFocusNodes.has(v.iface))vipFocusNodes.set(v.iface,new Set());
+        vipFocusNodes.get(v.iface).add(best.oid);
+      }
+    }
   }
   const vipExtra=oid=>{const vs=vipsBy.get(oid);return vs?28+vs.length*17:0;};
 
@@ -226,7 +343,16 @@ function render(topo){
   const H=Math.max(zy+40,leftH,720), W=ZONE_R+20;
   svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
   const drawW=Math.min(W,1560);
-  svg.setAttribute("width",drawW); svg.setAttribute("height",Math.round(drawW*H/W));
+  sizeCanvas(drawW,Math.round(drawW*H/W));
+
+  // Architecture reading order. These quiet labels make the wiring scannable
+  // before the operator starts tracing individual coloured routes.
+  mk("line",{x1:40,y1:64,x2:ZONE_R,y2:64,class:"lanerule"},gz);
+  mk("text",{x:64,y:52,class:"lanehead"},gz).textContent="LOCAL FABRIC";
+  mk("text",{x:HUBX,y:52,class:"lanehead"},gz).textContent="WIREGUARD HUB";
+  mk("text",{x:NATX,y:52,class:"lanehead","text-anchor":"middle"},gz).textContent="EDGE / NAT";
+  mk("text",{x:EPX,y:52,class:"lanehead"},gz).textContent="REMOTE ENDPOINTS";
+  mk("text",{x:BANDX,y:52,class:"lanehead"},gz).textContent="ROUTED NETWORKS";
 
   // zones: exactly two labels — hub zone (left) and far zones (right).
   // heights are fixed up after drawing, once actual content extents are known.
@@ -242,13 +368,15 @@ function render(topo){
   let ly=150; const localBand=new Map();
   const laggs=[...aggm.values()].sort((a,b)=>b.count-a.count).slice(0,6);
   for(const a of laggs){
-    const r=mk("rect",{x:64,y:ly,width:180,height:42,rx:8,class:"nbox band"},gn);
-    mk("text",{x:78,y:ly+18,class:"btit"},gn).textContent=a.cidr;
-    mk("text",{x:78,y:ly+32,class:"bsub"},gn).textContent=`인벤토리 ×${a.count}`;
+    const gb=grp(gn,null,{eids:[]});
+    gb.dataset.cidr=a.cidr;
+    const r=mk("rect",{x:64,y:ly,width:180,height:42,rx:8,class:"nbox band"},gb);
+    mk("text",{x:78,y:ly+18,class:"btit"},gb).textContent=a.cidr;
+    mk("text",{x:78,y:ly+32,class:"bsub"},gb).textContent=`인벤토리 ×${a.count}`;
     hot(r,()=>[a.cidr,`허브 사이트 로컬 대역 · 호스트 ${a.count}대`]);
     mk("path",{d:`M244,${ly+21} H272`,class:"grey"},gg);
     mk("circle",{cx:244,cy:ly+21,r:3,class:"jdot"},gd);
-    localBand.set(a.cidr,{x:244,y:ly+21,ref:0});
+    localBand.set(a.cidr,{x:244,y:ly+21,ref:0,group:gb,eids:new Set()});
     ly+=54;
   }
   if(laggs.length){
@@ -257,19 +385,18 @@ function render(topo){
     mk("circle",{cx:HUBX,cy:HUBY+40,r:3,class:"jdot"},gd);
   }
   // reverse-reach onto local bands: dashed colour elbow from the hub's left edge
-  // down to a dot on the band — "seoul 쪽이 이 터널로 이 대역에 도달"
+  // overlays the exact grey physical bus — it is route state on that wire, not
+  // a second piece of cabling.
   {
-    const rif=new Map();
     for(const s of spokes)for(const b of (s.back||[]))for(const c of cidrs(b.allowed)){
       const lb=localBand.get(c); if(!lb)continue;
-      if(!rif.has(s.iface))rif.set(s.iface,rif.size);
-      const idx=rif.get(s.iface), col=ifColor(s.iface);
-      const lane=282+idx*10, hy2=HUBY+62+idx*14, k=lb.ref++;
-      const doty=lb.y-8+k*14, dotx=256;
-      const g2=grp(gt,s.iface), g2d=grp(gd,s.iface);
-      const d=`M${HUBX-6},${hy2} H${lane} V${doty} H${dotx+5}`;
+      const col=ifColor(s.iface);
+      const g2=grp(gt,s.iface,{eids:[s.e.id,b.id]}), g2d=grp(gd,s.iface,{eids:[s.e.id,b.id]});
+      lb.eids.add(s.e.id);lb.eids.add(b.id);lb.group.dataset.eids=JSON.stringify([...lb.eids]);
+      const d=`M${HUBX},${HUBY+40} H272 V${lb.y} H244`;
       const pth=mk("path",{d,class:"reach",stroke:col},g2);
-      mk("circle",{cx:dotx,cy:doty,r:4,fill:col,class:"sdot"},g2d);
+      pth.dataset.overlay="local-bus";pth.dataset.cidr=c;
+      mk("circle",{cx:244,cy:lb.y,r:4,fill:col,class:"sdot"},g2d);
       hot(pth,()=>[`${s.iface} → ${c}`,`역방향 도달 — ${(N.get(s.oid)||{}).label||""} 측 AllowedIPs · 클릭=포커스`]);
       clickFocus(pth,s.iface);
     }
@@ -278,12 +405,13 @@ function render(topo){
   // hub box + ports (full label)
   const ghub=mk("g",{},gn); ghub.dataset.keep="1";
   mk("rect",{x:HUBX,y:HUBY,width:HUBW,height:hubH,rx:9,class:"nbox hub"},ghub);
-  mk("text",{x:HUBX+12,y:HUBY+20,class:"ntit"},ghub).textContent=hub.label;
-  mk("text",{x:HUBX+12,y:HUBY+35,class:"nsub"},ghub).textContent=hub.ip||"";
+  mk("text",{x:HUBX+12,y:HUBY+14,class:"nkind"},ghub).textContent=kindLabel(hub.kind);
+  mk("text",{x:HUBX+12,y:HUBY+31,class:"ntit"},ghub).textContent=hub.label;
+  mk("text",{x:HUBX+12,y:HUBY+47,class:"nsub"},ghub).textContent=hub.ip||"";
   const hubPort=new Map();
   remoteIf.forEach((ifc,i)=>{
     const y=HUBY+56+i*38, col=ifColor(ifc), port=(hub.ifaces||[]).find(x=>x.name===ifc);
-    const g2=grp(gd,ifc);
+    const g2=grp(gd,ifc,{hubif:ifc});
     const d=mk("circle",{cx:HUBX+HUBW,cy:y,r:5.5,fill:col,class:"pdot hot"},g2);
     hot(d,()=>[`${ifc} :${port?port.port:"?"}`,"허브 리슨 포트 · 클릭=포커스"]); clickFocus(d,ifc);
     const t=mk("text",{x:HUBX+HUBW-10,y:y+3.5,class:"plab","text-anchor":"end"},g2);
@@ -298,12 +426,15 @@ function render(topo){
     const labels=list.map(s=>((N.get(s.oid)||{}).label||s.oid)+"");
     const mw=Math.min(280,Math.max(200,Math.max(0,...labels.map(l=>l.length))*6.6+52));
     const col=ifColor(ifc), bh=48+list.length*20;
-    const g2=grp(gn,ifc), g2d=grp(gd,ifc), g2t=grp(gt,ifc);
+    const meshEids=list.map(s=>s.e.id),meshNodes=list.map(s=>s.oid);
+    const g2=grp(gn,ifc,{nodes:meshNodes,eids:meshEids}), g2d=grp(gd,ifc,{nodes:meshNodes,eids:meshEids}),
+      g2t=grp(gt,ifc,{eids:meshEids});
     const rset=[...new Set(list.flatMap(x=>(x.back||[]).flatMap(b=>cidrs(b.allowed))))];
     const box=mk("rect",{x:64,y:my,width:mw,height:bh,rx:9,class:"nbox"},g2);
-    mk("text",{x:76,y:my+18,class:"ntit"},g2).textContent=`${ifc} 메시 ×${list.length}`;
+    mk("text",{x:76,y:my+13,class:"nkind"},g2).textContent="LOCAL MESH";
+    mk("text",{x:76,y:my+28,class:"ntit"},g2).textContent=`${ifc} 메시 ×${list.length}`;
     const port=(hub.ifaces||[]).find(x=>x.name===ifc);
-    mk("text",{x:76,y:my+32,class:"nsub"},g2).textContent=":"+(port?port.port:"?");
+    mk("text",{x:76,y:my+42,class:"nsub"},g2).textContent=":"+(port?port.port:"?");
     hot(box,()=>[`${ifc} 메시`,`허브 ↔ 로컬 피어 ${list.length}대 /32 팬아웃`+
       (rset.length?` · 피어측 AllowedIPs: ${rset.join(", ")}`:"")+" · 클릭=포커스"]); clickFocus(box,ifc);
     const pdx=HUBX+28+meshIdx*22, pdy=HUBY+hubH; meshIdx++;
@@ -335,10 +466,12 @@ function render(topo){
     const n=N.get(s.oid); if(!n)return;
     const col=ifColor(s.iface), cw=Math.max(200,n.label.length*7+26);
     const cx0=EPX+i*(cw+24), cy=96;
-    const g2=grp(gn,s.iface), g2d=grp(gd,s.iface), g2t=grp(gt,s.iface), g2f=grp(gf,s.iface);
+    const g2=grp(gn,s.iface,{nodes:s.oid}), g2d=grp(gd,s.iface,{nodes:s.oid,eids:s.e.id}),
+      g2t=grp(gt,s.iface,{eids:s.e.id}), g2f=grp(gf,s.iface,{eids:s.e.id});
     const box=mk("rect",{x:cx0,y:cy,width:cw,height:50,rx:8,class:"nbox"},g2);
-    mk("text",{x:cx0+12,y:cy+20,class:"ntit"},g2).textContent=n.label;
-    mk("text",{x:cx0+12,y:cy+36,class:"nsub"},g2).textContent=[n.ip,n.tunnelIp].filter(Boolean).join(" · ");
+    mk("text",{x:cx0+12,y:cy+13,class:"nkind"},g2).textContent=kindLabel(n.kind);
+    mk("text",{x:cx0+12,y:cy+28,class:"ntit"},g2).textContent=n.label;
+    mk("text",{x:cx0+12,y:cy+43,class:"nsub"},g2).textContent=[n.ip,n.tunnelIp].filter(Boolean).join(" · ");
     hot(box,()=>[n.label,`${n.kind} · ${hub.dc?zoneKey(hub.dc):""} (허브 사이트로 다이얼인)`]); clickFocus(box,s.iface);
     topPos.set(s.oid,{x:cx0,y:cy,k:1});
     const dd=mk("circle",{cx:cx0,cy:cy+25,r:5.5,fill:col,class:"pdot hot"},g2d);
@@ -369,19 +502,22 @@ function render(topo){
     const parent=cl.parent;
     if(parent){
       const gp=mk("g",{},gn); gp.dataset.ifs=cl.items.map(x=>x.iface||"").filter(Boolean).join("|");
+      gp.dataset.nodes=JSON.stringify(cl.items.map(x=>x.oid));
       mk("rect",{x:EPX-10,y:ry,width:EPW+20,height:clH(cl),rx:10,class:"hbox"},gp);
-      mk("text",{x:EPX+2,y:ry+16,class:"htit"},gp).textContent=parent.label+(parent.ip?" · "+parent.ip:"");
+      mk("text",{x:EPX+2,y:ry+16,class:"htit"},gp).textContent="PHYSICAL HOST · "+parent.label+(parent.ip?" · "+parent.ip:"");
     }
     let inY=parent?ry+HOSTPAD-6:ry;
     for(const s of cl.items){
       const n=N.get(s.oid); if(!n)continue;
-      const g2=grp(gn,s.iface||undefined), g2d=grp(gd,s.iface||undefined);
+      const g2=grp(gn,s.iface||undefined,{nodes:s.oid}),
+        g2d=grp(gd,s.iface||undefined,{nodes:s.oid,eids:s.e&&s.e.id});
       let by=inY;
       const vips=vipsBy.get(s.oid)||[], vh=vips.length?28+vips.length*17:0;
       const box=mk("rect",{x:EPX,y:by,width:EPW,height:ROWH-10+vh,rx:8,class:"nbox"+(n.kind==="vm"?" vmb":"")},g2);
-      mk("text",{x:EPX+12,y:by+20,class:"ntit"},g2).textContent=n.label;
-      mk("text",{x:EPX+12,y:by+36,class:"nsub"},g2).textContent=[n.ip,n.tunnelIp].filter(Boolean).join(" · ");
-      if(n.warnings&&n.warnings.length)mk("text",{x:EPX+EPW-10,y:by+16,class:"warnb","text-anchor":"end"},g2).textContent="⚠";
+      mk("text",{x:EPX+12,y:by+13,class:"nkind"},g2).textContent=kindLabel(n.kind);
+      mk("text",{x:EPX+12,y:by+29,class:"ntit"},g2).textContent=n.label;
+      mk("text",{x:EPX+12,y:by+45,class:"nsub"},g2).textContent=[n.ip,n.tunnelIp].filter(Boolean).join(" · ");
+      if(n.warnings&&n.warnings.length)mk("text",{x:EPX+EPW-12,y:by+45,class:"warnb","text-anchor":"end"},g2).textContent="WARNING";
       hot(box,()=>[n.label,`${n.kind}${n.dc?" · "+n.dc:""}${n.observed?" · 관측 "+n.observed:""}${n.warnings?" · "+n.warnings.join("; "):""}`]);
       if(s.iface)clickFocus(box,s.iface);
       if(vips.length){ // ledger DNAT VIPs stacked vertically, beads on a wire
@@ -418,7 +554,7 @@ function render(topo){
           `${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} · tx ${fmtRate(st.tx)}${s.back.length?" · 역방향 "+cidrs(s.back[0].allowed).join(","):""}`];});
         clickFocus(din,s.iface);
         if(port){
-          const g2t=grp(gt,s.iface), g2f=grp(gf,s.iface);
+          const g2t=grp(gt,s.iface,{eids:s.e.id}), g2f=grp(gf,s.iface,{eids:s.e.id});
           const lane=HUBX+HUBW+26+remoteIf.indexOf(s.iface)*16;
           const d=`M${port.x+6},${port.y} H${lane} V${cy} H${EPX-6}`;
           const base=mk("path",{d,class:"tun",stroke:col},g2t);
@@ -448,13 +584,19 @@ function render(topo){
     for(const b of bands.list){
       const hgt=Math.max(44,20+b.refs.length*17);
       const gb=mk("g",{},gn); gb.dataset.ifs=b.refs.map(r=>r.iface).join("|");
+      gb.dataset.eids=JSON.stringify(b.refs.map(r=>r.eid));
+      gb.dataset.cidr=b.cidr;
       const r=mk("rect",{x:BANDX,y:byy,width:BANDW,height:hgt,rx:8,class:"nbox band"},gb);
       mk("text",{x:BANDX+14,y:byy+20,class:"btit"},gb).textContent=b.cidr;
       hot(r,()=>[b.cidr,"도달: "+b.refs.map(x=>x.iface).join(", ")]);
-      bandPos.set(b.cidr,{y:byy,n:b.refs.length});
+      if(!bandPos.has(b.cidr))bandPos.set(b.cidr,[]);
+      bandPos.get(b.cidr).push({
+        y:byy,n:b.refs.length,zoneY:zg.y,zoneH:zg.h,group:gb,
+        eids:new Set(b.refs.map(r=>r.eid))
+      });
       b.refs.forEach((rf,i)=>{
         const dy=byy+15+i*17, col=ifColor(rf.iface);
-        const g2=grp(gt,rf.iface), g2d=grp(gd,rf.iface);
+        const g2=grp(gt,rf.iface,{eids:rf.eid}), g2d=grp(gd,rf.iface,{eids:rf.eid});
         mk("circle",{cx:BANDX-12,cy:dy,r:5,fill:col,class:"pdot hot"},g2d);
         // grey bus (underlay, one solid line per endpoint lane)
         mk("path",{d:`M${rf.fromX+6},${rf.fromY} H${rf.lane} V${dy} H${BANDX-18}`,class:"grey"},gg);
@@ -485,7 +627,7 @@ function render(topo){
   let extIdx=0;
   for(const {e,sp,tn} of extHops){
     const col=ifColor(e.iface);
-    const g2=grp(gn,e.iface), g2t=grp(gt,e.iface);
+    const g2=grp(gn,e.iface,{nodes:tn.id,eids:e.id}), g2t=grp(gt,e.iface,{eids:e.id});
     const zg=zoneGeo.find(z=>sp.rowY>=z.y&&sp.rowY<=z.y+z.h)||zoneGeo[0];
     const cy=zg.y+52+extIdx*44; extIdx++;
     const r=mk("rect",{x:EXTX,y:cy-15,width:188,height:32,rx:8,class:"nbox ext"},g2);
@@ -501,16 +643,19 @@ function render(topo){
   for(const [oid,{tn,sp,edges}] of hopBy){
     const bw2=Math.max(200,tn.label.length*7+26);
     const g2=mk("g",{},gn); g2.dataset.ifs=edges.map(e=>e.iface).join("|");
+    g2.dataset.nodes=JSON.stringify([oid]);g2.dataset.eids=JSON.stringify(edges.map(e=>e.id));
     const bx2=mk("rect",{x:64,y:hy,width:bw2,height:52,rx:8,class:"nbox"+(tn.kind==="vm"?" vmb":"")},g2);
-    mk("text",{x:76,y:hy+20,class:"ntit"},g2).textContent=tn.label;
-    mk("text",{x:76,y:hy+36,class:"nsub"},g2).textContent=[tn.ip,tn.tunnelIp].filter(Boolean).join(" · ");
+    mk("text",{x:76,y:hy+13,class:"nkind"},g2).textContent=kindLabel(tn.kind);
+    mk("text",{x:76,y:hy+28,class:"ntit"},g2).textContent=tn.label;
+    mk("text",{x:76,y:hy+44,class:"nsub"},g2).textContent=[tn.ip,tn.tunnelIp].filter(Boolean).join(" · ");
     hot(bx2,()=>[tn.label,`${tn.kind}${tn.dc?" · "+tn.dc:""}`]);
     leftPos.set(oid,{x:64,y:hy,w:bw2,k:edges.length});
     const chipR=64+bw2;
     let below=0;
     edges.forEach((e,k)=>{
       const col=ifColor(e.iface), cy2=hy+18+k*16;
-      const g2d=grp(gd,e.iface), g2t=grp(gt,e.iface), g2f=grp(gf,e.iface);
+      const g2d=grp(gd,e.iface,{nodes:[oid],eids:e.id}), g2t=grp(gt,e.iface,{eids:e.id}),
+        g2f=grp(gf,e.iface,{eids:e.id});
       const dd=mk("circle",{cx:chipR,cy:cy2,r:5.5,fill:col,class:"pdot hot"},g2d);
       statusDots.set(e.id,dd);
       hot(dd,()=>{const st=stats[e.id]||{};return[`${e.iface} · ${tn.label}`,`${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)}`];});
@@ -525,8 +670,10 @@ function render(topo){
       clickFocus(base,e.iface);
       // reach: onto an existing zone band when drawn there, else a chip below
       cidrs(e.allowed).forEach(c=>{
-        const bp=bandPos.get(c);
+        const positions=bandPos.get(c)||[];
+        const bp=positions.find(p=>sp.rowY>=p.zoneY&&sp.rowY<=p.zoneY+p.zoneH)||positions[0];
         if(bp){ // e.g. personal → seoul 201/110/130: dot on the seoul band itself
+          bp.eids.add(e.id);bp.group.dataset.eids=JSON.stringify([...bp.eids]);
           const dy=bp.y+15+bp.n*17; bp.n++;
           mk("circle",{cx:BANDX-12,cy:dy,r:5,fill:col,class:"pdot"},g2d);
           const rp=mk("path",{d:`M${chipR+6},${hy+40} H${NATX-96-k*8} V${dy} H${BANDX-18}`,class:"reach",stroke:col},g2t);
@@ -551,7 +698,8 @@ function render(topo){
     const bId=leftPos.get(e.source)?e.target:e.source;
     const b=topPos.get(bId); if(!a||!b)continue;
     const col=ifColor(e.iface);
-    const g2d=grp(gd,e.iface), g2t=grp(gt,e.iface), g2f=grp(gf,e.iface);
+    const g2d=grp(gd,e.iface,{nodes:[e.source,e.target],eids:e.id}), g2t=grp(gt,e.iface,{eids:e.id}),
+      g2f=grp(gf,e.iface,{eids:e.id});
     const ay=a.y+18+a.k*16; a.k++;
     const byy=b.y+25+b.k*12; b.k++;
     const dd=mk("circle",{cx:a.x+a.w,cy:ay,r:5.5,fill:col,class:"pdot hot"},g2d);
@@ -570,28 +718,113 @@ function render(topo){
   buildLegend(); applyStats(); setFocus(focusIf);
   try{const bb=svg.getBBox();const H2=Math.min(H,bb.y+bb.height+30);
     svg.setAttribute("viewBox",`0 0 ${W} ${H2}`);
-    svg.setAttribute("height",Math.round(drawW*H2/W));}catch(_){}
+    sizeCanvas(drawW,Math.round(drawW*H2/W));
+    if(drawW>canvas.clientWidth-44)requestAnimationFrame(fitCanvas);}catch(_){}
 }
 
-// ---------- tunnel focus: dim everything not on the clicked iface ----------
+// ---------- tunnel focus: follow the branch through non-hub transit nodes ----------
+function focusClosure(seed){
+  const result={ifaces:new Set(seed?[seed]:[]),nodes:new Set(),edges:new Set(),hubIfaces:new Set(),cidrs:new Set()};
+  if(!seed||!curTopo)return result;
+  const {N,E,hub}=prep(curTopo);
+  if(!hub)return result;
+  const incident=new Map();
+  for(const e of E){
+    if(!incident.has(e.source))incident.set(e.source,[]);
+    if(!incident.has(e.target))incident.set(e.target,[]);
+    incident.get(e.source).push(e);incident.get(e.target).push(e);
+  }
+  // A hub iface name such as wg0 can also exist on many remote hosts. Seed only
+  // the edges attached to this topology's hub, then walk outward from there.
+  const hubOwns=(hub.ifaces||[]).some(i=>i.name===seed);
+  const seeds=E.filter(e=>e.iface===seed&&(!hubOwns||e.source===hub.id||e.target===hub.id));
+  const queue=[],visited=new Set(),vipIfacesSeen=new Set();
+  const includeVIPOwners=ifc=>{
+    if(vipIfacesSeen.has(ifc))return;
+    vipIfacesSeen.add(ifc);
+    for(const id of (vipFocusNodes.get(ifc)||[])){
+      result.nodes.add(id);
+      if(id!==hub.id&&!visited.has(id))queue.push(id);
+    }
+  };
+  const includeEdge=e=>{
+    result.edges.add(e.id);result.ifaces.add(e.iface);
+    result.nodes.add(e.source);result.nodes.add(e.target);
+    for(const c of cidrs(e.allowed))result.cidrs.add(c);
+    if(e.source===hub.id||e.target===hub.id)result.hubIfaces.add(e.iface);
+    includeVIPOwners(e.iface);
+  };
+  includeVIPOwners(seed);
+  for(const e of seeds)includeEdge(e);
+  // A hub fan-out interface represents several independent branches. Walking
+  // through every peer turns an exact wg0 selection into the whole connected
+  // component. Follow only point-to-point seeds, or an explicit DNAT/VIP owner
+  // such as wg3 → sre-lb. Non-hub seeds are already transit tunnel legs.
+  const seedPeers=new Set(seeds.map(e=>e.source===hub.id?e.target:e.source));
+  const hasVIPOwner=(vipFocusNodes.get(seed)||new Set()).size>0;
+  if(!hasVIPOwner&&(!hubOwns||seedPeers.size===1)){
+    for(const e of seeds)queue.push(e.source,e.target);
+  }
+  while(queue.length){
+    const id=queue.shift();
+    if(visited.has(id)){continue;}
+    visited.add(id);
+    if(id===hub.id)continue;
+    for(const e of (incident.get(id)||[])){
+      includeEdge(e);
+      const other=e.source===id?e.target:e.source;
+      if(other!==hub.id&&!visited.has(other))queue.push(other);
+    }
+  }
+  return result;
+}
 function setFocus(f){
   focusIf=f;
+  const closure=focusClosure(f);
+  focusIfaces=closure.ifaces;focusNodes=closure.nodes;focusEdges=closure.edges;focusHubIfaces=closure.hubIfaces;
+  focusCIDRs=closure.cidrs;
   for(const el of svg.querySelectorAll("g,path,rect,circle,text,line")){
     if(el.tagName==="g"&&!el.dataset)continue;
-    const own=el.dataset&&el.dataset.ifc, ifs=el.dataset&&el.dataset.ifs, keep=el.dataset&&el.dataset.keep;
-    if(own===undefined&&ifs===undefined&&keep===undefined)continue;
-    const onIt=!f||keep!=null||own===f||(ifs&&ifs.split("|").includes(f));
+    const data=el.dataset||{},own=data.ifc,ifs=data.ifs,keep=data.keep;
+    const precise=data.eids!==undefined||data.nodes!==undefined||data.hubif!==undefined||data.cidr!==undefined;
+    if(own===undefined&&ifs===undefined&&keep===undefined&&!precise)continue;
+    let matched=false;
+    // Explicit interface ownership wins over shared node metadata. Otherwise a
+    // wg3 glyph on a node also reached by wg0 remains bright during exact wg0
+    // focus even though wg3 is not part of the selected route.
+    if(own!==undefined)matched=focusIfaces.has(own);
+    // A routed-network band is semantic, not owned by the first interface that
+    // happened to create it. The same CIDR can later receive wg-seoul/wg1
+    // routes, so CIDR focus must beat the band's initial data-ifs value.
+    else if(data.cidr!==undefined)matched=focusCIDRs.has(data.cidr);
+    else if(ifs!==undefined)matched=ifs.split("|").some(i=>focusIfaces.has(i));
+    else{
+      if(data.eids!==undefined)matched=matched||JSON.parse(data.eids).some(id=>focusEdges.has(id));
+      if(data.nodes!==undefined)matched=matched||JSON.parse(data.nodes).some(id=>focusNodes.has(id));
+      if(data.hubif!==undefined)matched=matched||focusHubIfaces.has(data.hubif);
+    }
+    const onIt=!f||keep!=null||matched;
     el.classList.toggle("dim",!!f&&!onIt);
   }
-  document.querySelectorAll("#legend .i[data-if]").forEach(ch=>ch.classList.toggle("on",ch.dataset.if===f));
+  document.querySelectorAll("#legend .i[data-if]").forEach(ch=>{
+    ch.classList.toggle("on",ch.dataset.if===f);
+    ch.classList.toggle("related",ch.dataset.if!==f&&focusIfaces.has(ch.dataset.if));
+  });
+  const all=document.querySelector("#legend .i[data-all]");
+  if(all)all.classList.toggle("on",!f);
+  const sel=document.getElementById("selection");
+  sel.classList.toggle("on",!!f);
+  const hops=Math.max(0,focusIfaces.size-1);
+  sel.querySelector("b").textContent=f?(f+(hops?` +${hops} connected`:"")):"";
 }
 svg.addEventListener("click",e=>{if(e.target===svg||e.target.classList.contains("zone"))setFocus(null);});
 
 function buildLegend(){
   const ifs=new Set(); (curTopo.edges||[]).forEach(e=>ifs.add(e.iface));
   const el=document.getElementById("legend");
-  el.innerHTML=[...ifs].sort(ifCmp).map(i=>
-    `<span class="i" data-if="${esc(i)}"><span class="dt" style="background:${ifColor(i)}"></span>${esc(i)}</span>`).join("");
+  el.innerHTML=`<button type="button" class="i on" data-all>전체</button>`+[...ifs].sort(ifCmp).map(i=>
+    `<button type="button" class="i" data-if="${esc(i)}"><span class="dt" style="background:${ifColor(i)}"></span>${esc(i)}</button>`).join("");
+  el.querySelector("[data-all]").addEventListener("click",()=>setFocus(null));
   el.querySelectorAll(".i[data-if]").forEach(ch=>ch.addEventListener("click",()=>setFocus(focusIf===ch.dataset.if?null:ch.dataset.if)));
 }
 function applyStats(){
@@ -610,12 +843,32 @@ function applyStats(){
     dot.setAttribute("stroke",c);
     dot.style.filter=`drop-shadow(0 0 3px ${c})`;
   }
+  const vals=Object.values(stats), active=vals.filter(s=>s.hs>=0&&s.hs<=180).length;
+  const idle=vals.filter(s=>s.hs>180).length, down=vals.filter(s=>s.hs==null||s.hs<0).length;
+  const live=document.getElementById("live-summary");
+  live.className="live-summary "+(down?"warn":active?"ok":"");
+  live.querySelector("span").textContent=vals.length
+    ?`${active} active · ${idle} idle${down?` · ${down} down`:""}`
+    :"터널 상태 대기 중";
 }
 function updateMeta(topo,at){
   const zones=new Set(topo.nodes.filter(n=>n.dc).map(n=>zoneKey(n.dc)));
-  document.getElementById("meta").textContent=
-    `${zones.size} sites · ${topo.nodes.filter(n=>n.kind==="gateway").length} gateways · ${topo.edges.length} tunnels · ${new Date(at*1000).toLocaleTimeString()}`;
+  document.getElementById("site-count").textContent=zones.size;
+  document.getElementById("gateway-count").textContent=topo.nodes.filter(n=>n.kind==="gateway").length;
+  document.getElementById("tunnel-count").textContent=topo.edges.length;
+  document.getElementById("updated-at").textContent=new Date(at*1000).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"});
 }
+
+document.getElementById("zoom-in").addEventListener("click",()=>setZoom(zoom+.15));
+document.getElementById("zoom-out").addEventListener("click",()=>setZoom(zoom-.15));
+document.getElementById("zoom-fit").addEventListener("click",fitCanvas);
+document.querySelector("#selection button").addEventListener("click",()=>setFocus(null));
+document.addEventListener("keydown",ev=>{
+  if(ev.key==="Escape")setFocus(null);
+  if((ev.ctrlKey||ev.metaKey)&&ev.key==="="){ev.preventDefault();setZoom(zoom+.15);}
+  if((ev.ctrlKey||ev.metaKey)&&ev.key==="-"){ev.preventDefault();setZoom(zoom-.15);}
+  if((ev.ctrlKey||ev.metaKey)&&ev.key==="0"){ev.preventDefault();fitCanvas();}
+});
 
 // ---------- wiring: injected BOOT replay (demo) or live fetch + SSE ----------
 if(BOOT){
@@ -623,7 +876,7 @@ if(BOOT){
   const frames=BOOT.frames||[]; let fi=0;
   const ap=()=>{stats=frames.length?frames[fi%frames.length]:{};updateMeta(BOOT.topology,Date.now()/1000);applyStats();fi++;};
   ap(); if(frames.length>1)setInterval(ap,2000);
-  document.getElementById("health").textContent="demo replay";
+  document.getElementById("health").textContent="데모 리플레이";
 }else{
   fetch("topology").then(r=>r.json()).then(topo=>{
     render(topo);
@@ -633,9 +886,13 @@ if(BOOT){
       updateMeta(topo,d.at); applyStats();
       const errN=Object.keys(d.errors||{}).length, h=document.getElementById("health");
       h.className="health "+(errN?"fail":"ok");
-      h.textContent=errN?`${errN} poll failures`:"live polling healthy";
+      h.textContent=errN?`폴링 실패 ${errN}건`:"라이브 폴링 정상";
       document.getElementById("errs").textContent=Object.entries(d.errors||{}).map(([k,v])=>`! ${k}: ${v}`).join("\n");
     };
+  }).catch(err=>{
+    const h=document.getElementById("health");
+    h.className="health fail";h.textContent="토폴로지 연결 실패";
+    document.getElementById("errs").textContent=`! topology: ${err.message}`;
   });
 }
 </script>
