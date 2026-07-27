@@ -270,23 +270,16 @@ function prep(topo){
 const cidrs=a=>String(a||"").split(",").map(s=>s.trim()).filter(s=>s&&!/\/32$|\/128$/.test(s));
 const slash32=a=>String(a||"").split(",").map(s=>s.trim()).find(s=>/\/32$/.test(s))||"";
 
-// ---------- render ----------
-function render(topo){
-  curTopo=topo; svg.innerHTML=""; tunnels=[]; statusDots=new Map();vipFocusNodes=new Map();
-  const {N,E,hub}=prep(topo);
-  const gz=mk("g",{},svg),gg=mk("g",{},svg),gt=mk("g",{},svg),gf=mk("g",{},svg),gn=mk("g",{},svg),gd=mk("g",{},svg);
-  if(!hub){svg.setAttribute("viewBox","0 0 800 200");svg.setAttribute("width",800);svg.setAttribute("height",200);
-    mk("text",{x:40,y:60,class:"ntit"},gn).textContent="게이트웨이 없음 — 먼저 vctl wg sync 실행";return;}
-  const grp=(parent,ifc,meta={})=>{
-    const g=mk("g",{},parent);
-    if(ifc)g.dataset.ifc=ifc;
-    if(meta.nodes)g.dataset.nodes=JSON.stringify([].concat(meta.nodes).filter(Boolean));
-    if(meta.eids)g.dataset.eids=JSON.stringify([].concat(meta.eids).filter(Boolean));
-    if(meta.hubif)g.dataset.hubif=meta.hubif;
-    return g;
-  };
-
-  // hub spokes / mesh classification
+// ---------- wiring model: what the hub sees, before any geometry ----------
+// Groups the hub's peers per interface and sorts them into the buckets the layout
+// draws differently. A tunnel collected only from the far side is flipped so it
+// still reads hub→peer, which is why a reverse-only peer gets promoted here
+// rather than in the drawing code.
+//   mesh      — an interface with >=4 peers routing nothing wider than /32
+//   topSpokes — peers sitting in the hub's own zone
+//   farSpokes — peers in another zone
+//   hops      — edges that never touch the hub at all
+function wiringModel(N,E,hub){
   const touch=new Map();
   const T=id=>{if(!touch.has(id))touch.set(id,{fwd:[],rev:[]});return touch.get(id)};
   for(const e of E){
@@ -305,10 +298,69 @@ function render(topo){
   for(const [ifc,list] of perIface)
     for(const s of list)(meshIf.has(ifc)?mesh:spokes).push({...s,iface:ifc});
   const hops=E.filter(e=>e.source!==hub.id&&e.target!==hub.id);
-
-  // hub-zone spokes become top chips; the rest go to right-hand zones
   const topSpokes=spokes.filter(s=>{const n=N.get(s.oid);return n&&zoneKey(n.dc)===zoneKey(hub.dc);});
   const farSpokes=spokes.filter(s=>!topSpokes.includes(s));
+  return {meshIf,spokes,mesh,hops,topSpokes,farSpokes};
+}
+
+// Buckets the far endpoints into the right-hand zone columns, keyed by zone. Hop
+// endpoints that no bucket claimed yet join their own zone so a transit node in
+// another site still gets drawn; hub-zone and external nodes are left out because
+// the hub row and the external column already own them.
+function zoneBuckets(N,hub,{farSpokes,spokes,mesh,hops}){
+  const zmap=new Map();
+  const Z=k=>{if(!zmap.has(k))zmap.set(k,[]);return zmap.get(k)};
+  for(const s of farSpokes){const n=N.get(s.oid);Z(n?zoneKey(n.dc):"etc").push(s);}
+  const placed=new Set([hub.id,...spokes.map(s=>s.oid),...mesh.map(s=>s.oid)]);
+  for(const e of hops)for(const id of[e.source,e.target]){
+    const n=N.get(id);
+    if(n&&!placed.has(id)&&n.kind!=="external"&&zoneKey(n.dc)!==zoneKey(hub.dc)){
+      placed.add(id);Z(zoneKey(n.dc)).push({oid:id,e:null,iface:null,back:[]});}
+  }
+  return zmap;
+}
+
+// Attaches IPAM-ledger VIPs (e.g. o11y DNAT) to the endpoint whose label's first
+// token appears in the VIP label ("sre-lb 터널 DNAT (wg3)" -> sre-lb); the longest
+// matching token wins. Returns the per-endpoint VIP lists and, as a side effect,
+// records which node each interface fronts in vipFocusNodes — that map is what
+// lets a wg3 selection light its DNAT owner.
+function attachVips(topo,N,spokes){
+  const vipsBy=new Map();
+  for(const v of (topo.vips||[])){
+    let best=null;
+    for(const s of spokes){const n=N.get(s.oid);if(!n)continue;
+      const tok=String(n.label).split(/[\s(]/)[0];
+      if(tok&&v.label.includes(tok)&&(!best||tok.length>best.tok))best={oid:s.oid,tok:tok.length};}
+    if(!best)continue;
+    if(!vipsBy.has(best.oid))vipsBy.set(best.oid,[]);
+    vipsBy.get(best.oid).push(v);
+    if(v.iface){
+      if(!vipFocusNodes.has(v.iface))vipFocusNodes.set(v.iface,new Set());
+      vipFocusNodes.get(v.iface).add(best.oid);
+    }
+  }
+  return vipsBy;
+}
+
+// ---------- render ----------
+function render(topo){
+  curTopo=topo; svg.innerHTML=""; tunnels=[]; statusDots=new Map();vipFocusNodes=new Map();
+  const {N,E,hub}=prep(topo);
+  const gz=mk("g",{},svg),gg=mk("g",{},svg),gt=mk("g",{},svg),gf=mk("g",{},svg),gn=mk("g",{},svg),gd=mk("g",{},svg);
+  if(!hub){svg.setAttribute("viewBox","0 0 800 200");svg.setAttribute("width",800);svg.setAttribute("height",200);
+    mk("text",{x:40,y:60,class:"ntit"},gn).textContent="게이트웨이 없음 — 먼저 vctl wg sync 실행";return;}
+  const grp=(parent,ifc,meta={})=>{
+    const g=mk("g",{},parent);
+    if(ifc)g.dataset.ifc=ifc;
+    if(meta.nodes)g.dataset.nodes=JSON.stringify([].concat(meta.nodes).filter(Boolean));
+    if(meta.eids)g.dataset.eids=JSON.stringify([].concat(meta.eids).filter(Boolean));
+    if(meta.hubif)g.dataset.hubif=meta.hubif;
+    return g;
+  };
+
+  // hub-zone spokes become top chips; the rest go to right-hand zones
+  const {meshIf,spokes,mesh,hops,topSpokes,farSpokes}=wiringModel(N,E,hub);
 
   // dynamic widths so full labels are visible
   const HUBX=310, HUBW=Math.max(170,hub.label.length*7.2+26), NATX=HUBX+HUBW+130;
@@ -324,31 +376,8 @@ function render(topo){
   const HUBY=170;
   const ROWH=64,HOSTPAD=34;
 
-  const zmap=new Map();
-  const Z=k=>{if(!zmap.has(k))zmap.set(k,[]);return zmap.get(k)};
-  for(const s of farSpokes){const n=N.get(s.oid);Z(n?zoneKey(n.dc):"etc").push(s);}
-  const placed=new Set([hub.id,...spokes.map(s=>s.oid),...mesh.map(s=>s.oid)]);
-  for(const e of hops)for(const id of[e.source,e.target]){
-    const n=N.get(id);
-    if(n&&!placed.has(id)&&n.kind!=="external"&&zoneKey(n.dc)!==zoneKey(hub.dc)){
-      placed.add(id);Z(zoneKey(n.dc)).push({oid:id,e:null,iface:null,back:[]});}
-  }
-  // IPAM-ledger VIPs (e.g. o11y DNAT) attach to the endpoint whose label's
-  // first token appears in the VIP label ("sre-lb 터널 DNAT (wg3)" -> sre-lb).
-  const vipsBy=new Map();
-  for(const v of (topo.vips||[])){
-    let best=null;
-    for(const s of spokes){const n=N.get(s.oid);if(!n)continue;
-      const tok=String(n.label).split(/[\s(]/)[0];
-      if(tok&&v.label.includes(tok)&&(!best||tok.length>best.tok))best={oid:s.oid,tok:tok.length};}
-    if(best){
-      if(!vipsBy.has(best.oid))vipsBy.set(best.oid,[]);vipsBy.get(best.oid).push(v);
-      if(v.iface){
-        if(!vipFocusNodes.has(v.iface))vipFocusNodes.set(v.iface,new Set());
-        vipFocusNodes.get(v.iface).add(best.oid);
-      }
-    }
-  }
+  const zmap=zoneBuckets(N,hub,{farSpokes,spokes,mesh,hops});
+  const vipsBy=attachVips(topo,N,spokes);
   const vipExtra=oid=>{const vs=vipsBy.get(oid);return vs?28+vs.length*17:0;};
 
   const zones=[...zmap.entries()].sort((a,b)=>b[1].length-a[1].length);
