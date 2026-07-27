@@ -193,7 +193,7 @@ authenticated, so people should never share one identity.
 
 | Method | Who | Notes |
 |---|---|---|
-| **`oidc` (GitLab SSO)** | **People (default)** | Each user logs in as themselves via `gitlab.sre.local`. Per-person identity flows to every audit record. Browser session makes re-auth light. `vctl login` uses this with no flag or config. |
+| **`oidc` (GitLab SSO)** | **People (default)** | Each user logs in as themselves through the organization's GitLab. Per-person identity flows to every audit record. Browser session makes re-auth light. `vctl login` uses this with no flag or config. |
 | `approle` | Services / automation | Non-interactive (role_id + secret_id). A shared approle is one identity — fine for a daemon (e.g. the audit collector), **not** for multiple people. |
 | `userpass` | Fallback / bootstrap | Per-person, but a manual password each time. |
 
@@ -396,7 +396,7 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | Manage app-layer command RBAC (admin); `assign`/`grant` are interactive pickers |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | Show central SSH access audit rows |
 | `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | Install Vault SSH CA trust on a host so vctl ssh works (one-time onboarding) |
-| `vctl ca install\|remove\|print` | Trust the SRE root CA in this machine's OS store so browsers/curl accept `*.sre.local` (clears HSTS errors); platform auto-detected |
+| `vctl ca install\|remove\|print` | Trust the embedded root CA in this machine's OS store so browsers/curl accept the organization's internal hostnames (clears HSTS errors); platform auto-detected |
 | `vctl node-agent [--interval 5m]` | Report lightweight host runtime status for already registered inventory |
 | `vctl session [<serial>\|--list\|--json]` | Show what a person did inside an SSH session (host kernel-audit timeline) |
 | `vctl status` | Check login, SSH CA, and inventory DB connectivity |
@@ -417,15 +417,17 @@ mkdir -p .vctl
 cp .vctl/config.example.yaml .vctl/config.yaml   # then trim to what you override
 ```
 
-All keys and their compiled defaults:
+Every key, with endpoints shown as placeholders. The values compiled into your
+build point at your own organization's Vault and Postgres — read
+`internal/config/defaults_sre.go` for the ones actually in effect.
 
 ```yaml
-vault_addr: https://vault.sre.local
+vault_addr: https://vault.example.internal
 auth_method: oidc # people: GitLab SSO (per-person). userpass/approle also supported.
 oidc_role: vctl
 oidc_mount: oidc
 
-db_host: vctl-postgres.sre.local
+db_host: postgres.example.internal
 db_port: 5432
 db_name: vctl
 db_role_ro: vctl-ro

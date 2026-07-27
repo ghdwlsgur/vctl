@@ -141,7 +141,7 @@ docker run --rm ghcr.io/ghdwlsgur/vctl:latest --version
 
 | Method | Who | Notes |
 |---|---|---|
-| **`oidc` (GitLab SSO)** | **사람 (권장)** | 각 사용자가 `gitlab.sre.local`을 통해 본인 계정으로 로그인합니다. 개인 identity가 모든 감사 기록에 반영됩니다. 브라우저 세션 덕분에 재인증이 가볍습니다. |
+| **`oidc` (GitLab SSO)** | **사람 (권장)** | 각 사용자가 조직 GitLab을 통해 본인 계정으로 로그인합니다. 개인 identity가 모든 감사 기록에 반영됩니다. 브라우저 세션 덕분에 재인증이 가볍습니다. |
 | `approle` | 서비스 / 자동화 | 비대화형 인증(role_id + secret_id). 공유 approle은 하나의 identity입니다. 감사 collector 같은 데몬에는 괜찮지만 여러 사람이 함께 쓰면 안 됩니다. |
 | `userpass` | fallback / bootstrap | 개인별 인증이지만 매번 수동으로 비밀번호를 입력해야 합니다. |
 
@@ -308,15 +308,17 @@ mkdir -p .vctl
 cp .vctl/config.example.yaml .vctl/config.yaml   # 그 다음 override할 값만 남기세요
 ```
 
-모든 key와 컴파일된 기본값은 다음과 같습니다.
+전체 key 목록입니다. 엔드포인트는 플레이스홀더로 적어뒀습니다. 빌드에 실제로
+컴파일된 값은 각 조직의 Vault·Postgres를 가리키므로, 지금 적용된 값은
+`internal/config/defaults_sre.go`에서 확인하세요.
 
 ```yaml
-vault_addr: https://vault.sre.local
+vault_addr: https://vault.example.internal
 auth_method: oidc # 사람: GitLab SSO(개인별). userpass/approle도 지원.
 oidc_role: vctl
 oidc_mount: oidc
 
-db_host: vctl-postgres.sre.local
+db_host: postgres.example.internal
 db_port: 5432
 db_name: vctl
 db_role_ro: vctl-ro

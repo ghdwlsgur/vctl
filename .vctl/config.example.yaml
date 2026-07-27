@@ -17,8 +17,11 @@
 
 # Override ONLY if your workstation can't resolve/reach the default DB endpoint
 # (e.g. dialing through a port-forward where the dial host != the cert name).
-# db_host: vctl-postgres.sre.local
-# db_server_name: vctl-postgres.sre.local
+# Endpoints below are placeholders; the compiled default already points at your
+# environment's Postgres. db_server_name is the TLS name to verify against, so it
+# stays the certificate's dnsName even when db_host is a port-forward address.
+# db_host: 127.0.0.1
+# db_server_name: postgres.example.internal
 # db_role_status: vctl-status
 # db_role_identity: vctl-identity
 # db_role_audit_ro: vctl-audit-ro

@@ -147,7 +147,7 @@ docker run --rm ghcr.io/ghdwlsgur/vctl:latest --version
 
 | Method | Who | Notes |
 |---|---|---|
-| **`oidc` (GitLab SSO)** | **People (default)** | 各ユーザーが `gitlab.sre.local` を通じて本人としてログインします。個人単位のアイデンティティがすべての監査レコードに流れ込みます。ブラウザセッションにより再認証は軽量です。`vctl login` はフラグや設定なしでこれを使用します。 |
+| **`oidc` (GitLab SSO)** | **People (default)** | 各ユーザーが組織の GitLab を通じて本人としてログインします。個人単位のアイデンティティがすべての監査レコードに流れ込みます。ブラウザセッションにより再認証は軽量です。`vctl login` はフラグや設定なしでこれを使用します。 |
 | `approle` | Services / automation | 非対話的(role_id + secret_id)。共有 approle は 1 つのアイデンティティであり、デーモン(例: 監査コレクター)には適していますが、複数人での利用には**適しません**。 |
 | `userpass` | Fallback / bootstrap | 個人単位ですが、毎回手動でパスワードを入力します。 |
 
@@ -320,7 +320,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | アプリ層のコマンド RBAC を管理する(admin)。`assign`/`grant` は対話的なピッカー |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | 中央の SSH アクセス監査行を表示する |
 | `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | vctl ssh が動作するようホストに Vault SSH CA の信頼をインストールする(一度きりのオンボーディング) |
-| `vctl ca install\|remove\|print` | このマシンの OS ストアで SRE ルート CA を信頼し、ブラウザ/curl が `*.sre.local` を受け入れるようにする(HSTS エラーを解消)。プラットフォームは自動検出 |
+| `vctl ca install\|remove\|print` | このマシンの OS ストアで埋め込みルート CA を信頼し、ブラウザ/curl が組織の内部ホスト名を受け入れるようにする(HSTS エラーを解消)。プラットフォームは自動検出 |
 | `vctl node-agent [--interval 5m]` | すでに登録済みのインベントリについて軽量なホストのランタイム状態を報告する |
 | `vctl session [<serial>\|--list\|--json]` | SSH セッション内で誰が何をしたかを表示する(ホストのカーネル監査タイムライン) |
 | `vctl status` | ログイン、SSH CA、インベントリ DB の接続性を確認する |
@@ -338,15 +338,17 @@ mkdir -p .vctl
 cp .vctl/config.example.yaml .vctl/config.yaml   # then trim to what you override
 ```
 
-すべてのキーとそのコンパイル時デフォルト値:
+全キーの一覧です。エンドポイントはプレースホルダーで示しています。ビルドに実際に
+コンパイルされている値は各組織の Vault・Postgres を指すため、現在有効な値は
+`internal/config/defaults_sre.go` を参照してください。
 
 ```yaml
-vault_addr: https://vault.sre.local
+vault_addr: https://vault.example.internal
 auth_method: oidc # people: GitLab SSO (per-person). userpass/approle also supported.
 oidc_role: vctl
 oidc_mount: oidc
 
-db_host: vctl-postgres.sre.local
+db_host: postgres.example.internal
 db_port: 5432
 db_name: vctl
 db_role_ro: vctl-ro
