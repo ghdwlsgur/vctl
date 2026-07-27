@@ -37,6 +37,7 @@ type Config struct {
 	DBRoleStatus      string `yaml:"db_role_status"`       // database/creds/<status> for node-agent status updates
 	DBRoleMigrate     string `yaml:"db_role_migrate"`      // database/creds/<migrator> for schema changes
 	DBMigrationOwner  string `yaml:"db_migration_owner"`   // stable owner role for migration objects
+	LocalDBDSN        string `yaml:"-"`                    // dev/test only; env-only loopback DSN
 
 	// Kernel-audit retention. Raw kernel_event rows are high-volume; sessions are
 	// small metadata kept much longer as the dataset index. Pruning is delegated
@@ -144,6 +145,7 @@ func (c *Config) applyEnv() {
 	envStr(&c.DBRoleStatus, "VCTL_DB_ROLE_STATUS") // VCTL-only
 	envStrPair(&c.DBRoleMigrate, "DB_ROLE_MIGRATE")
 	envStrPair(&c.DBMigrationOwner, "DB_MIGRATION_OWNER")
+	envStr(&c.LocalDBDSN, "VCTL_LOCAL_DB_DSN")
 	envInt(&c.KernelRetentionDays, "VCTL_KERNEL_RETENTION_DAYS")   // VCTL-only
 	envInt(&c.SessionRetentionDays, "VCTL_SESSION_RETENTION_DAYS") // VCTL-only
 	envStrPair(&c.CARole, "CA_ROLE")

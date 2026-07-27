@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"golang.org/x/term"
 
@@ -229,9 +230,24 @@ func (a *App) roleFor(p Purpose) string {
 	}
 }
 
+// localDSNOnce holds the Vault-bypass notice to a single line per process.
+// OpenStore runs on nearly every command path — LogAccess opens a store per SSH
+// — so warning on each call would bury the command's own output.
+var localDSNOnce sync.Once
+
 // OpenStore ensures login, requests dynamic DB credentials for the purpose's
 // Vault role, and opens Postgres.
 func (a *App) OpenStore(ctx context.Context, p Purpose) (*store.Store, error) {
+	if a.Cfg.LocalDBDSN != "" {
+		// The local DSN ignores the purpose, so every caller shares one static
+		// credential instead of its own least-privilege DB role. Say so on stderr:
+		// a loopback address is also what a port-forward to the production database
+		// looks like, and that combination should not pass unnoticed.
+		localDSNOnce.Do(func() {
+			ui.Warnf(os.Stderr, "VCTL_LOCAL_DB_DSN set: static local Postgres credential in use, bypassing Vault dynamic creds and per-purpose DB roles")
+		})
+		return store.OpenLocal(ctx, a.Cfg.LocalDBDSN)
+	}
 	return a.openRole(ctx, a.roleFor(p))
 }
 
