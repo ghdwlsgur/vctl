@@ -434,6 +434,11 @@ func TestWGServeDashboardWiringLayout(t *testing.T) {
 		"도달 대역",
 		"메시 ×",
 		"NAT / WAN",
+		"EDGE / NAT",
+		"kindLabel",
+		"focusClosure",
+		`id="zoom-fit"`,
+		`id="live-summary"`,
 		`fetch("topology")`,
 		`EventSource("events")`,
 	} {

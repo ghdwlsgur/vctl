@@ -93,6 +93,51 @@ func Open(ctx context.Context, host string, port int, dbname string, getCreds Cr
 	return &Store{pool: p}, nil
 }
 
+// OpenLocal opens a static-credential Postgres DSN for local development and
+// recovery testing. It deliberately accepts loopback hosts only: production
+// connections must continue through Vault-issued credentials and verified TLS.
+func OpenLocal(ctx context.Context, dsn string) (*Store, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse local dsn: %w", err)
+	}
+	// pgx expands a comma-separated host list into Fallbacks and dials them in
+	// order when the primary refuses. Checking ConnConfig.Host alone would let
+	// "127.0.0.1,db.example.com" satisfy the guard and still reach production on
+	// the second attempt, so every host pgx may dial has to clear it.
+	hosts := []string{cfg.ConnConfig.Host}
+	for _, fb := range cfg.ConnConfig.Fallbacks {
+		hosts = append(hosts, fb.Host)
+	}
+	for _, host := range hosts {
+		if !isLoopbackHost(host) {
+			return nil, fmt.Errorf("local dsn host must be loopback, got %q", host)
+		}
+	}
+	cfg.MaxConns = 4
+	p, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("local postgres connect: %w", err)
+	}
+	if err := p.Ping(ctx); err != nil {
+		p.Close()
+		return nil, fmt.Errorf("local postgres ping: %w", err)
+	}
+	return &Store{pool: p}, nil
+}
+
+// isLoopbackHost reports whether host stays on this machine. Unix socket
+// directories are rejected along with everything non-loopback: OpenLocal is an
+// escape hatch, so it accepts only the two forms a local dev database actually
+// needs and leaves the rest to the Vault path.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func (s *Store) Close() {
 	if s.pool != nil {
 		s.pool.Close()

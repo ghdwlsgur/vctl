@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,47 @@ func TestMergeAddresses(t *testing.T) {
 	// Primary must always come first even when it also appears in a later set.
 	if got[0] != "10.0.0.1" {
 		t.Fatalf("primary not first: %v", got)
+	}
+}
+
+func TestOpenLocalRejectsNonLoopbackHost(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://user:pass@db.example.com/vctl",
+		"postgres://user:pass@10.0.0.5:5432/vctl",
+		// pgx turns a comma-separated list into Fallbacks and dials them in order,
+		// so a loopback primary must not smuggle a remote host in behind it.
+		"postgres://user:pass@127.0.0.1,db.example.com/vctl",
+	} {
+		_, err := OpenLocal(context.Background(), dsn)
+		if err == nil {
+			t.Fatalf("OpenLocal accepted a non-loopback database host: %s", dsn)
+		}
+		// Assert the guard rejected it rather than the dial failing by luck: an
+		// unreachable host errors either way.
+		if !strings.Contains(err.Error(), "must be loopback") {
+			t.Fatalf("OpenLocal(%s) failed outside the loopback guard: %v", dsn, err)
+		}
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want bool
+	}{
+		{"localhost", true},
+		{"127.0.0.1", true},
+		{"127.0.0.53", true},
+		{"::1", true},
+		{"db.example.com", false},
+		{"10.0.0.5", false},
+		{"0.0.0.0", false},
+		{"/var/run/postgresql", false},
+		{"", false},
+	} {
+		if got := isLoopbackHost(tc.host); got != tc.want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
 	}
 }
 

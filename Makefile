@@ -6,6 +6,7 @@ BIN         := $(BIN_DIR)/$(BINARY)
 VERSION     ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS     := -s -w -X main.version=$(VERSION)
 GOFILES     := $(shell find . -name '*.go' -not -path './vendor/*')
+EMBED_FILES := internal/cli/wg_serve.html
 
 # Pass arguments with: make run ARGS="ssh 0047"
 ARGS ?=
@@ -20,7 +21,7 @@ help: ## Show available targets
 .PHONY: build
 build: $(BIN) ## Build binary to bin/vctl
 
-$(BIN): $(GOFILES) go.mod
+$(BIN): $(GOFILES) $(EMBED_FILES) go.mod
 	@mkdir -p $(BIN_DIR)
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) $(PKG)
 	@echo "built $(BIN)"
