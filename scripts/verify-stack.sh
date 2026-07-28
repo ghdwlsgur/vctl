@@ -12,9 +12,15 @@
 # ways that look like code regressions. The fixture belongs in version control
 # next to the tests that depend on it.
 #
-# Nothing here is production-shaped: dev-mode Vault with a known root token,
-# a throwaway CA, passwords in the clear. It listens on loopback only and is
-# meant to be destroyed.
+# Nothing here is production-shaped: dev-mode Vault, a throwaway CA, a database
+# with no data worth keeping. It listens on loopback only and is meant to be
+# destroyed.
+#
+# Credentials are generated per run and written to $WORKDIR, never hardcoded.
+# Not because a localhost dev password is worth protecting, but because this repo
+# is public: a literal `password=...` reads as a secret to every scanner and
+# every reviewer, and "it's only a test value" is exactly what a real leak claims
+# too. Generating them costs one line and removes the question.
 set -euo pipefail
 
 PG=vctl-verify-pg
@@ -27,13 +33,34 @@ PG_IMAGE=${PG_IMAGE:-postgres:18.3}
 VAULT_IMAGE=${VAULT_IMAGE:-hashicorp/vault:1.21}
 WORKDIR=${WORKDIR:-${TMPDIR:-/tmp}/vctl-verify}
 CERTS="$WORKDIR/certs"
+CREDS="$WORKDIR/creds.env"
+TEST_USER=vctl-verify
 
 # The certificate name vctl verifies against. It is deliberately not the dial
 # host: that mismatch is the port-forward case serverName exists for, and the
 # tests assert it is enforced rather than waved through.
 TLS_SERVER_NAME=vctl-postgres.test
 
-v() { docker exec -i -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root "$VAULT" vault "$@"; }
+# mint_creds generates this run's throwaway credentials, or reloads the ones a
+# previous `up` generated so `env` and `down` see the same values.
+mint_creds() {
+  if [ -f "$CREDS" ]; then
+    # shellcheck disable=SC1090
+    . "$CREDS"
+    return
+  fi
+  mkdir -p "$WORKDIR"
+  {
+    echo "PG_PASSWORD=$(openssl rand -hex 16)"
+    echo "VAULT_ROOT_TOKEN=$(openssl rand -hex 16)"
+    echo "USERPASS_PASSWORD=$(openssl rand -hex 16)"
+  } > "$CREDS"
+  chmod 600 "$CREDS"
+  # shellcheck disable=SC1090
+  . "$CREDS"
+}
+
+v() { docker exec -i -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" "$VAULT" vault "$@"; }
 
 wait_for_pg() {
   for _ in $(seq 1 60); do
@@ -61,7 +88,7 @@ make_certs() {
 
 start_postgres() {
   docker rm -f "$PG" >/dev/null 2>&1 || true
-  docker run -d --name "$PG" -e POSTGRES_PASSWORD=verify -e POSTGRES_DB=vctl \
+  docker run -d --name "$PG" -e POSTGRES_PASSWORD="$PG_PASSWORD" -e POSTGRES_DB=vctl \
     -p "127.0.0.1:$PG_PORT:5432" "$PG_IMAGE" >/dev/null
   wait_for_pg
   local pgdata
@@ -88,7 +115,7 @@ start_postgres() {
 
 start_vault() {
   docker rm -f "$VAULT" >/dev/null 2>&1 || true
-  docker run -d --name "$VAULT" -e VAULT_DEV_ROOT_TOKEN_ID=root \
+  docker run -d --name "$VAULT" -e VAULT_DEV_ROOT_TOKEN_ID="$VAULT_ROOT_TOKEN" \
     -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 -p "127.0.0.1:$VAULT_PORT:8200" "$VAULT_IMAGE" >/dev/null
   for _ in $(seq 1 30); do v status >/dev/null 2>&1 && break; sleep 1; done
 }
@@ -111,7 +138,7 @@ JSON
   v write database/config/vctl plugin_name=postgresql-database-plugin \
     allowed_roles='vctl-ro,vctl-rw,vctl-audit-writer,vctl-identity,vctl-status' \
     connection_url="postgresql://{{username}}:{{password}}@${pgip}:5432/vctl?sslmode=disable" \
-    username=postgres password=verify >/dev/null
+    username=postgres password="$PG_PASSWORD" >/dev/null
   for role in vctl-ro vctl-rw vctl-audit-writer vctl-identity vctl-status; do
     v write "database/roles/$role" db_name=vctl default_ttl=1h max_ttl=4h \
       creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT ALL ON ALL TABLES IN SCHEMA public TO \"{{name}}\"; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO \"{{name}}\";" >/dev/null
@@ -135,7 +162,8 @@ path "database/creds/vctl-audit-writer" { capabilities = ["read"] }
 HCL
 
   v auth enable userpass >/dev/null
-  v write auth/userpass/users/albert password=devpass policies=vctl-user,vctl-ssh token_ttl=1h token_max_ttl=4h >/dev/null
+  v write "auth/userpass/users/$TEST_USER" password="$USERPASS_PASSWORD" \
+    policies=vctl-user,vctl-ssh token_ttl=1h token_max_ttl=4h >/dev/null
 
   v auth enable approle >/dev/null
   v write auth/approle/role/vctl-user token_policies=vctl-user,vctl-ssh token_ttl=1h token_max_ttl=4h >/dev/null
@@ -180,8 +208,10 @@ print_env() {
     | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print(d["username"], d["password"])')"
   cat <<ENV
 # eval "\$(scripts/verify-stack.sh env)"
-export VCTL_TEST_DSN='postgres://postgres:verify@127.0.0.1:$PG_PORT/vctl?sslmode=disable'
+export VCTL_TEST_DSN='postgres://postgres:$PG_PASSWORD@127.0.0.1:$PG_PORT/vctl?sslmode=disable'
 export VCTL_TEST_VAULT_ADDR='http://127.0.0.1:$VAULT_PORT'
+export VCTL_TEST_VAULT_USER='$TEST_USER'
+export VCTL_TEST_VAULT_PASS='$USERPASS_PASSWORD'
 export VCTL_TEST_TLS_HOST='127.0.0.1'
 export VCTL_TEST_TLS_PORT='$PG_PORT'
 export VCTL_TEST_TLS_SERVER='$TLS_SERVER_NAME'
@@ -194,6 +224,8 @@ ENV
 case "${1:-up}" in
   up)
     mkdir -p "$WORKDIR"
+    rm -f "$CREDS"          # a fresh stack gets fresh credentials
+    mint_creds
     make_certs
     start_postgres
     start_vault
@@ -203,9 +235,10 @@ case "${1:-up}" in
     echo "workdir: $WORKDIR" >&2
     print_env
     ;;
-  env) print_env ;;
+  env) mint_creds; print_env ;;
   down)
     docker rm -f "$PG" "$VAULT" "$SSHD" >/dev/null 2>&1 || true
+    rm -f "$CREDS"
     echo "stack removed" >&2
     ;;
   *)

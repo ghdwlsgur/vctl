@@ -22,9 +22,12 @@ import (
 // this is the path that must keep working for `vctl ssh` to work at all, cache
 // or no cache.
 //
-// Integration — needs VCTL_TEST_VAULT_ADDR (dev-mode Vault) and the fixtures
-// created by the verification script: userpass user "albert", ssh role
-// "sre-core", database roles under database/creds/.
+// Integration — needs a stack from scripts/verify-stack.sh, which exports
+// VCTL_TEST_VAULT_ADDR plus the userpass identity it generated
+// (VCTL_TEST_VAULT_USER / VCTL_TEST_VAULT_PASS). Credentials come from the
+// environment rather than being written here: this repo is public, and a
+// literal password in a test is indistinguishable from a real one to anything
+// scanning the history.
 func testClient(t *testing.T) *Client {
 	t.Helper()
 	addr := os.Getenv("VCTL_TEST_VAULT_ADDR")
@@ -41,10 +44,22 @@ func testClient(t *testing.T) *Client {
 func loggedIn(t *testing.T) *Client {
 	t.Helper()
 	c := testClient(t)
-	if err := c.LoginUserpass(context.Background(), "albert", "devpass"); err != nil {
+	if err := c.LoginUserpass(context.Background(), testIdentity(t), testPassword(t)); err != nil {
 		t.Fatalf("userpass login: %v", err)
 	}
 	return c
+}
+
+func testIdentity(t *testing.T) string { return requireEnv(t, "VCTL_TEST_VAULT_USER") }
+func testPassword(t *testing.T) string { return requireEnv(t, "VCTL_TEST_VAULT_PASS") }
+
+func requireEnv(t *testing.T, key string) string {
+	t.Helper()
+	v := os.Getenv(key)
+	if v == "" {
+		t.Skipf("%s not set; run scripts/verify-stack.sh up", key)
+	}
+	return v
 }
 
 func TestUserpassLoginCachesUsableToken(t *testing.T) {
@@ -79,8 +94,8 @@ func TestTokenPoliciesAndIdentity(t *testing.T) {
 		}
 	}
 
-	if id := c.Identity(ctx); id != "albert" {
-		t.Errorf("Identity = %q, want the authenticated user", id)
+	if want := testIdentity(t); c.Identity(ctx) != want {
+		t.Errorf("Identity = %q, want the authenticated user %q", c.Identity(ctx), want)
 	}
 }
 
