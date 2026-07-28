@@ -22,8 +22,8 @@ func lsCmd() *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List accessible inventory hosts",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
-				servers, err := st.ListInventory(cmd.Context(), dc)
+			return withInventory(cmd.Context(), func(_ *app.App, inv *app.Inventory) error {
+				servers, err := inv.ListInventory(cmd.Context(), dc)
 				if err != nil {
 					return err
 				}
@@ -31,7 +31,7 @@ func lsCmd() *cobra.Command {
 					ui.Warnf(os.Stderr, "inventory is empty. Run 'vctl sync' first.")
 					return nil
 				}
-				renderInventory(os.Stdout, servers)
+				renderInventory(os.Stdout, servers, inv.Cached())
 				return nil
 			})
 		},
@@ -55,7 +55,15 @@ func ipCell(r store.InventoryRow) string {
 // heartbeat (within statusFreshnessWindow) is "up", an older one is "stale",
 // and a host that has never reported is a muted "no-agent". Full metrics stay
 // in `vctl status`; this is just the at-a-glance agent flag `vctl list` needs.
-func agentCell(r store.InventoryRow) string {
+//
+// cached suppresses the verdict entirely. Liveness is a question only live data
+// can answer, and a snapshot's heartbeats are old by construction — rendering
+// them through the usual rules would report the whole fleet as "stale", blaming
+// the agents for what is really an unreachable database.
+func agentCell(r store.InventoryRow, cached bool) string {
+	if cached {
+		return ui.Muted("?")
+	}
 	if r.AgentSeen == nil {
 		return ui.Muted("no-agent")
 	}
@@ -72,7 +80,7 @@ func agentCell(r store.InventoryRow) string {
 //
 // Servers arrive already sorted by (dc, hostname) from the store, so a single
 // pass can detect group boundaries.
-func renderInventory(w io.Writer, servers []store.InventoryRow) {
+func renderInventory(w io.Writer, servers []store.InventoryRow, cached bool) {
 	host := make([]string, len(servers))
 	cells := make([][]string, len(servers)) // agent, ip, user, jump
 	widths := make([]int, 5)                // host + the four cells above
@@ -82,7 +90,7 @@ func renderInventory(w io.Writer, servers []store.InventoryRow) {
 			jump = ui.Muted("direct")
 		}
 		host[i] = ui.Truncate(s.Hostname, 40)
-		cells[i] = []string{agentCell(s), ipCell(s), s.User, jump}
+		cells[i] = []string{agentCell(s, cached), ipCell(s), s.User, jump}
 		if n := lipgloss.Width(host[i]); n > widths[0] {
 			widths[0] = n
 		}
@@ -118,7 +126,13 @@ func renderInventory(w io.Writer, servers []store.InventoryRow) {
 		}
 		fmt.Fprintln(w)
 	}
-	fmt.Fprintln(w, ui.Muted(fmt.Sprintf("%d hosts", len(servers))))
+	footer := fmt.Sprintf("%d hosts", len(servers))
+	if cached {
+		// Repeated on stdout because the stderr warning is lost the moment
+		// someone pipes the listing into a file or another tool.
+		footer += " · local snapshot; agent liveness unavailable"
+	}
+	fmt.Fprintln(w, ui.Muted(footer))
 }
 
 // statusFreshnessWindow is how recently a node-agent must have reported for a
@@ -130,7 +144,13 @@ const statusFreshnessWindow = 10 * time.Minute
 // An agent that reported within the freshness window means the host is up right
 // now (dynamic); a stale agent reads as down; with no agent we fall back to the
 // last sync probe, marked "up~" to show it's point-in-time, not live.
-func liveStatus(s store.ServerWithStatus) string {
+//
+// cached means the row came from the local snapshot, where no verdict is
+// honest — see agentCell.
+func liveStatus(s store.ServerWithStatus, cached bool) string {
+	if cached {
+		return ui.Muted("?")
+	}
 	switch liveStatusText(s) {
 	case "up":
 		return ui.OK("up")

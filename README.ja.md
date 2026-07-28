@@ -256,6 +256,44 @@ vctl audit --source-ip 192.0.2.10
 
 この監査テーブルは運用上のメタデータです。証明書署名要求の正式な記録は依然として Vault の監査デバイスです。
 
+## Postgres 障害時の動作
+
+インベントリ DB は RWO ボリュームに紐づく Postgres の単一インスタンスです。ここが落ちるとホスト検索もまとめて使えなくなります。SSH 証明書を発行する Vault のほうは無事なのに、です。そこで `vctl` はインベントリの読み取り専用スナップショットをローカルに保持し、その間も `vctl ssh` と `vctl list` が動くようにしています。
+
+**書き込みは変わりません。** スナップショットには信頼できる情報源となるものを一切書きません。`sync`、`prune`、RBAC 管理を含むすべての変更は従来どおり Postgres にのみ向かい、DB が落ちていれば従来どおり明示的に失敗します。
+
+```bash
+vctl cache status     # スナップショットの経過時間、ホスト数、オフライン grant の有効期間、キューされた監査レコード
+vctl cache refresh    # 今すぐ更新 — 接続を失う直前に使います
+vctl cache clear      # スナップショットとキャッシュされた grant を削除
+```
+
+動作:
+
+- **更新は自動です。** オンライン時の `vctl ssh` や `vctl list` は、スナップショットが `cache_refresh`(既定 5m)を超えていれば自動で更新します。別途 sync を実行する必要はありません。ホストが 0 件で返ってきた取得は保存せず拒否します。空の結果は設定ミスによる読み取りと区別がつかず、正常なスナップショットを空で上書きすると、最も必要なときにフォールバックが失われます。
+- **古いデータはそう表示します。** キャッシュから読むとスナップショットの経過時間とともに警告が出て、liveness 列は up/stale ではなく `?` になります。スナップショットは「このホストは今生きているか」に答えられません。すべてを stale と表示すれば、DB 障害を agent のせいにすることになります。
+- **Vault は依然として必要です。** スナップショットが代替するのは Postgres であって Vault ではありません。`vctl ssh` には有効な証明書署名が必要で、token policy は決してキャッシュしません。この仕組みが対応するのは「Postgres 停止、Vault 正常」— 実際に起きた障害です。
+- **障害中に無駄なログインをさせません。** store を開く際は dial より先に認証が走るため、token が切れていると SSO のプロンプトが出たあとで「DB に到達できない」と分かる、という順序でした。現在はプロンプトだけが障壁になる場合に限り DB を先に確認し、応答がなければスナップショットを使います。有効な token か AppRole 認証情報があれば避けるべきプロンプトが無いので、この確認は実行されず従来どおりの経路です。
+- **古すぎるスナップショットは使わず拒否します。** `cache_max_age`(既定 30d)を超えるとホスト検索は理由とともに失敗します。その間に再割り当てされたかもしれないトポロジで接続させるより、止めるほうが安全です。`cache_max_age: "0"` で制限を解除できます。
+- **監査レコードは捨てずに貯めます。** access_log の書き込みが Postgres に届かないときは `~/.vctl/spool/access.jsonl` に記録し、次に監査書き込みが成功したタイミングで送ります。時刻は flush 時刻ではなく実際の接続時刻を保持します。待機件数は `vctl cache status` で確認できます。
+- **RBAC は fail-closed です。** 以下を参照してください。
+
+### オフラインでの認可
+
+コマンドの grant もインベントリと一緒にキャッシュします。そうしないと DB が一瞬途切れるたびにすべての mutate コマンドが止まってしまうからです。その代わり degraded モードはオンライン経路より**すべての段階で厳しく**してあります。自分の DB をわざと遮断してオンライン時より多くの権限を得る経路があってはならないからです。
+
+| | オンライン | Postgres 不通 |
+|---|---|---|
+| Vault token policy | 都度 `lookup-self` | 都度 `lookup-self`(キャッシュしない) |
+| 読み取りコマンド (`list`, `status`, `audit`) | 許可 | 許可 |
+| `ssh` | grant が必要 | **Postgres が以前に確認した** grant が必要、かつ `cache_offline_ttl`(既定 24h)以内 |
+| `sync`, `prune`, `trust-ca`, `ip set/rm`, `wg sync` | grant が必要 | 常に拒否 — どのみち DB への書き込みが必要です |
+| 管理者コマンド | admin policy が必要 | admin policy が必要 |
+
+この有効期間は、長い障害中に取り消された grant が、一度も再接続しないノート PC で永久に生き続けないようにするためのものです。`cache_disabled: true`(または `VCTL_CACHE_DISABLE=1`)でこの仕組み全体を無効にすると、以前の fail-hard な動作にそのまま戻ります。
+
+このキャッシュが**防げない**ものが一つあります。ユーザーが自分のスナップショットファイルを直接書き換える場合です。ローカルではどうやっても防げません。検証する側が同じマシンにいるからです。TTL が制限するのは正直な staleness であって改ざんではありません。実際に持ちこたえる境界は Vault の token policy です。policy をキャッシュせず毎回問い合わせる理由がそれであり、Vault policy が同時に塞いでいないものを app-layer RBAC だけに頼ってはいけない理由もそれです。
+
 ## Host Agents
 
 2 つの任意のデーモンが、ワークステーションではなくサーバー*上で*動作します。いずれも AppRole で非対話的に認証し、狭い Vault ポリシーを保持し、短命の動的 DB 資格情報を通じて書き込みます。CLI と同じエージェントレスパターンをサーバー側に適用したものです。
@@ -323,13 +361,14 @@ claude mcp add vctl -- vctl mcp
 | `vctl ca install\|remove\|print` | このマシンの OS ストアで埋め込みルート CA を信頼し、ブラウザ/curl が組織の内部ホスト名を受け入れるようにする(HSTS エラーを解消)。プラットフォームは自動検出 |
 | `vctl node-agent [--interval 5m]` | すでに登録済みのインベントリについて軽量なホストのランタイム状態を報告する |
 | `vctl session [<serial>\|--list\|--json]` | SSH セッション内で誰が何をしたかを表示する(ホストのカーネル監査タイムライン) |
+| `vctl cache status\|refresh\|clear` | Postgres 不通時に使うローカルインベントリスナップショットを確認・操作する |
 | `vctl status` | ログイン、SSH CA、インベントリ DB の接続性を確認する |
 | `vctl sync [--migrate] [--prefix sre]` | `~/.ssh/config` とプローブからインベントリを同期する |
 | `vctl logout` | キャッシュされた Vault トークンを削除する |
 
 ## Configuration
 
-`VAULT_ADDR`、`VCTL_AUTH_METHOD`、`VCTL_ROLE_ID_FILE`、`VCTL_SECRET_ID_FILE`、`VCTL_SINK`、`VCTL_DB_HOST`、`VCTL_CA_ROLE`、`VCTL_SSH_DEFAULT_USER`、`VCTL_SSH_DIRECT_FIRST`、`VCTL_SYNC_PROBE_TIMEOUT`、`VCTL_SYNC_PROBE_CONCURRENCY` などの環境変数で、コンパイル時のデフォルト値を上書きできます。
+`VAULT_ADDR`、`VCTL_AUTH_METHOD`、`VCTL_ROLE_ID_FILE`、`VCTL_SECRET_ID_FILE`、`VCTL_SINK`、`VCTL_DB_HOST`、`VCTL_CA_ROLE`、`VCTL_SSH_DEFAULT_USER`、`VCTL_SSH_DIRECT_FIRST`、`VCTL_SYNC_PROBE_TIMEOUT`、`VCTL_SYNC_PROBE_CONCURRENCY`、`VCTL_CACHE_DISABLE`、`VCTL_CACHE_REFRESH`、`VCTL_CACHE_OFFLINE_TTL`、`VCTL_CACHE_MAX_AGE` などの環境変数で、コンパイル時のデフォルト値を上書きできます。
 
 設定ファイルは**任意**です。vctl はコンパイル時のデフォルト値で動作し、ログイン時にファイルは作成されません。値を上書きする必要があるときだけサンプルをコピーし(例: OIDC デフォルトを上書きする `auth_method: userpass`)、変更するキーだけを残してください。シークレットは一切入れません。Vault がランタイムにトークンと DB 資格情報を発行します。
 
@@ -407,6 +446,32 @@ make trivy
 
 `make trivy` は Go の依存関係、リポジトリのシークレット、Dockerfile の設定ミスをスキャンします。CI もリリース公開前に distroless イメージをスキャンします。
 
+### 統合テスト
+
+実際の Postgres を必要とするテストは、`VCTL_TEST_DSN` が loopback の DB を指しているときだけ実行されます(それ以外は skip)。監査ログのタイムスタンプ処理、スプールの flush、そして何より**差分検査**を対象にします。同じ検索を Postgres とオフラインスナップショットの両方に投げて答えが一致するかを確かめる検査で、2 つのリーダーが食い違わないよう支えているのはこれです。
+
+`scripts/verify-stack.sh` が一式を立ち上げます。使い捨ての CA で TLS を有効にした Postgres、SSH CA と database engine を設定した dev モードの Vault、その CA を信頼する sshd までまとめて起動します。
+
+```bash
+eval "$(scripts/verify-stack.sh up)"   # export すべき環境変数を出力します
+go test ./...
+scripts/verify-stack.sh down
+```
+
+フィクスチャを wiki ではなくスクリプトに置いているのには理由があります。テストがそのフィクスチャに対して表明を行うからです。policy が token まで届くか、policy 外の role が拒否されるか、信頼していない CA が拒否されるか、といった内容です。手作業で組んだフィクスチャはずれていき、ずれたフィクスチャはコードの回帰に見える失敗を出します。
+
+ユニットテストの範囲を超えて統合テストが担保する内容:
+
+| 領域 | 表明する内容 |
+|---|---|
+| `internal/store` TLS | `Open` が固定した CA で検証し、無関係な CA とサーバ名の不一致を拒否し、成立した接続は `pg_stat_ssl.ssl = true` |
+| `internal/store` 監査 | 再送されたレコードが flush 時刻ではなく接続時刻を保持 |
+| `internal/invcache` | 同じ検索を Postgres とスナップショットに投げた結果が一致 |
+| `internal/auditspool` | キューされたレコードが元のタイムスタンプで `access_log` に到達 |
+| `internal/vaultc` | ログイン・更新・policy/identity 参照・SSH 証明書署名・動的 DB 認証情報、および token の policy 外 role の拒否 |
+
+スキーマのマイグレーションとフィクスチャの後始末はテスト側で行うため、同じスタックに対して何度実行しても構いません。
+
 ## Release
 
 リリースは Git タグをプッシュすることで公開されます。GoReleaser が GitHub Release のアーティファクトを作成し、`ghdwlsgur/homebrew-vctl` リポジトリの `Formula/vctl.rb` を更新し、distroless イメージを `ghcr.io/ghdwlsgur/vctl` に公開します。
@@ -451,6 +516,8 @@ cmd/dbedit            maintenance tool for operator-managed inventory (-col dc|u
 internal/config       generic loader (config.go) + org-specific defaults (defaults_sre.go) + embedded CA
 internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
 internal/store        Postgres inventory, app-layer RBAC, access/session/kernel audit, host status (verify-full TLS)
+internal/invcache     ローカル読み取り専用インベントリスナップショット + resolve/list クエリの Go 再実装 (Postgres 障害時のフォールバック)
+internal/auditspool   Postgres に届かなかったアクセスレコードの outbox。次の書き込み成功時に再送
 internal/sshc         native SSH client with cert signer, jump chains, PTY, and connection metadata
 internal/syncx        ssh config parsing and host probing
 internal/hoststatus   node-agent host metrics collection (/proc, syscall) with pure, testable parsers

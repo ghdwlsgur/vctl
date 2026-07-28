@@ -103,6 +103,28 @@ func testStore(t *testing.T) *Store {
 // TestSessionEventRoundTrip exercises the audit path end to end: record a
 // session, ingest events that link by cgroup, and confirm the timeline groups
 // them under the right session. Integration — needs VCTL_TEST_DSN.
+// freeAddress removes whatever host currently owns addr and arranges for this
+// test's own row to go too, so a fixed test address stays reusable across runs.
+// Integration tests share one database; leaking a row here breaks the next run
+// of this test rather than the current one, which makes it easy to miss.
+func freeAddress(t *testing.T, st *Store, addr string) {
+	t.Helper()
+	ctx := context.Background()
+	clear := func() {
+		rows, err := st.List(ctx, "")
+		if err != nil {
+			return
+		}
+		for _, sv := range rows {
+			if sv.IP == addr {
+				_, _ = st.Delete(ctx, sv.Hostname)
+			}
+		}
+	}
+	clear()
+	t.Cleanup(clear)
+}
+
 func TestSessionEventRoundTrip(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
@@ -163,6 +185,11 @@ func TestListInventoryMergesObservedIPs(t *testing.T) {
 	ctx := context.Background()
 	host := "inv-host-" + time.Now().Format("150405.000000")
 	dc := "inv-dc-" + time.Now().Format("150405.000000")
+	// The hostname is unique per run but the address is not, and Upsert matches
+	// an existing host by IP and keeps its hostname. Without clearing the address
+	// the second run against a persistent database updates the first run's row
+	// and this test's hostname never exists.
+	freeAddress(t, st, "192.0.2.50")
 
 	if err := st.Upsert(ctx, Server{
 		Hostname: host, IP: "192.0.2.50", Port: 22, User: "ubuntu", DC: dc,
@@ -203,6 +230,7 @@ func TestServerStatusDoesNotCreateInventory(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 	host := "status-host-" + time.Now().Format("150405.000000")
+	freeAddress(t, st, "192.0.2.10")
 
 	ok, err := st.UpsertServerStatus(ctx, ServerStatus{Hostname: host, AgentVersion: "test"})
 	if err != nil {

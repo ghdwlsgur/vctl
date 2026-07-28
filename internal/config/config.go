@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -44,6 +45,14 @@ type Config struct {
 	// to `vctl prune` (run by a CronJob), mirroring Teleport's storage-lifecycle model.
 	KernelRetentionDays  int `yaml:"kernel_retention_days"`  // prune kernel_event older than this
 	SessionRetentionDays int `yaml:"session_retention_days"` // prune audit_session older than this (0 = keep)
+
+	// Local inventory cache. A snapshot under StateDir keeps host lookup working
+	// while Postgres is unreachable; see internal/invcache. Writes are unaffected
+	// and still go only to Postgres.
+	CacheDisabled   bool   `yaml:"cache_disabled"`    // never read or refresh the local snapshot
+	CacheRefresh    string `yaml:"cache_refresh"`     // refresh the snapshot when it is older than this
+	CacheOfflineTTL string `yaml:"cache_offline_ttl"` // how long cached RBAC grants may authorize an offline command
+	CacheMaxAge     string `yaml:"cache_max_age"`     // refuse to serve a snapshot older than this (0 = no limit)
 
 	CARole         string `yaml:"ca_role"`          // ssh/sign/<role>
 	SSHSign        string `yaml:"ssh_sign"`         // issued cert TTL
@@ -146,6 +155,10 @@ func (c *Config) applyEnv() {
 	envStrPair(&c.DBRoleMigrate, "DB_ROLE_MIGRATE")
 	envStrPair(&c.DBMigrationOwner, "DB_MIGRATION_OWNER")
 	envStr(&c.LocalDBDSN, "VCTL_LOCAL_DB_DSN")
+	envBool(&c.CacheDisabled, "VCTL_CACHE_DISABLE")                // VCTL-only
+	envStr(&c.CacheRefresh, "VCTL_CACHE_REFRESH")                  // VCTL-only
+	envStr(&c.CacheOfflineTTL, "VCTL_CACHE_OFFLINE_TTL")           // VCTL-only
+	envStr(&c.CacheMaxAge, "VCTL_CACHE_MAX_AGE")                   // VCTL-only
 	envInt(&c.KernelRetentionDays, "VCTL_KERNEL_RETENTION_DAYS")   // VCTL-only
 	envInt(&c.SessionRetentionDays, "VCTL_SESSION_RETENTION_DAYS") // VCTL-only
 	envStrPair(&c.CARole, "CA_ROLE")
@@ -185,6 +198,41 @@ func defaultConfigPath() string {
 		return "config.yaml"
 	}
 	return filepath.Join(wd, ".vctl", "config.yaml")
+}
+
+// CacheRefreshInterval is how stale the local inventory snapshot may get before
+// an online command refreshes it. Refreshing costs one extra query, so it is
+// amortized rather than done per command.
+func (c *Config) CacheRefreshInterval() time.Duration {
+	return parseDurationOr(c.CacheRefresh, 5*time.Minute)
+}
+
+// CacheOfflineWindow bounds how long cached command grants may authorize a
+// command while Postgres is unreachable. Past it, offline mutate commands fail
+// closed: a grant revoked during a long outage must not stay usable forever.
+func (c *Config) CacheOfflineWindow() time.Duration {
+	return parseDurationOr(c.CacheOfflineTTL, 24*time.Hour)
+}
+
+// CacheStaleLimit is the oldest inventory snapshot vctl will serve during an
+// outage. Past it, host lookup fails rather than routing by topology that has
+// had time to drift. An explicit "0" disables the limit.
+func (c *Config) CacheStaleLimit() time.Duration {
+	if strings.TrimSpace(c.CacheMaxAge) == "0" {
+		return 0
+	}
+	return parseDurationOr(c.CacheMaxAge, 30*24*time.Hour)
+}
+
+// parseDurationOr keeps a malformed or absent override from disabling a
+// protective default — a bad VCTL_CACHE_OFFLINE_TTL should not widen the offline
+// window, it should be ignored.
+func parseDurationOr(s string, def time.Duration) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
 
 func (c *Config) SyncBuildOptions(prefix string) syncx.BuildOptions {

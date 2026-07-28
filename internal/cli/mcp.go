@@ -288,7 +288,7 @@ func toMCPServer(w store.ServerWithStatus) mcpServer {
 	m := mcpServer{
 		Hostname: w.Hostname, IP: w.IP, ExtraIPs: w.ExtraIPs,
 		DC: w.DC, User: w.User, Jump: w.JumpVia,
-		Status: stripANSI(liveStatus(w)),
+		Status: stripANSI(liveStatus(w, false)), // MCP reads the live store
 	}
 	if w.Status != nil {
 		m.Agent = w.Status.AgentVersion

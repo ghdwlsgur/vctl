@@ -32,6 +32,9 @@ func Defaults() *Config {
 		DBMigrationOwner:     "vctl_owner",
 		KernelRetentionDays:  90,
 		SessionRetentionDays: 365,
+		CacheRefresh:         "5m",
+		CacheOfflineTTL:      "24h",
+		CacheMaxAge:          "720h", // 30d — long enough never to bite in practice
 		CARole:               "sre-core",
 		SSHSign:              "30m",
 		SSHDirectFirst:       true,

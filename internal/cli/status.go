@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -22,10 +24,13 @@ func statusCmd() *cobra.Command {
 					{Key: "Vault", Value: a.Cfg.VaultAddr},
 					{Key: "Auth method", Value: a.Cfg.AuthMethod},
 				}
-				if a.Vault.HasValidToken() {
-					rows = append(rows, ui.KV{Key: "Token", Value: fmt.Sprintf("valid · %s left", ui.CompactDuration(a.Vault.TTL())), State: ui.StateOK})
-				} else {
-					rows = append(rows, ui.KV{Key: "Token", Value: "missing; run 'vctl login'", State: ui.StateWarn})
+				tokenRow, authenticated := tokenStatus(ctx, a)
+				rows = append(rows, tokenRow)
+				if !authenticated {
+					// Still report the cache: whether host lookup would survive an
+					// outage is exactly what someone runs `vctl status` to find out,
+					// and it does not depend on being logged in.
+					rows = append(rows, cacheStatusRow(a))
 					ui.KVs(os.Stdout, rows)
 					return nil
 				}
@@ -38,6 +43,7 @@ func statusCmd() *cobra.Command {
 				st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
 				if err != nil {
 					rows = append(rows, ui.KV{Key: "Inventory DB", Value: "connection failed (" + err.Error() + ")", State: ui.StateFail})
+					rows = append(rows, cacheStatusRow(a))
 					ui.KVs(os.Stdout, rows)
 					return nil
 				}
@@ -56,11 +62,57 @@ func statusCmd() *cobra.Command {
 					State: agentState,
 					Raw:   fmt.Sprintf("%s  %s", ui.Badge(agentState, fmt.Sprintf("%d/%d reporting", withAgent, len(servers))), ui.Bar(withAgent, len(servers), 12)),
 				})
+				rows = append(rows, cacheStatusRow(a))
 				ui.KVs(os.Stdout, rows)
 				return nil
 			})
 		},
 	}
+}
+
+// tokenStatus reports the authentication state and whether the checks below it
+// can run at all.
+//
+// A cached token is not the only way to be authenticated: with AppRole
+// credentials on disk vctl authenticates silently, which is how the host agents
+// and any non-interactive caller work. Reporting those as "missing; run 'vctl
+// login'" and stopping was wrong twice over — the advice is unnecessary, and it
+// hid the SSH CA and inventory checks from exactly the setups that most need a
+// status command.
+func tokenStatus(ctx context.Context, a *app.App) (ui.KV, bool) {
+	if a.Vault.HasValidToken() {
+		return ui.KV{Key: "Token", Value: fmt.Sprintf("valid · %s left", ui.CompactDuration(a.Vault.TTL())), State: ui.StateOK}, true
+	}
+	if _, _, haveAppRole := a.AppRoleCreds(); haveAppRole {
+		if err := a.ReAuthNonInteractive(ctx); err != nil {
+			return ui.KV{Key: "Token", Value: "AppRole authentication failed (" + err.Error() + ")", State: ui.StateFail}, false
+		}
+		return ui.KV{Key: "Token", Value: fmt.Sprintf("valid · %s left (AppRole)", ui.CompactDuration(a.Vault.TTL())), State: ui.StateOK}, true
+	}
+	// Only now is a login genuinely required. status never prompts for one —
+	// it reports.
+	return ui.KV{Key: "Token", Value: "missing; run 'vctl login'", State: ui.StateWarn}, false
+}
+
+// cacheStatusRow summarizes whether host lookup would survive a database
+// outage. `vctl cache status` has the detail; this is the one line that belongs
+// in the overall health check.
+func cacheStatusRow(a *app.App) ui.KV {
+	if a.Cfg.CacheDisabled {
+		return ui.KV{Key: "Local cache", Value: "disabled", State: ui.StateWarn}
+	}
+	snap, err := a.CacheFile().Load()
+	if err != nil || !snap.HasInventory() {
+		// status deliberately has no side effects, so it never fills the cache
+		// itself — it says what would.
+		return ui.KV{Key: "Local cache", Value: "empty — run 'vctl cache refresh', or Postgres going down takes host lookup with it", State: ui.StateWarn}
+	}
+	now := time.Now()
+	age := ui.CompactDuration(snap.Age(now))
+	if snap.Expired(now, a.Cfg.CacheStaleLimit()) {
+		return ui.KV{Key: "Local cache", Value: fmt.Sprintf("%d hosts · %s old — too stale to serve", len(snap.Servers), age), State: ui.StateFail}
+	}
+	return ui.KV{Key: "Local cache", Value: fmt.Sprintf("%d hosts · %s old", len(snap.Servers), age), State: ui.StateOK}
 }
 
 func agentCoverageState(total, reporting int) ui.State {
