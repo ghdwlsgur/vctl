@@ -29,6 +29,27 @@ type ServerWithStatus struct {
 	Status *ServerStatus
 }
 
+// InventoryRow derives the listing view from a status-joined row: the merged
+// address set plus the node-agent heartbeat. ListInventory and ListWithStatus
+// select overlapping columns, and this is the projection from the wider shape to
+// the narrower one — so a snapshot of ServerWithStatus can serve both without a
+// second query. Keeping it here means mergeAddresses stays the single owner of
+// address precedence (primary, operator extras, agent-observed).
+func (w ServerWithStatus) InventoryRow() InventoryRow {
+	row := InventoryRow{Server: w.Server}
+	var observed []string
+	if w.Status != nil {
+		observed = w.Status.ObservedIPs
+		row.AgentVersion = w.Status.AgentVersion
+		if !w.Status.LastSeenAt.IsZero() {
+			seen := w.Status.LastSeenAt
+			row.AgentSeen = &seen
+		}
+	}
+	row.Addresses = mergeAddresses(w.IP, w.ExtraIPs, observed)
+	return row
+}
+
 // UpsertServerStatus records one heartbeat. It intentionally refuses to create
 // inventory: if hostname is absent from servers, zero rows are affected.
 func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, error) {

@@ -22,6 +22,10 @@ import (
 type App struct {
 	Cfg   *config.Config
 	Vault *vaultc.Client
+
+	// OnSpoolFlush reports the result of replaying access records that were
+	// queued while Postgres was unreachable. Optional; nil flushes silently.
+	OnSpoolFlush func(sent int, err error)
 }
 
 func New() (*App, error) {
@@ -255,13 +259,22 @@ func (a *App) OpenStore(ctx context.Context, p Purpose) (*store.Store, error) {
 // write credentials. It is best-effort: it opens a short-lived audit-write
 // store, inserts one row, and returns any error for the caller to log without
 // failing the SSH.
+//
+// When the write cannot reach Postgres the record is queued locally and the
+// returned error is a *SpooledError, so the caller can say "pending" rather than
+// "lost". A successful write also replays anything already queued — the moment a
+// working audit connection exists is the moment to catch up.
 func (a *App) LogAccess(ctx context.Context, entry store.AccessEntry) error {
 	st, err := a.OpenStore(ctx, PurposeAuditWrite)
 	if err != nil {
-		return err
+		return a.spoolAccess(entry, err)
 	}
 	defer st.Close()
-	return st.LogAccess(ctx, entry)
+	if err := st.LogAccess(ctx, entry); err != nil {
+		return a.spoolAccess(entry, err)
+	}
+	a.drainSpool(ctx, st)
+	return nil
 }
 
 // openRole opens Postgres with a specific Vault database role.
