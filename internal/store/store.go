@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -46,7 +47,14 @@ type Store struct {
 func Open(ctx context.Context, host string, port int, dbname string, getCreds CredsFunc, serverName string, caPEM []byte) (*Store, error) {
 	// No userinfo in the DSN: credentials are injected per-connection by
 	// BeforeConnect so the pool can refresh them as dynamic leases roll over.
-	dsn := fmt.Sprintf("postgres://%s:%d/%s", host, port, dbname)
+	//
+	// sslmode is explicit and must stay that way. Without it pgx parses the DSN
+	// under libpq's default of "prefer", which builds a plaintext entry in
+	// ConnConfig.Fallbacks — and assigning TLSConfig below only touches the
+	// primary. The result was a connection that downgraded to cleartext exactly
+	// when verification failed, i.e. against the attacker the verification is
+	// there to stop, while pg_stat_ssl reported ssl=false and nothing surfaced.
+	dsn := fmt.Sprintf("postgres://%s:%d/%s?sslmode=verify-full", host, port, dbname)
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -64,6 +72,11 @@ func Open(ctx context.Context, host string, port int, dbname string, getCreds Cr
 		ServerName: serverName,
 		MinVersion: tls.VersionTLS12,
 	}
+	// Belt and braces: whatever a future pgx decides "verify-full" implies, a
+	// fallback is a second connection attempt this function never configured and
+	// therefore cannot vouch for. There is exactly one way to reach the inventory
+	// database, and it is the verified one above.
+	cfg.ConnConfig.Fallbacks = nil
 	cfg.MaxConns = 4
 	// Vault dynamic DB creds default to a 1h TTL (max 4h). Recycle connections
 	// well inside that window so each physical connection re-fetches a live
@@ -124,6 +137,17 @@ func OpenLocal(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("local postgres ping: %w", err)
 	}
 	return &Store{pool: p}, nil
+}
+
+// DSNEndpoint reports the host:port a DSN resolves to, for callers that want to
+// probe reachability without opening a pool. Only the primary host is returned;
+// pgx fallbacks are not considered.
+func DSNEndpoint(dsn string) (string, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return "", err
+	}
+	return net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))), nil
 }
 
 // isLoopbackHost reports whether host stays on this machine. Unix socket
@@ -334,14 +358,24 @@ type AccessEntry struct {
 
 // LogAccess appends one SSH access record to access_log. It requires write
 // credentials and is meant to be called best-effort after a connection attempt.
+//
+// SignedAt is honoured when set and defaults to now() otherwise. Live calls
+// leave it zero and let the database stamp the row; a record replayed from the
+// local spool after a Postgres outage carries the time the connection actually
+// happened, so the audit trail does not compress an outage's worth of access
+// into the moment connectivity returned.
 func (s *Store) LogAccess(ctx context.Context, e AccessEntry) error {
+	var signedAt any
+	if !e.SignedAt.IsZero() {
+		signedAt = e.SignedAt
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO access_log
-			(vault_user, hostname, cert_serial, ok, source_ip, source_addr, client_host, client_user, target_addr, jump_via, error)
-		VALUES ($1,$2,$3,$4,NULLIF($5,'')::inet,$6,$7,$8,$9,$10,$11)`,
+			(vault_user, hostname, cert_serial, ok, source_ip, source_addr, client_host, client_user, target_addr, jump_via, error, signed_at)
+		VALUES ($1,$2,$3,$4,NULLIF($5,'')::inet,$6,$7,$8,$9,$10,$11, coalesce($12::timestamptz, now()))`,
 		nullIfEmpty(e.VaultUser), nullIfEmpty(e.Hostname), nullIfEmpty(e.CertSerial), e.OK, e.SourceIP,
 		nullIfEmpty(e.SourceAddr), nullIfEmpty(e.ClientHost), nullIfEmpty(e.ClientUser), nullIfEmpty(e.TargetAddr),
-		nullIfEmpty(e.JumpVia), nullIfEmpty(e.Error))
+		nullIfEmpty(e.JumpVia), nullIfEmpty(e.Error), signedAt)
 	return err
 }
 
