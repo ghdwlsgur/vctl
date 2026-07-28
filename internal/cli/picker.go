@@ -19,15 +19,17 @@ import (
 // selectServer shows a scrollable, type-to-filter picker (radio-style rows in a
 // fixed-height viewport with "↑/↓ N more" overflow counters). Falls back to a
 // numbered prompt when stdin isn't a TTY (pipes, CI).
-func selectServer(cands []store.ServerWithStatus, title string) (*store.ServerWithStatus, error) {
+// cached marks the candidates as coming from the local snapshot, which
+// suppresses the liveness column — see liveStatus.
+func selectServer(cands []store.ServerWithStatus, title string, cached bool) (*store.ServerWithStatus, error) {
 	if len(cands) == 0 {
 		return nil, fmt.Errorf("no servers to choose from")
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return numberPick(cands, title)
+		return numberPick(cands, title, cached)
 	}
 
-	m := newPickerModel(cands, title)
+	m := newPickerModel(cands, title, cached)
 	// Render to stderr so a piped stdout (e.g. `vctl ssh ... | tee`) stays clean,
 	// and read keys from the real terminal.
 	prog := tea.NewProgram(m, tea.WithOutput(os.Stderr), tea.WithInput(os.Stdin))
@@ -61,10 +63,11 @@ type pickerModel struct {
 	offset   int // first visible index into filtered
 	height   int // viewport rows
 	width    int
-	chosen   int // index into cands, -1 if cancelled
+	chosen   int  // index into cands, -1 if cancelled
+	cached   bool // candidates came from the local snapshot
 }
 
-func newPickerModel(cands []store.ServerWithStatus, title string) pickerModel {
+func newPickerModel(cands []store.ServerWithStatus, title string, cached bool) pickerModel {
 	m := pickerModel{
 		title:  title,
 		cands:  cands,
@@ -72,6 +75,7 @@ func newPickerModel(cands []store.ServerWithStatus, title string) pickerModel {
 		height: pickerViewport,
 		width:  100,
 		chosen: -1,
+		cached: cached,
 	}
 	if w, _, err := term.GetSize(int(os.Stderr.Fd())); err == nil && w > 0 {
 		m.width = w
@@ -257,7 +261,7 @@ func (m pickerModel) renderRow(i int) string {
 		nameWidth = w
 	}
 	label := fmt.Sprintf("%-*s %-16s %-12s %s",
-		nameWidth, ui.Truncate(c.Hostname, nameWidth), c.IP, c.DC, liveStatus(c))
+		nameWidth, ui.Truncate(c.Hostname, nameWidth), c.IP, c.DC, liveStatus(c, m.cached))
 
 	if i == m.cursor {
 		return pickCursorStyle.Render("› ●") + " " + pickSelectedStyle.Render(label)
@@ -266,10 +270,10 @@ func (m pickerModel) renderRow(i int) string {
 }
 
 // numberPick is the non-TTY fallback (pipes/CI): a plain numbered prompt.
-func numberPick(cands []store.ServerWithStatus, title string) (*store.ServerWithStatus, error) {
+func numberPick(cands []store.ServerWithStatus, title string, cached bool) (*store.ServerWithStatus, error) {
 	ui.Section(os.Stderr, title)
 	for i, c := range cands {
-		fmt.Fprintf(os.Stderr, "  %2d  %-28s %-16s %-12s %s\n", i+1, c.Hostname, c.IP, c.DC, liveStatus(c))
+		fmt.Fprintf(os.Stderr, "  %2d  %-28s %-16s %-12s %s\n", i+1, c.Hostname, c.IP, c.DC, liveStatus(c, cached))
 	}
 	fmt.Fprint(os.Stderr, ui.Muted("number: "))
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')

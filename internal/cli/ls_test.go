@@ -3,6 +3,7 @@ package cli
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
@@ -14,7 +15,7 @@ func TestRenderInventoryOmitsRuntimeStatus(t *testing.T) {
 	}
 
 	var out strings.Builder
-	renderInventory(&out, servers)
+	renderInventory(&out, servers, false)
 	got := out.String()
 	for _, unwanted := range []string{" up", "down", "stale", "seen ", "●", "○"} {
 		if strings.Contains(got, unwanted) {
@@ -25,6 +26,31 @@ func TestRenderInventoryOmitsRuntimeStatus(t *testing.T) {
 		if !strings.Contains(got, wanted) {
 			t.Errorf("inventory missing %q:\n%s", wanted, got)
 		}
+	}
+}
+
+// A snapshot cannot answer "is this host up right now", so the listing must not
+// imply an answer. Both the per-row agent cell and the footer have to say the
+// data is local, or a stale inventory reads exactly like a live one.
+func TestRenderInventoryFromCacheSuppressesLiveness(t *testing.T) {
+	seen := time.Now().Add(-2 * time.Hour)
+	servers := []store.InventoryRow{{
+		Server:    store.Server{Hostname: "host-a", IP: "192.0.2.1", User: "root", DC: "seoul"},
+		Addresses: []string{"192.0.2.1"},
+		AgentSeen: &seen,
+	}}
+
+	var out strings.Builder
+	renderInventory(&out, servers, true)
+	got := stripANSI(out.String())
+
+	for _, unwanted := range []string{"up", "down", "stale", "no-agent"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("cached listing claims liveness %q:\n%s", unwanted, got)
+		}
+	}
+	if !strings.Contains(got, "local snapshot") {
+		t.Errorf("cached listing does not disclose the snapshot:\n%s", got)
 	}
 }
 

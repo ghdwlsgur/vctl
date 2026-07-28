@@ -3,11 +3,14 @@ package cli
 
 import (
 	"context"
+	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // Version is injected by main for --version output.
@@ -92,7 +95,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		sessionCmd(), sessionStartCmd(), collectCmd(),
 		gate(pruneCmd(), "prune", classMutate),
 		watchSessionsCmd(), nodeAgentCmd(),
-		rbacCmd(), mcpCmd(),
+		rbacCmd(), mcpCmd(), cacheCmd(),
 	)
 	return root
 }
@@ -106,6 +109,52 @@ func withApp(fn func(*app.App) error) error {
 		return err
 	}
 	return fn(a)
+}
+
+// withInventory is withStore's read-only sibling for the two commands that have
+// to keep working during a database outage: it opens the inventory through the
+// local snapshot fallback instead of requiring Postgres.
+//
+// Commands that write, or that read data with no offline meaning (audit history,
+// RBAC administration), keep using withStore and keep failing loudly when the
+// database is gone — which is the correct outcome for them.
+func withInventory(ctx context.Context, fn func(*app.App, *app.Inventory) error) error {
+	a, err := newApp()
+	if err != nil {
+		return err
+	}
+	a.OnSpoolFlush = reportSpoolFlush
+	inv, err := a.OpenInventory(ctx)
+	if err != nil {
+		return err
+	}
+	defer inv.Close()
+	warnIfCached(inv)
+	return fn(a, inv)
+}
+
+// warnIfCached tells the operator, once per command, that what follows is a
+// snapshot rather than the current inventory. Silence here would be the
+// dangerous option: a decommissioned host still present in an hours-old snapshot
+// looks exactly like a live one.
+func warnIfCached(inv *app.Inventory) {
+	if !inv.Cached() {
+		return
+	}
+	ui.Warnf(os.Stderr, "inventory database unreachable — using the local snapshot from %s ago (run 'vctl cache status' for detail)",
+		ui.CompactDuration(inv.Age(time.Now())))
+}
+
+// reportSpoolFlush surfaces the replay of access records that were queued while
+// Postgres was unreachable.
+func reportSpoolFlush(sent int, err error) {
+	if err != nil {
+		ui.Warnf(os.Stderr, "queued access records: %v", err)
+		return
+	}
+	if sent > 0 {
+		ui.Infof(os.Stderr, "flushed %d queued access record(s) to the audit log", sent)
+	}
 }
 
 // withStore builds the app, opens the inventory store (rw=true for write roles),

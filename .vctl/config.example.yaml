@@ -33,3 +33,22 @@
 # files. Usually `vctl login --method oidc` is simpler.
 # role_id_file: /home/you/.vctl/role-id
 # secret_id_file: /home/you/.vctl/secret-id
+
+# Local inventory snapshot (~/.vctl/cache) — keeps `vctl ssh` and `vctl list`
+# working while Postgres is unreachable. Writes always go to Postgres; nothing is
+# ever authored locally. See the README "Surviving a Postgres Outage" section.
+#
+# Turn the whole mechanism off (reads fail hard when the database is down):
+# cache_disabled: true
+#
+# How stale the snapshot may get before an online command refreshes it.
+# cache_refresh: 5m
+#
+# How long grants confirmed by Postgres may authorize `vctl ssh` during an
+# outage. Past this, offline mutate commands fail closed.
+# cache_offline_ttl: 24h
+#
+# Oldest snapshot vctl will serve during an outage. Past this, host lookup fails
+# rather than routing by topology old enough to have been reassigned. "0" lifts
+# the limit.
+# cache_max_age: 720h

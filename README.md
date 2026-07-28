@@ -329,6 +329,44 @@ vctl audit --source-ip 192.0.2.10
 
 This audit table is operational metadata. The Vault audit device remains the authoritative record for certificate signing requests.
 
+## Surviving a Postgres Outage
+
+The inventory database is one Postgres instance behind a RWO volume, and when it goes down every host lookup goes with it — while Vault, which issues the SSH certificate, keeps working. `vctl` therefore keeps a local read-only snapshot of the inventory so `vctl ssh` and `vctl list` still work in that window.
+
+**Writes are unaffected.** Nothing is ever written to the snapshot as a source of truth; `sync`, `prune`, RBAC administration, and every other mutation still go only to Postgres and still fail loudly when it is unreachable.
+
+```bash
+vctl cache status     # snapshot age, host count, offline grant window, queued audit records
+vctl cache refresh    # refresh now — useful right before losing connectivity
+vctl cache clear      # drop the snapshot and cached grants
+```
+
+How it behaves:
+
+- **Refresh is automatic.** Any online `vctl ssh` or `vctl list` refreshes the snapshot once it has aged past `cache_refresh` (default 5m). There is no separate sync step. A capture that comes back with zero hosts is refused rather than stored — an empty result is indistinguishable from a misconfigured read, and overwriting a good snapshot with nothing would kill the fallback at exactly the wrong moment.
+- **Stale data is labelled.** A cached read prints a warning with the snapshot age, and the liveness column renders `?` instead of up/stale — a snapshot cannot answer "is this host up right now", and reporting the fleet as stale would blame the agents for an unreachable database.
+- **Vault is still required.** The snapshot replaces Postgres, not Vault: `vctl ssh` needs a live certificate signature, and token policies are never cached. This covers "Postgres down, Vault up", which is the outage that has actually happened.
+- **No pointless login during an outage.** Opening the store authenticates before it dials, so a lapsed token used to mean an SSO prompt followed by "the database is unreachable". When a prompt is the only thing standing in the way, vctl now probes the database first and serves the snapshot if nothing answers. With a valid token or AppRole credentials there is no prompt to avoid, the probe never runs, and the normal path is unchanged.
+- **A stale snapshot is refused, not served.** Past `cache_max_age` (default 30d) host lookup fails with the reason instead of routing by topology old enough to have been reassigned. Set `cache_max_age: "0"` to lift the limit.
+- **Audit records are queued, not dropped.** When the access-log write cannot reach Postgres the row is spooled to `~/.vctl/spool/access.jsonl` and replayed on the next successful audit write, keeping the time of the connection rather than the time of the flush. `vctl cache status` reports the backlog.
+- **RBAC fails closed.** See below.
+
+### Offline authorization
+
+Command grants are cached alongside the inventory, because otherwise every mutate command would be denied the moment the database blinked. Degraded mode is deliberately **stricter** than the online path at every step, so that making your own database unreachable can never grant more than being online would:
+
+| | Online | Postgres unreachable |
+|---|---|---|
+| Vault token policies | live `lookup-self` | live `lookup-self` (never cached) |
+| Read commands (`list`, `status`, `audit`) | allowed | allowed |
+| `ssh` | needs a grant | needs a grant **that Postgres previously confirmed**, inside `cache_offline_ttl` (default 24h) |
+| `sync`, `prune`, `trust-ca`, `ip set/rm`, `wg sync` | needs a grant | always refused — they write to the database anyway |
+| Admin commands | needs an admin policy | needs an admin policy |
+
+The window exists so a grant revoked during a long outage cannot stay usable forever on a laptop that never reconnects. Set `cache_disabled: true` (or `VCTL_CACHE_DISABLE=1`) to turn the whole mechanism off and restore the previous fail-hard behaviour exactly.
+
+What the cache deliberately does **not** defend against is a user editing their own snapshot file. Nothing local can: the verifier runs on the same machine. The TTL bounds honest staleness, not tampering. The boundary that does hold is the Vault token policy — which is why policies are looked up live and never cached, and why app-layer RBAC should not be relied on for anything Vault policy does not also gate.
+
 ## Host Agents
 
 Two optional daemons run *on* the servers (not the workstation). Both authenticate non-interactively with AppRole, hold a narrow Vault policy, and write through short-lived dynamic DB credentials — the same agent-less pattern as the CLI, applied server-side.
@@ -399,13 +437,14 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl ca install\|remove\|print` | Trust the embedded root CA in this machine's OS store so browsers/curl accept the organization's internal hostnames (clears HSTS errors); platform auto-detected |
 | `vctl node-agent [--interval 5m]` | Report lightweight host runtime status for already registered inventory |
 | `vctl session [<serial>\|--list\|--json]` | Show what a person did inside an SSH session (host kernel-audit timeline) |
+| `vctl cache status\|refresh\|clear` | Inspect or control the local inventory snapshot used when Postgres is unreachable |
 | `vctl status` | Check login, SSH CA, and inventory DB connectivity |
 | `vctl sync [--migrate] [--prefix sre]` | Sync inventory from `~/.ssh/config` and probes |
 | `vctl logout` | Remove the cached Vault token |
 
 ## Configuration
 
-Environment variables such as `VAULT_ADDR`, `VCTL_AUTH_METHOD`, `VCTL_ROLE_ID_FILE`, `VCTL_SECRET_ID_FILE`, `VCTL_SINK`, `VCTL_DB_HOST`, `VCTL_CA_ROLE`, `VCTL_SSH_DEFAULT_USER`, `VCTL_SSH_DIRECT_FIRST`, `VCTL_SYNC_PROBE_TIMEOUT`, and `VCTL_SYNC_PROBE_CONCURRENCY` override the compiled defaults.
+Environment variables such as `VAULT_ADDR`, `VCTL_AUTH_METHOD`, `VCTL_ROLE_ID_FILE`, `VCTL_SECRET_ID_FILE`, `VCTL_SINK`, `VCTL_DB_HOST`, `VCTL_CA_ROLE`, `VCTL_SSH_DEFAULT_USER`, `VCTL_SSH_DIRECT_FIRST`, `VCTL_SYNC_PROBE_TIMEOUT`, `VCTL_SYNC_PROBE_CONCURRENCY`, `VCTL_CACHE_DISABLE`, `VCTL_CACHE_REFRESH`, `VCTL_CACHE_OFFLINE_TTL`, and `VCTL_CACHE_MAX_AGE` override the compiled defaults.
 
 The config file is **optional** — vctl runs on compiled defaults and the file is
 not created at login. Copy the sample only when you need to override a value
@@ -490,6 +529,32 @@ make trivy
 
 `make trivy` scans Go dependencies, repository secrets, and Dockerfile misconfigurations. CI also scans the distroless image before release publishing.
 
+### Integration tests
+
+Tests that need a real Postgres skip unless `VCTL_TEST_DSN` points at a loopback database. They cover the audit-log timestamp handling, the spool flush, and — most importantly — a differential check that runs the same lookups against Postgres and against the offline snapshot and asserts identical answers, which is what keeps the two readers from drifting apart.
+
+`scripts/verify-stack.sh` stands the whole thing up — a TLS Postgres with a throwaway CA, a dev-mode Vault with the SSH CA and database engine configured, and an sshd that trusts that CA:
+
+```bash
+eval "$(scripts/verify-stack.sh up)"   # prints the env it exports
+go test ./...
+scripts/verify-stack.sh down
+```
+
+The fixture lives in that script rather than in a wiki page because the tests assert against it — that a policy reaches the token, that a role outside it is denied, that an untrusted CA is refused. A hand-built fixture drifts, and a drifted fixture fails those tests in ways that look like code regressions.
+
+What the integration tests cover beyond the unit suite:
+
+| Area | Asserts |
+|---|---|
+| `internal/store` TLS | `Open` verifies against the pinned CA, refuses an unrelated CA, refuses a server-name mismatch, and the accepted connection reports `pg_stat_ssl.ssl = true` |
+| `internal/store` audit | a replayed record keeps the time of the connection, not of the flush |
+| `internal/invcache` | the same lookups against Postgres and against the snapshot return identical answers |
+| `internal/auditspool` | queued records reach `access_log` with their original timestamps |
+| `internal/vaultc` | login, renewal, policy/identity lookup, SSH certificate signing, dynamic DB credentials, and denial of a role outside the token's policy |
+
+The suite migrates the schema itself and cleans up its fixtures, so it is safe to run repeatedly against the same stack.
+
 ## Release
 
 Releases are published by pushing a Git tag. GoReleaser creates GitHub Release artifacts, updates `Formula/vctl.rb` in the `ghdwlsgur/homebrew-vctl` repository, and publishes a distroless image to `ghcr.io/ghdwlsgur/vctl`.
@@ -534,6 +599,8 @@ cmd/dbedit            maintenance tool for operator-managed inventory (-col dc|u
 internal/config       generic loader (config.go) + org-specific defaults (defaults_sre.go) + embedded CA
 internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
 internal/store        Postgres inventory, app-layer RBAC, access/session/kernel audit, host status (verify-full TLS)
+internal/invcache     local read-only inventory snapshot + Go reimplementation of the resolve/list queries (Postgres-outage fallback)
+internal/auditspool   outbox for access records that could not reach Postgres, replayed on the next successful write
 internal/sshc         native SSH client with cert signer, jump chains, PTY, and connection metadata
 internal/syncx        ssh config parsing and host probing
 internal/hoststatus   node-agent host metrics collection (/proc, syscall) with pure, testable parsers

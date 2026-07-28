@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Class ranks a command by how much authority it needs. Read commands are
@@ -122,11 +123,99 @@ func (az Authorization) Allows(command string) bool {
 	return az.Admin || az.Commands["*"] || az.Commands[command]
 }
 
+// CachedGrant is one identity's grants as last confirmed against Postgres, with
+// the time of that confirmation. Declared here rather than imported so this
+// package keeps depending on nothing but the standard library.
+type CachedGrant struct {
+	Commands    []string
+	ConfirmedAt time.Time
+}
+
+// Has reports whether the cached grant covers a command, honouring "*".
+func (g CachedGrant) Has(command string) bool {
+	return slices.Contains(g.Commands, "*") || slices.Contains(g.Commands, command)
+}
+
+// Age is how long ago Postgres last confirmed the grant.
+//
+// A confirmation stamped in the future means a skewed clock or an edited cache;
+// it is clamped to zero so the value stays reportable. Clamping cannot make an
+// expired grant usable — Expired treats a non-positive window as expired — and
+// local tampering is not something a local verifier can defend against anyway.
+func (g CachedGrant) Age(now time.Time) time.Duration {
+	return max(now.Sub(g.ConfirmedAt), 0)
+}
+
+// Expired reports whether the grant has aged out of the offline window and may
+// no longer authorize anything. A window of zero or less means offline
+// authorization is switched off, which is expiry for every grant.
+//
+// This is the single owner of the rule. `vctl cache status` renders the same
+// verdict by calling it rather than recomputing the comparison, which is how the
+// two drifted apart the first time.
+func (g CachedGrant) Expired(now time.Time, window time.Duration) bool {
+	return window <= 0 || g.Age(now) > window
+}
+
+// offlineAllowed lists the gated commands a cached grant may authorize while
+// the grant source is unreachable.
+//
+// It is short on purpose. Every other mutate command writes to the inventory
+// database (sync, prune, ip set/rm, wg sync) or is one-time onboarding
+// (trust-ca), so allowing them offline would buy nothing and widen the window in
+// which a stale grant matters. `ssh` is the command an operator needs during an
+// outage, and it is the one the Vault SSH CA independently gates.
+var offlineAllowed = map[string]bool{"ssh": true}
+
+// Offline configures degraded-mode authorization: what to do when the grant
+// source cannot be reached.
+//
+// The design constraint is that degraded mode must never be more permissive than
+// the normal path, or blocking your own database access becomes a privilege
+// escalation. Every offline decision therefore requires a grant that Postgres
+// previously confirmed, restricts the command set further (offlineAllowed), and
+// expires (Window). Vault token policies are not cached at all — they are the
+// authoritative boundary, and they stay a live lookup.
+type Offline struct {
+	// Lookup returns the identity's last confirmed grants.
+	Lookup func(identity string) (CachedGrant, bool)
+	// Record stores grants after a successful online lookup.
+	Record func(identity string, commands []string)
+	// Window bounds how old a confirmation may be. Zero disables offline
+	// authorization entirely.
+	Window time.Duration
+	// OnDegraded is invoked when a command is allowed on cached grants, so the
+	// caller can warn. Optional.
+	OnDegraded func(command string, age time.Duration)
+	// Now is the clock, injectable for tests. Defaults to time.Now.
+	Now func() time.Time
+}
+
+func (o *Offline) now() time.Time {
+	if o != nil && o.Now != nil {
+		return o.Now()
+	}
+	return time.Now()
+}
+
+// enabled reports whether offline authorization is configured and permitted.
+func (o *Offline) enabled() bool {
+	return o != nil && o.Lookup != nil && o.Window > 0
+}
+
 // Authorizer answers authorization questions from a policy source and a
 // (lazily opened) grant source.
 type Authorizer struct {
 	policies   PolicySource
 	openGrants func(context.Context) (GrantSource, func(), error)
+	offline    *Offline
+}
+
+// WithOffline attaches degraded-mode behaviour and returns the authorizer, so
+// wiring reads as one expression at the call site.
+func (a *Authorizer) WithOffline(o *Offline) *Authorizer {
+	a.offline = o
+	return a
 }
 
 // New builds an Authorizer whose grant source is opened lazily — only when a
@@ -196,7 +285,7 @@ func (a *Authorizer) Check(ctx context.Context, cmd Command) error {
 	}
 	az := Authorization{Identity: identity}
 	if err := a.loadGrants(ctx, &az); err != nil {
-		return err
+		return a.checkOffline(cmd, identity, err)
 	}
 	if az.rbacUninitialized {
 		return fmt.Errorf("rbac: not initialized yet — an admin must run 'vctl sync --migrate' first")
@@ -205,6 +294,56 @@ func (a *Authorizer) Check(ctx context.Context, cmd Command) error {
 		return nil
 	}
 	return fmt.Errorf("rbac: '%s' not permitted for %q — ask an admin to grant it:\n  vctl rbac grant <group> %s", cmd.Name, identity, cmd.Name)
+}
+
+// checkOffline decides a mutate command when the grant source is unreachable.
+//
+// It is deliberately stricter than the online path at every step — the command
+// must be in offlineAllowed, a prior online confirmation must exist, that
+// confirmation must be inside the window, and it must actually carry the grant —
+// so there is no version of "make Postgres unreachable" that grants more than
+// being online would. When offline authorization is not configured, the original
+// failure is returned unchanged.
+func (a *Authorizer) checkOffline(cmd Command, identity string, cause error) error {
+	if !a.offline.enabled() {
+		return cause
+	}
+	if !offlineAllowed[cmd.Name] {
+		return fmt.Errorf("rbac: '%s' needs the inventory database and it is unreachable: %w", cmd.Name, cause)
+	}
+	grant, ok := a.offline.Lookup(identity)
+	if !ok {
+		return fmt.Errorf("rbac: inventory database unreachable and no cached authorization for %q — "+
+			"run '%s' once while it is reachable to cache one: %w", identity, cmd.Name, cause)
+	}
+	now := a.offline.now()
+	age := grant.Age(now)
+	if grant.Expired(now, a.offline.Window) {
+		return fmt.Errorf("rbac: inventory database unreachable and the cached authorization for %q expired "+
+			"(confirmed %s ago, offline window %s): %w", identity, age.Truncate(time.Minute), a.offline.Window, cause)
+	}
+	if !grant.Has(cmd.Name) {
+		return fmt.Errorf("rbac: '%s' not permitted for %q by the cached authorization — "+
+			"ask an admin to grant it:\n  vctl rbac grant <group> %s", cmd.Name, identity, cmd.Name)
+	}
+	if a.offline.OnDegraded != nil {
+		a.offline.OnDegraded(cmd.Name, age)
+	}
+	return nil
+}
+
+// recordGrants caches a freshly confirmed grant set for offline use.
+func (a *Authorizer) recordGrants(identity string, commands map[string]bool) {
+	if a.offline == nil || a.offline.Record == nil || identity == "" {
+		return
+	}
+	list := make([]string, 0, len(commands))
+	for c, granted := range commands {
+		if granted {
+			list = append(list, c)
+		}
+	}
+	a.offline.Record(identity, list)
 }
 
 // loadGrants opens the grant source, reads the caller's grants into az, and
@@ -227,5 +366,6 @@ func (a *Authorizer) loadGrants(ctx context.Context, az *Authorization) error {
 		return err
 	}
 	az.Commands = cmds
+	a.recordGrants(az.Identity, cmds)
 	return nil
 }
