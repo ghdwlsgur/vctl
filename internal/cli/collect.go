@@ -55,11 +55,13 @@ type tetraEvent struct {
 
 func collectCmd() *cobra.Command {
 	var (
-		from          string
-		host          string
-		serial        string
-		batch         int
-		flushInterval time.Duration
+		from           string
+		host           string
+		serial         string
+		batch          int
+		flushInterval  time.Duration
+		requireSession bool
+		grace          time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "collect",
@@ -71,7 +73,15 @@ Typical host wiring (systemd or sidecar):
   tetra getevents -o json | vctl collect
 
 Events link to a session by cgroup when the login stamper recorded one; pass
---serial to attach a known access explicitly.`,
+--serial to attach a known access explicitly.
+
+By default only events that link to a session are stored. A host emits exec/exit
+for everything it runs — on a Kubernetes node that is overwhelmingly container and
+kubelet churn, which belongs to no login and which no later row can attribute, so
+storing it buys nothing and costs everything. A miss is held for
+--attribution-grace and retried first, because a login's earliest commands arrive
+before watch-sessions has written the session row. Pass --require-session=false
+for full host capture.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
@@ -102,13 +112,21 @@ Events link to a session by cgroup when the login stamper recorded one; pass
 
 				buf := make([]store.KernelEvent, 0, batch)
 				total, skipped := 0, 0
+				held := newAttributionHold(grace, batch)
 				flush := func() error {
-					if len(buf) == 0 {
+					pending := held.merge(buf)
+					buf = buf[:0]
+					if len(pending) == 0 {
 						return nil
 					}
-					n, err := st.InsertKernelEvents(ctx, buf)
+					if !requireSession {
+						n, err := st.InsertKernelEvents(ctx, pending)
+						total += n
+						return err
+					}
+					n, missed, err := st.InsertKernelEventsAttributed(ctx, pending)
 					total += n
-					buf = buf[:0]
+					held.hold(pending, missed)
 					return err
 				}
 
@@ -134,7 +152,16 @@ Events link to a session by cgroup when the login stamper recorded one; pass
 							if scanErr != nil {
 								return fmt.Errorf("input scan aborted after %d events: %w", total, scanErr)
 							}
-							ui.Successf(os.Stderr, "ingested %d kernel events (%d skipped)", total, skipped)
+							// One last attempt for anything still inside its grace, so a
+							// clean shutdown does not throw away events whose session was
+							// about to appear.
+							if rest := held.drain(); len(rest) > 0 {
+								if n, _, err := st.InsertKernelEventsAttributed(ctx, rest); err == nil {
+									total += n
+								}
+							}
+							ui.Successf(os.Stderr, "ingested %d kernel events (%d unparsed, %d unattributable)",
+								total, skipped, held.Dropped())
 							return nil
 						}
 						line = strings.TrimSpace(line)
@@ -163,10 +190,12 @@ Events link to a session by cgroup when the login stamper recorded one; pass
 		},
 	}
 	cmd.Flags().StringVar(&from, "from", "", "read events from a file instead of stdin")
-	cmd.Flags().StringVar(&host, "host", "", "override hostname (default: event node_name)")
+	cmd.Flags().StringVar(&host, "host", "", "inventory hostname to record events under (default: event node_name); must match what watch-sessions records or nothing attributes")
 	cmd.Flags().StringVar(&serial, "serial", "", "attach events to a known cert serial")
 	cmd.Flags().IntVar(&batch, "batch", 200, "insert batch size")
 	cmd.Flags().DurationVar(&flushInterval, "flush-interval", 3*time.Second, "max time before flushing buffered events")
+	cmd.Flags().BoolVar(&requireSession, "require-session", true, "store only events that link to a session; false captures all host activity")
+	cmd.Flags().DurationVar(&grace, "attribution-grace", 30*time.Second, "how long to hold an unlinked event waiting for its session row")
 	return cmd
 }
 
