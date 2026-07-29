@@ -32,7 +32,7 @@ func findCmd(root *cobra.Command, name string) *cobra.Command {
 
 func TestNewRootRegistersCommands(t *testing.T) {
 	root := NewRoot(fakeDeps(t))
-	for _, want := range []string{"login", "ssh", "list", "sync", "audit", "rbac", "mcp", "prune", "node-agent"} {
+	for _, want := range []string{"login", "ssh", "list", "sync", "audit", "rbac", "mcp", "retention", "node-agent"} {
 		if findCmd(root, want) == nil {
 			t.Errorf("command %q missing from tree", want)
 		}

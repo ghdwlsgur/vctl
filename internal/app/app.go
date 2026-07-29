@@ -206,7 +206,6 @@ const (
 	PurposeAuditRead
 	PurposeAuditWrite
 	PurposeAuditIngest
-	PurposePrune
 	PurposeMigrate
 )
 
@@ -225,8 +224,6 @@ func (a *App) roleFor(p Purpose) string {
 		return a.Cfg.DBRoleAuditWrite
 	case PurposeAuditIngest:
 		return a.Cfg.DBRoleAuditIngest
-	case PurposePrune:
-		return a.Cfg.DBRolePrune
 	case PurposeMigrate:
 		return a.Cfg.DBRoleMigrate
 	default: // PurposeInventoryRead

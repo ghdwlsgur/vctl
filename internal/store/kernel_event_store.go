@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // KernelEvent is one process/file/network event observed inside a session.
@@ -106,34 +108,61 @@ func (s *Store) insertKernelEvents(ctx context.Context, evs []KernelEvent, requi
 	return n, unattributed, nil
 }
 
-// --- retention (driven by `vctl prune`) ---
+// --- retention (reported by `vctl retention`; enforced by the prune CronJob) ---
+//
+// Nothing here deletes. Retention deletion runs in-cluster from the prune
+// CronJob, as the table owner over the pod-local socket. That is deliberate: the
+// job needs no credential distribution and no network path, and it keeps the
+// ability to delete audit records out of every credential an operator carries.
+// vctl reads the same numbers so the footprint is visible without granting
+// anyone DELETE.
 
 // CountKernelEventsBefore returns how many kernel_event rows are older than t.
-// Used for prune dry-runs.
 func (s *Store) CountKernelEventsBefore(ctx context.Context, t time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM kernel_event WHERE ts < $1`, t).Scan(&n)
 	return n, err
 }
 
-// PruneKernelEvents deletes kernel_event rows older than t and returns the count.
-// Requires write credentials.
-func (s *Store) PruneKernelEvents(ctx context.Context, t time.Time) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM kernel_event WHERE ts < $1`, t)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+// CountSessionsBefore returns how many audit_session rows started before t.
+func (s *Store) CountSessionsBefore(ctx context.Context, t time.Time) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM audit_session WHERE started_at < $1`, t).Scan(&n)
+	return n, err
 }
 
-// PruneSessions deletes audit_session rows started before t. Sessions are the
-// dataset index, so prune them with a longer horizon than raw events.
-// FK on kernel_event is ON DELETE SET NULL, so orphan events are harmless and
-// caught by their own retention.
-func (s *Store) PruneSessions(ctx context.Context, t time.Time) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM audit_session WHERE started_at < $1`, t)
+// TableFootprint is what a table costs on disk right now.
+type TableFootprint struct {
+	Table string
+	Bytes int64
+	Rows  int64
+	Dead  int64
+}
+
+// AuditFootprint reports the on-disk size of the audit tables.
+//
+// This exists because the size was invisible. A delete-only retention job
+// returns space to the table's free list, not to the volume, so a burst parks the
+// high-water mark permanently and nothing says so — on 2026-07-29 an empty
+// kernel_event held 5,157 MB with no signal anywhere. Reading it needs no
+// privilege beyond seeing the table, so the auditor role is enough.
+func (s *Store) AuditFootprint(ctx context.Context) ([]TableFootprint, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT c.relname,
+		       pg_total_relation_size(c.oid),
+		       coalesce(st.n_live_tup, 0),
+		       coalesce(st.n_dead_tup, 0)
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		LEFT JOIN pg_stat_user_tables st ON st.relid = c.oid
+		WHERE n.nspname = 'public' AND c.relname IN ('kernel_event', 'audit_session', 'access_log')
+		ORDER BY pg_total_relation_size(c.oid) DESC`)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return tag.RowsAffected(), nil
+	return collectRows(rows, func(r pgx.Rows) (TableFootprint, error) {
+		var f TableFootprint
+		err := r.Scan(&f.Table, &f.Bytes, &f.Rows, &f.Dead)
+		return f, err
+	})
 }

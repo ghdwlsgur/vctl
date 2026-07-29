@@ -93,7 +93,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		statusCmd(), auditCmd(),
 		gate(trustCACmd(), "trust-ca", classMutate), caCmd(),
 		sessionCmd(), sessionStartCmd(), collectCmd(),
-		gate(pruneCmd(), "prune", classMutate),
+		gate(retentionCmd(), "retention", classRead),
 		watchSessionsCmd(), nodeAgentCmd(),
 		rbacCmd(), mcpCmd(), cacheCmd(),
 	)

@@ -184,7 +184,7 @@ func TestFileStoreRoundTrip(t *testing.T) {
 		t.Fatalf("round-tripped %d hosts, want 3", len(got.Servers))
 	}
 	g, ok := got.Grant("test-user")
-	if !ok || !g.Has("ssh") || g.Has("prune") {
+	if !ok || !g.Has("ssh") || g.Has("trust-ca") {
 		t.Fatalf("round-tripped grants = %+v (ok=%v)", g, ok)
 	}
 	// Status must survive: dropping it would make every cached host look
