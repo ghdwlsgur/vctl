@@ -91,7 +91,9 @@ has data). Because that writes, it additionally requires the 'wg-sync' grant.`,
 			if !term.IsTerminal(int(os.Stdout.Fd())) {
 				return wgMonitorSnapshot(ctx, conn, targets, timeout)
 			}
-			m := newMonitorModel(ctx, conn, targets, interval, timeout)
+			// The TUI polls on a timer, so it audits transitions rather than
+			// every tick. The one-shot paths above keep auditing each run.
+			m := newMonitorModel(ctx, conn.Monitor(), targets, interval, timeout)
 			_, err = tea.NewProgram(m, tea.WithOutput(os.Stderr), tea.WithInput(os.Stdin)).Run()
 			return err
 		},
@@ -197,9 +199,9 @@ type tickMsg time.Time
 
 // pollHost returns a tea.Cmd that SSHes into one gateway, runs wg show and
 // returns the parsed peers. It never blocks the UI: bubbletea runs it async.
-func pollHost(ctx context.Context, conn *access.Connector, t monTarget, timeout time.Duration) tea.Cmd {
+func pollHost(ctx context.Context, mon *access.Monitor, t monTarget, timeout time.Duration) tea.Cmd {
 	return func() tea.Msg {
-		res, err := conn.Execute(ctx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wgDumpCmd, timeout)
+		res, err := mon.Poll(ctx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wgDumpCmd, timeout)
 		if err != nil {
 			return pollResultMsg{host: t.name, err: err, at: time.Now()}
 		}
@@ -254,7 +256,7 @@ func humanRate(bps float64) string {
 
 type monitorModel struct {
 	ctx      context.Context
-	conn     *access.Connector
+	mon      *access.Monitor
 	targets  []monTarget
 	interval time.Duration
 	timeout  time.Duration
@@ -267,9 +269,9 @@ type monitorModel struct {
 	w, h   int
 }
 
-func newMonitorModel(ctx context.Context, conn *access.Connector, targets []monTarget, interval, timeout time.Duration) monitorModel {
+func newMonitorModel(ctx context.Context, mon *access.Monitor, targets []monTarget, interval, timeout time.Duration) monitorModel {
 	return monitorModel{
-		ctx: ctx, conn: conn, targets: targets, interval: interval, timeout: timeout,
+		ctx: ctx, mon: mon, targets: targets, interval: interval, timeout: timeout,
 		prev: map[tunnelKey]wgSample{}, cur: map[tunnelKey]wgSample{},
 		rates: map[tunnelKey][2]float64{}, errs: map[string]string{},
 	}
@@ -280,7 +282,7 @@ func (m monitorModel) Init() tea.Cmd { return tea.Batch(m.pollAll(), m.tick()) }
 func (m monitorModel) pollAll() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.targets))
 	for _, t := range m.targets {
-		cmds = append(cmds, pollHost(m.ctx, m.conn, t, m.timeout))
+		cmds = append(cmds, pollHost(m.ctx, m.mon, t, m.timeout))
 	}
 	return tea.Batch(cmds...)
 }

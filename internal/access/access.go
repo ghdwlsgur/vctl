@@ -111,7 +111,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) error {
 	sign, serial := c.signFunc(ctx)
 	vaultUser := c.Identity.Identity(ctx)
 	info, err := sshc.Connect(ctx, req.Target, sign)
-	c.audit(ctx, vaultUser, req.Target, info, serial(), err)
+	c.record(ctx, accessEntry(vaultUser, req.Target, info, serial(), err))
 	return err
 }
 
@@ -122,6 +122,18 @@ func (c *Connector) Connect(ctx context.Context, req Request) error {
 // When timeout > 0 the sign+dial+run are bounded by it; the audit write is not,
 // so a timed-out command is still recorded. The attempt is always audited.
 func (c *Connector) Execute(ctx context.Context, req Request, command string, timeout time.Duration) (Result, error) {
+	res, entry, err := c.run(ctx, req, command, timeout)
+	c.record(ctx, entry)
+	return res, err
+}
+
+// run performs the sign + dial + command without recording anything, returning
+// the audit entry the attempt produced so the caller decides what to do with it.
+//
+// Split out for Monitor, which polls on a timer and must not write a row per
+// poll. Execute is still the only way to run a one-off command, and it always
+// records — the split moves the decision, it does not remove it.
+func (c *Connector) run(ctx context.Context, req Request, command string, timeout time.Duration) (Result, store.AccessEntry, error) {
 	runCtx := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -132,11 +144,19 @@ func (c *Connector) Execute(ctx context.Context, req Request, command string, ti
 	sign, serial := c.signFunc(runCtx)
 	vaultUser := c.Identity.Identity(ctx)
 	res, info, err := sshc.Run(runCtx, req.Target, sign, command)
-	c.audit(ctx, vaultUser, req.Target, info, serial(), err)
 	return Result{
-		Host: req.Target.Name, Addr: req.Target.Addr,
-		Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode,
-	}, err
+			Host: req.Target.Name, Addr: req.Target.Addr,
+			Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode,
+		},
+		accessEntry(vaultUser, req.Target, info, serial(), err),
+		err
+}
+
+// record writes one prepared audit entry, best-effort.
+func (c *Connector) record(ctx context.Context, entry store.AccessEntry) {
+	if err := c.Audit.LogAccess(ctx, entry); err != nil && c.OnAuditError != nil {
+		c.OnAuditError(err)
+	}
 }
 
 // signFunc returns a sshc.SignFunc that signs through the CA at the configured
@@ -155,14 +175,6 @@ func (c *Connector) signFunc(ctx context.Context) (sshc.SignFunc, func() string)
 		return cert, err
 	}
 	return fn, func() string { return serial }
-}
-
-// audit records one attempt. It is best-effort: a write failure is surfaced via
-// OnAuditError but never fails the connection.
-func (c *Connector) audit(ctx context.Context, vaultUser string, tgt *sshc.Target, info sshc.ConnectionInfo, serial string, connErr error) {
-	if err := c.Audit.LogAccess(ctx, accessEntry(vaultUser, tgt, info, serial, connErr)); err != nil && c.OnAuditError != nil {
-		c.OnAuditError(err)
-	}
 }
 
 // ResolveServer resolves a host non-interactively (for --server and MCP): exact
