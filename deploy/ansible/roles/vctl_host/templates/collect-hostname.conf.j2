@@ -1,0 +1,15 @@
+# Managed by Ansible (vctl_host role). collect records kernel_event rows under the
+# INVENTORY hostname, matching what watch-sessions writes to audit_session.
+#
+# Attribution joins the two on hostname equality. Tetragon reports the OS name
+# ("k8s-all-01") while the inventory key is "sre-srv-0023", so leaving collect on
+# its default while watch-sessions is pinned would break every link and every
+# event would be discarded as unattributable. Both sides or neither.
+#
+# Double quotes, not the quote filter: systemd parses the outer single-quoted
+# sh -c argument itself, so a single quote from the filter would end that string
+# early. Inventory names carry brackets ("[admin]-wireguard-gw-incheon"), which
+# double quotes handle inside sh.
+[Service]
+ExecStart=
+ExecStart=/bin/sh -c 'tetra getevents -o json | /usr/local/bin/vctl collect --host "{{ vctl_host_node_hostname }}" --batch "$VCTL_COLLECT_BATCH" --flush-interval "$VCTL_COLLECT_FLUSH_INTERVAL"'

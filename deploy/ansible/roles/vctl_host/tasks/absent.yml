@@ -51,6 +51,7 @@
     - /etc/systemd/system/vctl-node-agent.service
     - /etc/systemd/system/vctl-node-agent.service.d/10-hostname.conf
     - /etc/systemd/system/vctl-watch-sessions.service.d/10-hostname.conf
+    - /etc/systemd/system/vctl-collect.service.d/10-hostname.conf
     - /etc/logrotate.d/vctl-audit
     - /etc/systemd/journald.conf.d/vctl-audit.conf
     - /usr/local/sbin/pam-session-stamp.sh

@@ -313,6 +313,8 @@ vctl session <cert-serial> --json   # machine-readable export (e.g. for an agent
 
 コレクターは Tetragon から `process_exec`/`process_exit` を取り込みます。イベントは cgroup id でセッションにリンクされ、フォールバックとして証明書シリアルを使います。保持期間は `vctl prune`(CronJob)によって強制され、Teleport のストレージライフサイクルモデルを踏襲しています。大量に発生する `kernel_event` 行は、小さな `audit_session` インデックスよりも早く失効します。
 
+**セッションにリンクされたイベントのみを保存します。** ホストは実行するすべてについて exec/exit を出力し、Kubernetes ノードではその大半がコンテナと kubelet の生成消滅です。どのログインにも属さず、`session_id` を後から埋めるものはなく、`vctl session` はその列で結合するため、保存してもディスクを消費するだけで何も答えません。リンクできなかったイベントは `--attribution-grace`(30秒)の間保持され優先的に再試行されます。ログイン直後のコマンドはセッション行が書かれる前に届くからです。それを過ぎて初めて破棄します。`--require-session=false` で全ホストキャプチャに戻せます。`vctl collect --host` と `vctl watch-sessions --hostname` は同じインベントリ名を記録する必要があります。突合はホスト名で結合するため、片側だけ固定しても何もリンクされません。
+
 **ランタイムのホスト状態。** `vctl node-agent` は軽量な生存ハートビート(負荷、メモリ、ディスク)を、*すでに `servers` に存在するホストについてのみ* `server_status` に報告します。インベントリを作成することは決してありません。`vctl list` と `vctl status` はこの鮮度をトポロジと並べて表示します。
 
 **長時間稼働する資格情報の更新。** これらのデーモンは Postgres プールを何日も保持しますが、Vault の動的 DB 資格情報は短命です(デフォルト 1h、最大 4h)。プールはそのウィンドウの十分内側で物理接続を再生成し、接続前に有効な資格情報を再取得し、トークンが失効していれば Vault セッションを再認証します。デーモンが資格情報のリースより長生きすることはなく、Vault Agent も不要です。

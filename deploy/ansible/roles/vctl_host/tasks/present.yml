@@ -326,6 +326,26 @@
     - Reload systemd
     - Restart vctl services
 
+# The collector needs the same pin. Attribution joins kernel_event to
+# audit_session on hostname equality, so pinning only one side breaks every link
+# and every event is then discarded as unattributable. Both or neither.
+- name: Ensure collector drop-in dir
+  ansible.builtin.file:
+    path: /etc/systemd/system/vctl-collect.service.d
+    state: directory
+    mode: "0755"
+
+- name: Pin collector to the inventory hostname (drop-in)
+  ansible.builtin.template:
+    src: collect-hostname.conf.j2
+    dest: /etc/systemd/system/vctl-collect.service.d/10-hostname.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart vctl services
+
 # node-agent always; watch-sessions + collector only with the full audit stack
 # (collector additionally needs vctl_host_install_collect / Tetragon).
 - name: Enable services (only with secret_id present)
