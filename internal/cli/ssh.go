@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/invcache"
+	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -18,25 +22,58 @@ import (
 func sshCmd() *cobra.Command {
 	var server string
 	cmd := &cobra.Command{
-		Use:   "ssh [host]",
-		Short: "Connect to an inventory host",
+		Use:   "ssh [host|user@addr]",
+		Short: "Connect to an inventory host, or to an address directly",
 		Long: `Connect to an inventory host.
 
 Interactive:  vctl ssh [host]            fuzzy match; picker when ambiguous/omitted
 Non-interactive (scripts/agents):
-              vctl ssh --server <host>   exact/unique match only; errors instead of prompting`,
+              vctl ssh --server <host>   exact/unique match only; errors instead of prompting
+
+Direct:       vctl ssh ubuntu@192.0.2.10        an address, not an inventory name
+              vctl ssh ubuntu@192.0.2.10:2222
+
+A direct target skips inventory entirely, so it reaches a host that was never
+registered — as long as the host already trusts the Vault SSH CA (see
+'vctl trust-ca'). The certificate, the RBAC gate and the access-log row are the
+same as for any other connection; what inventory would have supplied is not:
+there is no jump chain (direct connection only) and the CA role falls back to
+the configured default.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			if server != "" && len(args) > 0 {
+				return fmt.Errorf("pass the host via --server or as a positional argument, not both")
+			}
+			query := server
+			if query == "" && len(args) > 0 {
+				query = args[0]
+			}
+
+			// A terminal session may confirm an unknown host key; --server is
+			// non-interactive (scripts/agents) so it is strict instead.
+			policy := access.HostKeyPrompt
+			if server != "" {
+				policy = access.HostKeyStrict
+			}
+
+			// A direct address needs nothing from the inventory, so it does not
+			// open it. That also makes this the way in when the inventory
+			// database itself is unreachable and the snapshot cannot help.
+			if ep, ok := parseUserAtAddr(query); ok {
+				return withApp(func(a *app.App) error {
+					tgt := ep.target(a.Cfg)
+					ui.Infof(os.Stderr, "connecting to %s@%s (direct, not from inventory)", tgt.User, tgt.Addr)
+					return newConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+				})
+			}
+
 			return withInventory(ctx, func(a *app.App, inv *app.Inventory) error {
 				var (
 					target *store.Server
 					err    error
 				)
 				if server != "" {
-					if len(args) > 0 {
-						return fmt.Errorf("pass the host via --server or as a positional argument, not both")
-					}
 					target, err = access.ResolveServer(ctx, inv, server)
 				} else {
 					target, err = pick(ctx, inv, args)
@@ -50,20 +87,52 @@ Non-interactive (scripts/agents):
 					return err
 				}
 
-				// A terminal session may confirm an unknown host key; --server is
-				// non-interactive (scripts/agents) so it is strict instead.
-				policy := access.HostKeyPrompt
-				if server != "" {
-					policy = access.HostKeyStrict
-				}
-
 				ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
 				return newConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
 			})
 		},
 	}
-	cmd.Flags().StringVar(&server, "server", "", "exact inventory host to connect to (non-interactive; for scripts/agents)")
+	cmd.Flags().StringVar(&server, "server", "", "exact inventory host, or user@addr, to connect to (non-interactive; for scripts/agents)")
 	return cmd
+}
+
+// sshEndpoint is a target given as an address on the command line instead of a
+// name to look up.
+type sshEndpoint struct {
+	User string
+	Host string
+	Port string
+}
+
+// parseUserAtAddr splits "user@host", "user@host:port" or "user@[v6]:port".
+// ok is false when there is no "@", which is how callers tell a direct address
+// from an inventory name — an inventory hostname never contains one.
+func parseUserAtAddr(arg string) (sshEndpoint, bool) {
+	at := strings.Index(arg, "@")
+	if at <= 0 || at == len(arg)-1 {
+		return sshEndpoint{}, false
+	}
+	ep := sshEndpoint{User: arg[:at], Host: arg[at+1:], Port: "22"}
+	if h, p, err := net.SplitHostPort(ep.Host); err == nil {
+		ep.Host, ep.Port = h, p
+	}
+	return ep, true
+}
+
+// target builds the connection for a direct address. There is no jump chain: a
+// jump host is inventory topology, and this path deliberately has no inventory.
+// SkipDirect stays false for the same reason — direct is the only route.
+func (e sshEndpoint) target(cfg *config.Config) *sshc.Target {
+	user := e.User
+	if user == "" {
+		user = cfg.SSHDefaultUser
+	}
+	return &sshc.Target{
+		Name: e.Host,
+		Addr: net.JoinHostPort(e.Host, e.Port),
+		User: user,
+		Role: cfg.CARole,
+	}
 }
 
 // newConnector builds the SSH connector for this app: Vault signs certs and

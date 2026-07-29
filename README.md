@@ -426,7 +426,7 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl token` | Print a valid Vault token after renewal or re-authentication |
 | `vctl exec -- <cmd>` | Run a child process with `VAULT_TOKEN` and `VAULT_ADDR` |
 | `vctl agent [--sink <path>]` | Keep a token alive and write it to sink files |
-| `vctl ssh [host] [--server <host>]` | Connect by exact, fuzzy, IP, or interactive selection (picker filters by DC with ←/→); `--server` resolves exactly or by IP and connects non-interactively (scripts/agents) |
+| `vctl ssh [host\|user@addr] [--server <host>]` | Connect by exact, fuzzy, IP, or interactive selection (picker filters by DC with ←/→); `--server` resolves exactly or by IP and connects non-interactively (scripts/agents). `user@addr` connects to an address directly, skipping inventory |
 | `vctl list [--dc <dc>]` | List inventory hosts (primary + extra IPs, liveness/agent status) |
 | `vctl wg sync\|graph\|monitor\|serve` | Collect and inspect WireGuard topology; `serve` shows live traffic, endpoint VMs, physical hosts, and host networks |
 | `vctl wg endpoint list\|set\|rm` | Map a WireGuard public key to a VM/device identity and, for VMs, its physical inventory host |
