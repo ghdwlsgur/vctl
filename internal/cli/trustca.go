@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -102,19 +101,17 @@ func resolveTrustTarget(ctx context.Context, a *app.App, arg, loginAs string, po
 		portStr = strconv.Itoa(port)
 	}
 
-	if strings.Contains(arg, "@") {
-		user = arg[:strings.Index(arg, "@")]
-		hostpart := arg[strings.Index(arg, "@")+1:]
-		if h, p, e := net.SplitHostPort(hostpart); e == nil {
-			hostpart = h
-			if port == 0 {
-				portStr = p
-			}
-		}
+	// Shared with `vctl ssh`, which now accepts the same form. One parser so the
+	// two commands cannot disagree about what "user@host:port" means.
+	if ep, ok := parseUserAtAddr(arg); ok {
+		user = ep.User
 		if loginAs != "" {
 			user = loginAs
 		}
-		return user, hostpart, portStr, nil
+		if port == 0 {
+			portStr = ep.Port
+		}
+		return user, ep.Host, portStr, nil
 	}
 
 	st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
