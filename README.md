@@ -237,7 +237,7 @@ Postgres and is enforced by the stock CLI before each command:
 
 - Read commands are allowed by the app by default, but Vault still denies audit
   commands unless the token carries `vctl-auditor`.
-- Mutate/connect commands (`ssh`, `exec`, `sync`, `prune`, `trust-ca`) are denied
+- Mutate/connect commands (`ssh`, `exec`, `sync`, `trust-ca`) are denied
   until a group grants them.
 - `vctl-admin` (and `sre-admin`) bypass the app layer, so admins never lock out.
 
@@ -333,7 +333,7 @@ This audit table is operational metadata. The Vault audit device remains the aut
 
 The inventory database is one Postgres instance behind a RWO volume, and when it goes down every host lookup goes with it — while Vault, which issues the SSH certificate, keeps working. `vctl` therefore keeps a local read-only snapshot of the inventory so `vctl ssh` and `vctl list` still work in that window.
 
-**Writes are unaffected.** Nothing is ever written to the snapshot as a source of truth; `sync`, `prune`, RBAC administration, and every other mutation still go only to Postgres and still fail loudly when it is unreachable.
+**Writes are unaffected.** Nothing is ever written to the snapshot as a source of truth; `sync`, RBAC administration, and every other mutation still go only to Postgres and still fail loudly when it is unreachable.
 
 ```bash
 vctl cache status     # snapshot age, host count, offline grant window, queued audit records
@@ -360,7 +360,7 @@ Command grants are cached alongside the inventory, because otherwise every mutat
 | Vault token policies | live `lookup-self` | live `lookup-self` (never cached) |
 | Read commands (`list`, `status`, `audit`) | allowed | allowed |
 | `ssh` | needs a grant | needs a grant **that Postgres previously confirmed**, inside `cache_offline_ttl` (default 24h) |
-| `sync`, `prune`, `trust-ca`, `ip set/rm`, `wg sync` | needs a grant | always refused — they write to the database anyway |
+| `sync`, `trust-ca`, `ip set/rm`, `wg sync` | needs a grant | always refused — they write to the database anyway |
 | Admin commands | needs an admin policy | needs an admin policy |
 
 The window exists so a grant revoked during a long outage cannot stay usable forever on a laptop that never reconnects. Set `cache_disabled: true` (or `VCTL_CACHE_DISABLE=1`) to turn the whole mechanism off and restore the previous fail-hard behaviour exactly.
@@ -384,7 +384,7 @@ vctl session <cert-serial>          # full kernel timeline for one access
 vctl session <cert-serial> --json   # machine-readable export (e.g. for an agent)
 ```
 
-The collector ingests `process_exec`/`process_exit` from Tetragon; events link to sessions by cgroup id, falling back to cert serial. Retention is enforced by `vctl prune` (a CronJob), mirroring Teleport's storage-lifecycle model — high-volume `kernel_event` rows expire sooner than the small `audit_session` index.
+The collector ingests `process_exec`/`process_exit` from Tetragon; events link to sessions by cgroup id, falling back to cert serial. Retention is enforced by a CronJob that deletes in batches as the table owner over the pod-local socket — not through vctl, so no operator credential carries DELETE on the audit tables. `vctl retention` reports the same numbers read-only, including on-disk footprint. High-volume `kernel_event` rows expire sooner than the small `audit_session` index, mirroring Teleport's storage-lifecycle model.
 
 **Only events that link to a session are stored.** A host emits exec/exit for everything it runs, which on a Kubernetes node is overwhelmingly container and kubelet churn: it belongs to no login, nothing back-fills `session_id`, and `vctl session` joins on it, so storing it costs disk and answers nothing. An unlinked event is held for `--attribution-grace` (30s) and retried first, because a login's earliest commands arrive before the session row exists; only after that is it discarded. `--require-session=false` restores full host capture. Both `vctl collect --host` and `vctl watch-sessions --hostname` must record the same inventory name — attribution joins the two on hostname, so pinning one side alone links nothing.
 

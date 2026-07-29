@@ -112,8 +112,8 @@ func TestCheckWildcardGrantAllows(t *testing.T) {
 	p := fakePolicies{identity: "bob", policies: []string{"vctl-ssh-users"}}
 	g := &fakeGrants{commands: map[string]bool{"*": true}}
 	az, _ := newAuthorizer(p, g)
-	if err := az.Check(context.Background(), Command{Name: "prune", Class: ClassMutate}); err != nil {
-		t.Fatalf("wildcard Check(prune) = %v, want nil", err)
+	if err := az.Check(context.Background(), Command{Name: "sync", Class: ClassMutate}); err != nil {
+		t.Fatalf("wildcard Check(sync) = %v, want nil", err)
 	}
 }
 
@@ -166,8 +166,8 @@ func TestSnapshotNonAdminLoadsGrants(t *testing.T) {
 	if snap.Admin {
 		t.Fatal("non-admin snapshot marked admin")
 	}
-	if !snap.Allows("ssh") || snap.Allows("prune") {
-		t.Fatalf("Allows wrong: ssh=%v prune=%v", snap.Allows("ssh"), snap.Allows("prune"))
+	if !snap.Allows("ssh") || snap.Allows("sync") {
+		t.Fatalf("Allows wrong: ssh=%v sync=%v", snap.Allows("ssh"), snap.Allows("sync"))
 	}
 }
 

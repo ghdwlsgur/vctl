@@ -37,12 +37,16 @@ var gated = map[string]Class{
 	"ssh":      ClassMutate,
 	"exec":     ClassMutate,
 	"sync":     ClassMutate,
-	"prune":    ClassMutate,
 	"trust-ca": ClassMutate,
 	"list":     ClassRead,
 	"status":   ClassRead,
 	"audit":    ClassRead,
 	"session":  ClassRead,
+	// retention reports what is past its horizon and what it costs on disk; it
+	// deletes nothing. It was "prune" and ClassMutate, guarding a deletion path
+	// that could never run — see cli/retention.go. Deletion lives in the prune
+	// CronJob, which does not go through vctl at all.
+	"retention": ClassRead,
 }
 
 // ClassOf reports the class of a gated command; ok is false for an unknown
@@ -161,7 +165,7 @@ func (g CachedGrant) Expired(now time.Time, window time.Duration) bool {
 // the grant source is unreachable.
 //
 // It is short on purpose. Every other mutate command writes to the inventory
-// database (sync, prune, ip set/rm, wg sync) or is one-time onboarding
+// database (sync, ip set/rm, wg sync) or is one-time onboarding
 // (trust-ca), so allowing them offline would buy nothing and widen the window in
 // which a stale grant matters. `ssh` is the command an operator needs during an
 // outage, and it is the one the Vault SSH CA independently gates.

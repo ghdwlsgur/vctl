@@ -24,8 +24,8 @@ func rbacCmd() *cobra.Command {
 
 Vault policies are the authoritative capability boundary. On top of that,
 admins group users and grant them specific CLI commands here. Non-admins may
-run read commands (list/status/audit) by default; mutate/connect commands
-(ssh/exec/sync/prune/trust-ca) need a group grant. Admins (vctl-admin) bypass.`,
+run read commands (list/status/audit/session/retention) by default; mutate/connect
+commands (ssh/exec/sync/trust-ca) need a group grant. Admins (vctl-admin) bypass.`,
 	}
 	cmd.AddCommand(rbacAssignCmd(), rbacGroupCmd(), rbacMemberCmd(), rbacGrantCmd(), rbacRevokeCmd(), rbacUsersCmd(), rbacWhoamiCmd(), rbacCheckCmd())
 	return cmd

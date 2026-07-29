@@ -168,12 +168,13 @@ func TestSessionEventRoundTrip(t *testing.T) {
 		t.Fatalf("events linked = %d, want 2", got)
 	}
 
-	// prune cleanup
-	if _, err := st.PruneKernelEvents(ctx, time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("PruneKernelEvents: %v", err)
-	}
-	if _, err := st.PruneSessions(ctx, time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("PruneSessions: %v", err)
+	// Fixture cleanup, straight to the pool. Retention deletion is not a Store
+	// method any more: it runs in-cluster as the table owner and vctl only reports
+	// on it.
+	for _, q := range []string{"DELETE FROM kernel_event", "DELETE FROM audit_session"} {
+		if _, err := st.pool.Exec(ctx, q); err != nil {
+			t.Fatalf("cleanup %q: %v", q, err)
+		}
 	}
 }
 

@@ -174,7 +174,7 @@ Vault の `oidc` 認証バックエンドは GitLab をアイデンティティ�
 **第 2 層 — アプリ(追加制限)。** `vctl rbac` の Postgres grant を標準 CLI がコマンド実行前に検査します。
 
 - 読み取りコマンド(`list`、`status`、`audit`、`session`)はデフォルトで許可されます。
-- 変更/接続コマンド(`ssh`、`exec`、`sync`、`prune`、`trust-ca`)は、グループが付与するまで拒否されます。
+- 変更/接続コマンド(`ssh`、`exec`、`sync`、`trust-ca`)は、グループが付与するまで拒否されます。
 - `vctl-admin`(および `sre-admin`)はアプリ層をバイパスするため、admin が締め出されることはありません。
 
 admin は対話的なピッカーを使って CLI から管理します。
@@ -260,7 +260,7 @@ vctl audit --source-ip 192.0.2.10
 
 インベントリ DB は RWO ボリュームに紐づく Postgres の単一インスタンスです。ここが落ちるとホスト検索もまとめて使えなくなります。SSH 証明書を発行する Vault のほうは無事なのに、です。そこで `vctl` はインベントリの読み取り専用スナップショットをローカルに保持し、その間も `vctl ssh` と `vctl list` が動くようにしています。
 
-**書き込みは変わりません。** スナップショットには信頼できる情報源となるものを一切書きません。`sync`、`prune`、RBAC 管理を含むすべての変更は従来どおり Postgres にのみ向かい、DB が落ちていれば従来どおり明示的に失敗します。
+**書き込みは変わりません。** スナップショットには信頼できる情報源となるものを一切書きません。`sync`、RBAC 管理を含むすべての変更は従来どおり Postgres にのみ向かい、DB が落ちていれば従来どおり明示的に失敗します。
 
 ```bash
 vctl cache status     # スナップショットの経過時間、ホスト数、オフライン grant の有効期間、キューされた監査レコード
@@ -287,7 +287,7 @@ vctl cache clear      # スナップショットとキャッシュされた gran
 | Vault token policy | 都度 `lookup-self` | 都度 `lookup-self`(キャッシュしない) |
 | 読み取りコマンド (`list`, `status`, `audit`) | 許可 | 許可 |
 | `ssh` | grant が必要 | **Postgres が以前に確認した** grant が必要、かつ `cache_offline_ttl`(既定 24h)以内 |
-| `sync`, `prune`, `trust-ca`, `ip set/rm`, `wg sync` | grant が必要 | 常に拒否 — どのみち DB への書き込みが必要です |
+| `sync`, `trust-ca`, `ip set/rm`, `wg sync` | grant が必要 | 常に拒否 — どのみち DB への書き込みが必要です |
 | 管理者コマンド | admin policy が必要 | admin policy が必要 |
 
 この有効期間は、長い障害中に取り消された grant が、一度も再接続しないノート PC で永久に生き続けないようにするためのものです。`cache_disabled: true`(または `VCTL_CACHE_DISABLE=1`)でこの仕組み全体を無効にすると、以前の fail-hard な動作にそのまま戻ります。
@@ -311,7 +311,7 @@ vctl session <cert-serial>          # full kernel timeline for one access
 vctl session <cert-serial> --json   # machine-readable export (e.g. for an agent)
 ```
 
-コレクターは Tetragon から `process_exec`/`process_exit` を取り込みます。イベントは cgroup id でセッションにリンクされ、フォールバックとして証明書シリアルを使います。保持期間は `vctl prune`(CronJob)によって強制され、Teleport のストレージライフサイクルモデルを踏襲しています。大量に発生する `kernel_event` 行は、小さな `audit_session` インデックスよりも早く失効します。
+コレクターは Tetragon から `process_exec`/`process_exit` を取り込みます。イベントは cgroup id でセッションにリンクされ、フォールバックとして証明書シリアルを使います。保持期間は CronJob が強制します。テーブル所有者としてポッドローカルソケット経由でバッチ削除するため vctl は経由せず、運用者の資格情報が監査テーブルへの DELETE を持つことはありません。`vctl retention` は同じ数値をディスク使用量とあわせて読み取り専用で報告します。大量に発生する `kernel_event` 行は小さな `audit_session` インデックスより早く失効し、Teleport のストレージライフサイクルモデルを踏襲しています。
 
 **セッションにリンクされたイベントのみを保存します。** ホストは実行するすべてについて exec/exit を出力し、Kubernetes ノードではその大半がコンテナと kubelet の生成消滅です。どのログインにも属さず、`session_id` を後から埋めるものはなく、`vctl session` はその列で結合するため、保存してもディスクを消費するだけで何も答えません。リンクできなかったイベントは `--attribution-grace`(30秒)の間保持され優先的に再試行されます。ログイン直後のコマンドはセッション行が書かれる前に届くからです。それを過ぎて初めて破棄します。`--require-session=false` で全ホストキャプチャに戻せます。`vctl collect --host` と `vctl watch-sessions --hostname` は同じインベントリ名を記録する必要があります。突合はホスト名で結合するため、片側だけ固定しても何もリンクされません。
 

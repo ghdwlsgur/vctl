@@ -34,15 +34,16 @@ type Config struct {
 	DBRoleAuditRO     string `yaml:"db_role_audit_ro"`     // access/session/kernel audit reads
 	DBRoleAuditWrite  string `yaml:"db_role_audit_write"`  // append-only SSH access records
 	DBRoleAuditIngest string `yaml:"db_role_audit_ingest"` // host collector/session lifecycle
-	DBRolePrune       string `yaml:"db_role_prune"`        // retention deletes
 	DBRoleStatus      string `yaml:"db_role_status"`       // database/creds/<status> for node-agent status updates
 	DBRoleMigrate     string `yaml:"db_role_migrate"`      // database/creds/<migrator> for schema changes
 	DBMigrationOwner  string `yaml:"db_migration_owner"`   // stable owner role for migration objects
 	LocalDBDSN        string `yaml:"-"`                    // dev/test only; env-only loopback DSN
 
 	// Kernel-audit retention. Raw kernel_event rows are high-volume; sessions are
-	// small metadata kept much longer as the dataset index. Pruning is delegated
-	// to `vctl prune` (run by a CronJob), mirroring Teleport's storage-lifecycle model.
+	// small metadata kept much longer as the dataset index. Deletion is delegated to
+	// the prune CronJob, which runs SQL as the table owner and does not go through
+	// vctl; `vctl retention` only reports against these horizons. Mirrors Teleport's
+	// storage-lifecycle model.
 	//
 	// The kernel default is 14 days because that is what the volume holds, not
 	// because 14 days is the ideal window. Measured in production: kernel_event
@@ -51,12 +52,12 @@ type Config struct {
 	// vctl-ro to 500s until the PVC was raised to 20 GB.
 	//
 	// It must also match the CronJob that actually enforces it (vctl-postgres
-	// prune-cronjob.yaml, KERNEL_RETENTION_DAYS=14). While this said 90, a bare
-	// `vctl prune` deleted nothing and looked like enforcement — the one failure
-	// mode a retention default must not have. Raising it here without raising the
-	// volume re-arms the outage.
-	KernelRetentionDays  int `yaml:"kernel_retention_days"`  // prune kernel_event older than this
-	SessionRetentionDays int `yaml:"session_retention_days"` // prune audit_session older than this (0 = keep)
+	// prune-cronjob.yaml, KERNEL_RETENTION_DAYS=14) — the CronJob's value is what
+	// takes effect, and this one only decides what gets reported. While this said 90
+	// and the job said 14, the report described a horizon nothing enforced. Raising it
+	// here without raising the volume re-arms the outage.
+	KernelRetentionDays  int `yaml:"kernel_retention_days"`  // kernel_event horizon reported/enforced
+	SessionRetentionDays int `yaml:"session_retention_days"` // audit_session horizon (0 = keep forever)
 
 	// Local inventory cache. A snapshot under StateDir keeps host lookup working
 	// while Postgres is unreachable; see internal/invcache. Writes are unaffected
@@ -162,7 +163,6 @@ func (c *Config) applyEnv() {
 	envStr(&c.DBRoleAuditRO, "VCTL_DB_ROLE_AUDIT_RO")
 	envStr(&c.DBRoleAuditWrite, "VCTL_DB_ROLE_AUDIT_WRITE")
 	envStr(&c.DBRoleAuditIngest, "VCTL_DB_ROLE_AUDIT_INGEST")
-	envStr(&c.DBRolePrune, "VCTL_DB_ROLE_PRUNE")
 	envStr(&c.DBRoleStatus, "VCTL_DB_ROLE_STATUS") // VCTL-only
 	envStrPair(&c.DBRoleMigrate, "DB_ROLE_MIGRATE")
 	envStrPair(&c.DBMigrationOwner, "DB_MIGRATION_OWNER")

@@ -177,7 +177,7 @@ CLI가 실행 전에 검사합니다.
 
 - 읽기 커맨드는 앱에서 기본 허용하지만, `audit`과 `session`은 Vault의
   `vctl-auditor` 정책이 없으면 DB 자격 증명 발급 단계에서 거부됩니다.
-- 변경·접속 커맨드(`ssh`, `exec`, `sync`, `prune`, `trust-ca`)는 그룹이 권한을
+- 변경·접속 커맨드(`ssh`, `exec`, `sync`, `trust-ca`)는 그룹이 권한을
   부여하기 전까지 거부됩니다.
 - `vctl-admin`(과 `sre-admin`)은 앱 계층을 우회하므로 관리자가 스스로 막히는 일은
   없습니다.
@@ -259,7 +259,7 @@ vctl audit --source-ip 192.0.2.10
 
 인벤토리 DB는 RWO 볼륨에 붙은 Postgres 단일 인스턴스입니다. 여기가 죽으면 호스트 조회가 통째로 같이 죽습니다. 정작 SSH 인증서를 발급하는 Vault 는 멀쩡한데도 그렇습니다. 그래서 `vctl` 은 인벤토리를 로컬에 읽기 전용 스냅샷으로 들고 있다가 그 구간에도 `vctl ssh` 와 `vctl list` 가 돌아가게 합니다.
 
-**쓰기는 그대로입니다.** 스냅샷에는 진실의 원천이 될 만한 것을 아무것도 쓰지 않습니다. `sync`, `prune`, RBAC 관리를 비롯한 모든 변경은 여전히 Postgres 로만 갑니다. DB 가 안 되면 여전히 시끄럽게 실패합니다.
+**쓰기는 그대로입니다.** 스냅샷에는 진실의 원천이 될 만한 것을 아무것도 쓰지 않습니다. `sync`, RBAC 관리를 비롯한 모든 변경은 여전히 Postgres 로만 갑니다. DB 가 안 되면 여전히 시끄럽게 실패합니다.
 
 ```bash
 vctl cache status     # 스냅샷 나이, 호스트 수, 오프라인 grant 유효 기간, 대기 중인 감사 레코드
@@ -286,7 +286,7 @@ vctl cache clear      # 스냅샷과 캐시된 grant 삭제
 | Vault 토큰 정책 | 실시간 `lookup-self` | 실시간 `lookup-self` (캐싱 안 함) |
 | 읽기 명령 (`list`, `status`, `audit`) | 허용 | 허용 |
 | `ssh` | grant 필요 | **Postgres 가 이전에 확인해준** grant 필요 + `cache_offline_ttl`(기본 24h) 이내 |
-| `sync`, `prune`, `trust-ca`, `ip set/rm`, `wg sync` | grant 필요 | 항상 거부 — 어차피 DB 에 써야 하는 명령입니다 |
+| `sync`, `trust-ca`, `ip set/rm`, `wg sync` | grant 필요 | 항상 거부 — 어차피 DB 에 써야 하는 명령입니다 |
 | 관리자 명령 | admin 정책 필요 | admin 정책 필요 |
 
 긴 장애 중에 회수된 grant 가 한 번도 다시 접속하지 않는 노트북에서 영원히 살아 있으면 안 됩니다. 이 유효 기간은 그래서 뒀습니다. `cache_disabled: true`(또는 `VCTL_CACHE_DISABLE=1`)로 이 기능을 통째로 끄면 예전의 fail-hard 동작으로 정확히 돌아갑니다.
