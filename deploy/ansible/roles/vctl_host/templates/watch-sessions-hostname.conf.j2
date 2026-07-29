@@ -1,0 +1,10 @@
+# Managed by Ansible (vctl_host role). watch-sessions files audit_session rows
+# under the INVENTORY hostname, not the OS hostname.
+#
+# The PAM stamper can only see the OS name, so the marker it drops says "aio01"
+# where inventory says "incheon-aio01". Without this pin the audit rows join to
+# nothing in servers, and the stale-session reconciler looks up the wrong name and
+# leaves ended sessions marked live. Same reason as the node-agent drop-in.
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/vctl watch-sessions /run/vctl/sessions --hostname '{{ vctl_host_node_hostname }}' --interval 10s

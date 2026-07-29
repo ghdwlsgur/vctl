@@ -22,7 +22,9 @@ func (s *failingSessionStore) RecordSession(context.Context, store.AuditSession)
 	return 0, errors.New("vault unavailable")
 }
 
-func (*failingSessionStore) EndSession(context.Context, int64, string) error { return nil }
+func (*failingSessionStore) EndSession(context.Context, int64, time.Time, string) error {
+	return nil
+}
 
 func TestScanMarkersStopsAfterFirstBackendFailure(t *testing.T) {
 	dir := t.TempDir()
@@ -44,7 +46,7 @@ func TestScanMarkersStopsAfterFirstBackendFailure(t *testing.T) {
 	}
 
 	backend := &failingSessionStore{}
-	err := scanMarkers(context.Background(), backend, dir, map[string]int64{})
+	err := scanMarkers(context.Background(), backend, dir, "", map[string]int64{})
 	if err == nil {
 		t.Fatal("scanMarkers succeeded, want backend error")
 	}

@@ -306,6 +306,26 @@
     - Reload systemd
     - Restart vctl services
 
+# Same pin for watch-sessions. Installed unconditionally rather than only with the
+# audit stack: a drop-in on a disabled unit does nothing, so having it already in
+# place means enabling the unit later cannot file rows under the wrong name.
+- name: Ensure watch-sessions drop-in dir
+  ansible.builtin.file:
+    path: /etc/systemd/system/vctl-watch-sessions.service.d
+    state: directory
+    mode: "0755"
+
+- name: Pin watch-sessions to the inventory hostname (drop-in)
+  ansible.builtin.template:
+    src: watch-sessions-hostname.conf.j2
+    dest: /etc/systemd/system/vctl-watch-sessions.service.d/10-hostname.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart vctl services
+
 # node-agent always; watch-sessions + collector only with the full audit stack
 # (collector additionally needs vctl_host_install_collect / Tetragon).
 - name: Enable services (only with secret_id present)
