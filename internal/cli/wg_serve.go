@@ -577,7 +577,10 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 				return fmt.Errorf("no reachable gateways to poll")
 			}
 
-			conn := newConnector(a)
+			// Polling telemetry, not access: Monitor records the first poll per
+			// gateway and every change of outcome after that, instead of a row
+			// every 2s. See access.Monitor.
+			mon := newConnector(a).Monitor()
 			state := newWGServeState()
 			interval := time.Duration(intervalSec) * time.Second
 			timeout := time.Duration(timeoutSec) * time.Second
@@ -587,7 +590,7 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 			for _, t := range targets {
 				go func(t monTarget) {
 					for {
-						res, err := conn.Execute(pollCtx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wgDumpCmd, timeout)
+						res, err := mon.Poll(pollCtx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wgDumpCmd, timeout)
 						if err != nil {
 							state.fail(t.name, err)
 						} else {
