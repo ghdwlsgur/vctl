@@ -24,9 +24,35 @@ type AuditSession struct {
 }
 
 // sessionRow is the shared column list + scan for a full audit_session row.
-const sessionCols = `id, coalesce(cert_serial,''), coalesce(vault_user,''), hostname, coalesce(login_user,''),
-	coalesce(host(source_ip),''), coalesce(session_leader_pid,0), coalesce(cgroup_id,0),
-	started_at, ended_at, coalesce(summary,'')`
+// Qualified with the `s` alias because every query using it also joins
+// sessionVaultUser to attribute the session to a person.
+const sessionCols = `s.id, coalesce(s.cert_serial,''), coalesce(nullif(s.vault_user,''), al.vault_user, ''),
+	s.hostname, coalesce(s.login_user,''),
+	coalesce(host(s.source_ip),''), coalesce(s.session_leader_pid,0), coalesce(s.cgroup_id,0),
+	s.started_at, s.ended_at, coalesce(s.summary,'')`
+
+// sessionVaultUser resolves "which person was this" from the certificate serial.
+//
+// The host collector cannot do this itself and should not be able to: the marker
+// the PAM stamper drops carries the cert serial but no identity, and the
+// vctl-audit-ingest database role has no read access to access_log at all. That
+// separation is deliberate — a host may append audit records, not read who
+// signed for other hosts. So audit_session.vault_user stays NULL for anything
+// recorded by a collector, and the join below fills it in on the read path,
+// where vctl-audit-ro does have access_log.
+//
+// Latest signature wins: a serial is one certificate, but a re-sign for the same
+// serial should attribute to the most recent one.
+const sessionVaultUser = `
+	LEFT JOIN LATERAL (
+		SELECT vault_user
+		FROM access_log
+		WHERE cert_serial = s.cert_serial
+		  AND s.cert_serial IS NOT NULL
+		  AND vault_user IS NOT NULL
+		ORDER BY signed_at DESC
+		LIMIT 1
+	) al ON true`
 
 func scanSession(row interface {
 	Scan(dest ...any) error
@@ -70,10 +96,26 @@ func (s *Store) RecordSession(ctx context.Context, a AuditSession) (int64, error
 }
 
 // EndSession stamps ended_at and an optional summary for a session.
-func (s *Store) EndSession(ctx context.Context, id int64, summary string) error {
+//
+// endedAt comes from the caller, not from now(), because started_at comes from
+// the marker and is therefore on the *host's* clock (see RecordSession — it has
+// to be, it is part of the conflict key). Stamping the end with the database
+// clock mixed two clocks in one interval, so any host running ahead of Postgres
+// produced sessions that ended before they began: observed durations of -3m15s,
+// -48s and -44s in production on 2026-07-29. The watcher that sees the session
+// end is on the same host as the marker, so its clock is the right one.
+//
+// GREATEST is a floor for the remaining case one clock cannot fix: a step
+// correction (NTP) between login and logout can still move the host's clock
+// backwards. A zero-length session is wrong but readable; a negative one is
+// neither.
+func (s *Store) EndSession(ctx context.Context, id int64, endedAt time.Time, summary string) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE audit_session SET ended_at=now(), summary=COALESCE(NULLIF($2,''), summary) WHERE id=$1`,
-		id, summary)
+		`UPDATE audit_session
+		 SET ended_at=GREATEST($2::timestamptz, started_at),
+		     summary=COALESCE(NULLIF($3,''), summary)
+		 WHERE id=$1`,
+		id, endedAt.UTC(), summary)
 	return err
 }
 
@@ -100,9 +142,9 @@ func (s *Store) ListSessions(ctx context.Context, hostFilter string, limit int) 
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+sessionCols+`
-		FROM audit_session
-		WHERE ($1='' OR hostname ILIKE '%'||$1||'%')
-		ORDER BY started_at DESC LIMIT $2`, hostFilter, limit)
+		FROM audit_session s`+sessionVaultUser+`
+		WHERE ($1='' OR s.hostname ILIKE '%'||$1||'%')
+		ORDER BY s.started_at DESC LIMIT $2`, hostFilter, limit)
 	if err != nil {
 		return nil, err
 	}

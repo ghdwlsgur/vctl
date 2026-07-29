@@ -19,9 +19,9 @@ func (s *Store) SessionTimeline(ctx context.Context, certSerial string, limit in
 	}
 	srows, err := s.pool.Query(ctx, `
 		SELECT `+sessionCols+`
-		FROM audit_session
-		WHERE ($1='' OR cert_serial=$1)
-		ORDER BY started_at DESC LIMIT $2`, certSerial, limit)
+		FROM audit_session s`+sessionVaultUser+`
+		WHERE ($1='' OR s.cert_serial=$1)
+		ORDER BY s.started_at DESC LIMIT $2`, certSerial, limit)
 	if err != nil {
 		return nil, nil, err
 	}
