@@ -518,3 +518,88 @@ func fieldsOf(ifaces []store.WGInterface, peers []store.WGPeer) []string {
 	}
 	return out
 }
+
+// Management links come from servers.jump_via and were the one part of the
+// graph with no test at all — the gap only became visible once buildWGTopology
+// was split into phases and addLinks reported its own coverage.
+//
+// Each end resolves to a gateway hostname, or to the aggregate node the host
+// sits in when it is not a gateway itself.
+func TestBuildWGTopologyDrawsManagementLinksFromJumpVia(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{Host: "gw-a", Iface: "wg0", PublicKey: "AKEY"}},
+	}
+	servers := []store.Server{
+		{Hostname: "gw-a", IP: "10.10.0.1", DC: "incheon"},
+		// Reaches the world through the gateway: gw-a is a gateway, so the link
+		// lands on the hostname directly.
+		{Hostname: "app-01", IP: "10.10.0.20", DC: "incheon", JumpVia: "gw-a"},
+		// Not a gateway on either end, so both collapse into their /24 aggregate
+		// — and because that is the same aggregate, the self-link is dropped.
+		{Hostname: "app-02", IP: "10.10.0.21", DC: "incheon", JumpVia: "app-01"},
+	}
+
+	topo, _ := buildWGTopology(ifaces, nil, servers, nil)
+
+	agg := "agg|incheon|10.10.0.0/24"
+	if !hasTopologyLink(topo, agg, "gw-a", "management") {
+		t.Errorf("management link from the aggregate to its gateway missing: %+v", topo.Links)
+	}
+	for _, l := range topo.Links {
+		if l.Kind == "management" && l.Source == l.Target {
+			t.Errorf("self management link emitted: %+v", l)
+		}
+	}
+}
+
+// An unresolvable jump target must be dropped rather than drawn as a dangling
+// edge: a host in a dc with no gateway gets no aggregate, so there is nothing
+// to point at.
+func TestBuildWGTopologyDropsUnresolvableJumpVia(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{Host: "gw-a", Iface: "wg0", PublicKey: "AKEY"}},
+	}
+	servers := []store.Server{
+		{Hostname: "gw-a", IP: "10.10.0.1", DC: "incheon"},
+		{Hostname: "app-01", IP: "10.10.0.20", DC: "incheon", JumpVia: "does-not-exist"},
+		// Different dc with no gateway: no aggregate, so this end never resolves.
+		{Hostname: "far-01", IP: "10.99.0.5", DC: "nowhere", JumpVia: "gw-a"},
+	}
+
+	topo, _ := buildWGTopology(ifaces, nil, servers, nil)
+
+	for _, l := range topo.Links {
+		if l.Kind != "management" {
+			continue
+		}
+		if l.Target == "does-not-exist" || l.Source == "agg|nowhere|10.99.0.0/24" {
+			t.Errorf("unresolvable jump_via produced a link: %+v", l)
+		}
+	}
+}
+
+// Many hosts jumping through the same gateway collapse to one link, not one per
+// host: the graph shows adjacency, not host count.
+func TestBuildWGTopologyDeduplicatesManagementLinks(t *testing.T) {
+	ifaces := []store.WGInterfaceRow{
+		{WGInterface: store.WGInterface{Host: "gw-a", Iface: "wg0", PublicKey: "AKEY"}},
+	}
+	servers := []store.Server{{Hostname: "gw-a", IP: "10.10.0.1", DC: "incheon"}}
+	for _, h := range []string{"app-01", "app-02", "app-03"} {
+		servers = append(servers, store.Server{
+			Hostname: h, IP: "10.10.0.2" + h[len(h)-1:], DC: "incheon", JumpVia: "gw-a",
+		})
+	}
+
+	topo, _ := buildWGTopology(ifaces, nil, servers, nil)
+
+	var management int
+	for _, l := range topo.Links {
+		if l.Kind == "management" {
+			management++
+		}
+	}
+	if management != 1 {
+		t.Errorf("3 hosts through one gateway produced %d management links, want 1: %+v", management, topo.Links)
+	}
+}
