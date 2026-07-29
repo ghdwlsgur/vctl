@@ -28,6 +28,12 @@ vctl_host_approle: >-
 
 # Per-host AppRole secret_id is minted from the control node's Vault token.
 vctl_host_provision_secret_id: "{{ provision_secret_id | default(true) }}"
+# Refuse to onboard the audit stack onto a host whose clock is not NTP-synced.
+# Session start times come from the host's clock (see tasks/main.yml), so an
+# undisciplined clock silently writes audit records for times that never happened.
+# Set false to onboard anyway — the check then only warns.
+vctl_host_require_time_sync: "{{ require_time_sync | default(true) }}"
+
 # Rotation, not expiry. The AppRoles carry secret_id_ttl=0 since 2026-07-29, so
 # nothing dies on a deadline any more — a 30-day TTL silently stranded the fleet
 # twice, because Vault does not announce the expiry and the daemons kept looking

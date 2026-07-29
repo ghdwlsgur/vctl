@@ -13,6 +13,59 @@
       and Postgres) in inventory/group_vars or -e vctl_host_sre_lb_ip=<ip>; or set
       vctl_host_vault_lb_ip and vctl_host_pg_lb_ip separately when they differ (e.g. incheon).
 
+# --- clock discipline -------------------------------------------------------
+# Session start times come from the PAM marker, i.e. from THIS host's clock (they
+# have to — started_at is part of the audit_session conflict key). So an
+# undisciplined clock does not just make durations wrong, it files logins at times
+# that never happened and breaks correlation between hosts.
+#
+# Checked rather than managed: time sync may be owned elsewhere, and this role has
+# no business picking a time source. But it does depend on one, so it says so.
+#
+# 2026-07-29: three hosts turned out to have no working time sync at all — two
+# with no time service installed (one had drifted 150s) and one running
+# systemd-timesyncd with zero NTP servers configured, so the daemon was up and
+# doing nothing. None of it was visible anywhere. 33% of audit_session rows had
+# ended_at before started_at as a result.
+- name: Check whether the host clock is NTP-synchronized
+  when: vctl_host_state == 'present'
+  ansible.builtin.command: timedatectl show -p NTPSynchronized --value
+  register: vctl_host_clock
+  changed_when: false
+  failed_when: false
+
+# Hard requirement for the audit stack, which records host-clocked timestamps.
+- name: Require a disciplined clock for the audit stack
+  when:
+    - vctl_host_state == 'present'
+    - vctl_host_audit_stack | bool
+  ansible.builtin.assert:
+    that:
+      - (vctl_host_clock.stdout | default('') | trim) == 'yes'
+    fail_msg: >-
+      Clock is not NTP-synchronized (timedatectl NTPSynchronized={{
+      vctl_host_clock.stdout | default('unavailable') | trim }}). The audit stack
+      records session start times from this host's clock, so an unsynchronized
+      host writes audit records with times that never happened. Install and enable
+      a time service (chrony on this fleet) first, or pass
+      -e vctl_host_require_time_sync=false to onboard anyway.
+  ignore_errors: "{{ not (vctl_host_require_time_sync | bool) }}"
+
+# node-agent only: staleness is judged server-side, so a skewed clock does not
+# corrupt anything here. Still worth saying out loud — the host is a candidate for
+# the audit stack later, and the drift only grows.
+- name: Warn when a node-only host has no disciplined clock
+  when:
+    - vctl_host_state == 'present'
+    - not (vctl_host_audit_stack | bool)
+    - (vctl_host_clock.stdout | default('') | trim) != 'yes'
+  ansible.builtin.debug:
+    msg: >-
+      WARNING {{ inventory_hostname }}: clock is not NTP-synchronized
+      (NTPSynchronized={{ vctl_host_clock.stdout | default('unavailable') | trim }}).
+      Harmless for node-agent (server_status is timestamped server-side) but this
+      host cannot join the audit stack until a time service is running.
+
 - name: Install / onboard
   when: vctl_host_state == 'present'
   ansible.builtin.import_tasks: present.yml
