@@ -6,8 +6,16 @@
 Description=vctl node status agent
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=5min
-StartLimitBurst=6
+# No start rate limit. A rate limit here does not protect anything: RestartSec
+# already spaces the retries, and the only effect of tripping it is that systemd
+# stops trying forever. That is the wrong failure for a status agent, because the
+# thing it stops reporting is its own liveness.
+#
+# 2026-07-29: an upstream Vault outage lasting more than ~3 minutes tripped the
+# old 6-per-5min limit on 33 hosts at once. Every one of them latched to `failed`
+# and stayed silent long after Vault recovered — each needed a manual
+# `systemctl reset-failed`. With the limit off the fleet heals itself.
+StartLimitIntervalSec=0
 
 [Service]
 Environment=VCTL_AUTH_METHOD=approle
