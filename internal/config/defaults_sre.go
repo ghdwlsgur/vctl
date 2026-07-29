@@ -34,7 +34,13 @@ func Defaults() *Config {
 		SessionRetentionDays: 365,
 		CacheRefresh:         "1h",
 		CacheOfflineTTL:      "24h",
-		CacheMaxAge:          "720h", // 30d — long enough never to bite in practice
+		// 7d. Was 720h (30d), chosen "long enough never to bite in practice" — which
+		// is another way of saying the guard was off. Inventory drifts faster than a
+		// month: a host in this fleet lost its primary address outright and the
+		// database still carried the dead one days later. The snapshot refreshes
+		// hourly, so a week-old one already means the database has been unreachable
+		// for a week — at that point refusing to route is the safer answer.
+		CacheMaxAge:          "168h",
 		CARole:               "sre-core",
 		SSHSign:              "30m",
 		SSHDirectFirst:       true,
