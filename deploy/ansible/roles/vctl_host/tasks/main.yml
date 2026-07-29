@@ -22,11 +22,16 @@
 # Checked rather than managed: time sync may be owned elsewhere, and this role has
 # no business picking a time source. But it does depend on one, so it says so.
 #
-# 2026-07-29: three hosts turned out to have no working time sync at all — two
-# with no time service installed (one had drifted 150s) and one running
-# systemd-timesyncd with zero NTP servers configured, so the daemon was up and
-# doing nothing. None of it was visible anywhere. 33% of audit_session rows had
-# ended_at before started_at as a result.
+# 2026-07-29: two hosts turned out to have no time service installed at all. One
+# had drifted 150s. Nothing surfaced it anywhere, and 33% of audit_session rows
+# had ended_at before started_at as a result.
+#
+# "no" and "cannot tell" are NOT the same answer. timedatectl talks to systemd
+# over dbus, and on a saturated host dbus drops clients that miss its 30s auth
+# timeout ("Transport endpoint is not connected") — a busy hypervisor in this
+# fleet fails the query every time while its clock is in fact 1ms off. Treating
+# that silence as skew would block onboarding a host with a perfect clock, so only
+# an explicit "no" blocks. Anything unreadable warns and is left to a human.
 - name: Check whether the host clock is NTP-synchronized
   when: vctl_host_state == 'present'
   ansible.builtin.command: timedatectl show -p NTPSynchronized --value
@@ -34,22 +39,46 @@
   changed_when: false
   failed_when: false
 
+- name: Classify the clock answer
+  when: vctl_host_state == 'present'
+  ansible.builtin.set_fact:
+    vctl_host_clock_state: >-
+      {{ 'synced' if (vctl_host_clock.rc | default(1)) == 0
+             and (vctl_host_clock.stdout | default('') | trim) == 'yes'
+         else ('unsynced' if (vctl_host_clock.rc | default(1)) == 0
+                   and (vctl_host_clock.stdout | default('') | trim) == 'no'
+               else 'unknown') }}
+
 # Hard requirement for the audit stack, which records host-clocked timestamps.
+# Only a definite "no" blocks — see the note above on why "unknown" must not.
 - name: Require a disciplined clock for the audit stack
   when:
     - vctl_host_state == 'present'
     - vctl_host_audit_stack | bool
   ansible.builtin.assert:
     that:
-      - (vctl_host_clock.stdout | default('') | trim) == 'yes'
+      - vctl_host_clock_state != 'unsynced'
     fail_msg: >-
-      Clock is not NTP-synchronized (timedatectl NTPSynchronized={{
-      vctl_host_clock.stdout | default('unavailable') | trim }}). The audit stack
-      records session start times from this host's clock, so an unsynchronized
-      host writes audit records with times that never happened. Install and enable
-      a time service (chrony on this fleet) first, or pass
+      Clock is not NTP-synchronized (timedatectl NTPSynchronized=no). The audit
+      stack records session start times from this host's clock, so an
+      unsynchronized host writes audit records for times that never happened.
+      Install and enable a time service first — chrony on the Rocky hosts here,
+      systemd-timesyncd on the Ubuntu ones — or pass
       -e vctl_host_require_time_sync=false to onboard anyway.
   ignore_errors: "{{ not (vctl_host_require_time_sync | bool) }}"
+
+# Unreadable is not the same as bad, and it is not the same as fine either.
+- name: Warn when the clock state could not be determined
+  when:
+    - vctl_host_state == 'present'
+    - vctl_host_clock_state == 'unknown'
+  ansible.builtin.debug:
+    msg: >-
+      WARNING {{ inventory_hostname }}: could not read the clock state
+      (timedatectl rc={{ vctl_host_clock.rc | default('?') }},
+      out={{ vctl_host_clock.stdout | default('') | trim | default('empty', true) }}).
+      This is usually dbus refusing new clients on a saturated host, not a skewed
+      clock — verify out of band before treating it as either. Onboarding proceeds.
 
 # node-agent only: staleness is judged server-side, so a skewed clock does not
 # corrupt anything here. Still worth saying out loud — the host is a candidate for
@@ -58,11 +87,11 @@
   when:
     - vctl_host_state == 'present'
     - not (vctl_host_audit_stack | bool)
-    - (vctl_host_clock.stdout | default('') | trim) != 'yes'
+    - vctl_host_clock_state == 'unsynced'
   ansible.builtin.debug:
     msg: >-
       WARNING {{ inventory_hostname }}: clock is not NTP-synchronized
-      (NTPSynchronized={{ vctl_host_clock.stdout | default('unavailable') | trim }}).
+      (NTPSynchronized=no).
       Harmless for node-agent (server_status is timestamped server-side) but this
       host cannot join the audit stack until a time service is running.
 
