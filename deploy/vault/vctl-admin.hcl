@@ -1,38 +1,60 @@
-# Inventory/RBAC writes, migration, and CA operations. Vault policy and Identity
-# administration intentionally stay in Terraform/platform-admin credentials: a
-# token able to rewrite its own policy can elevate itself to all of Vault.
+# vctl-scoped admin: inventory writes, migrations, and vctl's own RBAC.
+#
+# SSH signing is deliberately NOT here — it lives in vctl-ssh and is granted to
+# the same admin group separately, so "can administer vctl" and "can reach every
+# host" stay two decisions.
+#
+# What makes this an admin rather than a writer is the second half: it can edit
+# the vctl-* policies and the identity groups that carry them, i.e. it can change
+# who is an admin. That power is scoped by name (vctl-*) so it cannot reach the
+# org-wide objects owned by the platform root configuration.
+#
+# NOTE: this file is a reference copy. The applied source of truth is the
+# Terraform module that manages Vault configuration; see the repository README.
 
-# CA public key read + config management (rotation/set is an admin op).
-path "ssh/config/ca" {
-  capabilities = ["read", "update"]
-}
-
-# Inventory read/write credentials.
+# --- inventory dynamic credentials (read / write / schema) -------------------
 path "database/creds/vctl-ro" {
   capabilities = ["read"]
 }
 path "database/creds/vctl-rw" {
   capabilities = ["read"]
 }
-path "database/creds/vctl-audit-ro" {
-  capabilities = ["read"]
-}
-path "database/creds/vctl-pruner" {
-  capabilities = ["read"]
-}
 path "database/creds/vctl-migrator" {
   capabilities = ["read"]
 }
 
-# DB engine root credential rotation.
-path "database/rotate-root/vctl-pg" {
-  capabilities = ["update"]
+# --- RBAC administration (group-based) ---------------------------------------
+# Edit the vctl-* policies and the OIDC group -> policy mapping. Scoped to the
+# vctl-* namespace so org objects stay out of reach.
+path "sys/policies/acl" {
+  capabilities = ["list"]
+}
+path "sys/policies/acl/vctl-*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
 }
 
-path "auth/token/lookup-self" {
+# External identity groups carry the vctl-* policies to their members.
+path "identity/group" {
+  capabilities = ["list"]
+}
+path "identity/group/name" {
+  capabilities = ["list"]
+}
+path "identity/group/name/vctl-*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+# Reading group ids is needed to resolve canonical_id when managing aliases.
+path "identity/group/id" {
+  capabilities = ["list"]
+}
+path "identity/group/id/*" {
   capabilities = ["read"]
 }
 
-path "auth/token/renew-self" {
-  capabilities = ["update"]
+# Group alias: bind an external group name to an identity group.
+path "identity/group-alias" {
+  capabilities = ["create", "update", "list"]
+}
+path "identity/group-alias/id/*" {
+  capabilities = ["read", "update", "delete"]
 }

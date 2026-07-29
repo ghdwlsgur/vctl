@@ -4,8 +4,12 @@
 #
 #   ansible-playbook site.yml -l <canary>
 #   ansible-playbook site.yml -l seoul_onprem -e vctl_host_sre_lb_ip=<lb>
-#   ansible-playbook site.yml -l seoul_onprem -e vctl_host_install_collect=false -e vctl_host_install_tetragon=false
-#   ansible-playbook site.yml -l <host> -e vctl_host_state=absent     # rollback
+#   ansible-playbook site.yml -l <canary> -e vctl_host_audit_stack=true   # + collector/watch (pulls in Tetragon)
+#   ansible-playbook site.yml -l <host> -e vctl_host_state=absent         # rollback
+#
+# The default run installs node-agent only and does not touch Tetragon. Nothing
+# needs to be turned off to get that — vctl_host_install_tetragon follows
+# vctl_host_audit_stack.
 - name: Onboard vctl node status stack (audit is explicit opt-in)
   hosts: all
   become: true

@@ -10,8 +10,10 @@
 Description=vctl kernel-audit collector (Tetragon -> central store)
 After=network-online.target tetragon.service
 Wants=network-online.target
-StartLimitIntervalSec=5min
-StartLimitBurst=6
+# No start rate limit — see the note in vctl-node-agent.service. This unit also
+# waits on tetragon.service, so a slow Tetragon start is enough to burn a burst
+# budget that then keeps the collector down permanently.
+StartLimitIntervalSec=0
 
 [Service]
 Environment=VCTL_AUTH_METHOD=approle

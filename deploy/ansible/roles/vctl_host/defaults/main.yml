@@ -28,13 +28,23 @@ vctl_host_approle: >-
 
 # Per-host AppRole secret_id is minted from the control node's Vault token.
 vctl_host_provision_secret_id: "{{ provision_secret_id | default(true) }}"
-# Vault AppRole secret IDs expire after 30 days. Rotate on a successful play
-# before that deadline so a later daemon restart can still authenticate.
+# Rotation, not expiry. The AppRoles carry secret_id_ttl=0 since 2026-07-29, so
+# nothing dies on a deadline any more — a 30-day TTL silently stranded the fleet
+# twice, because Vault does not announce the expiry and the daemons kept looking
+# healthy while logging 403 (vault-iac !59). Rotating on a successful play is now
+# hygiene: it bounds how long any one leaked secret_id stays usable, and skipping
+# a cycle costs nothing.
 vctl_host_secret_rotation_days: 21
 
 # Tetragon (kernel-event source for the collector). Bare VMs: systemd install
 # here. k8s nodes: set vctl_host_install_tetragon=false and run a DaemonSet instead.
-vctl_host_install_tetragon: "{{ install_tetragon | default(true) }}"
+#
+# Defaults to the audit stack rather than to true. Only vctl-collect consumes
+# Tetragon, and collect only runs with vctl_host_audit_stack — so the old default
+# meant a plain `ansible-playbook site.yml` downloaded and enabled Tetragon on
+# every node-only host in the fleet, for a collector that was never going to
+# start. Opt in with the audit stack, or set this explicitly.
+vctl_host_install_tetragon: "{{ install_tetragon | default(vctl_host_audit_stack) }}"
 vctl_host_tetragon_version: "{{ tetragon_version | default('v1.1.2') }}"
 vctl_host_tetragon_archive: "tetragon-{{ vctl_host_tetragon_version }}-amd64.tar.gz"
 vctl_host_tetragon_url: >-

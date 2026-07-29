@@ -6,8 +6,10 @@
 Description=vctl session registrar (PAM markers -> audit_session)
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=5min
-StartLimitBurst=6
+# No start rate limit — see the note in vctl-node-agent.service. Latching to
+# `failed` is worse here than there: markers pile up in tmpfs while nothing
+# drains them, and a reboot discards whatever never got ingested.
+StartLimitIntervalSec=0
 
 [Service]
 Environment=VCTL_AUTH_METHOD=approle
