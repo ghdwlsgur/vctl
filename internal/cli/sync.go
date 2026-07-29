@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -67,6 +68,15 @@ func syncCmd() *cobra.Command {
 				}
 			}
 			ui.Successf(os.Stderr, "sync complete: %d upserted", ok)
+
+			// sync is the command that changes inventory, so it leaves the local
+			// snapshot current instead of waiting for the refresh interval to
+			// notice. Without this the operator who just added a host has the one
+			// cache that does not know about it. Best-effort: a cache problem must
+			// not fail a sync that already succeeded.
+			if _, err := a.CaptureSnapshot(ctx, st); err != nil && !errors.Is(err, app.ErrCacheDisabled) {
+				ui.Warnf(os.Stderr, "local snapshot not refreshed: %v", err)
+			}
 			ui.KVs(os.Stderr, []ui.KV{
 				{Key: "Reachable", Value: fmt.Sprintf("%d", up), State: ui.StateOK},
 				{Key: "Unreachable", Value: fmt.Sprintf("%d", ok-up), State: ui.StateWarn},
