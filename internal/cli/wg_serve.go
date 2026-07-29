@@ -122,41 +122,110 @@ func cidr24(ip string) (string, bool) {
 // owns a gateway are collapsed into per-/24 aggregate nodes, and servers.jump_via
 // yields management links between gateways/aggregates. It also returns the
 // sample→edge mapping the pollers use to attribute live rates.
+//
+// The build runs in phases, each adding one layer of the graph and depending
+// only on the indices and on what earlier phases put in topo. Written as one
+// function it was 286 lines with five comment-separated sections and five
+// closures over shared state — the closures are methods here, which is what
+// they were reaching for.
 func buildWGTopology(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, servers []store.Server, annotations []store.WGEndpointAnnotation) (wgTopology, map[tunnelKey]string) {
-	idx := pubIndex(ifaces)
+	b := newWGTopologyBuilder(ifaces, peers, servers, annotations)
+	b.addGateways()
+	b.addPeerEdges()
+	b.addAggregates()
+	b.addLinks()
+	return b.topo, b.edgeFor
+}
 
-	byHost := make(map[string]store.Server, len(servers))
-	byIP := make(map[string]store.Server, len(servers))
+// wgTopologyBuilder holds the lookups every phase needs plus the graph being
+// assembled. Phases run in order and are not independent: peer edges need the
+// gateway nodes, aggregates need every node placed so far, and links need the
+// aggregate membership.
+type wgTopologyBuilder struct {
+	ifaces  []store.WGInterfaceRow
+	peers   []store.WGPeerRow
+	servers []store.Server
+
+	pubIdx     map[string]nodeRef                    // interface public key → owning gateway
+	byHost     map[string]store.Server               // inventory by hostname
+	byIP       map[string]store.Server               // inventory by any address it answers on
+	annByKey   map[string]store.WGEndpointAnnotation // annotation by peer/interface public key
+	annByHost  map[string]store.WGEndpointAnnotation // the winning annotation per gateway
+	warnings   map[string][]string                   // per-gateway annotation conflicts
+	endpointIP map[string]int                        // endpoint IP → how many peers claim it
+	ifByHost   map[string][]wgIface                  // gateway → its interfaces, name-sorted
+	gwHosts    map[string]bool                       // hosts that own at least one interface
+
+	topo      wgTopology
+	nodeSeen  map[string]bool
+	edgeFor   map[tunnelKey]string
+	aggOfHost map[string]string // hostname → aggregate node id, for link resolution
+}
+
+// newWGTopologyBuilder builds every index the phases read. Nothing here touches
+// the output graph.
+func newWGTopologyBuilder(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, servers []store.Server, annotations []store.WGEndpointAnnotation) *wgTopologyBuilder {
+	b := &wgTopologyBuilder{
+		ifaces: ifaces, peers: peers, servers: servers,
+		pubIdx:     pubIndex(ifaces),
+		byHost:     make(map[string]store.Server, len(servers)),
+		byIP:       make(map[string]store.Server, len(servers)),
+		annByKey:   make(map[string]store.WGEndpointAnnotation, len(annotations)),
+		annByHost:  map[string]store.WGEndpointAnnotation{},
+		warnings:   map[string][]string{},
+		endpointIP: map[string]int{},
+		ifByHost:   map[string][]wgIface{},
+		gwHosts:    map[string]bool{},
+		nodeSeen:   map[string]bool{},
+		edgeFor:    map[tunnelKey]string{},
+		aggOfHost:  map[string]string{},
+	}
 	for _, s := range servers {
-		byHost[s.Hostname] = s
-		byIP[s.IP] = s
+		b.byHost[s.Hostname] = s
+		b.byIP[s.IP] = s
 		for _, ip := range s.ExtraIPs {
-			byIP[ip] = s
+			b.byIP[ip] = s
 		}
 	}
-	dcOf := func(host string) string { return byHost[host].DC }
-	annotationByKey := make(map[string]store.WGEndpointAnnotation, len(annotations))
 	for _, a := range annotations {
-		annotationByKey[a.PublicKey] = a
+		b.annByKey[a.PublicKey] = a
 	}
-	sortedIfaces := append([]store.WGInterfaceRow{}, ifaces...)
+	for _, p := range peers {
+		if ip := wgEndpointIP(p.Endpoint); ip != "" {
+			b.endpointIP[ip]++
+		}
+	}
+	for _, i := range ifaces {
+		b.gwHosts[i.Host] = true
+		b.ifByHost[i.Host] = append(b.ifByHost[i.Host], wgIface{Name: i.Iface, Port: i.ListenPort})
+	}
+	// Name-sorted so the dashboard's port order is stable across polls.
+	for h := range b.ifByHost {
+		sort.Slice(b.ifByHost[h], func(x, y int) bool { return b.ifByHost[h][x].Name < b.ifByHost[h][y].Name })
+	}
+	b.resolveAnnotations()
+	return b
+}
+
+// resolveAnnotations picks one annotation per gateway. A host may own several
+// WG interfaces, each separately annotated, so the most specific placement wins
+// and any disagreement between them is surfaced as a warning rather than
+// silently dropped.
+func (b *wgTopologyBuilder) resolveAnnotations() {
+	sortedIfaces := append([]store.WGInterfaceRow{}, b.ifaces...)
 	sort.Slice(sortedIfaces, func(i, j int) bool {
 		if sortedIfaces[i].Host != sortedIfaces[j].Host {
 			return sortedIfaces[i].Host < sortedIfaces[j].Host
 		}
 		return sortedIfaces[i].Iface < sortedIfaces[j].Iface
 	})
-	annotationsByHost := map[string][]store.WGEndpointAnnotation{}
+	candidatesByHost := map[string][]store.WGEndpointAnnotation{}
 	for _, i := range sortedIfaces {
-		a, ok := annotationByKey[i.PublicKey]
-		if !ok {
-			continue
+		if a, ok := b.annByKey[i.PublicKey]; ok {
+			candidatesByHost[i.Host] = append(candidatesByHost[i.Host], a)
 		}
-		annotationsByHost[i.Host] = append(annotationsByHost[i.Host], a)
 	}
-	annotationByHost := map[string]store.WGEndpointAnnotation{}
-	annotationWarnings := map[string][]string{}
-	for host, candidates := range annotationsByHost {
+	for host, candidates := range candidatesByHost {
 		selected := candidates[0]
 		for _, candidate := range candidates[1:] {
 			if wgAnnotationSpecificity(candidate) > wgAnnotationSpecificity(selected) {
@@ -165,247 +234,251 @@ func buildWGTopology(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, ser
 		}
 		for _, candidate := range candidates {
 			if wgAnnotationPlacementConflict(selected, candidate) {
-				annotationWarnings[host] = []string{
+				b.warnings[host] = []string{
 					"conflicting endpoint annotations across WG interfaces; using the most specific placement",
 				}
 				break
 			}
 		}
-		// A collected host may own several WG interfaces. Their tunnel addresses
-		// are interface state, not one host-level scalar.
+		// Tunnel addresses are interface state, not one host-level scalar.
 		selected.TunnelIP = ""
-		annotationByHost[host] = selected
+		b.annByHost[host] = selected
 	}
-	endpointIPCount := map[string]int{}
-	for _, p := range peers {
-		if ip := wgEndpointIP(p.Endpoint); ip != "" {
-			endpointIPCount[ip]++
-		}
-	}
+}
 
-	// Interfaces grouped per gateway host (name-sorted for a stable port order).
-	ifByHost := map[string][]wgIface{}
-	for _, i := range ifaces {
-		ifByHost[i.Host] = append(ifByHost[i.Host], wgIface{Name: i.Iface, Port: i.ListenPort})
-	}
-	for h := range ifByHost {
-		sort.Slice(ifByHost[h], func(a, b int) bool { return ifByHost[h][a].Name < ifByHost[h][b].Name })
-	}
+func (b *wgTopologyBuilder) dcOf(host string) string { return b.byHost[host].DC }
 
-	var topo wgTopology
-	nodeSeen := map[string]bool{}
-	addNode := func(n wgNode) {
-		if !nodeSeen[n.ID] {
-			nodeSeen[n.ID] = true
-			topo.Nodes = append(topo.Nodes, n)
-		}
+// addNode appends a node once. Phases overlap on the same node ids, so
+// first-write-wins is the rule that keeps the graph stable.
+func (b *wgTopologyBuilder) addNode(n wgNode) {
+	if !b.nodeSeen[n.ID] {
+		b.nodeSeen[n.ID] = true
+		b.topo.Nodes = append(b.topo.Nodes, n)
 	}
-	addPhysicalHost := func(parent store.Server) string {
-		id := physicalHostNodeID(parent.Hostname)
-		addNode(wgNode{
-			ID: id, Label: parent.Hostname, Kind: "physical-host",
-			DC: parent.DC, IP: parent.IP,
-		})
-		return id
+}
+
+func (b *wgTopologyBuilder) addPhysicalHost(parent store.Server) string {
+	id := physicalHostNodeID(parent.Hostname)
+	b.addNode(wgNode{
+		ID: id, Label: parent.Hostname, Kind: "physical-host",
+		DC: parent.DC, IP: parent.IP,
+	})
+	return id
+}
+
+// enrichEndpoint layers an operator annotation over a discovered node. The
+// annotation wins over what was observed, and inventory fills the gaps.
+func (b *wgTopologyBuilder) enrichEndpoint(n wgNode, a store.WGEndpointAnnotation) wgNode {
+	if inv, ok := b.byHost[a.InventoryHost]; ok {
+		n.Label = firstNonEmpty(a.Label, inv.Hostname, n.Label)
+		n.IP = firstNonEmpty(a.UnderlayIP, inv.IP, n.IP)
+		n.DC = firstNonEmpty(a.Site, inv.DC, n.DC)
+	} else {
+		n.Label = firstNonEmpty(a.Label, n.Label)
+		n.IP = firstNonEmpty(a.UnderlayIP, n.IP)
+		n.DC = firstNonEmpty(a.Site, n.DC)
 	}
-	enrichEndpoint := func(n wgNode, a store.WGEndpointAnnotation) wgNode {
-		if inv, ok := byHost[a.InventoryHost]; ok {
-			n.Label = firstNonEmpty(a.Label, inv.Hostname, n.Label)
-			n.IP = firstNonEmpty(a.UnderlayIP, inv.IP, n.IP)
-			n.DC = firstNonEmpty(a.Site, inv.DC, n.DC)
-		} else {
-			n.Label = firstNonEmpty(a.Label, n.Label)
-			n.IP = firstNonEmpty(a.UnderlayIP, n.IP)
-			n.DC = firstNonEmpty(a.Site, n.DC)
-		}
-		n.Kind = firstNonEmpty(a.Kind, n.Kind)
-		n.TunnelIP = a.TunnelIP
-		if parent, ok := byHost[a.ParentHostname]; ok {
-			n.Parent = addPhysicalHost(parent)
-			n.DC = parent.DC
-		}
-		return n
+	n.Kind = firstNonEmpty(a.Kind, n.Kind)
+	n.TunnelIP = a.TunnelIP
+	if parent, ok := b.byHost[a.ParentHostname]; ok {
+		n.Parent = b.addPhysicalHost(parent)
+		n.DC = parent.DC
 	}
-	gwHosts := map[string]bool{}
-	for _, i := range ifaces {
-		gwHosts[i.Host] = true
+	return n
+}
+
+// addGateways places one node per host that owns a WG interface.
+func (b *wgTopologyBuilder) addGateways() {
+	hosts := make([]string, 0, len(b.gwHosts))
+	for host := range b.gwHosts {
+		hosts = append(hosts, host)
 	}
-	gatewayHosts := make([]string, 0, len(gwHosts))
-	for host := range gwHosts {
-		gatewayHosts = append(gatewayHosts, host)
-	}
-	sort.Strings(gatewayHosts)
-	for _, host := range gatewayHosts {
+	sort.Strings(hosts)
+	for _, host := range hosts {
 		n := wgNode{
 			ID: host, Label: host, Kind: "gateway",
-			DC: dcOf(host), IP: byHost[host].IP,
-			Warnings: annotationWarnings[host], Ifaces: ifByHost[host],
+			DC: b.dcOf(host), IP: b.byHost[host].IP,
+			Warnings: b.warnings[host], Ifaces: b.ifByHost[host],
 		}
-		if a, ok := annotationByHost[host]; ok {
-			n = enrichEndpoint(n, a)
+		if a, ok := b.annByHost[host]; ok {
+			n = b.enrichEndpoint(n, a)
 		}
-		addNode(n)
+		b.addNode(n)
 	}
+}
 
-	edgeFor := map[tunnelKey]string{}
+// addPeerEdges walks the collected peers. A peer whose key belongs to another
+// collected interface is one gateway↔gateway tunnel; everything else becomes an
+// external node hanging off its gateway. Either way the tunnel is mapped into
+// edgeFor so the pollers can attribute live rates to the right edge.
+func (b *wgTopologyBuilder) addPeerEdges() {
 	edgeSeen := map[string]bool{}
-	sorted := append([]store.WGPeerRow{}, peers...)
-	sort.Slice(sorted, func(a, b int) bool {
-		if sorted[a].Host != sorted[b].Host {
-			return sorted[a].Host < sorted[b].Host
+	sorted := append([]store.WGPeerRow{}, b.peers...)
+	sort.Slice(sorted, func(x, y int) bool {
+		if sorted[x].Host != sorted[y].Host {
+			return sorted[x].Host < sorted[y].Host
 		}
-		if sorted[a].Iface != sorted[b].Iface {
-			return sorted[a].Iface < sorted[b].Iface
+		if sorted[x].Iface != sorted[y].Iface {
+			return sorted[x].Iface < sorted[y].Iface
 		}
-		return sorted[a].PeerPubKey < sorted[b].PeerPubKey
+		return sorted[x].PeerPubKey < sorted[y].PeerPubKey
 	})
 	for _, p := range sorted {
 		k := tunnelKey{p.Host, p.Iface, p.PeerPubKey}
-		if far, ok := idx[p.PeerPubKey]; ok {
-			// Resolved gateway↔gateway tunnel: one edge, canonical side first.
-			a, b := p.Host, far.host
-			if a > b {
-				a, b = b, a
+		if far, ok := b.pubIdx[p.PeerPubKey]; ok {
+			// Both ends collected: one edge, canonical side first so the two
+			// directions collapse into the same id.
+			a, c := p.Host, far.host
+			if a > c {
+				a, c = c, a
 			}
-			id := "gw|" + a + "|" + b + "|" + p.Iface
-			edgeFor[k] = id
+			id := "gw|" + a + "|" + c + "|" + p.Iface
+			b.edgeFor[k] = id
 			if edgeSeen[id] {
 				continue
 			}
 			edgeSeen[id] = true
-			topo.Edges = append(topo.Edges, wgEdge{
+			b.topo.Edges = append(b.topo.Edges, wgEdge{
 				ID: id, Source: p.Host, Target: far.host,
 				Iface: p.Iface, Allowed: strings.Join(p.AllowedIPs, ", "),
 			})
 			continue
 		}
-		extID := "ext|" + shortKey(p.PeerPubKey)
-		label := p.Endpoint
-		if label == "" {
-			label = shortKey(p.PeerPubKey)
-		}
-		n := wgNode{ID: extID, Label: label, Kind: "external"}
-		if ip := wgEndpointIP(p.Endpoint); ip != "" {
-			if sv, ok := byIP[ip]; ok && endpointIPCount[ip] == 1 {
-				n.ID = "inventory|" + sv.Hostname
-				n.Label = sv.Hostname + " ?"
-				n.Kind = "inventory-candidate"
-				n.Observed = p.Endpoint
-			}
-		}
-		if a, ok := annotationByKey[p.PeerPubKey]; ok {
-			n.ID = "endpoint|" + p.PeerPubKey
-			n = enrichEndpoint(n, a)
-		}
-		extID = n.ID
-		addNode(n)
+		n := b.externalNode(p)
+		b.addNode(n)
 		id := p.Host + "|" + p.Iface + "|" + shortKey(p.PeerPubKey)
-		edgeFor[k] = id
-		topo.Edges = append(topo.Edges, wgEdge{
-			ID: id, Source: p.Host, Target: extID,
+		b.edgeFor[k] = id
+		b.topo.Edges = append(b.topo.Edges, wgEdge{
+			ID: id, Source: p.Host, Target: n.ID,
 			Iface: p.Iface, Allowed: strings.Join(p.AllowedIPs, ", "),
 		})
 	}
+}
 
-	// Aggregate nodes: non-gateway inventory hosts, grouped by (dc, primary /24),
-	// but only in dcs that own at least one WG gateway.
-	dcWithGW := map[string]bool{}
-	for h := range gwHosts {
-		dcWithGW[dcOf(h)] = true
+// externalNode identifies the far end of an unresolved peer, in increasing
+// order of confidence: an opaque key, then an inventory host guessed from a
+// unique endpoint address, then whatever an operator annotated.
+func (b *wgTopologyBuilder) externalNode(p store.WGPeerRow) wgNode {
+	label := p.Endpoint
+	if label == "" {
+		label = shortKey(p.PeerPubKey)
 	}
-	aggByKey := map[string]*wgAgg{}
-	aggMembers := map[string]map[string]bool{}
-	aggOfHost := map[string]string{} // hostname → agg id (for link resolution)
-	addAgg := func(dc, cidr, member string) string {
+	n := wgNode{ID: "ext|" + shortKey(p.PeerPubKey), Label: label, Kind: "external"}
+
+	// Only guess when exactly one peer claims the address; a shared NAT
+	// endpoint says nothing about which host is behind it.
+	if ip := wgEndpointIP(p.Endpoint); ip != "" {
+		if sv, ok := b.byIP[ip]; ok && b.endpointIP[ip] == 1 {
+			n.ID = "inventory|" + sv.Hostname
+			n.Label = sv.Hostname + " ?"
+			n.Kind = "inventory-candidate"
+			n.Observed = p.Endpoint
+		}
+	}
+	if a, ok := b.annByKey[p.PeerPubKey]; ok {
+		n.ID = "endpoint|" + p.PeerPubKey
+		n = b.enrichEndpoint(n, a)
+	}
+	return n
+}
+
+// addAggregates collapses non-gateway hosts into one node per (dc, /24), and
+// only in dcs that own a gateway — elsewhere the aggregate would have nothing
+// to attach to.
+func (b *wgTopologyBuilder) addAggregates() {
+	dcWithGW := map[string]bool{}
+	for h := range b.gwHosts {
+		dcWithGW[b.dcOf(h)] = true
+	}
+	byKey := map[string]*wgAgg{}
+	members := map[string]map[string]bool{}
+	add := func(dc, cidr, member string) string {
 		id := "agg|" + dc + "|" + cidr
-		a := aggByKey[id]
+		a := byKey[id]
 		if a == nil {
 			a = &wgAgg{ID: id, DC: dc, CIDR: cidr}
-			aggByKey[id] = a
+			byKey[id] = a
 		}
-		if aggMembers[id] == nil {
-			aggMembers[id] = map[string]bool{}
+		if members[id] == nil {
+			members[id] = map[string]bool{}
 		}
-		if member != "" && !aggMembers[id][member] {
-			aggMembers[id][member] = true
+		if member != "" && !members[id][member] {
+			members[id][member] = true
 			a.Count++
 		}
 		return id
 	}
-	for _, s := range servers {
+	for _, s := range b.servers {
 		if !dcWithGW[s.DC] {
 			continue
 		}
 		if cidr, ok := cidr24(s.IP); ok {
-			aggOfHost[s.Hostname] = addAgg(s.DC, cidr, s.Hostname)
+			b.aggOfHost[s.Hostname] = add(s.DC, cidr, s.Hostname)
 		}
 	}
-	for _, n := range topo.Nodes {
+	for _, n := range b.topo.Nodes {
 		if n.Kind == "external" || n.DC == "" {
 			continue
 		}
 		if cidr, ok := cidr24(n.IP); ok {
-			member := n.ID
-			if strings.HasPrefix(n.ID, "inventory|") {
-				member = strings.TrimPrefix(n.ID, "inventory|")
-			}
-			addAgg(n.DC, cidr, member)
+			member := strings.TrimPrefix(n.ID, "inventory|")
+			add(n.DC, cidr, member)
 		}
 	}
-	for _, a := range aggByKey {
-		topo.Aggs = append(topo.Aggs, *a)
+	for _, a := range byKey {
+		b.topo.Aggs = append(b.topo.Aggs, *a)
 	}
-	sort.Slice(topo.Aggs, func(a, b int) bool { return topo.Aggs[a].ID < topo.Aggs[b].ID })
+	sort.Slice(b.topo.Aggs, func(x, y int) bool { return b.topo.Aggs[x].ID < b.topo.Aggs[y].ID })
+}
 
-	// Management links from servers.jump_via, each end resolved to a gateway
-	// hostname or the aggregate node the host belongs to; unresolved/self dropped.
+// addLinks draws the non-tunnel relationships: management paths from
+// servers.jump_via, placement onto a physical host, and membership of a /24.
+func (b *wgTopologyBuilder) addLinks() {
+	// Each end resolves to a gateway hostname or the aggregate the host sits in;
+	// anything unresolved, or pointing at itself, is dropped.
 	resolve := func(host string) (string, bool) {
-		if gwHosts[host] {
+		if b.gwHosts[host] {
 			return host, true
 		}
-		if id, ok := aggOfHost[host]; ok {
-			return id, true
-		}
-		return "", false
+		id, ok := b.aggOfHost[host]
+		return id, ok
 	}
-	linkSeen := map[string]bool{}
-	for _, s := range servers {
+	seen := map[string]bool{}
+	for _, s := range b.servers {
 		if s.JumpVia == "" {
 			continue
 		}
-		src, ok1 := resolve(s.Hostname)
-		dst, ok2 := resolve(s.JumpVia)
-		if !ok1 || !ok2 || src == dst {
+		src, srcOK := resolve(s.Hostname)
+		dst, dstOK := resolve(s.JumpVia)
+		if !srcOK || !dstOK || src == dst {
 			continue
 		}
 		key := src + "\x00" + dst
-		if linkSeen[key] {
+		if seen[key] {
 			continue
 		}
-		linkSeen[key] = true
-		topo.Links = append(topo.Links, wgLink{Source: src, Target: dst, Kind: "management"})
+		seen[key] = true
+		b.topo.Links = append(b.topo.Links, wgLink{Source: src, Target: dst, Kind: "management"})
 	}
-	for _, n := range topo.Nodes {
+	for _, n := range b.topo.Nodes {
 		if n.Kind == "external" {
 			continue
 		}
 		if n.Parent != "" {
-			topo.Links = append(topo.Links, wgLink{Source: n.ID, Target: n.Parent, Kind: "placement"})
+			b.topo.Links = append(b.topo.Links, wgLink{Source: n.ID, Target: n.Parent, Kind: "placement"})
 		}
 		if cidr, ok := cidr24(n.IP); ok {
-			topo.Links = append(topo.Links, wgLink{
+			b.topo.Links = append(b.topo.Links, wgLink{
 				Source: n.ID, Target: "agg|" + n.DC + "|" + cidr, Kind: "network",
 			})
 		}
 	}
-	sort.Slice(topo.Links, func(a, b int) bool {
-		if topo.Links[a].Source != topo.Links[b].Source {
-			return topo.Links[a].Source < topo.Links[b].Source
+	sort.Slice(b.topo.Links, func(x, y int) bool {
+		if b.topo.Links[x].Source != b.topo.Links[y].Source {
+			return b.topo.Links[x].Source < b.topo.Links[y].Source
 		}
-		return topo.Links[a].Target < topo.Links[b].Target
+		return b.topo.Links[x].Target < b.topo.Links[y].Target
 	})
-
-	return topo, edgeFor
 }
 
 func physicalHostNodeID(hostname string) string { return "host|" + hostname }
