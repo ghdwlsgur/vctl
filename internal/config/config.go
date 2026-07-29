@@ -43,6 +43,18 @@ type Config struct {
 	// Kernel-audit retention. Raw kernel_event rows are high-volume; sessions are
 	// small metadata kept much longer as the dataset index. Pruning is delegated
 	// to `vctl prune` (run by a CronJob), mirroring Teleport's storage-lifecycle model.
+	//
+	// The kernel default is 14 days because that is what the volume holds, not
+	// because 14 days is the ideal window. Measured in production: kernel_event
+	// grows ~344 MB/day, so 90 days needs ~30 GB against a 20 GB PVC. That is not
+	// a theoretical limit — the table filled the volume on 2026-07-19 and took
+	// vctl-ro to 500s until the PVC was raised to 20 GB.
+	//
+	// It must also match the CronJob that actually enforces it (vctl-postgres
+	// prune-cronjob.yaml, KERNEL_RETENTION_DAYS=14). While this said 90, a bare
+	// `vctl prune` deleted nothing and looked like enforcement — the one failure
+	// mode a retention default must not have. Raising it here without raising the
+	// volume re-arms the outage.
 	KernelRetentionDays  int `yaml:"kernel_retention_days"`  // prune kernel_event older than this
 	SessionRetentionDays int `yaml:"session_retention_days"` // prune audit_session older than this (0 = keep)
 
@@ -201,10 +213,20 @@ func defaultConfigPath() string {
 }
 
 // CacheRefreshInterval is how stale the local inventory snapshot may get before
-// an online command refreshes it. Refreshing costs one extra query, so it is
-// amortized rather than done per command.
+// an online command refreshes it.
+//
+// Measured against production rather than guessed: the inventory changed once
+// in seven days, while a 5m interval rewrote all 122 hosts to disk up to 96
+// times a workday. The query itself is free (0.25ms), but polling minute-wise
+// for data that moves week-wise is the wrong shape, and it turns a one-row
+// `vctl ssh <host>` into a full table scan.
+//
+// An hour still refreshes far more often than the data changes, and bounds the
+// window in which another operator's change is invisible. Changes made *here*
+// do not wait for it — the commands that write inventory refresh the snapshot
+// directly.
 func (c *Config) CacheRefreshInterval() time.Duration {
-	return parseDurationOr(c.CacheRefresh, 5*time.Minute)
+	return parseDurationOr(c.CacheRefresh, time.Hour)
 }
 
 // CacheOfflineWindow bounds how long cached command grants may authorize a

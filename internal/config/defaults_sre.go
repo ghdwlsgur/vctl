@@ -30,9 +30,9 @@ func Defaults() *Config {
 		DBRoleStatus:         "vctl-status",
 		DBRoleMigrate:        "vctl-migrator",
 		DBMigrationOwner:     "vctl_owner",
-		KernelRetentionDays:  90,
+		KernelRetentionDays:  14,
 		SessionRetentionDays: 365,
-		CacheRefresh:         "5m",
+		CacheRefresh:         "1h",
 		CacheOfflineTTL:      "24h",
 		CacheMaxAge:          "720h", // 30d — long enough never to bite in practice
 		CARole:               "sre-core",

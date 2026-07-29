@@ -49,9 +49,14 @@ func statusCmd() *cobra.Command {
 				}
 				defer st.Close()
 				servers, _ := st.ListWithStatus(ctx, "")
+				// "Reporting" has to mean reporting now, not ever. Counting any
+				// host with a server_status row read as healthy while every agent
+				// in production had been silent for two days — the row survives the
+				// agent. `vctl list` already judges the same data by freshness, so
+				// this brings the two into agreement.
 				var withAgent int
 				for _, server := range servers {
-					if server.Status != nil {
+					if liveStatusText(server) == "up" {
 						withAgent++
 					}
 				}
