@@ -239,11 +239,18 @@ func (c *Config) CacheOfflineWindow() time.Duration {
 // CacheStaleLimit is the oldest inventory snapshot vctl will serve during an
 // outage. Past it, host lookup fails rather than routing by topology that has
 // had time to drift. An explicit "0" disables the limit.
+//
+// Seven days, not thirty. The snapshot refreshes hourly, so any age near this
+// limit already means the database has been unreachable for that long — and
+// addresses do move inside a week. Note this sits above CacheOfflineWindow (24h),
+// so shortening it does not newly block anything that offline authorization would
+// still have permitted; it only drops the long tail where vctl would route by a
+// topology nobody had confirmed for weeks.
 func (c *Config) CacheStaleLimit() time.Duration {
 	if strings.TrimSpace(c.CacheMaxAge) == "0" {
 		return 0
 	}
-	return parseDurationOr(c.CacheMaxAge, 30*24*time.Hour)
+	return parseDurationOr(c.CacheMaxAge, 7*24*time.Hour)
 }
 
 // parseDurationOr keeps a malformed or absent override from disabling a
