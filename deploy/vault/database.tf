@@ -1,4 +1,8 @@
-# Postgres dynamic credentials.  ★그룹 롤 GRANT 모델 (2026-07-24 장애 재발 방지)
+# Postgres dynamic credentials, granted through group roles.
+#
+# The group-role model exists because the previous one caused the 2026-07-24
+# outage: privileges granted directly to each dynamic role were lost the moment
+# the lease rotated.
 #
 # Two Postgres-side prerequisites Terraform can't create (run as vctl_admin, once,
 # BEFORE apply):

@@ -1,18 +1,23 @@
 # shellcheck shell=sh
 # /etc/profile.d/vctl-session-stamp.sh
-# SSH 로그인 셸에서 cert serial→세션 마커 기록. (sourced; 실행권한 불필요)
-# (sourced 스크립트라 셰뱅/실행 없음 — 위 지시어가 ShellCheck 에 sh 방언을 알려
-#  1행을 깨진 셰뱅으로 오인하지 않게 한다)
+# Record a session marker keyed by certificate serial, from the SSH login shell.
+# (sourced; needs no execute bit)
+# (Being sourced, this file has no shebang. The directive above tells ShellCheck
+#  which dialect to assume so it does not read line 1 as a broken shebang.)
 #
-# 왜 PAM 이 아니라 profile.d 인가: sshd ExposeAuthInfo 의 $SSH_USER_AUTH 는 "세션 셸"
-# 환경에만 들어가고 pam_exec 세션 훅은 받지 못한다(검증 완료). 로그인 셸에선 존재하므로
-# 여기서 cert 를 읽어 serial 을 뽑아 /run/vctl/sessions/<pid>.json 마커를 남기고,
-# vctl-watch-sessions 데몬이 이를 audit_session 으로 등록한다.
+# Why profile.d and not PAM: sshd's ExposeAuthInfo puts $SSH_USER_AUTH into the
+# session shell's environment only — pam_exec session hooks never receive it
+# (verified). The login shell does have it, so the certificate is read here, its
+# serial extracted, and a marker written to /run/vctl/sessions/<pid>.json. The
+# vctl-watch-sessions daemon turns that marker into an audit_session row.
 #
-# 마커 디렉터리는 root:root 0700 고정 — 절대 그룹/전역 쓰기로 풀지 말 것.
-# (풀면 비-root 사용자가 타 세션 마커를 위조/삭제할 수 있어 감사 귀속이 깨진다.)
-# 현재 marker backend는 root SSH 세션만 지원한다. 비-root 지원 전에는 디렉터리
-# 권한을 완화하지 말 것. 권한을 풀면 감사 마커 위조/삭제가 가능해진다.
+# The marker directory stays root:root 0700. Never widen it to group or world
+# writable: a non-root user could then forge or delete another session's marker,
+# and audit attribution would be silently wrong rather than missing.
+#
+# The marker backend currently supports root SSH sessions only. Supporting
+# non-root users is not a reason to relax these permissions first — the
+# permissions are what makes the attribution trustworthy.
 [ -n "${SSH_USER_AUTH:-}" ] && [ -r "$SSH_USER_AUTH" ] || return 0 2>/dev/null
 
 _vctl_serial=""
@@ -24,8 +29,9 @@ if [ -n "$_vctl_cl" ]; then
   rm -f "$_vctl_t"
 fi
 _vctl_lp=$PPID
-# started = 로그인 시각(불변). watch-sessions 재시작 시 같은 세션이 같은 키로 upsert 되어
-# 중복 등록/“live” 누적을 막는다.
+# started is the login time and never changes. Keeping it stable means a
+# watch-sessions restart upserts the same session under the same key instead of
+# registering a duplicate and leaving a phantom "live" row behind.
 _vctl_st=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 mkdir -p /run/vctl/sessions 2>/dev/null && cat > "/run/vctl/sessions/${_vctl_lp}.json" 2>/dev/null <<EOF
 {"serial":"${_vctl_serial}","login":"$(id -un)","rhost":"${SSH_CONNECTION%% *}","leader_pid":${_vctl_lp},"host":"$(hostname)","started":"${_vctl_st}"}

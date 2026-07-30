@@ -134,30 +134,30 @@
     <div class="brandmark">V/</div>
     <div><div class="eyebrow">vctl network observability</div><h1>WireGuard <span>/ topology</span></h1></div>
   </div>
-  <div id="meta" aria-label="토폴로지 요약">
+  <div id="meta" aria-label="topology summary">
     <div class="metric"><strong id="site-count">–</strong><span>Sites</span></div>
     <div class="metric"><strong id="gateway-count">–</strong><span>Gateways</span></div>
     <div class="metric"><strong id="tunnel-count">–</strong><span>Tunnels</span></div>
     <div class="metric"><strong id="updated-at">–</strong><span>Updated</span></div>
   </div>
-  <div class="live-summary" id="live-summary"><i class="pulse"></i><span>터널 상태 대기 중</span></div>
-  <span class="health" id="health">연결 중</span>
+  <div class="live-summary" id="live-summary"><i class="pulse"></i><span>waiting for tunnel state</span></div>
+  <span class="health" id="health">connecting</span>
 </header>
 <div id="toolbar">
   <span class="tool-label">INTERFACES</span>
-  <div id="legend" aria-label="인터페이스 필터"></div>
-  <span id="selection"><b></b> 선택됨 <button type="button" aria-label="선택 해제">×</button></span>
+  <div id="legend" aria-label="interface filter"></div>
+  <span id="selection"><b></b> selected <button type="button" aria-label="clear selection">×</button></span>
   <span class="tool-spacer"></span>
-  <div class="status-key" aria-label="터널 상태 범례">
+  <div class="status-key" aria-label="tunnel state legend">
     <span class="up"><i></i>active</span><span class="idle"><i></i>idle</span><span class="down"><i></i>down</span>
   </div>
-  <div class="view-controls" aria-label="화면 배율">
-    <button type="button" id="zoom-fit" title="화면에 맞춤">FIT</button>
-    <button type="button" id="zoom-out" aria-label="축소">−</button>
-    <button type="button" id="zoom-in" aria-label="확대">+</button>
+  <div class="view-controls" aria-label="zoom">
+    <button type="button" id="zoom-fit" title="fit to screen">FIT</button>
+    <button type="button" id="zoom-out" aria-label="zoom out">−</button>
+    <button type="button" id="zoom-in" aria-label="zoom in">+</button>
   </div>
 </div>
-<main id="canvas"><svg id="net" role="img" aria-label="WireGuard 네트워크 아키텍처"></svg><pre id="errs"></pre></main>
+<main id="canvas"><svg id="net" role="img" aria-label="WireGuard network architecture"></svg><pre id="errs"></pre></main>
 <div id="tip"></div>
 <script>
 "use strict";
@@ -235,7 +235,7 @@ function tunnelRun(gt,gf,{d,col,edge,iface,title}){
   const fl=mk("path",{d,class:"flow",stroke:col},gf);
   tunnels.push({id:edge.id,base,fl});
   hot(base,()=>{const st=stats[edge.id]||{};
-    return[title,`allowed ${edge.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} · tx ${fmtRate(st.tx)} · 클릭=포커스`]});
+    return[title,`allowed ${edge.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} · tx ${fmtRate(st.tx)} · click to focus`]});
   clickFocus(base,iface);
   return base;
 }
@@ -321,7 +321,7 @@ function zoneBuckets(N,hub,{farSpokes,spokes,mesh,hops}){
 }
 
 // Attaches IPAM-ledger VIPs (e.g. o11y DNAT) to the endpoint whose label's first
-// token appears in the VIP label ("sre-lb 터널 DNAT (wg3)" -> sre-lb); the longest
+// token appears in the VIP label ("sre-lb tunnel DNAT (wg3)" -> sre-lb); the longest
 // matching token wins. Returns the per-endpoint VIP lists and, as a side effect,
 // records which node each interface fronts in vipFocusNodes — that map is what
 // lets a wg3 selection light its DNAT owner.
@@ -426,8 +426,8 @@ function drawLocalFabric({gg,gn,gd,gt,grp},{HUBX,HUBY},topo,N,hub,spokes){
     gb.dataset.cidr=a.cidr;
     const r=mk("rect",{x:64,y:ly,width:180,height:42,rx:8,class:"nbox band"},gb);
     mk("text",{x:78,y:ly+18,class:"btit"},gb).textContent=a.cidr;
-    mk("text",{x:78,y:ly+32,class:"bsub"},gb).textContent=`인벤토리 ×${a.count}`;
-    hot(r,()=>[a.cidr,`허브 사이트 로컬 대역 · 호스트 ${a.count}대`]);
+    mk("text",{x:78,y:ly+32,class:"bsub"},gb).textContent=`inventory ×${a.count}`;
+    hot(r,()=>[a.cidr,`hub-site local range · ${a.count} hosts`]);
     mk("path",{d:`M244,${ly+21} H272`,class:"grey"},gg);
     mk("circle",{cx:244,cy:ly+21,r:3,class:"jdot"},gd);
     localBand.set(a.cidr,{x:244,y:ly+21,ref:0,group:gb,eids:new Set()});
@@ -447,7 +447,7 @@ function drawLocalFabric({gg,gn,gd,gt,grp},{HUBX,HUBY},topo,N,hub,spokes){
     const pth=mk("path",{d,class:"reach",stroke:col},g2);
     pth.dataset.overlay="local-bus";pth.dataset.cidr=c;
     mk("circle",{cx:244,cy:lb.y,r:4,fill:col,class:"sdot"},g2d);
-    hot(pth,()=>[`${s.iface} → ${c}`,`역방향 도달 — ${(N.get(s.oid)||{}).label||""} 측 AllowedIPs · 클릭=포커스`]);
+    hot(pth,()=>[`${s.iface} → ${c}`,`reverse reachability — AllowedIPs on ${(N.get(s.oid)||{}).label||""} · click to focus`]);
     clickFocus(pth,s.iface);
   }
 }
@@ -463,7 +463,7 @@ function drawHub({gn,gd,grp},{HUBX,HUBW,HUBY,hubH,remoteIf},hub){
     const y=HUBY+56+i*38, col=ifColor(ifc), port=(hub.ifaces||[]).find(x=>x.name===ifc);
     const g2=grp(gd,ifc,{hubif:ifc});
     const d=mk("circle",{cx:HUBX+HUBW,cy:y,r:5.5,fill:col,class:"pdot hot"},g2);
-    hot(d,()=>[`${ifc} :${port?port.port:"?"}`,"허브 리슨 포트 · 클릭=포커스"]); clickFocus(d,ifc);
+    hot(d,()=>[`${ifc} :${port?port.port:"?"}`,"hub listen port · click to focus"]); clickFocus(d,ifc);
     const t=mk("text",{x:HUBX+HUBW-10,y:y+3.5,class:"plab","text-anchor":"end"},g2);
     t.textContent=ifc; t.setAttribute("fill",col);
     hubPort.set(ifc,{x:HUBX+HUBW,y});
@@ -488,14 +488,14 @@ function drawMeshStacks({gn,gd,gt,grp},{HUBX,HUBY,hubH},N,hub,{meshIf,mesh}){
     const rset=[...new Set(list.flatMap(x=>(x.back||[]).flatMap(b=>cidrs(b.allowed))))];
     const box=mk("rect",{x:64,y:my,width:mw,height:bh,rx:9,class:"nbox"},g2);
     mk("text",{x:76,y:my+13,class:"nkind"},g2).textContent="LOCAL MESH";
-    mk("text",{x:76,y:my+28,class:"ntit"},g2).textContent=`${ifc} 메시 ×${list.length}`;
+    mk("text",{x:76,y:my+28,class:"ntit"},g2).textContent=`${ifc} mesh ×${list.length}`;
     const port=(hub.ifaces||[]).find(x=>x.name===ifc);
     mk("text",{x:76,y:my+42,class:"nsub"},g2).textContent=":"+(port?port.port:"?");
-    hot(box,()=>[`${ifc} 메시`,`허브 ↔ 로컬 피어 ${list.length}대 /32 팬아웃`+
-      (rset.length?` · 피어측 AllowedIPs: ${rset.join(", ")}`:"")+" · 클릭=포커스"]); clickFocus(box,ifc);
+    hot(box,()=>[`${ifc} mesh`,`hub ↔ local peers, ${list.length} × /32 fan-out`+
+      (rset.length?` · peer-side AllowedIPs: ${rset.join(", ")}`:"")+" · click to focus"]); clickFocus(box,ifc);
     const pdx=HUBX+28+meshIdx*22, pdy=HUBY+hubH; meshIdx++;
     const pd=mk("circle",{cx:pdx,cy:pdy,r:5.5,fill:col,class:"pdot hot"},g2d);
-    hot(pd,()=>[`${ifc} :${port?port.port:"?"}`,"허브 메시 포트"]); clickFocus(pd,ifc);
+    hot(pd,()=>[`${ifc} :${port?port.port:"?"}`,"hub mesh port"]); clickFocus(pd,ifc);
     const pl=mk("text",{x:pdx+10,y:pdy-8,class:"plab"},g2d); pl.textContent=ifc; pl.setAttribute("fill",col);
     list.sort((a,b)=>slash32(a.e.allowed).localeCompare(slash32(b.e.allowed),undefined,{numeric:true}));
     const dotX=64+mw-14, lane=64+mw+14;
@@ -509,7 +509,7 @@ function drawMeshStacks({gn,gd,gt,grp},{HUBX,HUBY,hubH},N,hub,{meshIf,mesh}){
     });
     const trunk=`M${lane},${my+48+(list.length-1)*20} V${my+20} H${pdx} V${pdy+6}`;
     const p=mk("path",{d:trunk,class:"tun",stroke:col,"stroke-width":2},g2t);
-    hot(p,()=>[`${ifc} · 메시 ×${list.length}`,"허브 ↔ 로컬 피어 /32 팬아웃 · 클릭=포커스"]); clickFocus(p,ifc);
+    hot(p,()=>[`${ifc} · mesh ×${list.length}`,"hub ↔ local peer /32 fan-out · click to focus"]); clickFocus(p,ifc);
     meshGeo.set(ifc,{x:64+mw,y:my+bh/2});
     my+=bh+44;
   }
@@ -528,7 +528,7 @@ function drawTopChips({gn,gd,gt,gf,grp},{EPX,HUBX,HUBW,remoteIf},N,hub,topSpokes
     const g2=grp(gn,s.iface,{nodes:s.oid}), g2d=grp(gd,s.iface,{nodes:s.oid,eids:s.e.id}),
       g2t=grp(gt,s.iface,{eids:s.e.id}), g2f=grp(gf,s.iface,{eids:s.e.id});
     const box=nodeCard(g2,{x:cx0,y:cy,w:cw,h:50,node:n});
-    hot(box,()=>[n.label,`${n.kind} · ${hub.dc?zoneKey(hub.dc):""} (허브 사이트로 다이얼인)`]); clickFocus(box,s.iface);
+    hot(box,()=>[n.label,`${n.kind} · ${hub.dc?zoneKey(hub.dc):""} (dials in to the hub site)`]); clickFocus(box,s.iface);
     topPos.set(s.oid,{x:cx0,y:cy,k:1});
     statusDot(g2d,{cx:cx0,cy:cy+25,eid:s.e.id,col,title:`${s.iface} · ${n.label}`});
     const port=hubPort.get(s.iface);
@@ -553,7 +553,7 @@ function drawZones({gz,gg,gn,gd,gt,gf,grp},geo,N,{vipsBy,meshGeo,hubPort}){
     const bands={list:[],by:new Map()};
     mk("rect",{x:EPX-24,y:zg.y,width:ZONE_R-(EPX-24)-16,height:zg.h,rx:12,class:"zone"},gz);
     mk("text",{x:EPX-8,y:zg.y+22,class:"zlab"},gz).textContent=zg.zk;
-    mk("text",{x:BANDX,y:zg.y+22,class:"zsub"},gz).textContent="도달 대역";
+    mk("text",{x:BANDX,y:zg.y+22,class:"zsub"},gz).textContent="reachable ranges";
     let ry=zg.y+40, epIdx=0;
     for(const cl of zg.clusters){
     const parent=cl.parent;
@@ -572,7 +572,7 @@ function drawZones({gz,gg,gn,gd,gt,gf,grp},geo,N,{vipsBy,meshGeo,hubPort}){
       const vips=vipsBy.get(s.oid)||[], vh=vips.length?28+vips.length*17:0;
       const box=nodeCard(g2,{x:EPX,y:by,w:EPW,h:ROWH-10+vh,node:n,cls:n.kind==="vm"?"vmb":""});
       if(n.warnings&&n.warnings.length)mk("text",{x:EPX+EPW-12,y:by+46,class:"warnb","text-anchor":"end"},g2).textContent="WARNING";
-      hot(box,()=>[n.label,`${n.kind}${n.dc?" · "+n.dc:""}${n.observed?" · 관측 "+n.observed:""}${n.warnings?" · "+n.warnings.join("; "):""}`]);
+      hot(box,()=>[n.label,`${n.kind}${n.dc?" · "+n.dc:""}${n.observed?" · observed "+n.observed:""}${n.warnings?" · "+n.warnings.join("; "):""}`]);
       if(s.iface)clickFocus(box,s.iface);
       if(vips.length){ // ledger DNAT VIPs stacked vertically, beads on a wire
         const vifc=vips[0].iface||s.iface, vcol=ifColor(vifc);
@@ -582,18 +582,18 @@ function drawZones({gz,gg,gn,gd,gt,gf,grp},geo,N,{vipsBy,meshGeo,hubPort}){
         vips.forEach((v,i)=>{
           const vy=by+68+i*17;
           const dd=mk("circle",{cx:EPX+20,cy:vy,r:4.5,fill:vcol,class:"sdot hot"},gv);
-          hot(dd,()=>[v.ip,`${v.label}${v.note?" · "+v.note:""} (IPAM 대장)`]);
+          hot(dd,()=>[v.ip,`${v.label}${v.note?" · "+v.note:""} (IPAM ledger)`]);
           clickFocus(dd,vifc);
           mk("text",{x:EPX+32,y:vy+3,class:"bsub"},gv).textContent=v.ip;
         });
         const wire=mk("path",{d:`M${EPX+20},${by+68+(vips.length-1)*17} V${by+58}`,class:"tun",stroke:vcol,"stroke-width":1.6},gvt);
-        hot(wire,()=>[`DNAT VIP ×${vips.length}`,"IPAM 대장(ip_allocations) 기재 — WG 수집 밖 · 클릭=포커스"]);
+        hot(wire,()=>[`DNAT VIP ×${vips.length}`,"recorded in the IPAM ledger (ip_allocations) — outside WG collection · click to focus"]);
         clickFocus(wire,vifc);
         const mg=meshGeo.get(vifc);
-        if(mg){ // DNAT 목적지 = 해당 iface 메시 (수송은 상위 터널)
+        if(mg){ // DNAT destination = that iface's mesh; the parent tunnel carries it
           const d2=`M${EPX-6},${by+62} H${NATX-44} V${mg.y} H${mg.x+6}`;
           const lp=mk("path",{d:d2,class:"reach",stroke:vcol},gvt);
-          hot(lp,()=>[`DNAT → ${vifc} 메시`,"상위 터널에 실려 허브 도착 후 메시로 팬아웃 (개별 매핑은 sre-lb iptables)"]);
+          hot(lp,()=>[`DNAT → ${vifc} mesh`,"carried by the parent tunnel to the hub, then fanned out over the mesh (individual mappings live in sre-lb iptables)"]);
           clickFocus(lp,vifc);
           mk("circle",{cx:EPX-6,cy:by+62,r:4,fill:vcol,class:"sdot"},gv);
         }
@@ -603,7 +603,7 @@ function drawZones({gz,gg,gn,gd,gt,gf,grp},geo,N,{vipsBy,meshGeo,hubPort}){
       if(s.iface&&s.e){
         const col=ifColor(s.iface), port=hubPort.get(s.iface);
         const din=statusDot(g2d,{cx:EPX,cy,eid:s.e.id,col,title:`${s.iface} · ${n.label}`,
-          detail:s.back.length?" · 역방향 "+cidrs(s.back[0].allowed).join(","):""});
+          detail:s.back.length?" · reverse "+cidrs(s.back[0].allowed).join(","):""});
         clickFocus(din,s.iface);
         if(port){
           const g2t=grp(gt,s.iface,{eids:s.e.id}), g2f=grp(gf,s.iface,{eids:s.e.id});
@@ -635,7 +635,7 @@ function drawZones({gz,gg,gn,gd,gt,gf,grp},geo,N,{vipsBy,meshGeo,hubPort}){
       gb.dataset.cidr=b.cidr;
       const r=mk("rect",{x:BANDX,y:byy,width:BANDW,height:hgt,rx:8,class:"nbox band"},gb);
       mk("text",{x:BANDX+14,y:byy+20,class:"btit"},gb).textContent=b.cidr;
-      hot(r,()=>[b.cidr,"도달: "+b.refs.map(x=>x.iface).join(", ")]);
+      hot(r,()=>[b.cidr,"reachable via: "+b.refs.map(x=>x.iface).join(", ")]);
       if(!bandPos.has(b.cidr))bandPos.set(b.cidr,[]);
       bandPos.get(b.cidr).push({
         y:byy,n:b.refs.length,zoneY:zg.y,zoneH:zg.h,group:gb,
@@ -650,7 +650,7 @@ function drawZones({gz,gg,gn,gd,gt,gf,grp},geo,N,{vipsBy,meshGeo,hubPort}){
         // per-tunnel dashed colour on top
         const p=mk("path",{d:`M${rf.fromX+6},${rf.fromY} H${rf.lane} V${dy} H${BANDX-18}`,class:"reach",stroke:col},g2);
         hot(p,()=>{const st=stats[rf.eid]||{};return[`${rf.iface} → ${b.cidr}`,
-          `${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)} · 클릭=포커스`]});
+          `${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} tx ${fmtRate(st.tx)} · click to focus`]});
         clickFocus(p,rf.iface);
       });
       byy+=hgt+12;
@@ -687,12 +687,12 @@ function drawHops({gn,gd,gt,gf,grp},geo,N,hub,{hops,startY,epPos,bandPos,topPos}
     const cy=zg.y+52+extIdx*44; extIdx++;
     const r=mk("rect",{x:EXTX,y:cy-15,width:188,height:32,rx:8,class:"nbox ext"},g2);
     mk("text",{x:EXTX+10,y:cy-1,class:"bsub"},g2).textContent=tn.label.slice(0,26);
-    mk("text",{x:EXTX,y:zg.y+22,class:"zsub"},g2).textContent=extIdx===1?"외부/미상":"";
-    hot(r,()=>[tn.label,`외부 endpoint (수집 관측) · allowed ${e.allowed}`]);
+    mk("text",{x:EXTX,y:zg.y+22,class:"zsub"},g2).textContent=extIdx===1?"external / unknown":"";
+    hot(r,()=>[tn.label,`external endpoint (observed during collection) · allowed ${e.allowed}`]);
     mk("circle",{cx:EXTX,cy:cy,r:4.5,fill:col,class:"sdot"},g2);
     const base=mk("path",{d:`M${sp.outX+6},${sp.rowY} H${LANE0+126} V${cy} H${EXTX-6}`,class:"tun dash",stroke:col,"stroke-width":1.7},g2t);
     hot(base,()=>{const st=stats[e.id]||{};return[`${e.iface} → ${tn.label}`,
-      `allowed ${e.allowed} · ${hsLabel(st.hs)} · 문서 미기재 종단 · 클릭=포커스`]});
+      `allowed ${e.allowed} · ${hsLabel(st.hs)} · undocumented terminus · click to focus`]});
     clickFocus(base,e.iface);
   }
   for(const [oid,{tn,sp,edges}] of hopBy){
@@ -722,14 +722,14 @@ function drawHops({gn,gd,gt,gf,grp},geo,N,hub,{hops,startY,epPos,bandPos,topPos}
           const dy=bp.y+15+bp.n*17; bp.n++;
           mk("circle",{cx:BANDX-12,cy:dy,r:5,fill:col,class:"pdot"},g2d);
           const rp=mk("path",{d:`M${chipR+6},${hy+40} H${NATX-96-k*8} V${dy} H${BANDX-18}`,class:"reach",stroke:col},g2t);
-          hot(rp,()=>[`${e.iface} → ${c}`,`${tn.label} 경유 도달 (피어측 AllowedIPs) · 클릭=포커스`]);
+          hot(rp,()=>[`${e.iface} → ${c}`,`reachable via ${tn.label} (peer-side AllowedIPs) · click to focus`]);
           clickFocus(rp,e.iface);
         }else{
           const byy=hy+64+below*48; below++;
           const rb=mk("rect",{x:94,y:byy,width:bw2-30,height:40,rx:8,class:"nbox band"},g2);
           mk("text",{x:106,y:byy+18,class:"btit"},g2).textContent=c;
-          mk("text",{x:106,y:byy+32,class:"bsub"},g2).textContent=`${e.iface} 경유 도달`;
-          hot(rb,()=>[c,`${tn.label} 뒤로 ${e.iface} 터널이 실어 나르는 대역`]);
+          mk("text",{x:106,y:byy+32,class:"bsub"},g2).textContent=`reachable via ${e.iface}`;
+          hot(rb,()=>[c,`ranges the ${e.iface} tunnel carries behind ${tn.label}`]);
           mk("path",{d:`M80,${hy+52} V${byy+20} H88`,class:"reach",stroke:col},g2t);
           mk("circle",{cx:94,cy:byy+20,r:4,fill:col,class:"sdot"},g2d);
         }
@@ -762,7 +762,7 @@ function render(topo){
   const {N,E,hub}=prep(topo);
   const gz=mk("g",{},svg),gg=mk("g",{},svg),gt=mk("g",{},svg),gf=mk("g",{},svg),gn=mk("g",{},svg),gd=mk("g",{},svg);
   if(!hub){svg.setAttribute("viewBox","0 0 800 200");svg.setAttribute("width",800);svg.setAttribute("height",200);
-    mk("text",{x:40,y:60,class:"ntit"},gn).textContent="게이트웨이 없음 — 먼저 vctl wg sync 실행";return;}
+    mk("text",{x:40,y:60,class:"ntit"},gn).textContent="no gateways — run `vctl wg sync` first";return;}
   const grp=(parent,ifc,meta={})=>{
     const g=mk("g",{},parent);
     if(ifc)g.dataset.ifc=ifc;
@@ -880,7 +880,7 @@ function buildLegend(){
     for(const i of (el.dataset.ifs||"").split("|"))if(i)ifs.add(i);
   }
   const el=document.getElementById("legend");
-  el.innerHTML=`<button type="button" class="i on" data-all>전체</button>`+[...ifs].sort(ifCmp).map(i=>
+  el.innerHTML=`<button type="button" class="i on" data-all>all</button>`+[...ifs].sort(ifCmp).map(i=>
     `<button type="button" class="i" data-if="${esc(i)}"><span class="dt" style="background:${ifColor(i)}"></span>${esc(i)}</button>`).join("");
   el.querySelector("[data-all]").addEventListener("click",()=>setFocus(null));
   el.querySelectorAll(".i[data-if]").forEach(ch=>ch.addEventListener("click",()=>setFocus(focusIf===ch.dataset.if?null:ch.dataset.if)));
@@ -907,7 +907,7 @@ function applyStats(){
   live.className="live-summary "+(down?"warn":active?"ok":"");
   live.querySelector("span").textContent=vals.length
     ?`${active} active · ${idle} idle${down?` · ${down} down`:""}`
-    :"터널 상태 대기 중";
+    :"waiting for tunnel state";
 }
 function updateMeta(topo,at){
   const zones=new Set(topo.nodes.filter(n=>n.dc).map(n=>zoneKey(n.dc)));
@@ -934,7 +934,7 @@ if(BOOT){
   const frames=BOOT.frames||[]; let fi=0;
   const ap=()=>{stats=frames.length?frames[fi%frames.length]:{};updateMeta(BOOT.topology,Date.now()/1000);applyStats();fi++;};
   ap(); if(frames.length>1)setInterval(ap,2000);
-  document.getElementById("health").textContent="데모 리플레이";
+  document.getElementById("health").textContent="demo replay";
 }else{
   fetch("topology").then(r=>r.json()).then(topo=>{
     render(topo);
@@ -944,12 +944,12 @@ if(BOOT){
       updateMeta(topo,d.at); applyStats();
       const errN=Object.keys(d.errors||{}).length, h=document.getElementById("health");
       h.className="health "+(errN?"fail":"ok");
-      h.textContent=errN?`폴링 실패 ${errN}건`:"라이브 폴링 정상";
+      h.textContent=errN?`${errN} poll failures`:"live polling ok";
       document.getElementById("errs").textContent=Object.entries(d.errors||{}).map(([k,v])=>`! ${k}: ${v}`).join("\n");
     };
   }).catch(err=>{
     const h=document.getElementById("health");
-    h.className="health fail";h.textContent="토폴로지 연결 실패";
+    h.className="health fail";h.textContent="topology connection failed";
     document.getElementById("errs").textContent=`! topology: ${err.message}`;
   });
 }

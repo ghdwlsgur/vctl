@@ -137,11 +137,11 @@ func joinKinds() string { return strings.Join(ipKinds, "|") }
 
 // ipKindLabels are friendly group headers for the ledger listing.
 var ipKindLabels = map[string]string{
-	"personal":    "개인 단말",
-	"server":      "물리 서버",
-	"vm":          "오픈스택 VM",
+	"personal":    "Personal device",
+	"server":      "Physical server",
+	"vm":          "OpenStack VM",
 	"floating-ip": "Floating IP",
-	"router-gw":   "라우터 GW",
+	"router-gw":   "Router GW",
 	"dnat-vip":    "DNAT VIP",
 }
 
