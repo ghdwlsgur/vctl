@@ -280,3 +280,53 @@ func TestServerStatusDoesNotCreateInventory(t *testing.T) {
 		t.Fatalf("status = %+v, want agent version and load", found.Status)
 	}
 }
+
+// The pool's recycling policy is a trade between two costs that pull in opposite
+// directions: recycling too late reuses a dead Vault lease, recycling too early
+// burns a Vault issuance and a Postgres role per cycle. Both failure modes are
+// silent — one surfaces as an authentication error under load, the other only as
+// a role count nobody is watching — so the bounds are asserted rather than left
+// to the comments in tunePool.
+
+func TestPoolLifetimeStaysInsideCredentialLease(t *testing.T) {
+	cfg, err := pgxpool.ParseConfig("postgres://localhost:5432/vctl")
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	tunePool(cfg)
+
+	// pgx computes the deadline as now+lifetime+jitter, so jitter is spent from
+	// the lease window, not held back from it. A connection reaching this age has
+	// a credential Vault has already revoked.
+	worst := cfg.MaxConnLifetime + cfg.MaxConnLifetimeJitter
+	if worst >= credentialTTL {
+		t.Errorf("worst-case connection age %v >= credential TTL %v: connections outlive their lease",
+			worst, credentialTTL)
+	}
+	if margin := credentialTTL - worst; margin < 5*time.Minute {
+		t.Errorf("margin under credential TTL is %v, want >= 5m for clock skew and slow reconnects", margin)
+	}
+}
+
+func TestPoolIdleTimeoutDoesNotRaceDaemonHeartbeat(t *testing.T) {
+	cfg, err := pgxpool.ParseConfig("postgres://localhost:5432/vctl")
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	tunePool(cfg)
+
+	// An idle timeout at or under the heartbeat interval makes the connection
+	// collectable exactly when it is next needed. The reconnect that follows is
+	// pure waste: a Vault issuance and a new Postgres role to replace a healthy
+	// connection. This regressed once at 5m against a 5m interval.
+	if cfg.MaxConnIdleTime <= maxDaemonInterval {
+		t.Errorf("MaxConnIdleTime %v <= daemon heartbeat %v: the reaper races the next write",
+			cfg.MaxConnIdleTime, maxDaemonInterval)
+	}
+	// Idling past the lifetime cap cannot happen, and pretending otherwise would
+	// hide a lifetime that had been shortened below the idle timeout.
+	if cfg.MaxConnIdleTime >= cfg.MaxConnLifetime {
+		t.Errorf("MaxConnIdleTime %v >= MaxConnLifetime %v: the idle timeout can never fire",
+			cfg.MaxConnIdleTime, cfg.MaxConnLifetime)
+	}
+}
