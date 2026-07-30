@@ -330,3 +330,22 @@ func TestPoolIdleTimeoutDoesNotRaceDaemonHeartbeat(t *testing.T) {
 			cfg.MaxConnIdleTime, cfg.MaxConnLifetime)
 	}
 }
+
+// Caching a credential only pays off if there is a usable window between the
+// moment it is issued and the moment it can no longer cover a new connection's
+// full life. That window is credentialTTL - MaxConnAge - the holder's margin.
+// Pushing the connection lifetime toward the TTL shrinks it, and a window near
+// zero silently turns the cache back into issue-per-connection — the behavior
+// it was written to replace, with none of the errors that would reveal it.
+func TestCredentialReuseWindowIsWorthCaching(t *testing.T) {
+	cfg, err := pgxpool.ParseConfig("postgres://localhost:5432/vctl")
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	tunePool(cfg)
+
+	if got, max := MaxConnAge(), credentialTTL/2; got > max {
+		t.Errorf("MaxConnAge is %v, more than half the %v credential TTL (%v): "+
+			"too little of each credential's life is left for reuse", got, credentialTTL, max)
+	}
+}

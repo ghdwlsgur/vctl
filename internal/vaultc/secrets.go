@@ -80,20 +80,62 @@ func (c *Client) SSHCAPublicKey(ctx context.Context) (string, error) {
 	return strings.TrimSpace(pub), nil
 }
 
+// DBLease is a dynamic Postgres credential together with the lease that governs
+// it. The lease is returned, not discarded, because issuing a credential is the
+// expensive half of this operation: Vault runs a CREATE ROLE against Postgres
+// and schedules a DROP ROLE for expiry. Holding the lease id lets a caller renew
+// what it already has instead of paying that again.
+type DBLease struct {
+	User      string
+	Pass      string
+	ID        string // lease id, for RenewLease
+	TTL       time.Duration
+	Renewable bool
+}
+
 // DBCreds requests short-lived Postgres credentials from database/creds/<role>.
-func (c *Client) DBCreds(ctx context.Context, role string) (user, pass string, ttl time.Duration, err error) {
+func (c *Client) DBCreds(ctx context.Context, role string) (DBLease, error) {
 	path := "database/creds/" + role
 	sec, err := c.readPath(ctx, path)
 	if err != nil {
-		return "", "", 0, err
+		return DBLease{}, err
 	}
-	if user, err = reqString(sec, path, "username"); err != nil {
-		return "", "", 0, err
+	l := DBLease{
+		ID:        sec.LeaseID,
+		TTL:       time.Duration(sec.LeaseDuration) * time.Second,
+		Renewable: sec.Renewable,
 	}
-	if pass, err = reqString(sec, path, "password"); err != nil {
-		return "", "", 0, err
+	if l.User, err = reqString(sec, path, "username"); err != nil {
+		return DBLease{}, err
 	}
-	return user, pass, time.Duration(sec.LeaseDuration) * time.Second, nil
+	if l.Pass, err = reqString(sec, path, "password"); err != nil {
+		return DBLease{}, err
+	}
+	return l, nil
+}
+
+// RenewLease extends an existing lease and reports the TTL Vault granted.
+//
+// The granted TTL is not the requested one. Vault clamps it to whatever remains
+// of the secret's max_ttl, so a renewal near that ceiling returns a short TTL
+// and eventually stops extending at all. Callers must act on the returned value
+// rather than assuming the increment was honoured — treating a clamped renewal
+// as a full one is how a credential expires while still in use.
+func (c *Client) RenewLease(ctx context.Context, leaseID string, increment time.Duration) (ttl time.Duration, renewable bool, err error) {
+	const path = "sys/leases/renew"
+	// Not writePath: a renewal's payload is carried in the secret's lease fields
+	// and Data is legitimately nil, which writePath rejects as an empty response.
+	sec, err := c.api.Logical().WriteWithContext(ctx, path, map[string]interface{}{
+		"lease_id":  leaseID,
+		"increment": int(increment.Seconds()),
+	})
+	if err != nil {
+		return 0, false, fmt.Errorf("%s: %w", path, err)
+	}
+	if sec == nil {
+		return 0, false, fmt.Errorf("%s: empty response", path)
+	}
+	return time.Duration(sec.LeaseDuration) * time.Second, sec.Renewable, nil
 }
 
 // AppRoleRoleID reads the role_id for an approle role (not a secret).

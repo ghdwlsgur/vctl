@@ -74,14 +74,38 @@ const (
 //
 // It is split out from Open so the invariants below are testable without a
 // database; Open cannot run without one.
+// MaxConnAge reports the oldest a pooled connection can get.
+//
+// Credential holders need this: a connection opened right now may still be in
+// the pool this long from now, so any credential handed to it must outlive the
+// value returned here. Deriving that floor from the pool is the point — the two
+// numbers have to move together, and a hand-picked constant elsewhere would not.
+func MaxConnAge() time.Duration {
+	cfg, err := pgxpool.ParseConfig("postgres://localhost:5432/postgres")
+	if err != nil {
+		// Unreachable: the DSN is a literal. Fall back to the configured values
+		// rather than panic in a getter.
+		return 50 * time.Minute
+	}
+	tunePool(cfg)
+	return cfg.MaxConnLifetime + cfg.MaxConnLifetimeJitter
+}
+
 func tunePool(cfg *pgxpool.Config) {
 	cfg.MaxConns = 4
-	// Jitter is added to the deadline (pgx: now+lifetime+jitter), not subtracted,
-	// so it spends TTL margin rather than protecting it. 45m+5m leaves 10m under
-	// the 1h lease for clock skew and a slow reconnect.
-	cfg.MaxConnLifetime = 45 * time.Minute
+	// Recycling a connection no longer implies issuing a credential — see
+	// internal/dbcreds — so the lifetime is set for connection hygiene rather
+	// than pushed as close to the lease as it will safely go. Staying well
+	// under the TTL is what buys the credential holder a wide window in which
+	// it may hand the cached credential out: with 25m of worst-case connection
+	// age against a 1h lease, a credential is reusable for over half its life
+	// even if renewal is unavailable.
+	//
+	// Jitter is added to the deadline (pgx: now+lifetime+jitter), not
+	// subtracted, so it counts toward the age a credential must cover.
+	cfg.MaxConnLifetime = 20 * time.Minute
 	cfg.MaxConnLifetimeJitter = 5 * time.Minute
-	cfg.MaxConnIdleTime = 15 * time.Minute
+	cfg.MaxConnIdleTime = 10 * time.Minute
 }
 
 // Open creates a Postgres pool with short-lived credentials and caPEM TLS roots.
