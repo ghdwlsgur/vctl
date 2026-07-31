@@ -6,33 +6,21 @@ import "context"
 // decommissioned (e.g. a deleted VM). Audit/access rows keyed by the hostname
 // remain as historical records. Returns whether a row matched.
 func (s *Store) Delete(ctx context.Context, hostname string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=$1`, hostname)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.execMatched(ctx, `DELETE FROM servers WHERE hostname=$1`, hostname)
 }
 
 // SetDC updates a server's datacenter label. DC is operator-managed and `vctl
 // sync` would overwrite it from IP heuristics, so this is the deliberate manual
 // edit path (used by cmd/dbedit). Returns whether a row matched.
 func (s *Store) SetDC(ctx context.Context, hostname, dc string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE servers SET dc=$2 WHERE hostname=$1`, hostname, dc)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.execMatched(ctx, `UPDATE servers SET dc=$2 WHERE hostname=$1`, hostname, dc)
 }
 
 // SetUser updates a server's SSH login user. Like dc, `vctl sync` derives it
 // from ssh config and would overwrite a manual value, so this is the deliberate
 // edit path (cmd/dbedit). Returns whether a row matched.
 func (s *Store) SetUser(ctx context.Context, hostname, user string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE servers SET ssh_user=$2 WHERE hostname=$1`, hostname, user)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.execMatched(ctx, `UPDATE servers SET ssh_user=$2 WHERE hostname=$1`, hostname, user)
 }
 
 // SetExtraIPs replaces a server's operator-curated additional addresses (VIPs,
@@ -40,11 +28,7 @@ func (s *Store) SetUser(ctx context.Context, hostname, user string) (bool, error
 // path (cmd/dbedit) for hosts whose node-agent can't auto-report (e.g. probe-only
 // LBs). Pass bare IPs; an empty slice clears them. Returns whether a row matched.
 func (s *Store) SetExtraIPs(ctx context.Context, hostname string, ips []string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE servers SET extra_ips=coalesce($2::inet[],'{}'), updated_at=now() WHERE hostname=$1`, hostname, ips)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.execMatched(ctx, `UPDATE servers SET extra_ips=coalesce($2::inet[],'{}'), updated_at=now() WHERE hostname=$1`, hostname, ips)
 }
 
 // Rename changes a server's hostname (the inventory key) and, in the same
@@ -66,6 +50,22 @@ func (s *Store) Rename(ctx context.Context, oldHost, newHost string) (bool, erro
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// execMatched runs a statement that edits one inventory row and reports whether
+// it found one.
+//
+// Every editor here returns (matched, error) rather than just error, because
+// "no such host" is a normal outcome the caller must be able to tell from a
+// failed statement — a typo'd hostname is not a database error. That two-value
+// contract was written out four times; keeping it in one place is what stops
+// the next editor from returning nil for a host that does not exist.
+func (s *Store) execMatched(ctx context.Context, sql string, args ...any) (bool, error) {
+	tag, err := s.pool.Exec(ctx, sql, args...)
+	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
