@@ -417,33 +417,15 @@ func mcpApp() (*app.App, error) {
 }
 
 func withMCPStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) error) error {
-	a, err := mcpApp()
-	if err != nil {
-		return err
-	}
 	p := app.PurposeInventoryRead
 	if rw {
 		p = app.PurposeInventoryWrite
 	}
-	st, err := a.OpenStore(ctx, p)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	return fn(a, st)
+	return withStoreFrom(ctx, mcpApp, p, fn)
 }
 
 func withMCPAuditStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
-	a, err := mcpApp()
-	if err != nil {
-		return err
-	}
-	st, err := a.OpenStore(ctx, app.PurposeAuditRead)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	return fn(a, st)
+	return withStoreFrom(ctx, mcpApp, app.PurposeAuditRead, fn)
 }
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)

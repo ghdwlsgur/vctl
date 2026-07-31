@@ -102,25 +102,25 @@ func agentCell(r store.InventoryRow, cached bool) string {
 // Servers arrive already sorted by (dc, hostname) from the store, so a single
 // pass can detect group boundaries.
 func renderInventory(w io.Writer, servers []store.InventoryRow, cached, allIPs bool) {
-	host := make([]string, len(servers))
-	cells := make([][]string, len(servers)) // agent, ip, user, jump
-	widths := make([]int, 5)                // host + the four cells above
+	// The hostname is column 0 rather than a value carried alongside the row.
+	// Keeping it separate meant every later index was off by one — widths[0] for
+	// the host, widths[j+1] for everything else — which is a standing invitation
+	// to misalign a column while adding one.
+	cells := make([][]string, len(servers)) // host, agent, ip, user, jump
 	for i, s := range servers {
 		jump := s.JumpVia
 		if jump == "" {
 			jump = ui.Muted("direct")
 		}
-		host[i] = ui.Truncate(s.Hostname, 40)
-		cells[i] = []string{agentCell(s, cached), ipCell(s, allIPs), s.User, jump}
-		if n := lipgloss.Width(host[i]); n > widths[0] {
-			widths[0] = n
-		}
-		for j, c := range cells[i] {
-			if n := lipgloss.Width(c); n > widths[j+1] {
-				widths[j+1] = n
-			}
+		cells[i] = []string{
+			ui.Truncate(s.Hostname, 40),
+			agentCell(s, cached),
+			ipCell(s, allIPs),
+			s.User,
+			jump,
 		}
 	}
+	widths := ui.ColumnWidths(cells)
 
 	dcStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	for i := 0; i < len(servers); {
@@ -138,10 +138,11 @@ func renderInventory(w io.Writer, servers []store.InventoryRow, cached, allIPs b
 		for ; i < end; i++ {
 			var line strings.Builder
 			line.WriteString("  ")
-			line.WriteString(ui.PadRight(host[i], widths[0]))
 			for j, c := range cells[i] {
-				line.WriteString("  ")
-				line.WriteString(ui.PadRight(c, widths[j+1]))
+				if j > 0 {
+					line.WriteString("  ")
+				}
+				line.WriteString(ui.PadRight(c, widths[j]))
 			}
 			fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
 		}
