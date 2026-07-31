@@ -139,10 +139,82 @@ func TestStatusConnKeepsHandleWhenHostUnregistered(t *testing.T) {
 	}
 }
 
-type unregisteredSink struct{ closed bool }
+type unregisteredSink struct {
+	closed  bool
+	upserts int
+}
 
 func (u *unregisteredSink) UpsertServerStatus(context.Context, store.ServerStatus) (bool, error) {
+	u.upserts++
 	return false, nil
 }
 
 func (u *unregisteredSink) Close() { u.closed = true }
+
+// Steady-state success must be silent. The agent reports every five minutes, so
+// logging each success writes 288 lines a day per host to say nothing changed,
+// and the failures worth reading get buried. `healthy` is what distinguishes a
+// transition from a repeat, so it is asserted directly rather than through the
+// log output.
+func TestHealthyStaysSetWhileReportsKeepSucceeding(t *testing.T) {
+	o := &opener{sinks: []*fakeStatusSink{{}}}
+	c := &statusConn{open: o.open}
+	ctx := context.Background()
+
+	if c.healthy {
+		t.Fatal("healthy is set before the first report: startup would be silent")
+	}
+	for i := 0; i < 3; i++ {
+		if err := c.report(ctx, "host-a"); err != nil {
+			t.Fatalf("report %d: %v", i, err)
+		}
+		if !c.healthy {
+			t.Fatalf("healthy cleared after a successful report %d", i)
+		}
+	}
+	if o.calls != 1 {
+		t.Errorf("opened %d handles, want 1", o.calls)
+	}
+}
+
+// A failure has to re-arm the transition, or the recovery goes unlogged and the
+// operator sees the outage start but never its end.
+func TestFailureReArmsTheSuccessLog(t *testing.T) {
+	failing := &fakeStatusSink{err: errors.New("postgres is down")}
+	o := &opener{sinks: []*fakeStatusSink{failing, {}}}
+	c := &statusConn{open: o.open}
+	ctx := context.Background()
+
+	if err := c.report(ctx, "host-a"); err == nil {
+		t.Fatal("report succeeded against a failing sink")
+	}
+	if c.healthy {
+		t.Error("healthy is still set after a failure: the recovery would not be logged")
+	}
+	if err := c.report(ctx, "host-a"); err != nil {
+		t.Fatalf("report after recovery: %v", err)
+	}
+	if !c.healthy {
+		t.Error("healthy not set after recovery")
+	}
+}
+
+// An unregistered host is a standing misconfiguration, not a working agent. It
+// must not count as the success that silences later logging, or the one message
+// explaining why no status ever appears would print once and never again.
+func TestUnregisteredHostDoesNotCountAsHealthy(t *testing.T) {
+	sink := &unregisteredSink{}
+	c := &statusConn{open: func() (statusSink, error) { return sink, nil }}
+
+	for i := 0; i < 2; i++ {
+		if err := c.report(context.Background(), "ghost"); err != nil {
+			t.Fatalf("report %d returned an error, want a warning only: %v", i, err)
+		}
+	}
+	if c.healthy {
+		t.Error("an ignored heartbeat marked the agent healthy")
+	}
+	if sink.upserts != 2 {
+		t.Errorf("upserts = %d, want 2: the agent stopped trying", sink.upserts)
+	}
+}

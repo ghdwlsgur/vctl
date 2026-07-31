@@ -83,6 +83,12 @@ type statusSink interface {
 type statusConn struct {
 	open func() (statusSink, error)
 	st   statusSink
+
+	// healthy tracks whether the last attempt succeeded, so success is logged
+	// on the way back up rather than on every heartbeat. It starts false so the
+	// first successful report still says so — a silent agent and a working one
+	// would otherwise look identical at startup.
+	healthy bool
 }
 
 func (c *statusConn) report(ctx context.Context, hostname string) error {
@@ -93,7 +99,7 @@ func (c *statusConn) report(ctx context.Context, hostname string) error {
 		}
 		c.st = st
 	}
-	if err := reportStatus(ctx, c.st, hostname); err != nil {
+	if err := reportStatus(ctx, c.st, hostname, &c.healthy); err != nil {
 		c.close()
 		return err
 	}
@@ -105,20 +111,36 @@ func (c *statusConn) close() {
 		c.st.Close()
 		c.st = nil
 	}
+	// Dropping the handle means the next success is a recovery, and recoveries
+	// are exactly what this log is for.
+	c.healthy = false
 }
 
 // reportStatus collects host status and upserts it for an already-registered
 // host. A heartbeat for an unknown host is ignored (warned), not an error.
-func reportStatus(ctx context.Context, st statusSink, hostname string) error {
+//
+// Success is logged on transitions only: the first one after start, and the
+// first after a failure. A daemon that logs every successful heartbeat writes
+// 288 lines a day per host to say nothing happened, and the failures worth
+// reading get buried in them. The same reasoning already applies to wg
+// monitoring, which audits transitions instead of every poll.
+func reportStatus(ctx context.Context, st statusSink, hostname string, healthy *bool) error {
 	status := hoststatus.Collect(hostname, Version)
 	ok, err := st.UpsertServerStatus(ctx, status)
 	if err != nil {
+		*healthy = false
 		return err
 	}
 	if !ok {
+		// Not a transition: an unregistered host is a standing misconfiguration
+		// rather than an event, but it is also the reason no status will ever
+		// appear, so it stays visible on every attempt.
 		ui.Warnf(os.Stderr, "status ignored: %s is not registered in inventory", hostname)
 		return nil
 	}
-	ui.Infof(os.Stderr, "reported status for %s", hostname)
+	if !*healthy {
+		ui.Infof(os.Stderr, "reporting status for %s", hostname)
+		*healthy = true
+	}
 	return nil
 }
