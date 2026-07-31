@@ -16,7 +16,10 @@ import (
 )
 
 func lsCmd() *cobra.Command {
-	var dc string
+	var (
+		dc     string
+		allIPs bool
+	)
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
@@ -31,24 +34,42 @@ func lsCmd() *cobra.Command {
 					ui.Warnf(os.Stderr, "inventory is empty. Run 'vctl sync' first.")
 					return nil
 				}
-				renderInventory(os.Stdout, servers, inv.Cached())
+				renderInventory(os.Stdout, servers, inv.Cached(), allIPs)
 				return nil
 			})
 		},
 	}
 	cmd.Flags().StringVar(&dc, "dc", "", "DC filter, for example incheon or seoul-onprem")
+	cmd.Flags().BoolVar(&allIPs, "all-ips", false, "list every address a host answers on instead of a count")
 	return cmd
 }
 
-// ipCell renders the primary address plus any additional ones the host answers
-// on, so a multi-homed host shows every address that `vctl ssh --server <ip>`
-// will match. The store already merged and deduped them (primary first); extras
-// are muted.
-func ipCell(r store.InventoryRow) string {
+// ipCell renders the address a host is reached at, and how many others it also
+// answers on.
+//
+// Listing every address inline was the obvious thing and it made the table
+// unreadable. Column widths are computed across all rows, so one seven-homed
+// host stretched the address column for the whole fleet: hosts with a single
+// address carried ~150 characters of padding before their next column. The
+// extras were rarely the reason anyone ran this — most are container bridges
+// (docker 172.17/, podman 10.88/, 10.89/) that nothing connects to.
+//
+// So the count is shown instead of the addresses. It keeps the fact that a host
+// is multi-homed visible, which is what a reader scanning the list needs, and
+// leaves the addresses themselves to `--all-ips`. Nothing is dropped from the
+// data — `vctl ssh --server <ip>` still matches every address the store holds.
+//
+// Filtering by CIDR was the other option and is worse: here 172.16/ and 172.18/
+// are real farm networks, so a heuristic that hides "container-looking" ranges
+// would hide real ones too, and which ranges are noise differs per site.
+func ipCell(r store.InventoryRow, allIPs bool) string {
 	if len(r.Addresses) <= 1 {
 		return r.IP
 	}
-	return r.Addresses[0] + " " + ui.Muted("+"+strings.Join(r.Addresses[1:], " +"))
+	if allIPs {
+		return r.Addresses[0] + " " + ui.Muted("+"+strings.Join(r.Addresses[1:], " +"))
+	}
+	return r.Addresses[0] + " " + ui.Muted(fmt.Sprintf("(+%d)", len(r.Addresses)-1))
 }
 
 // agentCell reports node-agent liveness for the inventory listing: a fresh
@@ -80,7 +101,7 @@ func agentCell(r store.InventoryRow, cached bool) string {
 //
 // Servers arrive already sorted by (dc, hostname) from the store, so a single
 // pass can detect group boundaries.
-func renderInventory(w io.Writer, servers []store.InventoryRow, cached bool) {
+func renderInventory(w io.Writer, servers []store.InventoryRow, cached, allIPs bool) {
 	host := make([]string, len(servers))
 	cells := make([][]string, len(servers)) // agent, ip, user, jump
 	widths := make([]int, 5)                // host + the four cells above
@@ -90,7 +111,7 @@ func renderInventory(w io.Writer, servers []store.InventoryRow, cached bool) {
 			jump = ui.Muted("direct")
 		}
 		host[i] = ui.Truncate(s.Hostname, 40)
-		cells[i] = []string{agentCell(s, cached), ipCell(s), s.User, jump}
+		cells[i] = []string{agentCell(s, cached), ipCell(s, allIPs), s.User, jump}
 		if n := lipgloss.Width(host[i]); n > widths[0] {
 			widths[0] = n
 		}
