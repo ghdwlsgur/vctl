@@ -94,47 +94,63 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ env.RELEASE_VERSION }}
             ghcr.io/${{ github.repository }}:latest
 
-  chocolatey:
-    name: Chocolatey
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: goreleaser
-    runs-on: windows-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
-    steps:
-      - name: Check out
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-
-      - name: Download release checksums
-        shell: pwsh
-        run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart('v')
-          New-Item -ItemType Directory -Force dist | Out-Null
-          gh release download $env:GITHUB_REF_NAME --pattern checksums.txt --dir dist
-          $archive = "vctl_${version}_windows_amd64.zip"
-          $line = Get-Content dist/checksums.txt | Where-Object { $_ -match "  $([regex]::Escape($archive))$" }
-          if (-not $line) { throw "checksum not found for $archive" }
-          $checksum = ($line -split '\s+')[0]
-          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
-          "WINDOWS_AMD64_CHECKSUM=$checksum" >> $env:GITHUB_ENV
-
-      - name: Pack Chocolatey package
-        shell: pwsh
-        run: ./deploy/chocolatey/pack.ps1 -Version $env:RELEASE_VERSION -Checksum64 $env:WINDOWS_AMD64_CHECKSUM -OutputDirectory dist/chocolatey
-
-      - name: Verify Chocolatey install
-        shell: pwsh
-        run: |
-          choco install vctl --source "$(Resolve-Path dist/chocolatey)" --version $env:RELEASE_VERSION --yes --no-progress
-          vctl --version
-          choco uninstall vctl --yes --no-progress
-
-      - name: Attach package to GitHub release
-        shell: pwsh
-        run: gh release upload $env:GITHUB_REF_NAME (Get-ChildItem dist/chocolatey/*.nupkg).FullName --clobber
-
-      - name: Publish to Chocolatey Community Repository
-        if: env.CHOCOLATEY_API_KEY != ''
-        shell: pwsh
-        run: choco push (Get-ChildItem dist/chocolatey/*.nupkg).FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+  # Chocolatey 발행을 임시로 껐다 (2026-07-31).
+  #
+  # CHOCOLATEY_API_KEY 가 거부된다. v0.2.0·v0.2.1 두 릴리스가 같은 지점에서
+  # 죽었다: `choco push ... --api-key` 가
+  # `Response status code does not indicate success: 403 (Forbidden).`
+  #
+  # 이 잡은 goreleaser 뒤에 붙어 있을 뿐 릴리스 산출물과는 무관하다. 실제로
+  # v0.2.1 도 GoReleaser 는 성공했고 자산 12개가 정상 발행됐다. 그런데 잡이
+  # 실패하면 워크플로 전체가 빨간색으로 끝나고, 그 빨간색이 매 릴리스마다
+  # 반복되면 "릴리스가 실패했다" 와 "Chocolatey 키가 만료됐다" 를 구분하지
+  # 않게 된다. 진짜 실패를 놓치는 쪽이 더 비싸다.
+  #
+  # 되살리려면 키를 재발급해 CHOCOLATEY_API_KEY 시크릿을 갱신하고 아래 주석을
+  # 해제한다. 그때까지 Windows 사용자는 릴리스 페이지의 zip 을 쓴다
+  # (Windows Build 잡은 그대로 돌고 있어 바이너리는 계속 나온다).
+  # chocolatey:
+  #   name: Chocolatey
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   needs: goreleaser
+  #   runs-on: windows-latest
+  #   env:
+  #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #     CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+  #   steps:
+  #     - name: Check out
+  #       uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+  #
+  #     - name: Download release checksums
+  #       shell: pwsh
+  #       run: |
+  #         $version = $env:GITHUB_REF_NAME.TrimStart('v')
+  #         New-Item -ItemType Directory -Force dist | Out-Null
+  #         gh release download $env:GITHUB_REF_NAME --pattern checksums.txt --dir dist
+  #         $archive = "vctl_${version}_windows_amd64.zip"
+  #         $line = Get-Content dist/checksums.txt | Where-Object { $_ -match "  $([regex]::Escape($archive))$" }
+  #         if (-not $line) { throw "checksum not found for $archive" }
+  #         $checksum = ($line -split '\s+')[0]
+  #         "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+  #         "WINDOWS_AMD64_CHECKSUM=$checksum" >> $env:GITHUB_ENV
+  #
+  #     - name: Pack Chocolatey package
+  #       shell: pwsh
+  #       run: ./deploy/chocolatey/pack.ps1 -Version $env:RELEASE_VERSION -Checksum64 $env:WINDOWS_AMD64_CHECKSUM -OutputDirectory dist/chocolatey
+  #
+  #     - name: Verify Chocolatey install
+  #       shell: pwsh
+  #       run: |
+  #         choco install vctl --source "$(Resolve-Path dist/chocolatey)" --version $env:RELEASE_VERSION --yes --no-progress
+  #         vctl --version
+  #         choco uninstall vctl --yes --no-progress
+  #
+  #     - name: Attach package to GitHub release
+  #       shell: pwsh
+  #       run: gh release upload $env:GITHUB_REF_NAME (Get-ChildItem dist/chocolatey/*.nupkg).FullName --clobber
+  #
+  #     - name: Publish to Chocolatey Community Repository
+  #       if: env.CHOCOLATEY_API_KEY != ''
+  #       shell: pwsh
+  #       run: choco push (Get-ChildItem dist/chocolatey/*.nupkg).FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+  #
