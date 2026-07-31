@@ -172,6 +172,18 @@ func withStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) err
 // withPurposeStore builds the app, opens the store for one purpose, runs fn, and
 // closes it afterward — the shared preamble for every store-backed command.
 func withPurposeStore(ctx context.Context, p app.Purpose, fn func(*app.App, *store.Store) error) error {
+	return withStoreFrom(ctx, newApp, p, fn)
+}
+
+// withStoreFrom is withPurposeStore with the app constructor left open.
+//
+// The MCP server needs the same open/run/close discipline but a different app:
+// it must authenticate non-interactively, because a login prompt would write to
+// the stdio channel that carries JSON-RPC and corrupt the protocol. That is one
+// line of difference, and duplicating the preamble to express it meant the
+// close-on-every-path guarantee lived in two places — the kind of thing that
+// stays correct until someone fixes a leak in one copy.
+func withStoreFrom(ctx context.Context, newApp func() (*app.App, error), p app.Purpose, fn func(*app.App, *store.Store) error) error {
 	a, err := newApp()
 	if err != nil {
 		return err

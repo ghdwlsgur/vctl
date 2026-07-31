@@ -161,7 +161,6 @@ func renderIPAllocations(w io.Writer, rows []store.IPAllocation) {
 	cells := make([][]string, len(rows))
 	note := make([]string, len(rows))
 	idx := map[string]int{}
-	widths := make([]int, 6)
 	pos := 0
 	order := append([]string{}, ipKinds...)
 	for _, kind := range order {
@@ -183,11 +182,6 @@ func renderIPAllocations(w io.Writer, rows []store.IPAllocation) {
 				orDashMuted(a.Farm),
 				ipWGCell(a.WGTunnel),
 			}
-			for j := range c {
-				if n := lipgloss.Width(c[j]); n > widths[j] {
-					widths[j] = n
-				}
-			}
 			dot[pos] = ui.Dot(ipStatusState(a.Status))
 			cells[pos] = c
 			note[pos] = ui.Muted(a.Note)
@@ -195,6 +189,7 @@ func renderIPAllocations(w io.Writer, rows []store.IPAllocation) {
 			pos++
 		}
 	}
+	widths := ui.ColumnWidths(cells)
 
 	groupStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	for _, kind := range order {

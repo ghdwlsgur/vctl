@@ -291,3 +291,32 @@ func Truncate(s string, max int) string {
 	tail := keep - head
 	return string(r[:head]) + "…" + string(r[len(r)-tail:])
 }
+
+// ColumnWidths returns the display width of the widest cell in each column.
+//
+// Grouped listings (`vctl list`, `vctl ip`) cannot use Table: they print a group
+// header instead of column headers, but they still need every group aligned to
+// the same grid, which means widths computed across all rows rather than per
+// group. Each had its own copy of this loop, and lipgloss.Width — not len — is
+// the part that is easy to get wrong, because these cells carry ANSI styling and
+// len() would count the escape bytes as columns.
+//
+// Short rows are tolerated: a row with fewer cells than the widest simply does
+// not contribute to the trailing columns.
+func ColumnWidths(rows [][]string) []int {
+	n := 0
+	for _, r := range rows {
+		if len(r) > n {
+			n = len(r)
+		}
+	}
+	widths := make([]int, n)
+	for _, r := range rows {
+		for i, c := range r {
+			if w := lipgloss.Width(c); w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+	return widths
+}

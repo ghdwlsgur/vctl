@@ -23,24 +23,50 @@ const oidcRedirect = "http://localhost:8250/oidc/callback"
 //
 //	vctl login --method oidc -> browser -> SSO -> group policy mapping -> token
 func (c *Client) LoginOIDC(ctx context.Context, mount, role string) error {
-	// 1. Request the authorization URL from Vault.
+	authURL, expectedState, err := c.oidcAuthURL(ctx, mount, role)
+	if err != nil {
+		return err
+	}
+	params, err := awaitOIDCCallback(ctx, authURL, expectedState)
+	if err != nil {
+		return err
+	}
+	return c.exchangeOIDCCallback(ctx, mount, params)
+}
+
+// oidcAuthURL asks Vault where to send the browser, and pulls out the state
+// parameter that the callback must echo back.
+//
+// The state is read from the URL Vault built rather than generated here: it is
+// Vault that will validate it on exchange, so any value this client invented
+// would be checked against nothing.
+func (c *Client) oidcAuthURL(ctx context.Context, mount, role string) (authURL, state string, err error) {
 	sec, err := c.writePath(ctx, "auth/"+mount+"/oidc/auth_url", map[string]interface{}{
 		"role":         role,
 		"redirect_uri": oidcRedirect,
 	})
 	if err != nil {
-		return err
+		return "", "", err
 	}
-	authURL, _ := sec.Data["auth_url"].(string)
+	authURL, _ = sec.Data["auth_url"].(string)
 	if authURL == "" {
-		return fmt.Errorf("oidc: auth_url is empty; Vault OIDC may not be configured")
+		return "", "", fmt.Errorf("oidc: auth_url is empty; Vault OIDC may not be configured")
 	}
-	expectedState, err := oidcState(authURL)
+	state, err = oidcState(authURL)
 	if err != nil {
-		return err
+		return "", "", err
 	}
+	return authURL, state, nil
+}
 
-	// 2. Start a local callback server.
+// awaitOIDCCallback runs the loopback listener, opens the browser at authURL,
+// and returns the callback parameters once the provider redirects back.
+//
+// The listener is started before the browser, not after. A provider that
+// redirects immediately — an already-authenticated SSO session does exactly
+// that — can come back before a listener started afterwards is accepting, and
+// the login would fail on the fast path while working on the slow one.
+func awaitOIDCCallback(ctx context.Context, authURL, expectedState string) (map[string]string, error) {
 	type result struct {
 		params map[string]string
 		err    error
@@ -48,7 +74,7 @@ func (c *Client) LoginOIDC(ctx context.Context, mount, role string) error {
 	resCh := make(chan result, 1)
 	ln, err := net.Listen("tcp", "127.0.0.1:8250")
 	if err != nil {
-		return fmt.Errorf("oidc callback port 8250 bind failed: %w", err)
+		return nil, fmt.Errorf("oidc callback port 8250 bind failed: %w", err)
 	}
 	srv := &http.Server{
 		ReadHeaderTimeout: 10 * time.Second,
@@ -91,29 +117,29 @@ func (c *Client) LoginOIDC(ctx context.Context, mount, role string) error {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	// 3. Open the browser.
 	ui.Infof(os.Stdout, "complete SSO login in your browser")
 	ui.Infof(os.Stdout, "if it does not open, use this URL: %s", authURL)
 	_ = openBrowser(authURL)
 
-	// 4. Wait for the callback.
-	var got result
 	select {
-	case got = <-resCh:
+	case got := <-resCh:
+		if got.err != nil {
+			return nil, got.err
+		}
+		return got.params, nil
 	case <-time.After(3 * time.Minute):
-		return fmt.Errorf("oidc: callback timeout after 3 minutes")
+		return nil, fmt.Errorf("oidc: callback timeout after 3 minutes")
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
-	if got.err != nil {
-		return got.err
-	}
+}
 
-	// 5. Exchange callback parameters with Vault.
+// exchangeOIDCCallback trades the callback parameters for a Vault token.
+func (c *Client) exchangeOIDCCallback(ctx context.Context, mount string, params map[string]string) error {
 	cb, err := c.api.Logical().ReadWithDataWithContext(ctx, "auth/"+mount+"/oidc/callback", map[string][]string{
-		"state":    {got.params["state"]},
-		"code":     {got.params["code"]},
-		"id_token": {got.params["id_token"]},
+		"state":    {params["state"]},
+		"code":     {params["code"]},
+		"id_token": {params["id_token"]},
 	})
 	if err != nil {
 		return fmt.Errorf("oidc callback exchange: %w", err)
