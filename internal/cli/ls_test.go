@@ -16,7 +16,7 @@ func TestRenderInventoryOmitsRuntimeStatus(t *testing.T) {
 	}
 
 	var out strings.Builder
-	renderInventory(&out, servers, false)
+	renderInventory(&out, servers, false, false)
 	got := out.String()
 	for _, unwanted := range []string{" up", "down", "stale", "seen ", "●", "○"} {
 		if strings.Contains(got, unwanted) {
@@ -42,7 +42,7 @@ func TestRenderInventoryFromCacheSuppressesLiveness(t *testing.T) {
 	}}
 
 	var out strings.Builder
-	renderInventory(&out, servers, true)
+	renderInventory(&out, servers, true, false)
 	got := stripANSI(out.String())
 
 	for _, unwanted := range []string{"up", "down", "stale", "no-agent"} {
@@ -55,21 +55,54 @@ func TestRenderInventoryFromCacheSuppressesLiveness(t *testing.T) {
 	}
 }
 
-func TestIPCellShowsMergedExtraAddresses(t *testing.T) {
+// The default listing shows one address and a count. Inlining every address
+// made the column as wide as the most-homed host in the fleet, so single-homed
+// rows carried ~150 characters of padding — the width is shared across all rows.
+func TestIPCellCompactsExtraAddressesToACount(t *testing.T) {
 	row := store.InventoryRow{
 		Server:    store.Server{IP: "10.0.0.1"},
 		Addresses: []string{"10.0.0.1", "10.0.0.2", "192.168.1.5"},
 	}
-	got := stripANSI(ipCell(row))
-	for _, want := range []string{"10.0.0.1", "+10.0.0.2", "+192.168.1.5"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("ipCell = %q, want to contain %q", got, want)
+	got := stripANSI(ipCell(row, false))
+	if !strings.Contains(got, "10.0.0.1") {
+		t.Errorf("ipCell = %q, want the primary address", got)
+	}
+	if !strings.Contains(got, "(+2)") {
+		t.Errorf("ipCell = %q, want the extras collapsed to (+2)", got)
+	}
+	// The point of collapsing is width. If an extra address still appears, the
+	// column grows with the fleet's most-homed host all over again.
+	for _, unwanted := range []string{"10.0.0.2", "192.168.1.5"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("ipCell = %q, still lists %q inline", got, unwanted)
 		}
 	}
+}
 
+// The addresses are collapsed, not dropped. --all-ips has to bring them back,
+// because `vctl ssh --server <ip>` matches on them and an operator checking
+// which address a host answers on needs to see the list.
+func TestIPCellAllIPsListsEveryAddress(t *testing.T) {
+	row := store.InventoryRow{
+		Server:    store.Server{IP: "10.0.0.1"},
+		Addresses: []string{"10.0.0.1", "10.0.0.2", "192.168.1.5"},
+	}
+	got := stripANSI(ipCell(row, true))
+	for _, want := range []string{"10.0.0.1", "+10.0.0.2", "+192.168.1.5"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ipCell(all) = %q, want to contain %q", got, want)
+		}
+	}
+}
+
+// A single-homed host must not carry a marker at all: "(+0)" would be noise on
+// most of the fleet, which is the problem this change exists to fix.
+func TestIPCellSingleAddressHasNoMarker(t *testing.T) {
 	solo := store.InventoryRow{Server: store.Server{IP: "10.0.0.9"}, Addresses: []string{"10.0.0.9"}}
-	if got := ipCell(solo); strings.Contains(got, "+") {
-		t.Fatalf("ipCell single address = %q, want no extras marker", got)
+	for _, all := range []bool{false, true} {
+		if got := stripANSI(ipCell(solo, all)); strings.ContainsAny(got, "+()") {
+			t.Fatalf("ipCell(single, all=%v) = %q, want no extras marker", all, got)
+		}
 	}
 }
 
