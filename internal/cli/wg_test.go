@@ -431,8 +431,8 @@ func TestWGServeDashboardWiringLayout(t *testing.T) {
 	for _, want := range []string{
 		"window.WG_BOOT",
 		"hubPort",
-		"도달 대역",
-		"메시 ×",
+		"reachable ranges",
+		"mesh ×",
 		"NAT / WAN",
 		"EDGE / NAT",
 		"kindLabel",

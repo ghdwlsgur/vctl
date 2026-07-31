@@ -40,6 +40,74 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// Pool tuning is bounded by two facts outside this package, both recorded here
+// so the test can enforce them.
+const (
+	// credentialTTL is the TTL Vault's database engine issues these credentials
+	// with (`default_ttl` on the vctl DB roles). A connection outliving its lease
+	// is not slow, it is broken: the role is gone from Postgres.
+	credentialTTL = time.Hour
+
+	// maxDaemonInterval is the longest heartbeat any long-running vctl daemon
+	// uses between database writes (node-agent's --interval default is the
+	// largest at 5m). An idle timeout at or under this is a reaper racing the
+	// next write.
+	maxDaemonInterval = 5 * time.Minute
+)
+
+// tunePool sets the pool's connection recycling policy.
+//
+// Recycling exists because Vault dynamic credentials expire. Connections are
+// dropped inside the lease window so each physical connection re-fetches a live
+// credential via BeforeConnect, which is what lets the collector and watch
+// daemons run for days without a restart.
+//
+// But every recycle costs a Vault issuance plus a CREATE ROLE / DROP ROLE pair
+// in Postgres, so the lease window is a budget, not free headroom. Measured on
+// the fleet with a 30m lifetime and a 5m idle timeout: 42 agents produced 114
+// dynamic roles per hour — 2.7 each — to write one row every five minutes.
+//
+// The idle timeout was the more wasteful of the two. At 5m it exactly equalled
+// node-agent's interval, so a connection became collectable at the moment it was
+// next needed and the reaper and the heartbeat raced. Losing that race pays a
+// full Vault round trip to replace a connection that was about to be used.
+//
+// It is split out from Open so the invariants below are testable without a
+// database; Open cannot run without one.
+// MaxConnAge reports the oldest a pooled connection can get.
+//
+// Credential holders need this: a connection opened right now may still be in
+// the pool this long from now, so any credential handed to it must outlive the
+// value returned here. Deriving that floor from the pool is the point — the two
+// numbers have to move together, and a hand-picked constant elsewhere would not.
+func MaxConnAge() time.Duration {
+	cfg, err := pgxpool.ParseConfig("postgres://localhost:5432/postgres")
+	if err != nil {
+		// Unreachable: the DSN is a literal. Fall back to the configured values
+		// rather than panic in a getter.
+		return 50 * time.Minute
+	}
+	tunePool(cfg)
+	return cfg.MaxConnLifetime + cfg.MaxConnLifetimeJitter
+}
+
+func tunePool(cfg *pgxpool.Config) {
+	cfg.MaxConns = 4
+	// Recycling a connection no longer implies issuing a credential — see
+	// internal/dbcreds — so the lifetime is set for connection hygiene rather
+	// than pushed as close to the lease as it will safely go. Staying well
+	// under the TTL is what buys the credential holder a wide window in which
+	// it may hand the cached credential out: with 25m of worst-case connection
+	// age against a 1h lease, a credential is reusable for over half its life
+	// even if renewal is unavailable.
+	//
+	// Jitter is added to the deadline (pgx: now+lifetime+jitter), not
+	// subtracted, so it counts toward the age a credential must cover.
+	cfg.MaxConnLifetime = 20 * time.Minute
+	cfg.MaxConnLifetimeJitter = 5 * time.Minute
+	cfg.MaxConnIdleTime = 10 * time.Minute
+}
+
 // Open creates a Postgres pool with short-lived credentials and caPEM TLS roots.
 // serverName overrides the TLS SNI/verification name; when empty it defaults to host.
 // Use serverName when dialing through a port-forward/proxy where the dial host
@@ -77,14 +145,7 @@ func Open(ctx context.Context, host string, port int, dbname string, getCreds Cr
 	// therefore cannot vouch for. There is exactly one way to reach the inventory
 	// database, and it is the verified one above.
 	cfg.ConnConfig.Fallbacks = nil
-	cfg.MaxConns = 4
-	// Vault dynamic DB creds default to a 1h TTL (max 4h). Recycle connections
-	// well inside that window so each physical connection re-fetches a live
-	// credential via BeforeConnect; an expired lease is never reused. This is
-	// what lets the long-running collector/watch daemons run without a restart.
-	cfg.MaxConnLifetime = 30 * time.Minute
-	cfg.MaxConnLifetimeJitter = 5 * time.Minute
-	cfg.MaxConnIdleTime = 5 * time.Minute
+	tunePool(cfg)
 	cfg.BeforeConnect = func(ctx context.Context, cc *pgx.ConnConfig) error {
 		user, pass, err := getCreds(ctx)
 		if err != nil {

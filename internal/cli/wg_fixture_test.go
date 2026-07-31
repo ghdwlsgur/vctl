@@ -102,7 +102,7 @@ func wgDashboardFixture() wgTopology {
 	topo, _ := buildWGTopology(ifaces, peers, servers, annotations)
 	// A VIP attaches to the endpoint whose label's first token appears in the VIP
 	// label, so the label has to name lb-gw for the wg3 focus path to see it.
-	topo.Vips = append(topo.Vips, wgVip{IP: "10.99.0.7", Label: "lb-gw 터널 DNAT (wg3)", Iface: "wg3", Note: "dnat"})
+	topo.Vips = append(topo.Vips, wgVip{IP: "10.99.0.7", Label: "lb-gw tunnel DNAT (wg3)", Iface: "wg3", Note: "dnat"})
 	return topo
 }
 

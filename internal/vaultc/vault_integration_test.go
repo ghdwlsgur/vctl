@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -164,20 +165,49 @@ func TestDBCredsAreDynamic(t *testing.T) {
 	c := loggedIn(t)
 	ctx := context.Background()
 
-	u1, p1, _, err := c.DBCreds(ctx, "vctl-ro")
+	l1, err := c.DBCreds(ctx, "vctl-ro")
 	if err != nil {
 		t.Fatalf("DBCreds: %v", err)
 	}
-	if u1 == "" || p1 == "" {
+	if l1.User == "" || l1.Pass == "" {
 		t.Fatal("DBCreds returned an empty credential")
 	}
-	u2, _, _, err := c.DBCreds(ctx, "vctl-ro")
+	// The lease id is what makes renewal possible instead of re-issuing, so an
+	// empty one is a silent regression to a role created per connection.
+	if l1.ID == "" {
+		t.Error("DBCreds returned no lease id: the credential cannot be renewed")
+	}
+	l2, err := c.DBCreds(ctx, "vctl-ro")
 	if err != nil {
 		t.Fatalf("DBCreds second call: %v", err)
 	}
-	if u1 == u2 {
-		t.Errorf("both calls returned %q — credentials are not dynamic", u1)
+	if l1.User == l2.User {
+		t.Errorf("both calls returned %q — credentials are not dynamic", l1.User)
 	}
+}
+
+// Renewal is the cheap path the pool depends on: it moves a credential's expiry
+// without creating another Postgres role. If leases come back non-renewable, the
+// cache silently degrades to issuing one credential per connection recycle.
+func TestDBCredsLeaseRenews(t *testing.T) {
+	c := loggedIn(t)
+	ctx := context.Background()
+
+	l, err := c.DBCreds(ctx, "vctl-ro")
+	if err != nil {
+		t.Fatalf("DBCreds: %v", err)
+	}
+	if !l.Renewable {
+		t.Fatalf("lease for vctl-ro is not renewable; the credential cache cannot extend it")
+	}
+	ttl, renewable, err := c.RenewLease(ctx, l.ID, time.Hour)
+	if err != nil {
+		t.Fatalf("RenewLease: %v", err)
+	}
+	if ttl <= 0 {
+		t.Errorf("renewal granted TTL %v, want a positive duration", ttl)
+	}
+	_ = renewable
 }
 
 // A role the token's policy does not cover must fail, not silently succeed:
@@ -185,7 +215,7 @@ func TestDBCredsAreDynamic(t *testing.T) {
 // write paths.
 func TestDBCredsDeniedWithoutPolicy(t *testing.T) {
 	c := loggedIn(t)
-	if _, _, _, err := c.DBCreds(context.Background(), "vctl-rw"); err == nil {
+	if _, err := c.DBCreds(context.Background(), "vctl-rw"); err == nil {
 		t.Fatal("vctl-rw credentials were issued to a token without the policy")
 	}
 }

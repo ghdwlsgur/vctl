@@ -8,10 +8,12 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/term"
 
 	"github.com/ghdwlsgur/vctl/internal/config"
+	"github.com/ghdwlsgur/vctl/internal/dbcreds"
 	"github.com/ghdwlsgur/vctl/internal/securefile"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
@@ -277,14 +279,53 @@ func (a *App) LogAccess(ctx context.Context, entry store.AccessEntry) error {
 // openRole opens Postgres with a specific Vault database role.
 func (a *App) openRole(ctx context.Context, role string) (*store.Store, error) {
 	// getCreds runs before each new pool connection. It re-establishes the Vault
-	// session if the token lapsed, then issues a fresh dynamic DB credential, so
-	// a daemon holding the pool for hours never outlives a credential lease.
+	// session if the token lapsed, then asks the cache for a credential, so a
+	// daemon holding the pool for hours never outlives a credential lease.
+	//
+	// The cache is what keeps connection recycling from meaning credential
+	// issuance. The pool drops a connection roughly every 45 minutes; Vault
+	// renews the same lease for up to its max_ttl, so those recycles reuse one
+	// credential instead of creating a Postgres role apiece.
+	//
+	// The floor comes from the pool rather than a constant here: a credential
+	// handed out now must still be valid for the whole life of the connection
+	// that takes it. The renewal increment is the same span — asking for more
+	// than max_ttl allows is harmless because Vault clamps it.
+	minRemaining := store.MaxConnAge() + credentialSafetyMargin
+	cache := dbcreds.New(vaultIssuer{app: a, role: role}, minRemaining, renewalIncrement)
 	getCreds := func(ctx context.Context) (string, string, error) {
 		if err := a.EnsureLogin(ctx); err != nil {
 			return "", "", err
 		}
-		user, pass, _, err := a.Vault.DBCreds(ctx, role)
-		return user, pass, err
+		return cache.Get(ctx)
 	}
 	return store.Open(ctx, a.Cfg.DBHost, a.Cfg.DBPort, a.Cfg.DBName, getCreds, a.Cfg.DBServerName, config.SRERootCA)
+}
+
+const (
+	// credentialSafetyMargin is the slack between a connection's maximum age and
+	// the lease backing it, covering clock skew between this host and Vault plus
+	// the time a slow connect spends between the credential check and first use.
+	credentialSafetyMargin = 5 * time.Minute
+
+	// renewalIncrement asks for far more time than any role will grant. Vault
+	// clamps a renewal to what remains of the role's max_ttl, so over-asking
+	// costs nothing and keeps this client from encoding a server-side setting it
+	// does not own. Asking for exactly the floor instead would technically work
+	// and would renew every few minutes to reach the same expiry.
+	renewalIncrement = 24 * time.Hour
+)
+
+// vaultIssuer adapts the Vault client to dbcreds.Issuer.
+type vaultIssuer struct {
+	app  *App
+	role string
+}
+
+func (v vaultIssuer) Issue(ctx context.Context) (vaultc.DBLease, error) {
+	return v.app.Vault.DBCreds(ctx, v.role)
+}
+
+func (v vaultIssuer) Renew(ctx context.Context, leaseID string, increment time.Duration) (time.Duration, bool, error) {
+	return v.app.Vault.RenewLease(ctx, leaseID, increment)
 }

@@ -1,15 +1,19 @@
 ---
-# 기존 서버(fleet)가 Vault SSH CA 서명 인증서를 신뢰하게 한다 (TrustedUserCAKeys).
-# 신규 VM 의 cloud-init(trust-vault-ssh-ca.yaml)과 동일 효과의 "기존 서버" 버전.
+# Make existing fleet hosts trust certificates signed by the Vault SSH CA
+# (TrustedUserCAKeys). This is the already-running-server counterpart to the
+# cloud-init unit new VMs get (trust-vault-ssh-ca.yaml); the effect is the same.
 #
-# 멱등 + 안전:
-#   - CA '공개키'만 배포(비밀 아님). 기존 일반 authorized_keys/키 접근은 복구용으로 보존.
-#   - system-wide drop-in을 설치하고 'sshd -t' 검증 후에만 reload.
+# Idempotent, and safe to re-run:
+#   - Only the CA *public* key is distributed; it is not a secret.
+#   - Existing authorized_keys access is left in place as the recovery path. Do
+#     not remove it here — losing CA trust would otherwise lock the host out.
+#   - The drop-in is installed system-wide, and sshd is reloaded only after
+#     'sshd -t' validates the resulting config.
 #
-# 실행:
-#   ansible-playbook -i inventory.ini trust-vault-ssh-ca.yml            # 전체
-#   ansible-playbook -i inventory.ini trust-vault-ssh-ca.yml -l <host>  # 1대 검증
-#   (롤백: --extra-vars "state=absent")
+# Usage:
+#   ansible-playbook -i inventory.ini trust-vault-ssh-ca.yml            # whole fleet
+#   ansible-playbook -i inventory.ini trust-vault-ssh-ca.yml -l <host>  # one host first
+#   Roll back with: --extra-vars "state=absent"
 - name: Trust Vault SSH CA on existing fleet
   hosts: all
   become: true
@@ -18,7 +22,7 @@
     ca_pub_src: files/vault-ca.pub
     ca_pub_dest: /etc/ssh/vault-ca.pub
     ca_dropin_dest: /etc/ssh/sshd_config.d/10-vault-ca.conf
-    state: present # absent 로 롤백
+    state: present # set to absent to roll back
   tasks:
     - name: Install Vault SSH CA public key
       when: state == 'present'
@@ -63,7 +67,7 @@
         validate: "sshd -t -f %s"
       notify: Reload sshd
 
-    # --- 롤백 ---
+    # --- rollback ---
     - name: Remove TrustedUserCAKeys drop-in (rollback)
       when: state == 'absent'
       ansible.builtin.file:
