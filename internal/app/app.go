@@ -59,10 +59,16 @@ func (a *App) EnsureLogin(ctx context.Context) error {
 	if ok, err := a.tryAppRoleLogin(ctx); ok && err == nil {
 		return nil
 	}
+	// Kubernetes before the configured method, for the same reason AppRole is:
+	// both are unattended, and a pod that could authenticate itself should not
+	// fall through to a method that prompts.
+	if ok, err := a.tryKubernetesLogin(ctx); ok && err == nil {
+		return nil
+	}
 	return a.Login(ctx, a.Cfg.AuthMethod)
 }
 
-// Login authenticates with userpass, oidc, or approle.
+// Login authenticates with userpass, oidc, approle, or kubernetes.
 func (a *App) Login(ctx context.Context, method string) error {
 	switch strings.ToLower(method) {
 	case "oidc":
@@ -72,6 +78,12 @@ func (a *App) Login(ctx context.Context, method string) error {
 		ok, err := a.tryAppRoleLogin(ctx)
 		if !ok {
 			return fmt.Errorf("missing AppRole credentials (VCTL_ROLE_ID/VCTL_SECRET_ID or *_FILE)")
+		}
+		return err
+	case "kubernetes":
+		ok, err := a.tryKubernetesLogin(ctx)
+		if !ok {
+			return fmt.Errorf("kubernetes auth needs a role (VCTL_KUBERNETES_ROLE) and a projected service account token — is this running in a pod?")
 		}
 		return err
 	case "", "userpass":
@@ -105,6 +117,31 @@ func (a *App) AppRoleCreds() (roleID, secretID string, ok bool) {
 	roleID = strutil.FirstNonEmpty(a.Cfg.AppRoleID, readFileTrim(a.Cfg.AppRoleIDFile))
 	secretID = strutil.FirstNonEmpty(a.Cfg.AppRoleSecretID, readFileTrim(a.Cfg.AppRoleSecretIDFile))
 	return roleID, secretID, roleID != "" && secretID != ""
+}
+
+// tryKubernetesLogin logs in with the pod's ServiceAccount token. ok=false with
+// a nil error means this is not a pod, or no role is configured, so the caller
+// can fall through to another method — on a workstation there is no token file
+// and that is the ordinary case rather than a failure.
+//
+// The token is read on every attempt. Projected ServiceAccount tokens are
+// refreshed in place, so a process that cached the contents at startup would
+// re-authenticate an hour later with an assertion Vault has stopped accepting.
+func (a *App) tryKubernetesLogin(ctx context.Context) (ok bool, err error) {
+	if a.Cfg.KubernetesRole == "" {
+		return false, nil
+	}
+	jwt, found, err := vaultc.ReadServiceAccountToken(a.Cfg.KubernetesTokenFile)
+	if err != nil {
+		// Configured for kubernetes auth but the token is unreadable. That is a
+		// real failure, not an absence, so report it rather than falling through
+		// to a method that will ask for a password nobody is there to type.
+		return true, err
+	}
+	if !found {
+		return false, nil
+	}
+	return true, a.Vault.LoginKubernetes(ctx, a.Cfg.KubernetesMount, a.Cfg.KubernetesRole, jwt)
 }
 
 // tryAppRoleLogin logs in with stored AppRole creds. ok=false (with nil error)

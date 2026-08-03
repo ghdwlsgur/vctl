@@ -20,7 +20,7 @@ import (
 
 type Config struct {
 	VaultAddr  string `yaml:"vault_addr"`
-	AuthMethod string `yaml:"auth_method"` // userpass | oidc
+	AuthMethod string `yaml:"auth_method"` // userpass | oidc | approle | kubernetes
 	OIDCRole   string `yaml:"oidc_role"`   // Vault OIDC role (phase 2)
 	OIDCMount  string `yaml:"oidc_mount"`  // Vault OIDC auth mount path
 
@@ -77,6 +77,13 @@ type Config struct {
 	DCRules              []syncx.DCRule `yaml:"dc_rules"`
 
 	// AppRole supports non-interactive auto-auth for agent and exec re-auth.
+	// Kubernetes auth, for vctl running as a pod. The ServiceAccount token is
+	// projected by the kubelet, so there is no credential to configure — only
+	// which Vault role to present it to.
+	KubernetesMount     string `yaml:"kubernetes_mount"`
+	KubernetesRole      string `yaml:"kubernetes_role"`
+	KubernetesTokenFile string `yaml:"kubernetes_token_file"`
+
 	AppRoleMount        string `yaml:"approle_mount"`
 	AppRoleID           string `yaml:"role_id"`
 	AppRoleSecretID     string `yaml:"secret_id"`
@@ -178,6 +185,9 @@ func (c *Config) applyEnv() {
 	envStrPair(&c.SSHDefaultUser, "SSH_DEFAULT_USER")
 	envStrPair(&c.SyncProbeTimeout, "SYNC_PROBE_TIMEOUT")
 	envIntPair(&c.SyncProbeConcurrency, "SYNC_PROBE_CONCURRENCY")
+	envStrPair(&c.KubernetesMount, "KUBERNETES_MOUNT")
+	envStrPair(&c.KubernetesRole, "KUBERNETES_ROLE")
+	envStrPair(&c.KubernetesTokenFile, "KUBERNETES_TOKEN_FILE")
 	envStrPair(&c.AppRoleID, "ROLE_ID")
 	envStrPair(&c.AppRoleSecretID, "SECRET_ID")
 	envStrPair(&c.AppRoleIDFile, "ROLE_ID_FILE")

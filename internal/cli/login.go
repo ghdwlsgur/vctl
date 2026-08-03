@@ -41,10 +41,11 @@ so use it only for automation/bootstrap, never for day-to-day human access.`,
 				return err
 			}
 			// Register the person in seen_users so `vctl rbac assign` can offer
-			// them without a prior ssh. Best-effort, human methods only (approle
-			// is a shared identity, not a person). Done before --register flips
-			// the cached token to the approle.
-			if m != "approle" {
+			// them without a prior ssh. Best-effort, human methods only —
+			// approle is a shared identity and kubernetes is a workload, and
+			// neither belongs in a picker of people. Done before --register
+			// flips the cached token to the approle.
+			if m != "approle" && m != "kubernetes" {
 				if id := a.Vault.Identity(ctx); id != "" {
 					if st, err := a.OpenStore(ctx, app.PurposeIdentity); err == nil {
 						if err := st.RecordSeenUser(ctx, id, Version); err != nil {
@@ -66,7 +67,7 @@ so use it only for automation/bootstrap, never for day-to-day human access.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&method, "method", "", "auth method: userpass | oidc | approle")
+	cmd.Flags().StringVar(&method, "method", "", "auth method: userpass | oidc | approle | kubernetes")
 	cmd.Flags().BoolVar(&register, "register", false, "also cache the approle for non-interactive auto-auth (shared identity)")
 	return cmd
 }
