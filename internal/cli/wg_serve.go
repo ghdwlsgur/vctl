@@ -46,6 +46,16 @@ type wgNode struct {
 	Parent   string    `json:"parent,omitempty"`   // physical inventory host for a VM endpoint
 	Warnings []string  `json:"warnings,omitempty"`
 	Ifaces   []wgIface `json:"ifaces,omitempty"` // gateway interfaces, name-sorted
+
+	// PubKey is the endpoint's WireGuard public key — its identity everywhere
+	// else in this schema. Carried so a VIP can point at the endpoint it fronts
+	// by key rather than by a substring of its display label.
+	PubKey string `json:"pub,omitempty"`
+
+	// SeenAs lists the hostnames this endpoint was observed under when there is
+	// more than one, usually a VIP sharing a machine with its host. Present so
+	// the page can name both instead of silently picking one.
+	SeenAs []string `json:"seenAs,omitempty"`
 }
 
 // wgEdge is one tunnel: a peer entry, resolved to the far-end gateway when both
@@ -127,6 +137,14 @@ type wgVip struct {
 	Label string `json:"label"`
 	Iface string `json:"iface,omitempty"`
 	Note  string `json:"note,omitempty"`
+
+	// Owner is the public key of the endpoint this address fronts, as recorded in
+	// ip_allocations.owner_public_key.
+	//
+	// When it is set, the page attaches the VIP to that endpoint and says so.
+	// When it is empty the page falls back to matching label text, which is what
+	// it always did — and marks the result as a guess, because that is what it is.
+	Owner string `json:"owner,omitempty"`
 }
 
 type wgTopology struct {
@@ -396,6 +414,15 @@ func (b *wgTopologyBuilder) addGateways() {
 			ID: host, Label: host, Kind: "gateway",
 			DC: b.dcOf(host), IP: b.byHost[host].IP,
 			Warnings: b.warnings[host], Ifaces: b.ifByHost[host],
+		}
+		// A gateway's identity is a key per interface, not one per host. Carry the
+		// first by interface name so a VIP that names an owner can be matched
+		// exactly; deterministic because ifByHost is name-sorted.
+		if ifs := b.ifByHost[host]; len(ifs) > 0 {
+			n.PubKey = b.localPubKey(host, ifs[0].Name)
+			if hosts := b.endpoints.observedThrough(n.PubKey); len(hosts) > 1 {
+				n.SeenAs = hosts
+			}
 		}
 		if a, ok := b.annByHost[host]; ok {
 			n = b.enrichEndpoint(n, a)
@@ -888,7 +915,10 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 			if vips, err := st.IPAllocList(ctx, "dnat-vip", "", ""); err == nil {
 				for _, v := range vips {
 					note := strings.TrimSpace(strings.TrimSpace(v.OS) + " " + strings.TrimSpace(v.Note))
-					topo.Vips = append(topo.Vips, wgVip{IP: v.IP, Label: v.Label, Iface: v.WGTunnel, Note: note})
+					topo.Vips = append(topo.Vips, wgVip{
+						IP: v.IP, Label: v.Label, Iface: v.WGTunnel, Note: note,
+						Owner: v.OwnerPublicKey,
+					})
 				}
 			}
 
