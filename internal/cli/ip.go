@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -28,7 +30,7 @@ inventory (servers). It records who/what holds each 192.168.201.x address —
 personal devices, OpenStack VMs, floating IPs, DNAT VIPs and physical hosts —
 so the ledger survives sync and covers non-SSH addresses too.`,
 	}
-	cmd.AddCommand(ipListCmd(), ipSetCmd(), ipRmCmd())
+	cmd.AddCommand(ipListCmd(), ipSetCmd(), ipRmCmd(), ipBindWGCmd())
 	return cmd
 }
 
@@ -260,4 +262,104 @@ func ipStatusState(status string) ui.State {
 	default:
 		return ui.StateOK
 	}
+}
+
+// ipBindWGCmd records which WireGuard endpoint a VIP fronts.
+//
+// The dashboard needs to know which endpoint an address belongs to. Until this
+// existed it worked it out by asking whether the endpoint's display label
+// appeared as a substring of the VIP's label — two human-typed strings, so it
+// attached a VIP to the wrong endpoint whenever one label contained another's
+// prefix, and to nothing at all when either side was renamed.
+//
+// The column to fix that shipped with migration 014 and then had no writer: `ip
+// set` rewrites the whole row from its flags and does not mention it. This is
+// the writer, and it is separate on purpose — binding an endpoint is one fact,
+// and making somebody restate owner, project and rack to state it is how the
+// other fields get clobbered by omission.
+//
+// The endpoint is named as host/interface because that is what an operator can
+// read off `vctl wg graph`; the public key it resolves to is what gets stored,
+// since that is the identity the rest of the schema uses.
+func ipBindWGCmd() *cobra.Command {
+	var endpoint string
+	var clear bool
+	cmd := &cobra.Command{
+		Use:   "bind-wg <ip>",
+		Short: "Record which WireGuard endpoint an address fronts",
+		Long: `bind-wg states the WireGuard endpoint a VIP belongs to, so the
+dashboard stops guessing it from label text.
+
+Name the endpoint as host/interface — the same pair 'vctl wg graph' prints. It
+is stored as that interface's public key.
+
+  vctl ip bind-wg 192.0.2.10 --endpoint sre-lb/wg1
+  vctl ip bind-wg 192.0.2.10 --clear`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			ip := strings.TrimSpace(args[0])
+			if net.ParseIP(ip) == nil {
+				return fmt.Errorf("not an IP address: %q", ip)
+			}
+			if clear == (endpoint != "") {
+				return fmt.Errorf("pass exactly one of --endpoint or --clear")
+			}
+			return withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+				key := ""
+				if !clear {
+					var err error
+					if key, err = resolveWGEndpointKey(ctx, st, endpoint); err != nil {
+						return err
+					}
+				}
+				ok, err := st.IPAllocSetOwnerKey(ctx, ip, key)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("%s is not in the IP ledger; add it with vctl ip set", ip)
+				}
+				if clear {
+					ui.Successf(os.Stdout, "cleared the endpoint binding for %s", ip)
+					return nil
+				}
+				ui.Successf(os.Stdout, "%s fronts %s (%s)", ip, endpoint, shortKey(key))
+				return nil
+			})
+		},
+	}
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "owning endpoint as host/interface, e.g. sre-lb/wg1")
+	cmd.Flags().BoolVar(&clear, "clear", false, "remove the binding and go back to guessing from labels")
+	return gate(cmd, "ip", classMutate)
+}
+
+// resolveWGEndpointKey turns "host/iface" into that interface's public key.
+//
+// It refuses an ambiguous or unknown pair rather than storing something that
+// will never match: a binding that points at no collected interface is worse
+// than no binding, because the dashboard would show it as recorded fact.
+func resolveWGEndpointKey(ctx context.Context, st *store.Store, endpoint string) (string, error) {
+	host, iface, ok := strings.Cut(strings.TrimSpace(endpoint), "/")
+	if !ok || host == "" || iface == "" {
+		return "", fmt.Errorf("--endpoint must be host/interface, e.g. sre-lb/wg1 (got %q)", endpoint)
+	}
+	ifaces, err := st.WGInterfaces(ctx)
+	if err != nil {
+		return "", err
+	}
+	var names []string
+	for _, i := range ifaces {
+		if i.Host == host && i.Iface == iface {
+			return i.PublicKey, nil
+		}
+		if i.Host == host {
+			names = append(names, i.Iface)
+		}
+	}
+	if len(names) > 0 {
+		sort.Strings(names)
+		return "", fmt.Errorf("%s has no interface %q (has %s)", host, iface, strings.Join(names, ", "))
+	}
+	return "", fmt.Errorf("no collected WireGuard interfaces on %q — run vctl wg sync", host)
 }

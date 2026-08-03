@@ -437,7 +437,15 @@ function attachVips(topo,N,spokes){
   const vipsBy=new Map();
   // Endpoint public key → node id, for the stated case.
   const byKey=new Map();
-  for(const s of spokes){const n=N.get(s.oid);if(n&&n.pub)byKey.set(n.pub,s.oid);}
+  // Every interface's key, not just the node's first. A gateway has one key per
+  // interface — sre-lb runs wg1 and wg-personal with different keys — so
+  // indexing the node key alone made a VIP naming the second interface fall
+  // through to the label guess and render as an inference.
+  for(const s of spokes){
+    const n=N.get(s.oid); if(!n)continue;
+    if(n.pub)byKey.set(n.pub,s.oid);
+    for(const i of (n.ifaces||[]))if(i.pub)byKey.set(i.pub,s.oid);
+  }
   for(const v of (topo.vips||[])){
     let oid=null,guessed=false;
     if(v.owner&&byKey.has(v.owner))oid=byKey.get(v.owner);
