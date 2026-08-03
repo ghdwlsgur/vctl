@@ -70,3 +70,26 @@ func (s *Store) execMatched(ctx context.Context, sql string, args ...any) (bool,
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+// Insert registers a new inventory host and reports whether it was created.
+//
+// It is deliberately not Upsert. Upsert exists for `vctl sync`, which sees the
+// same host repeatedly and must not clobber operator-set fields, so on conflict
+// it refreshes only probe-derived columns — ssh_user, dc and jump_via survive.
+// That is right for a sync and wrong for an explicit add: a caller who typed a
+// hostname that already exists wants to hear about it, not to have half their
+// input silently dropped.
+//
+// false with a nil error means the hostname is taken. Editing an existing host
+// goes through SetDC/SetUser/SetExtraIPs, which say what they change.
+func (s *Store) Insert(ctx context.Context, sv Server) (bool, error) {
+	var jump any
+	if sv.JumpVia != "" {
+		jump = sv.JumpVia
+	}
+	return s.execMatched(ctx, `
+		INSERT INTO servers (hostname, ip, ssh_port, ssh_user, jump_via, dc, ca_role, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+		ON CONFLICT (hostname) DO NOTHING`,
+		sv.Hostname, sv.IP, sv.Port, sv.User, jump, sv.DC, sv.CARole)
+}
