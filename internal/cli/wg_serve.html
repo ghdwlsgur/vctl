@@ -71,6 +71,9 @@
   /* Unobserved is grey on purpose: it is the absence of a reading, not a bad
      one, and colouring it like a fault would invent information. */
   .status-key .unk{color:var(--muted)}
+  .status-key .conf{color:var(--ink2)}
+  .status-key .conf i{width:8px;height:8px;border-radius:50%;background:var(--ink2)}
+  .status-key .conf i.hollow{background:transparent;border:1.6px solid var(--ink2)}
   .view-controls{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
   .view-controls button{appearance:none;width:30px;height:28px;border:0;border-left:1px solid var(--line);
     background:var(--panel2);color:var(--ink2);font:600 12px/1 inherit;cursor:pointer}
@@ -168,6 +171,14 @@
   <div id="legend" aria-label="interface filter"></div>
   <span id="selection"><b></b> selected <button type="button" aria-label="clear selection">×</button></span>
   <span class="tool-spacer"></span>
+  <!-- Confidence, kept apart from state. The diagram mixes collected facts with
+       presentational inference — a VIP owner matched from label text, an
+       inventory host guessed from an endpoint address — and a reader cannot tell
+       them apart from the shapes alone. Filled means recorded; hollow means
+       inferred, and the tooltip says from what. -->
+  <div class="status-key" aria-label="confidence legend">
+    <span class="conf"><i class="solid"></i>recorded</span><span class="conf"><i class="hollow"></i>inferred</span>
+  </div>
   <div class="status-key" aria-label="tunnel state legend">
     <!-- The old key was active/idle/down, and "down" stood for three different
          things: never handshook, nobody asked, or the gateway was unreachable.
@@ -406,24 +417,43 @@ function zoneBuckets(N,hub,{farSpokes,spokes,mesh,hops}){
   return zmap;
 }
 
-// Attaches IPAM-ledger VIPs (e.g. o11y DNAT) to the endpoint whose label's first
-// token appears in the VIP label ("sre-lb tunnel DNAT (wg3)" -> sre-lb); the longest
-// matching token wins. Returns the per-endpoint VIP lists and, as a side effect,
+// Attaches IPAM-ledger VIPs (e.g. o11y DNAT) to the endpoint that owns them, and
 // records which node each interface fronts in vipFocusNodes — that map is what
 // lets a wg3 selection light its DNAT owner.
+//
+// Two ways to decide the owner, and the page keeps them apart:
+//
+//   stated    ip_allocations.owner_public_key names the endpoint. Exact.
+//   guessed   the endpoint label's first token appears in the VIP label,
+//             longest match winning.
+//
+// The guess is what this always did, and it is substring matching on two
+// human-typed strings: it attaches a VIP to the wrong endpoint when one label
+// contains another's prefix, attaches nothing when either side is renamed, and
+// the screen could not say which had happened. It stays as the fallback for rows
+// nobody has filled in, but it is marked, so a reader can tell a fact from an
+// inference without reading this function.
 function attachVips(topo,N,spokes){
   const vipsBy=new Map();
+  // Endpoint public key → node id, for the stated case.
+  const byKey=new Map();
+  for(const s of spokes){const n=N.get(s.oid);if(n&&n.pub)byKey.set(n.pub,s.oid);}
   for(const v of (topo.vips||[])){
-    let best=null;
-    for(const s of spokes){const n=N.get(s.oid);if(!n)continue;
-      const tok=String(n.label).split(/[\s(]/)[0];
-      if(tok&&v.label.includes(tok)&&(!best||tok.length>best.tok))best={oid:s.oid,tok:tok.length};}
-    if(!best)continue;
-    if(!vipsBy.has(best.oid))vipsBy.set(best.oid,[]);
-    vipsBy.get(best.oid).push(v);
+    let oid=null,guessed=false;
+    if(v.owner&&byKey.has(v.owner))oid=byKey.get(v.owner);
+    if(!oid){
+      let best=null;
+      for(const s of spokes){const n=N.get(s.oid);if(!n)continue;
+        const tok=String(n.label).split(/[\s(]/)[0];
+        if(tok&&v.label.includes(tok)&&(!best||tok.length>best.tok))best={oid:s.oid,tok:tok.length};}
+      if(!best)continue;
+      oid=best.oid; guessed=true;
+    }
+    if(!vipsBy.has(oid))vipsBy.set(oid,[]);
+    vipsBy.get(oid).push({...v,guessed});
     if(v.iface){
       if(!vipFocusNodes.has(v.iface))vipFocusNodes.set(v.iface,new Set());
-      vipFocusNodes.get(v.iface).add(best.oid);
+      vipFocusNodes.get(v.iface).add(oid);
     }
   }
   return vipsBy;
@@ -667,10 +697,15 @@ function drawZones({gz,gg,gn,gd,gt,gf,grp},geo,N,{vipsBy,meshGeo,hubPort}){
         t.textContent=`DNAT VIP ×${vips.length}${vifc?" · "+vifc:""}`; t.setAttribute("fill",vcol);
         vips.forEach((v,i)=>{
           const vy=by+68+i*17;
-          const dd=mk("circle",{cx:EPX+20,cy:vy,r:4.5,fill:vcol,class:"sdot hot"},gv);
-          hot(dd,()=>[v.ip,`${v.label}${v.note?" · "+v.note:""} (IPAM ledger)`]);
+          // A guessed owner is drawn hollow. The attachment is an inference from
+          // label text, and a filled bead would present it as recorded fact.
+          const dd=mk("circle",{cx:EPX+20,cy:vy,r:4.5,
+            fill:v.guessed?"none":vcol,stroke:vcol,"stroke-width":v.guessed?1.6:0,
+            class:"sdot hot"},gv);
+          hot(dd,()=>[v.ip,`${v.label}${v.note?" · "+v.note:""} (IPAM ledger)`+
+            (v.guessed?" · owner GUESSED from label text — set ip_allocations.owner_public_key":" · owner recorded")]);
           clickFocus(dd,vifc);
-          mk("text",{x:EPX+32,y:vy+3,class:"bsub"},gv).textContent=v.ip;
+          mk("text",{x:EPX+32,y:vy+3,class:"bsub"},gv).textContent=v.ip+(v.guessed?" ?":"");
         });
         const wire=mk("path",{d:`M${EPX+20},${by+68+(vips.length-1)*17} V${by+58}`,class:"tun",stroke:vcol,"stroke-width":1.6},gvt);
         hot(wire,()=>[`DNAT VIP ×${vips.length}`,"recorded in the IPAM ledger (ip_allocations) — outside WG collection · click to focus"]);

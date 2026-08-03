@@ -25,6 +25,11 @@ type IPAllocation struct {
 	WGTunnel string
 	Status   string
 	Note     string
+
+	// OwnerPublicKey is the WireGuard endpoint this address fronts, stated rather
+	// than guessed from label text. Empty when nobody has said, which the
+	// renderer distinguishes from a stated owner.
+	OwnerPublicKey string
 }
 
 // scanIPAllocation reads one row; it takes the minimal Scan interface so both
@@ -34,7 +39,8 @@ func scanIPAllocation(row interface {
 }) (IPAllocation, error) {
 	var a IPAllocation
 	err := row.Scan(&a.IP, &a.Owner, &a.Kind, &a.Label, &a.Hostname, &a.OS, &a.Project,
-		&a.Farm, &a.FarmVIP, &a.Rack, &a.Location, &a.WGTunnel, &a.Status, &a.Note)
+		&a.Farm, &a.FarmVIP, &a.Rack, &a.Location, &a.WGTunnel, &a.Status, &a.Note,
+		&a.OwnerPublicKey)
 	return a, err
 }
 
@@ -44,7 +50,7 @@ func scanIPAllocRow(r pgx.Rows) (IPAllocation, error) { return scanIPAllocation(
 // empty string so a row scans straight into IPAllocation without null handling.
 const ipAllocCols = `host(ip), owner, kind, label, coalesce(hostname,''), coalesce(os,''), ` +
 	`coalesce(project,''), coalesce(farm,''), coalesce(host(farm_vip),''), coalesce(rack,''), ` +
-	`coalesce(location,''), coalesce(wg_tunnel,''), status, note`
+	`coalesce(location,''), coalesce(wg_tunnel,''), status, note, coalesce(owner_public_key,'')`
 
 // IPAllocList returns ledger rows ordered by address, optionally filtered by
 // kind, owner (substring), and a free-text substring across owner/label/
