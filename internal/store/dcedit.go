@@ -23,6 +23,18 @@ func (s *Store) SetUser(ctx context.Context, hostname, user string) (bool, error
 	return s.execMatched(ctx, `UPDATE servers SET ssh_user=$2 WHERE hostname=$1`, hostname, user)
 }
 
+// SetJumpVia sets or clears the host a connection hops through. Like dc and
+// ssh_user this is operator-managed: `vctl sync` reads ProxyJump from ssh config
+// and would overwrite a value set here, so this is the deliberate edit path.
+// An empty jump means a direct connection. Returns whether a row matched.
+func (s *Store) SetJumpVia(ctx context.Context, hostname, jump string) (bool, error) {
+	var v any
+	if jump != "" {
+		v = jump
+	}
+	return s.execMatched(ctx, `UPDATE servers SET jump_via=$2, updated_at=now() WHERE hostname=$1`, hostname, v)
+}
+
 // SetExtraIPs replaces a server's operator-curated additional addresses (VIPs,
 // extra NICs). `vctl sync` preserves extra_ips, so this is the deliberate edit
 // path (cmd/dbedit) for hosts whose node-agent can't auto-report (e.g. probe-only
