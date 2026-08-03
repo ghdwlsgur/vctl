@@ -240,13 +240,18 @@ func (m listModel) View() string {
 func (m listModel) renderRow(i int) string {
 	ci := m.filtered[i]
 	label := m.cands[ci]
-	mark := "  "
-	if m.multi {
-		if m.selected[ci] {
-			mark = "[x]"
-		} else {
-			mark = "[ ]"
-		}
+	// Radio dots in single mode, checkboxes in multi — the same marks the server
+	// picker uses, so `vctl ssh` and `vctl delete` do not look like two tools.
+	// Both spellings occupy the same width within a mode, which is what keeps the
+	// labels aligned across rows.
+	mark := "○"
+	switch {
+	case m.multi && m.selected[ci]:
+		mark = "[x]"
+	case m.multi:
+		mark = "[ ]"
+	case i == m.cursor:
+		mark = "●"
 	}
 	if i == m.cursor {
 		return pickCursorStyle.Render("› "+mark) + " " + pickSelectedStyle.Render(label)

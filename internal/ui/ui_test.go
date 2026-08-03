@@ -3,7 +3,7 @@ package ui
 import "testing"
 
 func TestTruncate(t *testing.T) {
-	const long = "incheon-vm-[surromind]-surromind-k8s-worker-gpu-bw6000"
+	const long = "incheon-vm-[tenant-a]-tenant-a-k8s-worker-gpu-bw6000"
 	cases := []struct {
 		name string
 		in   string
@@ -12,7 +12,7 @@ func TestTruncate(t *testing.T) {
 	}{
 		{"short unchanged", "sre-srv-0023", 40, "sre-srv-0023"},
 		{"exact fit", "abcd", 4, "abcd"},
-		{"middle elided", long, 40, "incheon-vm-[surromin…s-worker-gpu-bw6000"},
+		{"middle elided", long, 40, "incheon-vm-[tenant-a…s-worker-gpu-bw6000"},
 		{"tiny max", "abcdef", 1, "abcdef"}, // max<=1: unchanged (nothing useful to show)
 	}
 	for _, c := range cases {
