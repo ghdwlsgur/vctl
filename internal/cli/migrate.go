@@ -56,7 +56,20 @@ and the error is reported; re-run it deliberately once you have looked.`,
 		},
 	}
 	cmd.Flags().BoolVar(&status, "status", false, "show what is applied and what is pending, and change nothing")
-	return gate(cmd, "migrate", classMutate)
+	// Deliberately not app-gated. Vault is the boundary for this one: migrating
+	// needs `database/creds/vctl-migrator`, which only vctl-admin and the
+	// migration Job's policy can read. Nobody reaches the schema without it, and
+	// nobody who has it is stopped by a grant table.
+	//
+	// The app layer also cannot answer here. Its grants live in Postgres, in
+	// tables the migrations create — so on a fresh database the gate would need
+	// the very schema it is guarding. And a Job authenticating with kubernetes
+	// auth has no per-person identity to look up: the grant table is a table of
+	// people, and putting a workload in it to satisfy a check is the wrong shape.
+	//
+	// Authentication still happens — OpenStore calls EnsureLogin before it asks
+	// Vault for credentials.
+	return cmd
 }
 
 // applyMigrations runs the pending set and names what it ran. Reporting the

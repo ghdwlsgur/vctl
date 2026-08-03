@@ -94,8 +94,6 @@ func TestSyncMigrateFlagIsDeprecatedButStillPresent(t *testing.T) {
 	}
 }
 
-// --status must be answerable without the rights to change anything, which is
-// why it is a flag on a read path rather than a separate gated command.
 func TestMigrateCommandTakesNoArgumentsAndOffersStatus(t *testing.T) {
 	cmd := migrateCmd()
 	if err := cmd.Args(cmd, []string{"something"}); err == nil {
@@ -104,7 +102,25 @@ func TestMigrateCommandTakesNoArgumentsAndOffersStatus(t *testing.T) {
 	if cmd.Flags().Lookup("status") == nil {
 		t.Error("migrate has no --status flag")
 	}
-	if cmd.Annotations["rbac.command"] != "migrate" {
-		t.Errorf("migrate is not gated: annotations = %v", cmd.Annotations)
+}
+
+// Vault is the boundary for migrate, not the app-layer grant table.
+//
+// The grants live in Postgres, in tables the migrations create, so on a fresh
+// database the gate would need the schema it is guarding. And a Job that
+// authenticates with kubernetes auth has no per-person identity to look up —
+// the grant table is a table of people.
+//
+// Nothing is widened by this: migrating reads `database/creds/vctl-migrator`,
+// which only vctl-admin and the migration Job's policy carry. Verified against
+// the live Vault — the vctl-user baseline is vctl-ro and vctl-identity only.
+func TestMigrateIsNotAppGatedBecauseVaultDecides(t *testing.T) {
+	if got := migrateCmd().Annotations["rbac.command"]; got != "" {
+		t.Errorf("migrate carries an app-layer gate (%q); it cannot be satisfied before the schema exists", got)
+	}
+	// sync keeps its gate. It writes inventory, which is exactly what the grant
+	// table is for, and it does not have the bootstrap problem.
+	if got := syncCmd().Annotations["rbac.command"]; got != "" && got != "sync" {
+		t.Errorf("sync gate changed to %q", got)
 	}
 }
