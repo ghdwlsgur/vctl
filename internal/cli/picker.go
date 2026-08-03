@@ -65,17 +65,24 @@ type pickerModel struct {
 	width    int
 	chosen   int  // index into cands, -1 if cancelled
 	cached   bool // candidates came from the local snapshot
+
+	// addrWidth is measured rather than fixed. A bare IPv4 fits in 16, but a
+	// non-default port adds up to 6 more, and a fixed 16 would push the DC column
+	// right on exactly the rows that already stand out. Measuring keeps the
+	// column tight when every host is on 22 — which is most of them.
+	addrWidth int
 }
 
 func newPickerModel(cands []store.ServerWithStatus, title string, cached bool) pickerModel {
 	m := pickerModel{
-		title:  title,
-		cands:  cands,
-		dcs:    distinctDCs(cands),
-		height: pickerViewport,
-		width:  100,
-		chosen: -1,
-		cached: cached,
+		title:     title,
+		cands:     cands,
+		dcs:       distinctDCs(cands),
+		height:    pickerViewport,
+		width:     100,
+		chosen:    -1,
+		cached:    cached,
+		addrWidth: addrColumnWidth(cands),
 	}
 	if w, _, err := term.GetSize(int(os.Stderr.Fd())); err == nil && w > 0 {
 		m.width = w
@@ -121,7 +128,27 @@ func matchServer(c store.ServerWithStatus, q string) bool {
 	return strings.Contains(strings.ToLower(c.Hostname), q) ||
 		strings.Contains(strings.ToLower(c.IP), q) ||
 		strings.Contains(strings.ToLower(c.DC), q) ||
-		strings.Contains(strings.ToLower(c.User), q)
+		strings.Contains(strings.ToLower(c.User), q) ||
+		// The port is on screen, so it has to be typeable. Searching "10022" to
+		// find the hosts behind that port is the reason to show it at all.
+		strconv.Itoa(c.Port) == q
+}
+
+// addrColumnMin is the width the address column had before ports were shown.
+// Keeping it as a floor means a fleet where every host is on 22 renders exactly
+// as it did — the column only grows for the lists that need it.
+const addrColumnMin = 16
+
+// addrColumnWidth measures the address column across every candidate, so the
+// column is only as wide as the widest port actually present.
+func addrColumnWidth(cands []store.ServerWithStatus) int {
+	w := addrColumnMin
+	for _, c := range cands {
+		if n := lipgloss.Width(addrCell(c.IP, c.Port)); n > w {
+			w = n
+		}
+	}
+	return w
 }
 
 func (m *pickerModel) clampScroll() {
@@ -260,8 +287,9 @@ func (m pickerModel) renderRow(i int) string {
 	if w := m.width - 60; w > 20 && w < nameWidth {
 		nameWidth = w
 	}
-	label := fmt.Sprintf("%-*s %-16s %-12s %s",
-		nameWidth, ui.Truncate(c.Hostname, nameWidth), c.IP, c.DC, liveStatus(c, m.cached))
+	label := fmt.Sprintf("%-*s %-*s %-12s %s",
+		nameWidth, ui.Truncate(c.Hostname, nameWidth),
+		m.addrWidth, addrCell(c.IP, c.Port), c.DC, liveStatus(c, m.cached))
 
 	if i == m.cursor {
 		return pickCursorStyle.Render("› ●") + " " + pickSelectedStyle.Render(label)
@@ -272,8 +300,10 @@ func (m pickerModel) renderRow(i int) string {
 // numberPick is the non-TTY fallback (pipes/CI): a plain numbered prompt.
 func numberPick(cands []store.ServerWithStatus, title string, cached bool) (*store.ServerWithStatus, error) {
 	ui.Section(os.Stderr, title)
+	w := addrColumnWidth(cands)
 	for i, c := range cands {
-		fmt.Fprintf(os.Stderr, "  %2d  %-28s %-16s %-12s %s\n", i+1, c.Hostname, c.IP, c.DC, liveStatus(c, cached))
+		fmt.Fprintf(os.Stderr, "  %2d  %-28s %-*s %-12s %s\n",
+			i+1, c.Hostname, w, addrCell(c.IP, c.Port), c.DC, liveStatus(c, cached))
 	}
 	fmt.Fprint(os.Stderr, ui.Muted("number: "))
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')

@@ -85,7 +85,12 @@ func hostPickLabels(rows []store.InventoryRow) []string {
 		if r.JumpVia != "" {
 			via = "via " + r.JumpVia
 		}
-		cells = append(cells, []string{ui.Truncate(r.Hostname, hostPickNameWidth), r.IP, r.DC, via})
+		cells = append(cells, []string{
+			ui.Truncate(r.Hostname, hostPickNameWidth),
+			addrCell(r.IP, r.Port),
+			r.DC,
+			via,
+		})
 	}
 	w := ui.ColumnWidths(cells)
 	out := make([]string, 0, len(cells))
