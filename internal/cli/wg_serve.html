@@ -457,14 +457,57 @@ function attachVips(topo,N,spokes){
       if(!best)continue;
       oid=best.oid; guessed=true;
     }
+    // Focus by the interface that actually carries the VIP, not by the name in
+    // the ledger's wg_tunnel field.
+    //
+    // That field is free text and in this fleet it names the *destination* mesh:
+    // the o11y VIPs read "wg3", which lives on the incheon hub, while the VIPs
+    // are DNAT'd on sre-lb and leave over wg1. Keying on it meant selecting the
+    // hub's wg3 lit up sre-lb — a host with no wg3 at all — and selecting sre-lb's
+    // wg1, the interface that really carries them, brought no VIP into focus.
+    //
+    // The owner key resolves it exactly: find which of the owner's interfaces
+    // holds that key. Fall back to wg_tunnel only when there is no owner, where
+    // it remains a guess like everything else about an unbound VIP.
+    const owner=N.get(oid), ifc=vipIface(owner,v);
     if(!vipsBy.has(oid))vipsBy.set(oid,[]);
-    vipsBy.get(oid).push({...v,guessed});
-    if(v.iface){
-      if(!vipFocusNodes.has(v.iface))vipFocusNodes.set(v.iface,new Set());
-      vipFocusNodes.get(v.iface).add(oid);
+    vipsBy.get(oid).push({...v,guessed,iface:ifc||v.iface});
+    if(ifc){
+      if(!vipFocusNodes.has(ifc))vipFocusNodes.set(ifc,new Set());
+      vipFocusNodes.get(ifc).add(oid);
     }
   }
   return vipsBy;
+}
+
+// vipIface is the interface on the owning endpoint that carries a VIP.
+//
+// With a recorded owner key this is exact. Without one, wg_tunnel is all there
+// is — and it is only trusted when the owner actually has an interface by that
+// name, because naming another host's interface is how it is usually wrong.
+// hopKey is the focus key for a tunnel that does not touch the hub.
+//
+// Interface names are chosen per host, so a bare name only addresses a tunnel
+// when nothing else uses it. When the hub also runs an interface by that name,
+// focusClosure keeps hub-attached edges and drops this one — so clicking it dimmed
+// the whole diagram and lit nothing. Scoping to host/iface makes it addressable;
+// the plain name is kept everywhere else so the common case reads unchanged.
+function hopKey(e,hub){
+  const bare=e.iface;
+  if(!hub||!bare)return bare;
+  if(e.source===hub.id||e.target===hub.id)return bare;
+  return (hub.ifaces||[]).some(i=>i.name===bare) ? e.source+"/"+bare : bare;
+}
+
+function vipIface(owner,v){
+  if(!owner)return "";
+  const ifs=owner.ifaces||[];
+  if(v.owner){
+    const hit=ifs.find(i=>i.pub===v.owner);
+    if(hit)return hit.name;
+  }
+  if(v.iface&&ifs.some(i=>i.name===v.iface))return v.iface;
+  return "";
 }
 
 // ---------- geometry: the layout grid, measured once ----------
@@ -810,8 +853,8 @@ function drawHops({gn,gd,gt,gf,grp},geo,N,hub,{hops,startY,epPos,bandPos,topPos}
   }
   let extIdx=0;
   for(const {e,sp,tn} of extHops){
-    const col=ifColor(e.iface);
-    const g2=grp(gn,e.iface,{nodes:tn.id,eids:e.id}), g2t=grp(gt,e.iface,{eids:e.id});
+    const col=ifColor(e.iface), fk=hopKey(e,hub);
+    const g2=grp(gn,fk,{nodes:tn.id,eids:e.id}), g2t=grp(gt,fk,{eids:e.id});
     const zg=zoneGeo.find(z=>sp.rowY>=z.y&&sp.rowY<=z.y+z.h)||zoneGeo[0];
     const cy=zg.y+52+extIdx*44; extIdx++;
     const r=mk("rect",{x:EXTX,y:cy-15,width:188,height:32,rx:8,class:"nbox ext"},g2);
@@ -822,11 +865,11 @@ function drawHops({gn,gd,gt,gf,grp},geo,N,hub,{hops,startY,epPos,bandPos,topPos}
     const base=mk("path",{d:`M${sp.outX+6},${sp.rowY} H${LANE0+126} V${cy} H${EXTX-6}`,class:"tun dash",stroke:col,"stroke-width":1.7},g2t);
     hot(base,()=>{const st=stats[e.id]||{};return[`${e.iface} → ${tn.label}`,
       `allowed ${e.allowed} · ${hsLabel(st.hs)} · undocumented terminus · click to focus`]});
-    clickFocus(base,e.iface);
+    clickFocus(base,fk);
   }
   for(const [oid,{tn,sp,edges}] of hopBy){
     const bw2=Math.max(200,tn.label.length*7+26);
-    const g2=mk("g",{},gn); g2.dataset.ifs=edges.map(e=>e.iface).join("|");
+    const g2=mk("g",{},gn); g2.dataset.ifs=edges.map(e=>hopKey(e,hub)).join("|");
     g2.dataset.nodes=JSON.stringify([oid]);g2.dataset.eids=JSON.stringify(edges.map(e=>e.id));
     const bx2=nodeCard(g2,{x:64,y:hy,w:bw2,h:52,node:tn,cls:tn.kind==="vm"?"vmb":""});
     hot(bx2,()=>[tn.label,`${tn.kind}${tn.dc?" · "+tn.dc:""}`]);
@@ -834,14 +877,14 @@ function drawHops({gn,gd,gt,gf,grp},geo,N,hub,{hops,startY,epPos,bandPos,topPos}
     const chipR=64+bw2;
     let below=0;
     edges.forEach((e,k)=>{
-      const col=ifColor(e.iface), cy2=hy+18+k*16;
-      const g2d=grp(gd,e.iface,{nodes:[oid],eids:e.id}), g2t=grp(gt,e.iface,{eids:e.id}),
-        g2f=grp(gf,e.iface,{eids:e.id});
+      const col=ifColor(e.iface), hk=hopKey(e,hub), cy2=hy+18+k*16;
+      const g2d=grp(gd,hk,{nodes:[oid],eids:e.id}), g2t=grp(gt,hk,{eids:e.id}),
+        g2f=grp(gf,hk,{eids:e.id});
       const dd=statusDot(g2d,{cx:chipR,cy:cy2,eid:e.id,col,title:`${e.iface} · ${tn.label}`});
-      clickFocus(dd,e.iface);
+      clickFocus(dd,hk);
       mk("circle",{cx:sp.inX,cy:sp.rowY+16+k*12,r:5,fill:col,class:"pdot"},g2d);
       const d=`M${chipR+6},${cy2} H${EPX-38-k*10} V${sp.rowY+16+k*12} H${sp.inX-6}`;
-      tunnelRun(g2t,g2f,{d,col,edge:e,iface:e.iface,title:`${e.iface} ↔ ${tn.label}`});
+      tunnelRun(g2t,g2f,{d,col,edge:e,iface:hk,title:`${e.iface} ↔ ${tn.label}`});
       // reach: onto an existing zone band when drawn there, else a chip below
       cidrs(e.allowed).forEach(c=>{
         const positions=bandPos.get(c)||[];
@@ -945,9 +988,19 @@ function focusClosure(seed){
   // A hub iface name such as wg0 can also exist on unrelated remote hosts. Keep
   // only the edges attached to this topology's hub, so the selection stays one
   // tunnel instead of every tunnel that happens to share the name.
-  const hubOwns=(hub.ifaces||[]).some(i=>i.name===seed);
+  // A seed may be scoped as "host/iface". Interface names are chosen per host, so
+  // a bare name cannot address a tunnel between two remote hosts when the hub
+  // happens to use the same name: the guard below drops it, and nothing else
+  // selects it, leaving the tunnel unreachable by any filter. Two of this
+  // fleet's nineteen edges were in that state.
+  const slash=seed.lastIndexOf("/");
+  const scopeHost=slash>0?seed.slice(0,slash):"";
+  const seedIf=scopeHost?seed.slice(slash+1):seed;
+
+  const hubOwns=!scopeHost&&(hub.ifaces||[]).some(i=>i.name===seedIf);
   for(const e of E){
-    if(e.iface!==seed)continue;
+    if(e.iface!==seedIf)continue;
+    if(scopeHost&&e.source!==scopeHost&&e.target!==scopeHost)continue;
     if(hubOwns&&e.source!==hub.id&&e.target!==hub.id)continue;
     result.edges.add(e.id);
     result.nodes.add(e.source);result.nodes.add(e.target);
