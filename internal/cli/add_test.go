@@ -201,3 +201,54 @@ func TestDCFieldChoosesWidgetFromKnownLabels(t *testing.T) {
 		t.Errorf("dcField returned %T in both cases; the widget must differ", empty)
 	}
 }
+
+// Extra addresses are what `vctl ssh --server <ip>` matches on and what the
+// WireGuard view resolves endpoints through, so a typo here produces a host
+// that looks registered and cannot be found by address.
+func TestValidateServerChecksExtraAddresses(t *testing.T) {
+	base := store.Server{Hostname: "web-01", IP: "192.0.2.10", User: "ubuntu", DC: "seoul-onprem", Port: 22}
+
+	bad := base
+	bad.ExtraIPs = []string{"192.0.2.11", "not-an-ip"}
+	err := validateServer(context.Background(), nil, bad)
+	if err == nil {
+		t.Fatal("accepted an unparseable extra address")
+	}
+	if !strings.Contains(err.Error(), "not-an-ip") {
+		t.Errorf("error %q does not name the bad value", err)
+	}
+
+	// Repeating the primary is not an error Postgres would raise — extra_ips is
+	// just an array — but it makes the listing claim a second address the host
+	// does not separately answer on.
+	dup := base
+	dup.ExtraIPs = []string{base.IP}
+	if err := validateServer(context.Background(), nil, dup); err == nil {
+		t.Error("accepted an extra address identical to --ip")
+	}
+
+	ok := base
+	ok.ExtraIPs = []string{"192.0.2.11", " 192.0.2.12 "}
+	if err := validateServer(context.Background(), nil, ok); err != nil {
+		t.Errorf("rejected valid extra addresses: %v", err)
+	}
+}
+
+// The form takes one line because it cannot repeat a field the way a flag
+// repeats. A pasted list usually carries stray whitespace and a trailing comma,
+// and turning those into empty addresses would store rows nothing matches.
+func TestSplitIPListDropsBlanksAndTrims(t *testing.T) {
+	got := splitIPList(" 10.0.0.1 ,10.0.0.2,, 10.0.0.3 ,")
+	want := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+	if len(got) != len(want) {
+		t.Fatalf("splitIPList = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("splitIPList = %v, want %v", got, want)
+		}
+	}
+	if got := splitIPList("  , ,"); len(got) != 0 {
+		t.Errorf("splitIPList(blank) = %v, want empty", got)
+	}
+}

@@ -70,7 +70,11 @@ leaves ssh_user, dc and jump_via as entered here.`,
 					ui.Successf(os.Stdout, "updated %s (%s)", sv.Hostname, sv.IP)
 					return nil
 				}
-				ui.Successf(os.Stdout, "added %s (%s) in %s", sv.Hostname, sv.IP, sv.DC)
+				addr := sv.IP
+				if n := len(sv.ExtraIPs); n > 0 {
+					addr = fmt.Sprintf("%s (+%d)", sv.IP, n)
+				}
+				ui.Successf(os.Stdout, "added %s (%s) in %s", sv.Hostname, addr, sv.DC)
 				ui.Infof(os.Stdout, "connect with: vctl ssh %s", sv.Hostname)
 				return nil
 			})
@@ -84,6 +88,11 @@ leaves ssh_user, dc and jump_via as entered here.`,
 	f.StringVar(&sv.JumpVia, "jump", "", "jump host (an existing inventory hostname); empty means direct")
 	f.IntVar(&sv.Port, "port", 22, "SSH port")
 	f.StringVar(&sv.CARole, "ca-role", "sre-core", "Vault SSH CA role")
+	// Repeatable rather than comma-separated. A --extra-ip that swallowed a list
+	// would have to define what a bad element does — reject the whole flag, or
+	// drop it — and repeating the flag makes each address its own argument that
+	// shells complete and quote on their own.
+	f.StringSliceVar(&sv.ExtraIPs, "extra-ip", nil, "additional address the host answers on (repeatable)")
 	f.BoolVar(&force, "force", false, "if the hostname exists, refresh it instead of failing")
 	return gate(cmd, "add", classMutate)
 }
@@ -113,6 +122,7 @@ func completeServer(ctx context.Context, st inventoryLister, sv *store.Server) e
 	// inventory ends up with "seoul-onprem", "seoul_onprem" and "Seoul" as three
 	// places, and grouped listings then show the same site three times.
 	dcs := knownDCs(ctx, st)
+	extraIPs := strings.Join(sv.ExtraIPs, ", ")
 
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title("Hostname").
@@ -133,6 +143,20 @@ func completeServer(ctx context.Context, st inventoryLister, sv *store.Server) e
 		huh.NewInput().Title("Jump host").
 			Description("leave empty for a direct connection").
 			Value(&sv.JumpVia),
+		// One line, comma separated: a form cannot repeat a field the way a flag
+		// repeats, and asking "another address? y/n" in a loop is worse than
+		// letting someone paste what they already have.
+		huh.NewInput().Title("Other addresses").
+			Description("comma separated; VIPs or extra NICs. leave empty if none").
+			Value(&extraIPs).
+			Validate(func(s string) error {
+				for _, e := range splitIPList(s) {
+					if net.ParseIP(e) == nil {
+						return fmt.Errorf("%q is not an IP address", e)
+					}
+				}
+				return nil
+			}),
 	))
 	if err := form.Run(); err != nil {
 		return err
@@ -142,7 +166,21 @@ func completeServer(ctx context.Context, st inventoryLister, sv *store.Server) e
 	sv.User = strings.TrimSpace(sv.User)
 	sv.DC = strings.TrimSpace(sv.DC)
 	sv.JumpVia = strings.TrimSpace(sv.JumpVia)
+	sv.ExtraIPs = splitIPList(extraIPs)
 	return nil
+}
+
+// splitIPList reads the comma separated form field. Blank entries are dropped
+// rather than becoming empty addresses, because a trailing comma is what a
+// pasted list usually ends with.
+func splitIPList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // dcField offers the existing labels when there are any, and falls back to free
@@ -210,6 +248,18 @@ func validateServer(ctx context.Context, st inventoryLister, sv store.Server) er
 	}
 	if sv.Port <= 0 || sv.Port > 65535 {
 		return fmt.Errorf("invalid --port: %d", sv.Port)
+	}
+	// Extra addresses are what `vctl ssh --server <ip>` matches on, and what the
+	// WireGuard view resolves endpoints through. An unparseable one is stored as
+	// an inet[] element by Postgres or rejected outright depending on the value,
+	// so it is checked here where the operator can still fix the typo.
+	for _, e := range sv.ExtraIPs {
+		if net.ParseIP(strings.TrimSpace(e)) == nil {
+			return fmt.Errorf("invalid --extra-ip: %q", e)
+		}
+		if strings.TrimSpace(e) == sv.IP {
+			return fmt.Errorf("--extra-ip %q repeats --ip", e)
+		}
 	}
 	if sv.JumpVia == "" {
 		return nil
