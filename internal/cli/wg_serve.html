@@ -68,6 +68,9 @@
   .status-key span{display:inline-flex;align-items:center;gap:5px}
   .status-key i{width:6px;height:6px;border-radius:50%;background:currentColor}
   .status-key .up{color:var(--ok)} .status-key .idle{color:var(--warn)} .status-key .down{color:var(--crit)}
+  /* Unobserved is grey on purpose: it is the absence of a reading, not a bad
+     one, and colouring it like a fault would invent information. */
+  .status-key .unk{color:var(--muted)}
   .view-controls{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
   .view-controls button{appearance:none;width:30px;height:28px;border:0;border-left:1px solid var(--line);
     background:var(--panel2);color:var(--ink2);font:600 12px/1 inherit;cursor:pointer}
@@ -158,7 +161,12 @@
   <span id="selection"><b></b> selected <button type="button" aria-label="clear selection">×</button></span>
   <span class="tool-spacer"></span>
   <div class="status-key" aria-label="tunnel state legend">
-    <span class="up"><i></i>active</span><span class="idle"><i></i>idle</span><span class="down"><i></i>down</span>
+    <!-- The old key was active/idle/down, and "down" stood for three different
+         things: never handshook, nobody asked, or the gateway was unreachable.
+         Each needs a different response, so each gets its own word. -->
+    <span class="up"><i></i>active</span><span class="idle"><i></i>idle</span
+    ><span class="down"><i></i>never</span><span class="idle"><i></i>stale</span
+    ><span class="unk"><i></i>unobserved</span><span class="down"><i></i>poll error</span>
   </div>
   <div class="view-controls" aria-label="zoom">
     <button type="button" id="zoom-fit" title="fit to screen">FIT</button>
@@ -186,6 +194,49 @@ const ifColor=i=>{if(!ifColMap.has(i))ifColMap.set(i,cssv(PALETTE[ifColMap.size%
 const fmtRate=b=>{if(!b||b<1)return"·";const k=1024;return b>=k*k?(b/k/k).toFixed(1)+"M/s":b>=k?(b/k).toFixed(1)+"K/s":b.toFixed(0)+"B/s"};
 const hsState=s=>s==null||s<0?"crit":s<=180?"ok":"warn";
 const hsLabel=s=>s==null||s<0?"no-handshake":s<=180?`up · ${s}s`:`idle · ${Math.round(s/60)}m`;
+
+// POLL_STALE_SECONDS is how long a tunnel's newest sample may age before it stops
+// counting as observed. Pollers run every few seconds, so anything past a minute
+// means this tunnel's gateway has gone quiet even if others are reporting.
+const POLL_STALE_SECONDS=60;
+
+// Six states, because "down" was answering three different questions at once:
+// the tunnel never handshook, or nobody asked it, or the gateway could not be
+// reached. Those need different responses and used to look identical.
+//
+//   active   recent handshake
+//   idle     polled, handshake is old
+//   never    polled, no handshake has ever completed
+//   stale    the newest sample for this tunnel has aged out
+//   unknown  no poll has attributed anything here yet
+//   error    a gateway on this tunnel failed to poll
+const TUNNEL_STATES=["active","idle","never","stale","unknown","error"];
+const STATE_CLS={active:"ok",idle:"warn",never:"crit",stale:"warn",unknown:"muted",error:"crit"};
+
+// edgeHosts is the gateways a tunnel runs between. Both ends when the edge
+// carries them; otherwise the node ids, which for gateways are the hostnames.
+function edgeHosts(e){
+  const hs=[];
+  if(e.a&&e.a.host)hs.push(e.a.host);
+  if(e.b&&e.b.host)hs.push(e.b.host);
+  if(!hs.length){for(const id of [e.source,e.target])if(id&&!id.includes("|"))hs.push(id);}
+  return hs;
+}
+function tunnelState(e){
+  // A failed poll outranks everything. Whatever the last sample said, we do not
+  // currently know — reporting the stale value as fact is how a dead gateway
+  // reads as healthy.
+  for(const h of edgeHosts(e))if(pollErrors[h])return"error";
+  const st=stats[e.id];
+  if(!st)return"unknown";
+  // Newest sample across both ends. `at` is absent on older payloads, in which
+  // case age cannot be judged and the handshake is taken at face value.
+  let newest=0;
+  for(const k in (st.sides||{})){const a=st.sides[k].at||0;if(a>newest)newest=a;}
+  if(newest&&frameAt&&frameAt-newest>POLL_STALE_SECONDS)return"stale";
+  if(st.hs==null||st.hs<0)return"never";
+  return st.hs<=180?"active":"idle";
+}
 const zoneKey=dc=>dc?String(dc).split("-")[0]:"etc";
 const ifCmp=(a,b)=>{const m=x=>/^(.*?)(\d*)$/.exec(String(x));const A=m(a),B=m(b);
   return A[1]===B[1]?(parseInt(A[2]||"-1")-parseInt(B[2]||"-1")):(A[1]<B[1]?-1:1)};
@@ -193,6 +244,9 @@ const kindLabel=k=>({"gateway":"WG HUB","physical-host":"PHYSICAL HOST",vm:"VIRT
   device:"DEVICE",external:"EXTERNAL PEER"}[k]||String(k||"ENDPOINT").replaceAll("-"," ").toUpperCase());
 const svg=document.getElementById("net"), tip=document.getElementById("tip"), canvas=document.getElementById("canvas");
 let stats={}, tunnels=[], statusDots=new Map(), curTopo=null, focusIf=null;
+// Poll outcome, kept beside the samples. "no traffic" and "we could not ask"
+// used to arrive as the same absence.
+let pollErrors={}, frameAt=0;
 let focusIfaces=new Set(),focusNodes=new Set(),focusEdges=new Set(),focusHubIfaces=new Set();
 let focusCIDRs=new Set();
 let vipFocusNodes=new Map();
@@ -919,19 +973,45 @@ function applyStats(){
       t.base.setAttribute("stroke-width",Math.min(4.6,2+Math.log10(r+1)*.5));
     }else t.fl.classList.remove("on");
   }
+  const stateOf=new Map();
+  for(const e of ((curTopo&&curTopo.edges)||[]))stateOf.set(e.id,tunnelState(e));
   for(const [eid,dot] of statusDots){
-    const st=stats[eid]; if(!st)continue;
-    const c=cssv("--"+hsState(st.hs));
+    // Draw every dot, including tunnels nothing reported. Skipping them left the
+    // previous frame's colour on screen, so an unobserved tunnel kept whatever
+    // it last looked like — which is the opposite of saying "we do not know".
+    const c=cssv("--"+(STATE_CLS[stateOf.get(eid)||"unknown"]||"muted"));
     dot.setAttribute("stroke",c);
     dot.style.filter=`drop-shadow(0 0 3px ${c})`;
   }
-  const vals=Object.values(stats), active=vals.filter(s=>s.hs>=0&&s.hs<=180).length;
-  const idle=vals.filter(s=>s.hs>180).length, down=vals.filter(s=>s.hs==null||s.hs<0).length;
+  // Count over every tunnel in the topology, not over the samples that arrived.
+  //
+  // This used to read Object.values(stats), which holds only tunnels a poll has
+  // reached. A fleet where 12 of 30 tunnels were observed and all 12 looked fine
+  // rendered as "12 active" — the other 18 were missing from the numerator and
+  // from the denominator, so the screen was silent about them. Absence was the
+  // one thing it could not say.
+  const edges=(curTopo&&curTopo.edges)||[];
+  const n={}; for(const s of TUNNEL_STATES)n[s]=0;
+  for(const e of edges)n[tunnelState(e)]++;
+
   const live=document.getElementById("live-summary");
-  live.className="live-summary "+(down?"warn":active?"ok":"");
-  live.querySelector("span").textContent=vals.length
-    ?`${active} active · ${idle} idle${down?` · ${down} down`:""}`
-    :"waiting for tunnel state";
+  const observed=n.active+n.idle+n.never;
+  // Order the parts by what a reader needs first: what is wrong, then what is
+  // unknown, then what is fine.
+  const parts=[];
+  if(n.error)parts.push(`${n.error} poll error`);
+  if(n.stale)parts.push(`${n.stale} stale`);
+  if(n.unknown)parts.push(`${n.unknown} unobserved`);
+  if(n.never)parts.push(`${n.never} never`);
+  if(n.idle)parts.push(`${n.idle} idle`);
+  if(n.active)parts.push(`${n.active} active`);
+  live.className="live-summary "+(n.error?"warn":(n.stale||n.unknown)?"warn":n.active?"ok":"");
+  live.querySelector("span").textContent=edges.length
+    // The coverage fraction is the honest headline: how much of the graph this
+    // reading actually covers.
+    ? `observed ${observed}/${edges.length} · ${parts.join(" · ")}`
+    : "waiting for tunnel state";
+  live.title=TUNNEL_STATES.map(s=>`${s}: ${n[s]}`).join("\n");
 }
 // TOPOLOGY_STALE_SECONDS is when a snapshot stops describing the network well
 // enough to trust. `vctl wg sync` runs on no timer, so this is not a missed
@@ -986,7 +1066,8 @@ document.addEventListener("keydown",ev=>{
 if(BOOT){
   render(BOOT.topology);
   const frames=BOOT.frames||[]; let fi=0;
-  const ap=()=>{stats=frames.length?frames[fi%frames.length]:{};updateMeta(BOOT.topology,Date.now()/1000);applyStats();fi++;};
+  const ap=()=>{stats=frames.length?frames[fi%frames.length]:{};pollErrors={};frameAt=Date.now()/1000;
+    updateMeta(BOOT.topology,frameAt);applyStats();fi++;};
   ap(); if(frames.length>1)setInterval(ap,2000);
   document.getElementById("health").textContent="demo replay";
 }else{
@@ -994,7 +1075,11 @@ if(BOOT){
     render(topo);
     const es=new EventSource("events");
     es.onmessage=ev=>{
+      // Errors and the frame time are inputs to tunnelState, so they have to be
+      // in place before applyStats runs — otherwise a failed gateway's tunnels
+      // keep rendering their last sample as if it were current.
       const d=JSON.parse(ev.data); stats=d.edges||{};
+      pollErrors=d.errors||{}; frameAt=d.at||0;
       updateMeta(topo,d.at); applyStats();
       const errN=Object.keys(d.errors||{}).length, h=document.getElementById("health");
       h.className="health "+(errN?"fail":"ok");
