@@ -355,7 +355,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl exec -- <cmd>` | `VAULT_TOKEN` と `VAULT_ADDR` を渡して子プロセスを実行する |
 | `vctl agent [--sink <path>]` | トークンを生かし続け、シンクファイルに書き出す |
 | `vctl ssh [host\|user@addr] [--server <host>]` | 完全一致、あいまい一致、IP、対話的な選択で接続する(ピッカーは ←/→ で DC フィルタ)。`--server` は完全一致または IP で解決し、非対話的に接続する(スクリプト/エージェント向け). `user@addr` 形式はインベントリを経由せずアドレスへ直接接続する |
-| `vctl list [--dc <dc>]` | インベントリのホストを一覧表示する(プライマリ + 追加 IP、liveness/agent 状態) |
+| `vctl list [--dc <dc>]` | インベントリのホストを一覧表示する(プライマリ + 追加 IP、非標準 SSH ポート、liveness/agent 状態) |
 | `vctl add [flags]` | `sync` が発見できないホストをインベントリに登録する。フラグなしで実行するとフォームで入力する |
 | `vctl edit [host] [flags]` | `sync` が上書きしないフィールドを変更する — dc・ssh user・踏み台・追加 IP・ホスト名。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
 | `vctl delete [host] [--yes]` | 廃止したホストを削除する。監査履歴は残る。このホストを経由するホストがあれば削除を拒否する。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
