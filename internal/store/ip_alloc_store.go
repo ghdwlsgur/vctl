@@ -96,6 +96,22 @@ func (s *Store) IPAllocUpsert(ctx context.Context, a IPAllocation) error {
 	return err
 }
 
+// IPAllocSetOwnerKey records which WireGuard endpoint an address fronts, and
+// touches nothing else.
+//
+// Deliberately not folded into IPAllocUpsert. That one writes every column from
+// the struct it is handed, which is right for `vctl ip set` — the caller supplies
+// the whole row — and wrong here: binding a VIP to an endpoint is a single fact,
+// and routing it through a full upsert would make anyone stating it also restate
+// owner, project, rack and note, where one omission silently blanks good data.
+//
+// An empty key clears the binding, which is how a wrong one is undone.
+// Returns whether the address exists.
+func (s *Store) IPAllocSetOwnerKey(ctx context.Context, ip, publicKey string) (bool, error) {
+	return s.execMatched(ctx,
+		`UPDATE ip_allocations SET owner_public_key=$2, updated_at=now() WHERE ip=$1`, ip, publicKey)
+}
+
 // IPAllocDelete removes one allocation by IP. Idempotent.
 func (s *Store) IPAllocDelete(ctx context.Context, ip string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM ip_allocations WHERE ip=$1`, ip)

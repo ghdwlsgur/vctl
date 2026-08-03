@@ -31,6 +31,12 @@ var wgServeHTML []byte
 type wgIface struct {
 	Name string `json:"name"`
 	Port int    `json:"port"`
+
+	// PubKey is this interface's own key. A gateway has one per interface, not
+	// one per host: sre-lb runs wg1 and wg-personal with different keys, and a
+	// single key on the node meant whichever sorted first was the only one a VIP
+	// could be matched against.
+	PubKey string `json:"pub,omitempty"`
 }
 
 // wgNode is one vertex in the dashboard graph: a collected gateway interface's
@@ -47,9 +53,10 @@ type wgNode struct {
 	Warnings []string  `json:"warnings,omitempty"`
 	Ifaces   []wgIface `json:"ifaces,omitempty"` // gateway interfaces, name-sorted
 
-	// PubKey is the endpoint's WireGuard public key — its identity everywhere
-	// else in this schema. Carried so a VIP can point at the endpoint it fronts
-	// by key rather than by a substring of its display label.
+	// PubKey is the endpoint's first interface key, kept for callers that want a
+	// single identity for the node. It is not the whole story — a gateway has a
+	// key per interface, and Ifaces carries all of them. Matching a VIP against
+	// this alone missed every interface but the first.
 	PubKey string `json:"pub,omitempty"`
 
 	// SeenAs lists the hostnames this endpoint was observed under when there is
@@ -312,7 +319,7 @@ func newWGTopologyBuilder(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow
 	}
 	for _, i := range ifaces {
 		b.gwHosts[i.Host] = true
-		b.ifByHost[i.Host] = append(b.ifByHost[i.Host], wgIface{Name: i.Iface, Port: i.ListenPort})
+		b.ifByHost[i.Host] = append(b.ifByHost[i.Host], wgIface{Name: i.Iface, Port: i.ListenPort, PubKey: i.PublicKey})
 	}
 	// Name-sorted so the dashboard's port order is stable across polls.
 	for h := range b.ifByHost {
@@ -406,6 +413,14 @@ func (b *wgTopologyBuilder) enrichEndpoint(n wgNode, a store.WGEndpointAnnotatio
 func (b *wgTopologyBuilder) addGateways() {
 	hosts := make([]string, 0, len(b.gwHosts))
 	for host := range b.gwHosts {
+		// One machine reachable under two inventory names produced two gateway
+		// nodes for one box — the graph drew sre-lb and sre-srv-0049 side by
+		// side, each with the same interfaces and keys. The endpoint index
+		// already knows they are the same; this is where that has to be applied,
+		// or every later phase works from a duplicated host list.
+		if c := b.canonicalHost(host); c != host {
+			continue
+		}
 		hosts = append(hosts, host)
 	}
 	sort.Strings(hosts)
@@ -435,6 +450,39 @@ func (b *wgTopologyBuilder) addGateways() {
 // collected interface is one gateway↔gateway tunnel; everything else becomes an
 // external node hanging off its gateway. Either way the tunnel is mapped into
 // edgeFor so the pollers can attribute live rates to the right edge.
+// canonicalHost maps an inventory name to the one this graph draws the machine
+// under.
+//
+// A host is an alias when every one of its interfaces was also observed under
+// another name with the same key — a VIP and the box it lives on. The canonical
+// pick comes from the endpoint index, so it is the same choice edges and nodes
+// both make; deciding it twice is how the two used to disagree.
+//
+// A host that merely shares one key stays its own node. Two machines with one
+// shared interface are still two machines.
+func (b *wgTopologyBuilder) canonicalHost(host string) string {
+	ifs := b.ifByHost[host]
+	if len(ifs) == 0 {
+		return host
+	}
+	canon := ""
+	for _, i := range ifs {
+		ref, ok := b.endpoints.lookup(i.PubKey)
+		if !ok || b.endpoints.conflicts[i.PubKey] {
+			return host // unknown or genuinely conflicting: do not merge
+		}
+		if canon == "" {
+			canon = ref.host
+		} else if canon != ref.host {
+			return host // its interfaces point at different machines
+		}
+	}
+	if canon == "" {
+		return host
+	}
+	return canon
+}
+
 // localPubKey is the public key of the interface a peer row was collected on.
 // Empty when that interface was not collected, which tunnelEdgeID tolerates.
 func (b *wgTopologyBuilder) localPubKey(host, iface string) string {
@@ -459,8 +507,20 @@ func (b *wgTopologyBuilder) fillEdgeSide(id string, p store.WGPeerRow, localKey 
 			Host: p.Host, Iface: p.Iface, PubKey: localKey,
 			Allowed: strings.Join(p.AllowedIPs, ", "),
 		}
-		if e.A != nil && e.A.Host == p.Host && e.A.Iface == p.Iface {
-			return // the same side reported twice; nothing new
+		// Compare by public key, not by hostname.
+		//
+		// A machine reachable under two inventory names is polled twice and both
+		// rows carry the same key. Matching on host+iface said "different side"
+		// for the alias, so it took B — and the real far end, arriving later,
+		// found B occupied and was dropped. In this fleet that made the
+		// wg-personal tunnel render with sre-lb on both ends and
+		// wireguard-personal-incheon nowhere, which is the opposite of what the
+		// wire says.
+		//
+		// The key is the identity. Two observations sharing one are one side of
+		// the tunnel however many hostnames they arrived under.
+		if e.A != nil && e.A.PubKey == localKey {
+			return // the same endpoint, re-collected under another name
 		}
 		if e.B == nil {
 			e.B = side
@@ -509,9 +569,15 @@ func (b *wgTopologyBuilder) addPeerEdges() {
 				continue
 			}
 			edgeSeen[id] = true
+			// Source/Target name nodes, and only canonical hosts have nodes now.
+			// Whichever alias a peer row happened to be collected under, the edge
+			// has to point at the box the graph actually drew — otherwise the
+			// endpoint sorted first wins and the edge dangles.
 			e := wgEdge{
-				ID: id, Source: p.Host, Target: far.host,
-				Iface: p.Iface, Allowed: strings.Join(p.AllowedIPs, ", "),
+				ID:     id,
+				Source: b.canonicalHost(p.Host),
+				Target: b.canonicalHost(far.host),
+				Iface:  p.Iface, Allowed: strings.Join(p.AllowedIPs, ", "),
 				A: &wgEdgeSide{
 					Host: p.Host, Iface: p.Iface, PubKey: localKey,
 					Allowed: strings.Join(p.AllowedIPs, ", "),
