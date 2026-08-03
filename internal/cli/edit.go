@@ -62,7 +62,11 @@ are written; with none, the fields are asked for interactively.`,
 				if err := e.validate(ctx, st, host); err != nil {
 					return err
 				}
-				return e.apply(ctx, st, host)
+				if err := e.apply(ctx, st, host); err != nil {
+					return err
+				}
+				warnAgentAfterRename(cur, e.Name)
+				return nil
 			})
 		},
 	}
@@ -142,6 +146,26 @@ func (e hostEdits) apply(ctx context.Context, st *store.Store, host string) erro
 	return nil
 }
 
+// warnAgentAfterRename says the one thing a rename cannot fix from here.
+//
+// node-agent is started with the inventory hostname baked into its systemd unit
+// (`vctl node-agent --hostname <name>`), because OS names do not match inventory
+// names. The database rename carries the heartbeat row, but the agent keeps
+// reporting under the old name on its next tick and UpsertServerStatus drops it
+// as unregistered. The host then reads as no-agent until the vctl_host Ansible
+// role runs again.
+//
+// Nothing here can reach the host to fix that, so the least it can do is not let
+// the operator find out ten minutes later from a listing. Hosts that never had
+// an agent are silent: there is no unit to update.
+func warnAgentAfterRename(cur store.InventoryRow, newName string) {
+	if newName == "" || cur.AgentSeen == nil {
+		return
+	}
+	ui.Warnf(os.Stderr, "node-agent on this host still reports as %s", cur.Hostname)
+	ui.Infof(os.Stderr, "re-run the vctl_host Ansible role against it, or its status goes stale")
+}
+
 // validate rejects edits the database would take but `vctl ssh` could not use,
 // mirroring what add checks at creation time.
 func (e hostEdits) validate(ctx context.Context, st inventoryLister, host string) error {
@@ -152,6 +176,14 @@ func (e hostEdits) validate(ctx context.Context, st inventoryLister, host string
 	}
 	if e.Name == host {
 		return fmt.Errorf("--name is the current hostname")
+	}
+	// servers.hostname is UNIQUE, so a taken name fails in the database with a
+	// constraint violation naming an index. Catching it here says which host
+	// already has the name, which is the thing the operator needs to know.
+	if e.Name != "" {
+		if _, err := findHost(ctx, st, e.Name); err == nil {
+			return fmt.Errorf("%q is already in the inventory", e.Name)
+		}
 	}
 	if e.JumpVia == "" || e.JumpVia == jumpDirect {
 		return nil
@@ -206,6 +238,7 @@ func jumpHostExists(ctx context.Context, st inventoryLister, jump string) error 
 // prompt asks which fields to change, seeded with what the host has now so the
 // operator edits rather than retypes.
 func (e *hostEdits) prompt(cur store.InventoryRow) error {
+	name := cur.Hostname
 	dc, user := cur.DC, cur.User
 	jump := cur.JumpVia
 	if jump == "" {
@@ -214,6 +247,9 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 	extra := strings.Join(cur.ExtraIPs, ", ")
 
 	form := huh.NewForm(huh.NewGroup(
+		// Last, not first. The name is the inventory key and the field least
+		// often being changed, so it should not be what the cursor lands on when
+		// someone opens the form to fix a datacenter label.
 		huh.NewInput().Title("Datacenter").Value(&dc).Validate(nonEmpty("datacenter")),
 		huh.NewInput().Title("SSH user").Value(&user).Validate(nonEmpty("user")),
 		huh.NewInput().Title("Jump host").
@@ -230,6 +266,10 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 				}
 				return nil
 			}),
+		huh.NewInput().Title("Hostname").
+			Description("renaming carries the agent heartbeat and jump chains; audit history keeps the old name").
+			Value(&name).
+			Validate(nonEmpty("hostname")),
 	))
 	if err := form.WithTheme(ui.FormTheme()).WithKeyMap(ui.FormKeyMap()).Run(); err != nil {
 		return err
@@ -254,6 +294,9 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 		} else {
 			e.ExtraIPs = got
 		}
+	}
+	if name = strings.TrimSpace(name); name != cur.Hostname {
+		e.Name = name
 	}
 	return nil
 }

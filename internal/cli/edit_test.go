@@ -67,6 +67,9 @@ func TestHostEditsValidateRejectsUnusableChanges(t *testing.T) {
 		{"자기 자신을 점프", hostEdits{JumpVia: "web-01"}, "itself"},
 		{"개명 후의 이름을 점프", hostEdits{Name: "web-09", JumpVia: "web-09"}, "itself"},
 		{"등록되지 않은 점프", hostEdits{JumpVia: "ghost-01"}, "not in the inventory"},
+		// servers.hostname is UNIQUE, so this otherwise fails in the database with
+		// a message naming an index instead of the host that already has the name.
+		{"이미 쓰이는 이름으로 개명", hostEdits{Name: "bastion-01"}, "already in the inventory"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
