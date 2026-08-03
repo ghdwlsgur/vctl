@@ -321,7 +321,7 @@ claude mcp add vctl -- vctl mcp
 
 | Command | Description |
 |---|---|
-| `vctl login [--method userpass\|oidc\|approle]` | Vault에 로그인하고 토큰을 캐시합니다 |
+| `vctl login [--method userpass\|oidc\|approle\|kubernetes]` | Vault에 로그인하고 토큰을 캐시합니다. `kubernetes`는 파드의 ServiceAccount 토큰을 교환하므로 클러스터 안 잡에는 심어둘 자격증명이 없습니다 |
 | `vctl token` | 갱신 또는 재인증 후 유효한 Vault 토큰을 출력합니다 |
 | `vctl exec -- <cmd>` | 자식 프로세스를 `VAULT_TOKEN`, `VAULT_ADDR`와 함께 실행합니다 |
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |

@@ -48,6 +48,7 @@ func Defaults() *Config {
 		SyncProbeConcurrency: 32,
 		DCRules:              syncx.DefaultDCRules(),
 		AppRoleMount:         "approle",
+		KubernetesMount:      "kubernetes",
 		AppRoleSelfRole:      "vctl-user",
 	}
 }

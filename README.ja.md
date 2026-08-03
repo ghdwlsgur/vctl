@@ -350,7 +350,7 @@ claude mcp add vctl -- vctl mcp
 
 | Command | Description |
 |---|---|
-| `vctl login [--method userpass\|oidc\|approle]` | Vault にログインしてトークンをキャッシュする |
+| `vctl login [--method userpass\|oidc\|approle\|kubernetes]` | Vault にログインしてトークンをキャッシュする。`kubernetes` は Pod の ServiceAccount トークンを交換するため、クラスタ内のジョブに保存する資格情報は不要 |
 | `vctl token` | 更新または再認証後に有効な Vault トークンを出力する |
 | `vctl exec -- <cmd>` | `VAULT_TOKEN` と `VAULT_ADDR` を渡して子プロセスを実行する |
 | `vctl agent [--sink <path>]` | トークンを生かし続け、シンクファイルに書き出す |

@@ -424,7 +424,7 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 
 | Command | Description |
 |---|---|
-| `vctl login [--method userpass\|oidc\|approle]` | Log in to Vault and cache the token |
+| `vctl login [--method userpass\|oidc\|approle\|kubernetes]` | Log in to Vault and cache the token. `kubernetes` exchanges a pod's ServiceAccount token, so in-cluster jobs need no stored credential |
 | `vctl token` | Print a valid Vault token after renewal or re-authentication |
 | `vctl exec -- <cmd>` | Run a child process with `VAULT_TOKEN` and `VAULT_ADDR` |
 | `vctl agent [--sink <path>]` | Keep a token alive and write it to sink files |
