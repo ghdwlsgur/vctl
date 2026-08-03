@@ -102,6 +102,38 @@ func TestMigrateRecordsEachFileAndSkipsItNextTime(t *testing.T) {
 	}
 }
 
+// The runner reports what it ran, because only the transaction that held the
+// lock knows. Asking the ledger afterwards answers for whoever migrated last,
+// which on a concurrent deploy is a different process.
+// Integration — needs VCTL_TEST_DSN.
+func TestMigrateReportsTheFilesItApplied(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	files, _ := embeddedMigrations()
+	victim := files[len(files)-1]
+
+	// Up to date: nothing to report.
+	ran, err := st.MigrateAsOwner(ctx, "")
+	if err != nil {
+		t.Fatalf("MigrateAsOwner: %v", err)
+	}
+	if len(ran) != 0 {
+		t.Errorf("an up-to-date database reported %v as applied", ran)
+	}
+
+	if _, err := st.pool.Exec(ctx,
+		`DELETE FROM schema_migrations WHERE version=$1`, victim.name); err != nil {
+		t.Fatalf("clear ledger row: %v", err)
+	}
+	ran, err = st.MigrateAsOwner(ctx, "")
+	if err != nil {
+		t.Fatalf("MigrateAsOwner: %v", err)
+	}
+	if len(ran) != 1 || ran[0] != victim.name {
+		t.Errorf("applied = %v, want just %s", ran, victim.name)
+	}
+}
+
 // A rollback leaves the ledger ahead of the binary: a newer build migrated the
 // database, then an older one was deployed. It finds a row for a file it does
 // not have.
@@ -251,7 +283,7 @@ func TestMigrateWaitsForTheAdvisoryLock(t *testing.T) {
 	blocked, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	start := time.Now()
-	if err := st.MigrateAsOwner(blocked, ""); err == nil {
+	if _, err := st.MigrateAsOwner(blocked, ""); err == nil {
 		_ = holder.Rollback(ctx)
 		t.Fatal("Migrate proceeded while another transaction held the migration lock")
 	}
@@ -267,7 +299,7 @@ func TestMigrateWaitsForTheAdvisoryLock(t *testing.T) {
 	}
 	free, cancel2 := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel2()
-	if err := st.MigrateAsOwner(free, ""); err != nil {
+	if _, err := st.MigrateAsOwner(free, ""); err != nil {
 		t.Fatalf("Migrate failed once the lock was free: %v", err)
 	}
 	var n int

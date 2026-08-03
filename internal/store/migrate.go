@@ -67,7 +67,8 @@ type AppliedMigration struct {
 
 // Migrate runs embedded migrations that have not been applied yet.
 func (s *Store) Migrate(ctx context.Context) error {
-	return s.MigrateAsOwner(ctx, "")
+	_, err := s.MigrateAsOwner(ctx, "")
+	return err
 }
 
 // MigrateAsOwner applies pending migrations, recording each in schema_migrations
@@ -105,55 +106,60 @@ func (s *Store) Migrate(ctx context.Context) error {
 // landed. Retrying would risk writing on top of a partial apply. This returns
 // the error and stops; re-running it deliberately, once somebody has looked, is
 // the recovery path.
-func (s *Store) MigrateAsOwner(ctx context.Context, owner string) error {
+// It returns the migrations it applied, in order — empty when the database was
+// already up to date. Only the transaction that held the lock knows which files
+// it ran; asking the ledger afterwards would answer for whoever migrated last,
+// which on a concurrent deploy is a different process.
+func (s *Store) MigrateAsOwner(ctx context.Context, owner string) ([]string, error) {
 	files, err := embeddedMigrations()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
 	if owner != "" {
 		if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+pgx.Identifier{owner}.Sanitize()); err != nil {
-			return fmt.Errorf("set migration owner %s: %w", owner, err)
+			return nil, fmt.Errorf("set migration owner %s: %w", owner, err)
 		}
 	}
 
 	// Bound the wait before taking the lock, or a stuck migrator turns this into
 	// an indefinite hang with no message.
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", migrateLockTimeout.Milliseconds())); err != nil {
-		return fmt.Errorf("set lock timeout: %w", err)
+		return nil, fmt.Errorf("set lock timeout: %w", err)
 	}
 	// Transaction-scoped: released on commit, on rollback, and on a dropped
 	// connection. A session-scoped lock would survive a crashed migrator and
 	// block every later one until somebody found it by hand.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
-		return fmt.Errorf("acquire migration lock (another migration may be running): %w", err)
+		return nil, fmt.Errorf("acquire migration lock (another migration may be running): %w", err)
 	}
 
 	if _, err := tx.Exec(ctx, schemaMigrationsDDL); err != nil {
-		return fmt.Errorf("create schema_migrations: %w", err)
+		return nil, fmt.Errorf("create schema_migrations: %w", err)
 	}
 	if _, err := tx.Exec(ctx, schemaMigrationsGrant); err != nil {
-		return fmt.Errorf("grant on schema_migrations: %w", err)
+		return nil, fmt.Errorf("grant on schema_migrations: %w", err)
 	}
 
 	applied, err := appliedChecksums(ctx, tx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
+	var ran []string
 	for _, f := range files {
 		if was, ok := applied[f.name]; ok {
 			if was != f.checksum {
 				// Editing an applied migration means the database and the file no
 				// longer describe the same schema, and nothing here can tell which
 				// one is right. Say so rather than guessing.
-				return fmt.Errorf(
+				return nil, fmt.Errorf(
 					"migration %s changed after it was applied (recorded %s, now %s): "+
 						"add a new migration instead of editing an applied one",
 					f.name, short(was), short(f.checksum))
@@ -161,15 +167,19 @@ func (s *Store) MigrateAsOwner(ctx context.Context, owner string) error {
 			continue
 		}
 		if _, err := tx.Exec(ctx, f.sql); err != nil {
-			return fmt.Errorf("migration %s: %w", f.name, err)
+			return nil, fmt.Errorf("migration %s: %w", f.name, err)
 		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)`,
 			f.name, f.checksum); err != nil {
-			return fmt.Errorf("record migration %s: %w", f.name, err)
+			return nil, fmt.Errorf("record migration %s: %w", f.name, err)
 		}
+		ran = append(ran, f.name)
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return ran, nil
 }
 
 // AppliedMigrations returns the ledger, oldest first. It is the answer to "what

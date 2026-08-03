@@ -368,7 +368,8 @@ claude mcp add vctl -- vctl mcp
 | `vctl session [<serial>\|--list\|--json]` | SSH セッション内で誰が何をしたかを表示する(ホストのカーネル監査タイムライン) |
 | `vctl cache status\|refresh\|clear` | Postgres 不通時に使うローカルインベントリスナップショットを確認・操作する |
 | `vctl status` | ログイン、SSH CA、インベントリ DB の接続性を確認する |
-| `vctl sync [--migrate] [--prefix sre]` | `~/.ssh/config` とプローブからインベントリを同期する |
+| `vctl sync [--prefix sre]` | `~/.ssh/config` とプローブからインベントリを同期する(`--migrate` は非推奨 — `vctl migrate` を使う) |
+| `vctl migrate [--status]` | 未適用のスキーママイグレーションを適用する。`schema_migrations` に名前と checksum で記録し、advisory lock で直列化する。`--status` は何も変更せず状況だけ表示する |
 | `vctl logout` | キャッシュされた Vault トークンを削除する |
 
 ## Configuration
