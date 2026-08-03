@@ -78,6 +78,29 @@ func ipCell(r store.InventoryRow, allIPs bool) string {
 	return first + " " + ui.Muted(fmt.Sprintf("(+%d)", len(r.Addresses)-1))
 }
 
+// stateCell renders what an operator declared about a host, and renders nothing
+// when that is "active".
+//
+// Same trade as the port: active is the overwhelming majority, and labelling
+// every row with it would bury the handful that are not. What is left is a
+// column that is blank unless somebody has something to say.
+//
+// The colours encode whether a down reading on that row is news. broken is red
+// because it is a fault; maintenance is amber because it is planned and
+// temporary; retired is muted because nothing is expected of it any more.
+func stateCell(state string) string {
+	switch store.StateOrActive(state) {
+	case store.StateBroken:
+		return ui.Fail(store.StateBroken)
+	case store.StateMaintenance:
+		return ui.Warn("maint")
+	case store.StateRetired:
+		return ui.Muted(store.StateRetired)
+	default:
+		return ""
+	}
+}
+
 // defaultSSHPort is the port a bare address implies, and the one worth omitting.
 const defaultSSHPort = 22
 
@@ -134,7 +157,7 @@ func renderInventory(w io.Writer, servers []store.InventoryRow, cached, allIPs b
 	// Keeping it separate meant every later index was off by one — widths[0] for
 	// the host, widths[j+1] for everything else — which is a standing invitation
 	// to misalign a column while adding one.
-	cells := make([][]string, len(servers)) // host, agent, ip, user, jump
+	cells := make([][]string, len(servers)) // host, agent, state, ip, user, jump
 	for i, s := range servers {
 		jump := s.JumpVia
 		if jump == "" {
@@ -143,6 +166,10 @@ func renderInventory(w io.Writer, servers []store.InventoryRow, cached, allIPs b
 		cells[i] = []string{
 			ui.Truncate(s.Hostname, 40),
 			agentCell(s, cached),
+			// Next to the agent column on purpose: the pair is the whole point.
+			// "no-agent" beside "broken" is a filed fault; "no-agent" beside a
+			// blank state is a host nobody has looked at.
+			stateCell(s.State),
 			ipCell(s, allIPs),
 			s.User,
 			jump,

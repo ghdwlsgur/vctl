@@ -49,7 +49,7 @@ are written; with none, the fields are asked for interactively.`,
 				host := cur.Hostname
 				if e.empty() {
 					if !term.IsTerminal(int(os.Stdin.Fd())) {
-						return fmt.Errorf("nothing to change: pass at least one of --dc, --user, --jump, --extra-ip, --name")
+						return fmt.Errorf("nothing to change: pass at least one of --dc, --user, --jump, --extra-ip, --name, --state")
 					}
 					if err := e.prompt(cur); err != nil {
 						return err
@@ -75,6 +75,7 @@ are written; with none, the fields are asked for interactively.`,
 	f.StringVar(&e.User, "user", "", "SSH login user")
 	f.StringVar(&e.JumpVia, "jump", "", `jump host; pass "direct" to clear it`)
 	f.StringVar(&e.Name, "name", "", "rename the host (jump chains that point at it are repointed)")
+	f.StringVar(&e.State, "state", "", "operator-declared state: "+strings.Join(store.HostStates, "|"))
 	f.StringSliceVar(&e.ExtraIPs, "extra-ip", nil, "replace the extra addresses (repeatable; pass none to clear)")
 	f.BoolVar(&e.clearIPs, "clear-extra-ips", false, "remove every extra address")
 	return gate(cmd, "edit", classMutate)
@@ -89,12 +90,13 @@ type hostEdits struct {
 	User     string
 	JumpVia  string
 	Name     string
+	State    string
 	ExtraIPs []string
 	clearIPs bool
 }
 
 func (e hostEdits) empty() bool {
-	return e.DC == "" && e.User == "" && e.JumpVia == "" && e.Name == "" &&
+	return e.DC == "" && e.User == "" && e.JumpVia == "" && e.Name == "" && e.State == "" &&
 		len(e.ExtraIPs) == 0 && !e.clearIPs
 }
 
@@ -120,6 +122,10 @@ func (e hostEdits) apply(ctx context.Context, st *store.Store, host string) erro
 			fmt.Sprintf("extra-ips=%d", len(ips)),
 			func() (bool, error) { return st.SetExtraIPs(ctx, host, ips) },
 		})
+	}
+	if e.State != "" {
+		state := e.State
+		steps = append(steps, step{"state=" + state, func() (bool, error) { return st.SetState(ctx, host, state) }})
 	}
 	if e.JumpVia != "" {
 		jump := e.JumpVia
@@ -173,6 +179,12 @@ func (e hostEdits) validate(ctx context.Context, st inventoryLister, host string
 		if net.ParseIP(strings.TrimSpace(ip)) == nil {
 			return fmt.Errorf("invalid --extra-ip: %q", ip)
 		}
+	}
+	// Reject an unknown state before any other step writes. The database has the
+	// same constraint, but hitting it mid-apply would leave the earlier edits
+	// committed and report a check-constraint name instead of the valid words.
+	if e.State != "" && !store.ValidState(e.State) {
+		return fmt.Errorf("unknown --state %q (want one of %s)", e.State, strings.Join(store.HostStates, ", "))
 	}
 	if e.Name == host {
 		return fmt.Errorf("--name is the current hostname")
@@ -239,6 +251,7 @@ func jumpHostExists(ctx context.Context, st inventoryLister, jump string) error 
 // operator edits rather than retypes.
 func (e *hostEdits) prompt(cur store.InventoryRow) error {
 	name := cur.Hostname
+	state := store.StateOrActive(cur.State)
 	dc, user := cur.DC, cur.User
 	jump := cur.JumpVia
 	if jump == "" {
@@ -266,6 +279,13 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 				}
 				return nil
 			}),
+		// A Select, not free text: the database constrains the column, and typing
+		// "down" into a field that only takes these four should fail at the form
+		// rather than after the other edits have already been written.
+		huh.NewSelect[string]().Title("State").
+			Description("what you are declaring; liveness stays observed and is shown next to it").
+			Options(stateOptions()...).
+			Value(&state),
 		huh.NewInput().Title("Hostname").
 			Description("renaming carries the agent heartbeat and jump chains; audit history keeps the old name").
 			Value(&name).
@@ -298,7 +318,30 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 	if name = strings.TrimSpace(name); name != cur.Hostname {
 		e.Name = name
 	}
+	if state != store.StateOrActive(cur.State) {
+		e.State = state
+	}
 	return nil
+}
+
+// stateOptions labels each state with what it means for the listing, because
+// the words alone do not say which of them silence a red row and which do not.
+//
+// Nothing here marks the current value: the field is bound to a variable already
+// holding it, and huh selects the option matching that. Setting it twice would
+// be two mechanisms for one behaviour, and they can disagree.
+func stateOptions() []huh.Option[string] {
+	desc := map[string]string{
+		store.StateActive:      "expected up — a down reading here is a problem",
+		store.StateMaintenance: "planned window — down is expected and temporary",
+		store.StateBroken:      "known faulty — somebody diagnosed it",
+		store.StateRetired:     "decommissioned, kept for its history",
+	}
+	opts := make([]huh.Option[string], 0, len(store.HostStates))
+	for _, s := range store.HostStates {
+		opts = append(opts, huh.NewOption(s+"  "+desc[s], s))
+	}
+	return opts
 }
 
 func sameStrings(a, b []string) bool {

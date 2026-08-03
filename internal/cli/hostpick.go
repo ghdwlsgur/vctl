@@ -89,6 +89,7 @@ func hostPickLabels(rows []store.InventoryRow) []string {
 			ui.Truncate(r.Hostname, hostPickNameWidth),
 			addrCell(r.IP, r.Port),
 			r.DC,
+			stateCell(r.State),
 			via,
 		})
 	}
@@ -97,7 +98,8 @@ func hostPickLabels(rows []store.InventoryRow) []string {
 	for _, c := range cells {
 		line := ui.PadRight(c[0], w[0]) + "  " +
 			ui.PadRight(c[1], w[1]) + "  " +
-			ui.PadRight(c[2], w[2]) + "  " + c[3]
+			ui.PadRight(c[2], w[2]) + "  " +
+			ui.PadRight(c[3], w[3]) + "  " + c[4]
 		out = append(out, strings.TrimRight(line, " "))
 	}
 	return out
