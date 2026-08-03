@@ -92,6 +92,38 @@ type wgTopology struct {
 	Aggs  []wgAgg  `json:"aggs"`
 	Links []wgLink `json:"links"`
 	Vips  []wgVip  `json:"vips,omitempty"`
+
+	// CollectedAt is when `vctl wg sync` last wrote the rows this graph is drawn
+	// from — not when the page rendered, and not when live polling last ran.
+	//
+	// In practice the two are far apart and that gap is the reason to show it.
+	// Node and tunnel structure, AllowedIPs, endpoints and peer membership all
+	// come from this snapshot; only traffic and handshake come from live SSH
+	// polling. A fleet whose last sync was six days ago still animates traffic
+	// every two seconds, and without this the page reads as current in every
+	// respect. It was six days stale when this field was added.
+	//
+	// Zero means there are no WireGuard rows at all, which the page reports as
+	// "never collected" rather than as 1970.
+	CollectedAt time.Time `json:"collectedAt"`
+}
+
+// topologyCollectedAt is the newest collection timestamp across the interfaces
+// this graph was built from.
+//
+// Newest, not oldest: gateways are collected one after another and a host that
+// failed its last sync keeps an older row, so the oldest would report the worst
+// gateway's staleness rather than the snapshot's. What this answers is "how long
+// ago was anything learned at all". Per-gateway staleness is a different signal
+// and this deliberately does not fold the two together.
+func topologyCollectedAt(ifaces []store.WGInterfaceRow) time.Time {
+	var newest time.Time
+	for _, i := range ifaces {
+		if i.CollectedAt.After(newest) {
+			newest = i.CollectedAt
+		}
+	}
+	return newest
 }
 
 // edgeStat is the live per-tunnel measurement pushed to browsers.
@@ -134,6 +166,7 @@ func buildWGTopology(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, ser
 	b.addPeerEdges()
 	b.addAggregates()
 	b.addLinks()
+	b.topo.CollectedAt = topologyCollectedAt(ifaces)
 	return b.topo, b.edgeFor
 }
 
