@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
 )
@@ -319,4 +320,44 @@ func ColumnWidths(rows [][]string) []int {
 		}
 	}
 	return widths
+}
+
+// FormTheme is the huh theme for vctl's interactive prompts.
+//
+// huh ships a Charm-branded default — purple and pink — and vctl does not use
+// those colours anywhere else. Without this, `vctl add` and `vctl list` look
+// like two different tools, and the reason is invisible: nobody chose the
+// mismatch, it is just what happens when a form library brings its own palette.
+//
+// The palette lives here rather than in the command that opens a form, so a
+// second form does not get its own idea of what "accent" means. These are the
+// same constants Muted/OK/Warn/Fail already render with.
+func FormTheme() *huh.Theme {
+	t := huh.ThemeBase()
+
+	t.Focused.Base = t.Focused.Base.BorderForeground(accent)
+	t.Focused.Title = t.Focused.Title.Foreground(accent).Bold(true)
+	t.Focused.Description = t.Focused.Description.Foreground(muted)
+	t.Focused.SelectSelector = t.Focused.SelectSelector.Foreground(accent)
+	t.Focused.SelectedOption = t.Focused.SelectedOption.Foreground(accent)
+	t.Focused.TextInput.Prompt = t.Focused.TextInput.Prompt.Foreground(accent)
+	t.Focused.TextInput.Cursor = t.Focused.TextInput.Cursor.Foreground(accent)
+
+	// Validation errors reuse the same red as ui.Fail. A form that reports a bad
+	// IP in one colour and the command that rejects it in another reads as two
+	// unrelated failures.
+	t.Focused.ErrorMessage = t.Focused.ErrorMessage.Foreground(red)
+	t.Focused.ErrorIndicator = t.Focused.ErrorIndicator.Foreground(red)
+
+	// Confirm: the affirmative is the destructive side in `vctl delete`, so it
+	// gets no encouraging colour. Green here would read as "recommended".
+	t.Focused.FocusedButton = t.Focused.FocusedButton.Background(accent).Foreground(lipgloss.Color("232"))
+	t.Focused.BlurredButton = t.Focused.BlurredButton.Foreground(muted)
+
+	t.Blurred = t.Focused
+	t.Blurred.Base = t.Blurred.Base.BorderStyle(lipgloss.HiddenBorder())
+	t.Blurred.Title = t.Blurred.Title.Foreground(muted).Bold(false)
+	t.Blurred.TextInput.Prompt = t.Blurred.TextInput.Prompt.Foreground(muted)
+
+	return t
 }
