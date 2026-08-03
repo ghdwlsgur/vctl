@@ -158,7 +158,7 @@ func completeServer(ctx context.Context, st inventoryLister, sv *store.Server) e
 				return nil
 			}),
 	))
-	if err := form.Run(); err != nil {
+	if err := form.WithTheme(ui.FormTheme()).Run(); err != nil {
 		return err
 	}
 	sv.Hostname = strings.TrimSpace(sv.Hostname)

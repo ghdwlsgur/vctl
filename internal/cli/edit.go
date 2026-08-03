@@ -231,7 +231,7 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 				return nil
 			}),
 	))
-	if err := form.Run(); err != nil {
+	if err := form.WithTheme(ui.FormTheme()).Run(); err != nil {
 		return err
 	}
 
