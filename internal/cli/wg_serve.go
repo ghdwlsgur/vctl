@@ -686,10 +686,40 @@ type wgServeState struct {
 	prev  map[tunnelKey]wgSample
 	stats map[string]edgeStat // edge ID -> latest
 	errs  map[string]string   // gateway -> poll error
+
+	// drifted holds peers the pollers see on the wire that the snapshot does not
+	// contain.
+	//
+	// record used to drop these — "peer appeared after topology snapshot; ignore
+	// until re-serve". The graph is drawn from the database, so a peer added
+	// after the last `vctl wg sync` is invisible until someone restarts the
+	// server, and nothing says it is there. With the fleet's snapshot six days
+	// old, that is a long time to be blind to new tunnels.
+	//
+	// This does not add them to the graph. The layout is computed from the
+	// snapshot, and re-deriving it every poll would move the diagram under the
+	// reader's cursor for something that is really a prompt to re-sync. What it
+	// does is stop the omission from being silent.
+	drifted map[tunnelKey]wgDriftPeer
+}
+
+// wgDriftPeer is a live-observed peer with no row behind it.
+type wgDriftPeer struct {
+	Host       string   `json:"host"`
+	Iface      string   `json:"iface"`
+	PubKey     string   `json:"pub"`
+	Endpoint   string   `json:"endpoint,omitempty"`
+	AllowedIPs []string `json:"allowed,omitempty"`
+	FirstSeen  int64    `json:"firstSeen"`
 }
 
 func newWGServeState() *wgServeState {
-	return &wgServeState{prev: map[tunnelKey]wgSample{}, stats: map[string]edgeStat{}, errs: map[string]string{}}
+	return &wgServeState{
+		prev:    map[tunnelKey]wgSample{},
+		stats:   map[string]edgeStat{},
+		errs:    map[string]string{},
+		drifted: map[tunnelKey]wgDriftPeer{},
+	}
 }
 
 func (s *wgServeState) record(host string, peers []wgParsedPeer, at time.Time, edgeFor map[tunnelKey]string) {
@@ -700,8 +730,23 @@ func (s *wgServeState) record(host string, peers []wgParsedPeer, at time.Time, e
 		k := tunnelKey{host, p.Iface, p.PubKey}
 		id, ok := edgeFor[k]
 		if !ok {
-			continue // peer appeared after topology snapshot; ignore until re-serve
+			// On the wire but not in the snapshot: a peer added since the last
+			// `vctl wg sync`. It cannot be placed in a layout derived from the
+			// snapshot, so it is reported rather than drawn — and reported rather
+			// than dropped, which is what used to happen.
+			if _, seen := s.drifted[k]; !seen {
+				s.drifted[k] = wgDriftPeer{
+					Host: host, Iface: p.Iface, PubKey: p.PubKey,
+					Endpoint: p.Endpoint, AllowedIPs: p.AllowedIPs,
+					FirstSeen: at.Unix(),
+				}
+			}
+			continue
 		}
+		// It is in the snapshot after all — drop any earlier drift entry, so a
+		// re-sync during a running session clears the notice instead of leaving
+		// it to accumulate.
+		delete(s.drifted, k)
 		var hs *time.Time
 		if p.Handshake > 0 {
 			t := time.Unix(p.Handshake, 0)
@@ -759,12 +804,38 @@ func (s *wgServeState) fail(host string, err error) {
 	s.errs[host] = err.Error()
 }
 
-// snapshotJSON renders the current stats/errors as one SSE payload.
+// snapshotJSON renders the current stats/errors/drift as one SSE payload.
 func (s *wgServeState) snapshotJSON() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, _ := json.Marshal(map[string]any{"edges": s.stats, "errors": s.errs, "at": time.Now().Unix()})
+	payload := map[string]any{"edges": s.stats, "errors": s.errs, "at": time.Now().Unix()}
+	if len(s.drifted) > 0 {
+		payload["drift"] = s.driftList()
+	}
+	b, _ := json.Marshal(payload)
 	return b
+}
+
+// driftList returns the drifted peers in a stable order. Callers hold the lock.
+//
+// Sorted because this ends up in a list on screen: an unstable order would make
+// the panel reshuffle every two seconds and read as churn rather than as a fixed
+// set of things to go fix.
+func (s *wgServeState) driftList() []wgDriftPeer {
+	out := make([]wgDriftPeer, 0, len(s.drifted))
+	for _, p := range s.drifted {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Host != out[j].Host {
+			return out[i].Host < out[j].Host
+		}
+		if out[i].Iface != out[j].Iface {
+			return out[i].Iface < out[j].Iface
+		}
+		return out[i].PubKey < out[j].PubKey
+	})
+	return out
 }
 
 // --- command ---
