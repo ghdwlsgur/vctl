@@ -33,6 +33,11 @@
   .metric{min-width:74px;padding:5px 10px;border-left:1px solid var(--line)}
   .metric:first-child{border-left:0}
   .metric strong{display:block;color:var(--ink);font-size:13px;line-height:1.15;font-variant-numeric:tabular-nums}
+  /* A stale snapshot is not an error — nothing is broken and no alert is due.
+     It is a caveat on everything else on screen, so it is coloured like a
+     warning rather than a failure, and it stays legible instead of shouting. */
+  .metric strong.stale{color:var(--warn,#d29922)}
+  .metric strong.stale::after{content:" ▲";font-size:9px;vertical-align:1px}
   .metric span{display:block;margin-top:2px;color:var(--muted);font-size:8.5px;letter-spacing:.1em;text-transform:uppercase}
   .live-summary{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--ink2);font-size:10.5px;white-space:nowrap}
   .live-summary .pulse{width:7px;height:7px;border-radius:50%;background:var(--muted)}
@@ -138,7 +143,11 @@
     <div class="metric"><strong id="site-count">–</strong><span>Sites</span></div>
     <div class="metric"><strong id="gateway-count">–</strong><span>Gateways</span></div>
     <div class="metric"><strong id="tunnel-count">–</strong><span>Tunnels</span></div>
-    <div class="metric"><strong id="updated-at">–</strong><span>Updated</span></div>
+    <!-- Two clocks, deliberately. Structure comes from the last `vctl wg sync`;
+         only traffic and handshake come from live polling. One "Updated" made a
+         six-day-old graph look current, because the page kept animating. -->
+    <div class="metric"><strong id="topology-at">–</strong><span>Topology</span></div>
+    <div class="metric"><strong id="updated-at">–</strong><span>Telemetry</span></div>
   </div>
   <div class="live-summary" id="live-summary"><i class="pulse"></i><span>waiting for tunnel state</span></div>
   <span class="health" id="health">connecting</span>
@@ -909,12 +918,42 @@ function applyStats(){
     ?`${active} active · ${idle} idle${down?` · ${down} down`:""}`
     :"waiting for tunnel state";
 }
+// TOPOLOGY_STALE_SECONDS is when a snapshot stops describing the network well
+// enough to trust. `vctl wg sync` runs on no timer, so this is not a missed
+// schedule — it is the point past which peers may have come or gone without the
+// graph knowing.
+const TOPOLOGY_STALE_SECONDS=24*3600;
+
+// ago renders a coarse age. Precision is not the point: the reader needs to know
+// whether this is minutes or days, and a seconds-accurate "6d 3h 12m" invites
+// them to read a snapshot as a live figure.
+function ago(sec){
+  if(sec<90)return"just now";
+  if(sec<5400)return`${Math.round(sec/60)}m ago`;
+  if(sec<172800)return`${Math.round(sec/3600)}h ago`;
+  return`${Math.round(sec/86400)}d ago`;
+}
 function updateMeta(topo,at){
   const zones=new Set(topo.nodes.filter(n=>n.dc).map(n=>zoneKey(n.dc)));
   document.getElementById("site-count").textContent=zones.size;
   document.getElementById("gateway-count").textContent=topo.nodes.filter(n=>n.kind==="gateway").length;
   document.getElementById("tunnel-count").textContent=topo.edges.length;
   document.getElementById("updated-at").textContent=new Date(at*1000).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+
+  // The structural clock. Everything drawn here — nodes, tunnels, AllowedIPs,
+  // endpoints — is as old as this, however fast the traffic animates.
+  const el=document.getElementById("topology-at");
+  const t=topo.collectedAt?Date.parse(topo.collectedAt):NaN;
+  if(!t||isNaN(t)){
+    el.textContent="never";
+    el.title="no WireGuard rows in the database — run `vctl wg sync`";
+    el.className="stale";
+    return;
+  }
+  const age=(Date.now()-t)/1000;
+  el.textContent=ago(age);
+  el.title=new Date(t).toLocaleString()+" — last `vctl wg sync`";
+  el.className=age>TOPOLOGY_STALE_SECONDS?"stale":"";
 }
 
 document.getElementById("zoom-in").addEventListener("click",()=>setZoom(zoom+.15));
