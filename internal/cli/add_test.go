@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -79,5 +80,124 @@ func TestCompleteServerDoesNotPromptWhenFlagsAreComplete(t *testing.T) {
 	}
 	if sv.Hostname != "web-01" {
 		t.Errorf("completeServer changed a supplied value: %q", sv.Hostname)
+	}
+}
+
+// fakeLister stands in for the inventory so the branches that consult it can be
+// tested without a database. Those branches are the interesting ones: whether a
+// jump host exists decides if the row is usable at all.
+type fakeLister struct {
+	rows []store.InventoryRow
+	err  error
+	dc   string // records the filter passed in
+}
+
+func (f *fakeLister) ListInventory(_ context.Context, dc string) ([]store.InventoryRow, error) {
+	f.dc = dc
+	return f.rows, f.err
+}
+
+func rowsWith(hosts ...string) []store.InventoryRow {
+	out := make([]store.InventoryRow, 0, len(hosts))
+	for _, h := range hosts {
+		out = append(out, store.InventoryRow{Server: store.Server{Hostname: h}})
+	}
+	return out
+}
+
+// A jump host that is not in the inventory yields a row that stores cleanly and
+// fails at connect time. Catching it at add time is the whole point of asking
+// the inventory here.
+func TestValidateServerRejectsAJumpHostThatIsNotRegistered(t *testing.T) {
+	st := &fakeLister{rows: rowsWith("bastion-01", "web-02")}
+	sv := store.Server{
+		Hostname: "web-01", IP: "192.0.2.10", User: "ubuntu",
+		DC: "seoul-onprem", Port: 22, JumpVia: "bastion-99",
+	}
+	err := validateServer(context.Background(), st, sv)
+	if err == nil {
+		t.Fatal("accepted a jump host that is not in the inventory")
+	}
+	if !strings.Contains(err.Error(), "bastion-99") {
+		t.Errorf("error %q does not name the missing host", err)
+	}
+}
+
+func TestValidateServerAcceptsARegisteredJumpHost(t *testing.T) {
+	st := &fakeLister{rows: rowsWith("bastion-01", "web-02")}
+	sv := store.Server{
+		Hostname: "web-01", IP: "192.0.2.10", User: "ubuntu",
+		DC: "seoul-onprem", Port: 22, JumpVia: "bastion-01",
+	}
+	if err := validateServer(context.Background(), st, sv); err != nil {
+		t.Fatalf("rejected a registered jump host: %v", err)
+	}
+}
+
+// The lookup is a courtesy, not a gate. Failing the add because the check that
+// would have helped is unavailable trades a real problem for a possible one —
+// and the database being unreachable is exactly when an operator is trying to
+// repair the inventory.
+func TestValidateServerStillAddsWhenTheInventoryLookupFails(t *testing.T) {
+	st := &fakeLister{err: errLookup{}}
+	sv := store.Server{
+		Hostname: "web-01", IP: "192.0.2.10", User: "ubuntu",
+		DC: "seoul-onprem", Port: 22, JumpVia: "bastion-01",
+	}
+	if err := validateServer(context.Background(), st, sv); err != nil {
+		t.Fatalf("a failed lookup blocked the add: %v", err)
+	}
+}
+
+type errLookup struct{}
+
+func (errLookup) Error() string { return "inventory unavailable" }
+
+// The datacenter suggestions exist to stop the same site being spelled three
+// ways. Duplicates and blanks in the inventory must not become duplicate and
+// blank options.
+func TestKnownDCsDedupesAndDropsBlanks(t *testing.T) {
+	st := &fakeLister{rows: []store.InventoryRow{
+		{Server: store.Server{DC: "seoul-onprem"}},
+		{Server: store.Server{DC: "incheon-vm"}},
+		{Server: store.Server{DC: "seoul-onprem"}},
+		{Server: store.Server{DC: ""}},
+		{Server: store.Server{DC: "incheon-vm"}},
+	}}
+	got := knownDCs(context.Background(), st)
+	want := []string{"seoul-onprem", "incheon-vm"}
+	if len(got) != len(want) {
+		t.Fatalf("knownDCs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("knownDCs = %v, want %v (order follows first appearance)", got, want)
+		}
+	}
+	if st.dc != "" {
+		t.Errorf("knownDCs filtered by dc=%q; it must see every label", st.dc)
+	}
+}
+
+// A fresh inventory has nothing to suggest. Returning an empty list rather than
+// erroring is what lets the form fall back to free text.
+func TestKnownDCsReturnsNothingOnAFailedLookup(t *testing.T) {
+	if got := knownDCs(context.Background(), &fakeLister{err: errLookup{}}); len(got) != 0 {
+		t.Errorf("knownDCs = %v, want empty", got)
+	}
+}
+
+// dcField picks the widget from what the inventory knows: a chooser once there
+// are labels, free text while there are none. Getting this backwards would
+// either offer an empty menu or make every add retype the label.
+func TestDCFieldChoosesWidgetFromKnownLabels(t *testing.T) {
+	var target string
+	if got := dcField(nil, &target); got == nil {
+		t.Fatal("dcField returned nil for an empty inventory")
+	}
+	empty := dcField(nil, &target)
+	filled := dcField([]string{"seoul-onprem"}, &target)
+	if fmt.Sprintf("%T", empty) == fmt.Sprintf("%T", filled) {
+		t.Errorf("dcField returned %T in both cases; the widget must differ", empty)
 	}
 }
