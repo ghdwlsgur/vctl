@@ -105,7 +105,8 @@ func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStat
 		var load1, memoryUsed, diskUsed sql.NullFloat64
 		var observedIPs []string
 		err := r.Scan(&item.Hostname, &item.IP, &item.Port, &item.User, &item.JumpVia, &item.DC, &item.CARole,
-			&item.CAKeyVersion, &item.LastSeenUp, &item.ExtraIPs, &statusHost, &lastSeen, &st.AgentVersion, &st.OS, &st.Kernel,
+			&item.CAKeyVersion, &item.LastSeenUp, &item.ExtraIPs, &item.State,
+			&statusHost, &lastSeen, &st.AgentVersion, &st.OS, &st.Kernel,
 			&st.UptimeSeconds, &load1, &memoryUsed, &diskUsed, &observedIPs)
 		if err != nil {
 			return item, err
@@ -135,5 +136,6 @@ func nullFloatPtr(v sql.NullFloat64) *float64 {
 func prefixedSelectCols(alias string) string {
 	p := alias + "."
 	return p + "hostname, host(" + p + "ip), " + p + "ssh_port, " + p + "ssh_user, coalesce(" + p + "jump_via,''), " +
-		p + "dc, " + p + "ca_role, " + p + "ca_key_version, " + p + "last_seen_up, " + extraIPsCol(p)
+		p + "dc, " + p + "ca_role, " + p + "ca_key_version, " + p + "last_seen_up, " + extraIPsCol(p) +
+		", coalesce(" + p + "state,'active')"
 }

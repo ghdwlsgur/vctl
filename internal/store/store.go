@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"time"
 
@@ -34,7 +35,49 @@ type Server struct {
 	CAKeyVersion int
 	LastSeenUp   *time.Time
 	ExtraIPs     []string // additional addresses the host answers on (VIPs, extra NICs)
+
+	// State is what an operator declared about this host — see StateActive and
+	// friends. It is not observed and never inferred: liveness answers "is there
+	// a signal", this answers "is that expected". Empty means active, so rows
+	// written before the column existed and snapshots taken by an older binary
+	// read as active rather than as an unknown fourth thing.
+	State string
 }
+
+// Operator-declared host states. The database constrains the column to exactly
+// these, so adding one is a migration — every renderer and alert rule that
+// switches on the value has to learn the new word first.
+const (
+	// StateActive is the default: the host is expected to be reachable, so a
+	// liveness of "down" on it is a problem rather than a record.
+	StateActive = "active"
+	// StateMaintenance is a planned window. Down is expected and temporary.
+	StateMaintenance = "maintenance"
+	// StateBroken is a fault somebody diagnosed. Observation cannot tell a dead
+	// NIC from a host nobody installed the agent on; this is where that
+	// judgement is recorded.
+	StateBroken = "broken"
+	// StateRetired is decommissioned but deliberately kept in the inventory,
+	// e.g. so its audit history stays easy to find.
+	StateRetired = "retired"
+)
+
+// HostStates is the accepted set, in escalating order of "do not expect this
+// host to answer". Order is the listing's, not the database's.
+var HostStates = []string{StateActive, StateMaintenance, StateBroken, StateRetired}
+
+// StateOrActive normalises the empty string to active. Reading it through this
+// keeps the "empty means active" rule in one place instead of at every caller
+// that renders or compares a state.
+func StateOrActive(s string) string {
+	if s == "" {
+		return StateActive
+	}
+	return s
+}
+
+// ValidState reports whether s is a state the database would accept.
+func ValidState(s string) bool { return slices.Contains(HostStates, s) }
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -240,13 +283,13 @@ func ipArrayCol(expr string) string {
 // plus a dot ("" for an unqualified query, "srv." for a join).
 func extraIPsCol(prefix string) string { return ipArrayCol(prefix + "extra_ips") }
 
-var selectCols = `hostname, host(ip), ssh_port, ssh_user, coalesce(jump_via,''), dc, ca_role, ca_key_version, last_seen_up, ` + extraIPsCol("")
+var selectCols = `hostname, host(ip), ssh_port, ssh_user, coalesce(jump_via,''), dc, ca_role, ca_key_version, last_seen_up, ` + extraIPsCol("") + `, coalesce(state,'active')`
 
 func scanServer(row interface {
 	Scan(dest ...any) error
 }) (Server, error) {
 	var sv Server
-	err := row.Scan(&sv.Hostname, &sv.IP, &sv.Port, &sv.User, &sv.JumpVia, &sv.DC, &sv.CARole, &sv.CAKeyVersion, &sv.LastSeenUp, &sv.ExtraIPs)
+	err := row.Scan(&sv.Hostname, &sv.IP, &sv.Port, &sv.User, &sv.JumpVia, &sv.DC, &sv.CARole, &sv.CAKeyVersion, &sv.LastSeenUp, &sv.ExtraIPs, &sv.State)
 	return sv, err
 }
 
@@ -371,7 +414,7 @@ func (s *Store) ListInventory(ctx context.Context, dc string) ([]InventoryRow, e
 		var row InventoryRow
 		var observed []string
 		err := r.Scan(&row.Hostname, &row.IP, &row.Port, &row.User, &row.JumpVia, &row.DC,
-			&row.CARole, &row.CAKeyVersion, &row.LastSeenUp, &row.ExtraIPs, &observed,
+			&row.CARole, &row.CAKeyVersion, &row.LastSeenUp, &row.ExtraIPs, &row.State, &observed,
 			&row.AgentSeen, &row.AgentVersion)
 		if err != nil {
 			return row, err

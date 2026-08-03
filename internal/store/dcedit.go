@@ -1,6 +1,10 @@
 package store
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
 
 // Delete removes a server from the inventory. Use when a host is
 // decommissioned (e.g. a deleted VM). Audit/access rows keyed by the hostname
@@ -72,6 +76,25 @@ var renameCarried = []struct {
 	{"wg_endpoint_annotations", "inventory_host", false},
 	{"wg_endpoint_annotations", "parent_hostname", false},
 	{"ip_allocations", "hostname", false},
+}
+
+// SetState records what an operator declared about a host: active, maintenance,
+// broken or retired.
+//
+// This is the one column here that is not a connection detail. dc, ssh_user and
+// jump_via describe how to reach the machine; state describes whether anyone
+// should expect to. Observation cannot supply it — a dead NIC, a planned window
+// and a host nobody has installed the agent on all read as "down" — so it is
+// entered rather than derived, and the listing shows it beside the observed
+// value instead of replacing it.
+//
+// The database constrains the value, so an unknown state is rejected here rather
+// than stored and rendered as a blank column. Returns whether a row matched.
+func (s *Store) SetState(ctx context.Context, hostname, state string) (bool, error) {
+	if !ValidState(state) {
+		return false, fmt.Errorf("unknown state %q (want one of %s)", state, strings.Join(HostStates, ", "))
+	}
+	return s.execMatched(ctx, `UPDATE servers SET state=$2, updated_at=now() WHERE hostname=$1`, hostname, state)
 }
 
 // Rename changes a server's hostname — the inventory key — and carries with it

@@ -129,6 +129,10 @@ func matchServer(c store.ServerWithStatus, q string) bool {
 		strings.Contains(strings.ToLower(c.IP), q) ||
 		strings.Contains(strings.ToLower(c.DC), q) ||
 		strings.Contains(strings.ToLower(c.User), q) ||
+		// Declared state is on the row, so "broken" has to find the broken hosts.
+		// Whole word only, like the port: a prefix match would make "a" select
+		// every active host and swallow the hostname search.
+		store.StateOrActive(c.State) == q ||
 		// The port is on screen, so it has to be typeable. Searching "10022" to
 		// find the hosts behind that port is the reason to show it at all.
 		strconv.Itoa(c.Port) == q
@@ -287,9 +291,9 @@ func (m pickerModel) renderRow(i int) string {
 	if w := m.width - 60; w > 20 && w < nameWidth {
 		nameWidth = w
 	}
-	label := fmt.Sprintf("%-*s %-*s %-12s %s",
+	label := fmt.Sprintf("%-*s %-*s %-12s %-6s %s",
 		nameWidth, ui.Truncate(c.Hostname, nameWidth),
-		m.addrWidth, addrCell(c.IP, c.Port), c.DC, liveStatus(c, m.cached))
+		m.addrWidth, addrCell(c.IP, c.Port), c.DC, liveStatus(c, m.cached), stateCell(c.State))
 
 	if i == m.cursor {
 		return pickCursorStyle.Render("› ●") + " " + pickSelectedStyle.Render(label)
@@ -302,8 +306,8 @@ func numberPick(cands []store.ServerWithStatus, title string, cached bool) (*sto
 	ui.Section(os.Stderr, title)
 	w := addrColumnWidth(cands)
 	for i, c := range cands {
-		fmt.Fprintf(os.Stderr, "  %2d  %-28s %-*s %-12s %s\n",
-			i+1, c.Hostname, w, addrCell(c.IP, c.Port), c.DC, liveStatus(c, cached))
+		fmt.Fprintf(os.Stderr, "  %2d  %-28s %-*s %-12s %-6s %s\n",
+			i+1, c.Hostname, w, addrCell(c.IP, c.Port), c.DC, liveStatus(c, cached), stateCell(c.State))
 	}
 	fmt.Fprint(os.Stderr, ui.Muted("number: "))
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')

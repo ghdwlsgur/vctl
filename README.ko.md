@@ -326,9 +326,9 @@ claude mcp add vctl -- vctl mcp
 | `vctl exec -- <cmd>` | 자식 프로세스를 `VAULT_TOKEN`, `VAULT_ADDR`와 함께 실행합니다 |
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |
 | `vctl ssh [host\|user@addr] [--server <host>]` | exact, fuzzy, IP, interactive 선택으로 접속합니다(픽커는 ←/→로 DC 필터). `--server`는 정확히 또는 IP로 해석해 비대화형으로 접속합니다(스크립트/에이전트용). `user@addr` 형태는 인벤토리를 거치지 않고 주소로 바로 접속합니다 |
-| `vctl list [--dc <dc>]` | 인벤토리 호스트를 나열합니다(primary + extra IP, 비표준 SSH 포트, liveness/agent 상태) |
+| `vctl list [--dc <dc>]` | 인벤토리 호스트를 나열합니다(primary + extra IP, 비표준 SSH 포트, 관측된 liveness, 그리고 `active` 가 아닐 때의 운영 상태) |
 | `vctl add [flags]` | `sync`가 찾지 못하는 호스트를 인벤토리에 등록합니다. 플래그 없이 실행하면 폼으로 입력합니다 |
-| `vctl edit [host] [flags]` | `sync`가 덮어쓰지 않는 필드를 바꿉니다 — dc · ssh user · 점프 호스트 · extra IP · 호스트명. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
+| `vctl edit [host] [flags]` | `sync`가 덮어쓰지 않는 필드를 바꿉니다 — dc · ssh user · 점프 호스트 · extra IP · 호스트명, 그리고 `--state active\|maintenance\|broken\|retired`. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
 | `vctl delete [host] [--yes]` | 폐기한 호스트를 지웁니다. 감사 기록은 남습니다. 이 호스트를 경유하는 호스트가 있으면 삭제를 막습니다. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
 | `vctl mcp` | 인벤토리를 AI 에이전트에 노출하는 읽기 전용 MCP 서버(stdio). `vctl_ssh_exec`로 호스트 명령 실행도 가능. 호출자 신원으로 동작 — RBAC 적용 |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | 앱 계층 커맨드 RBAC 관리(관리자). `assign`/`grant`은 인터랙티브 픽커 |
