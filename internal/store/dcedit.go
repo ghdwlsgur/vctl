@@ -88,8 +88,8 @@ func (s *Store) Insert(ctx context.Context, sv Server) (bool, error) {
 		jump = sv.JumpVia
 	}
 	return s.execMatched(ctx, `
-		INSERT INTO servers (hostname, ip, ssh_port, ssh_user, jump_via, dc, ca_role, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+		INSERT INTO servers (hostname, ip, ssh_port, ssh_user, jump_via, dc, ca_role, extra_ips, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7, coalesce($8::inet[],'{}'), now())
 		ON CONFLICT (hostname) DO NOTHING`,
-		sv.Hostname, sv.IP, sv.Port, sv.User, jump, sv.DC, sv.CARole)
+		sv.Hostname, sv.IP, sv.Port, sv.User, jump, sv.DC, sv.CARole, sv.ExtraIPs)
 }
