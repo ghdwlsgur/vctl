@@ -431,8 +431,8 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl ssh [host\|user@addr] [--server <host>]` | Connect by exact, fuzzy, IP, or interactive selection (picker filters by DC with ←/→); `--server` resolves exactly or by IP and connects non-interactively (scripts/agents). `user@addr` connects to an address directly, skipping inventory |
 | `vctl list [--dc <dc>]` | List inventory hosts (primary + extra IPs, liveness/agent status) |
 | `vctl add [flags]` | Register an inventory host `sync` cannot discover; with no flags the fields are asked for in a form |
-| `vctl edit [host] [flags]` | Change the fields `sync` will not overwrite — dc, ssh user, jump host, extra IPs, hostname. With no host, pick one from a list |
-| `vctl delete [host] [--yes]` | Remove a decommissioned host. Audit history is kept; hosts that jump through it block the delete. With no host, pick one from a list |
+| `vctl edit [host] [flags]` | Change the fields `sync` will not overwrite — dc, ssh user, jump host, extra IPs, hostname. With no host, pick one from a list (←/→ filters by DC) |
+| `vctl delete [host] [--yes]` | Remove a decommissioned host. Audit history is kept; hosts that jump through it block the delete. With no host, pick one from a list (←/→ filters by DC) |
 | `vctl wg sync\|graph\|monitor\|serve` | Collect and inspect WireGuard topology; `serve` shows live traffic, endpoint VMs, physical hosts, and host networks |
 | `vctl wg endpoint list\|set\|rm` | Map a WireGuard public key to a VM/device identity and, for VMs, its physical inventory host |
 | `vctl mcp` | Run a read-only MCP server (stdio) exposing the inventory to AI agents; `vctl_ssh_exec` also runs commands on hosts. Runs as your identity — RBAC applies |

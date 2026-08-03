@@ -116,6 +116,6 @@ func confirmDelete(cur store.InventoryRow) (bool, error) {
 			Affirmative("Remove").
 			Negative("Cancel").
 			Value(&ok),
-	)).WithTheme(ui.FormTheme()).Run()
+	)).WithTheme(ui.FormTheme()).WithKeyMap(ui.FormKeyMap()).Run()
 	return ok, err
 }
