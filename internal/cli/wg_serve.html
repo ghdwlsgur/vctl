@@ -90,6 +90,14 @@
     color:#ff9b96;background:rgba(39,15,17,.96);border:1px solid rgba(248,81,73,.35);border-radius:5px;
     font-size:10.5px;white-space:pre-wrap;padding:8px 10px;box-shadow:var(--shadow)}
   #errs:empty{display:none}
+  /* Drift sits above the error panel and is amber, not red: a peer on the wire
+     that the snapshot lacks is out-of-date data, not a failure. The action is a
+     re-sync, so it reads as a notice with a next step. */
+  #drift{position:absolute;z-index:10;right:16px;bottom:12px;max-width:min(560px,calc(100% - 32px));margin:0;
+    color:#f0d08a;background:rgba(39,31,15,.96);border:1px solid rgba(227,179,65,.35);border-radius:5px;
+    font-size:10.5px;white-space:pre-wrap;padding:8px 10px;box-shadow:var(--shadow)}
+  #drift:empty{display:none}
+  #errs:not(:empty)~#drift{bottom:calc(12px + 4.6em)}
 
   .zone{fill:var(--panel);fill-opacity:.34;stroke:var(--ring);stroke-width:1.1;stroke-dasharray:6 5}
   .zlab{fill:var(--ink2);font-size:12px;font-weight:700;letter-spacing:.08em}
@@ -174,7 +182,7 @@
     <button type="button" id="zoom-in" aria-label="zoom in">+</button>
   </div>
 </div>
-<main id="canvas"><svg id="net" role="img" aria-label="WireGuard network architecture"></svg><pre id="errs"></pre></main>
+<main id="canvas"><svg id="net" role="img" aria-label="WireGuard network architecture"></svg><pre id="errs"></pre><pre id="drift"></pre></main>
 <div id="tip"></div>
 <script>
 "use strict";
@@ -1013,6 +1021,26 @@ function applyStats(){
     : "waiting for tunnel state";
   live.title=TUNNEL_STATES.map(s=>`${s}: ${n[s]}`).join("\n");
 }
+// renderDrift lists peers the pollers see that the drawn snapshot does not have.
+//
+// They are not added to the graph: the layout comes from the snapshot, and
+// re-deriving it every two seconds would shift the diagram under the reader's
+// cursor for what is really a prompt to re-sync. Naming them, and saying what to
+// run, is the part that was missing — until now they were dropped in silence.
+function renderDrift(list){
+  const el=document.getElementById("drift");
+  if(!list.length){el.textContent="";return;}
+  const lines=list.slice(0,8).map(p=>{
+    const where=`${p.host}/${p.iface}`;
+    const via=p.endpoint?` via ${p.endpoint}`:"";
+    const routes=(p.allowed||[]).length?` allowed ${p.allowed.join(", ")}`:"";
+    return `  + ${where} ${String(p.pub||"").slice(0,12)}…${via}${routes}`;
+  });
+  if(list.length>8)lines.push(`  … and ${list.length-8} more`);
+  el.textContent=[`${list.length} peer(s) on the wire are not in this snapshot`,
+    ...lines, "run `vctl wg sync` to draw them"].join("\n");
+}
+
 // TOPOLOGY_STALE_SECONDS is when a snapshot stops describing the network well
 // enough to trust. `vctl wg sync` runs on no timer, so this is not a missed
 // schedule — it is the point past which peers may have come or gone without the
@@ -1085,6 +1113,7 @@ if(BOOT){
       h.className="health "+(errN?"fail":"ok");
       h.textContent=errN?`${errN} poll failures`:"live polling ok";
       document.getElementById("errs").textContent=Object.entries(d.errors||{}).map(([k,v])=>`! ${k}: ${v}`).join("\n");
+      renderDrift(d.drift||[]);
     };
   }).catch(err=>{
     const h=document.getElementById("health");
