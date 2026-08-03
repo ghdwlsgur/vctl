@@ -51,11 +51,54 @@ type wgNode struct {
 // wgEdge is one tunnel: a peer entry, resolved to the far-end gateway when both
 // ends were collected.
 type wgEdge struct {
-	ID      string `json:"id"`
-	Source  string `json:"source"`
-	Target  string `json:"target"`
+	ID     string `json:"id"`
+	Source string `json:"source"`
+	Target string `json:"target"`
+
+	// Iface and Allowed describe the source side only. They stay because the
+	// layout groups tunnels by the gateway's own interface name, which is a
+	// property of that end. What they are not is a property of the tunnel — see
+	// A and B.
 	Iface   string `json:"iface"`
 	Allowed string `json:"allowed"`
+
+	// A and B are the two ends, when both were collected. AllowedIPs in
+	// particular are per-direction routes: what A accepts from B is a different
+	// fact from what B accepts from A, and collapsing them into one string loses
+	// whichever end was seen second.
+	A *wgEdgeSide `json:"a,omitempty"`
+	B *wgEdgeSide `json:"b,omitempty"`
+
+	// TargetSeenAs lists the hostnames the far end was observed under when there
+	// is more than one — a VIP arrangement, usually. Present so the page can say
+	// "observed through" instead of silently picking a name.
+	TargetSeenAs []string `json:"targetSeenAs,omitempty"`
+
+	// Conflict marks a key whose observations disagree on interface settings,
+	// meaning two machines are presenting one identity. Not set for the same
+	// machine seen under several names — that is TargetSeenAs.
+	Conflict bool `json:"conflict,omitempty"`
+}
+
+// wgEdgeSide is one end of a tunnel as that end reported it.
+type wgEdgeSide struct {
+	Host    string `json:"host"`
+	Iface   string `json:"iface"`
+	PubKey  string `json:"pub,omitempty"`
+	Allowed string `json:"allowed,omitempty"`
+}
+
+// tunnelEdgeID identifies a tunnel by its pair of public keys, sorted so both
+// ends compute the same id.
+//
+// A missing local key (the interface row was not collected) still yields a
+// stable id from the peer key alone; it just cannot collapse with the far side.
+func tunnelEdgeID(localKey, peerKey string) string {
+	a, c := localKey, peerKey
+	if a > c {
+		a, c = c, a
+	}
+	return "gw|" + shortKey(a) + "|" + shortKey(c)
 }
 
 // wgAgg is a set of non-gateway inventory hosts in one dc collapsed by their
@@ -131,6 +174,27 @@ type edgeStat struct {
 	RxPS float64 `json:"rx"` // bytes/sec toward the source gateway
 	TxPS float64 `json:"tx"` // bytes/sec away from the source gateway
 	HS   int64   `json:"hs"` // seconds since last handshake, -1 = never
+
+	// Sides holds each gateway's own view, keyed by hostname.
+	//
+	// Both ends of a tunnel are polled, and each reports counters from its own
+	// perspective: A's tx is the same bytes as B's rx. Writing both into one
+	// rx/tx pair meant the later poll won and the arrow could reverse between
+	// frames with no traffic change at all.
+	//
+	// The flat RxPS/TxPS above stay as the source side's view, because that is
+	// what the page draws and what "toward the source gateway" has always meant.
+	// Sides is what makes the other end visible, and what lets a reader check
+	// A.tx against B.rx.
+	Sides map[string]edgeSideStat `json:"sides,omitempty"`
+}
+
+// edgeSideStat is one gateway's measurement of a tunnel.
+type edgeSideStat struct {
+	RxPS float64 `json:"rx"`
+	TxPS float64 `json:"tx"`
+	HS   int64   `json:"hs"`
+	At   int64   `json:"at"` // unix seconds of the poll this came from
 }
 
 // cidr24 masks an IPv4 address to its /24 network ("10.20.0.33" → "10.20.0.0/24").
@@ -179,7 +243,7 @@ type wgTopologyBuilder struct {
 	peers   []store.WGPeerRow
 	servers []store.Server
 
-	pubIdx     map[string]nodeRef                    // interface public key → owning gateway
+	endpoints  endpointIndex                         // public key → canonical gateway, aliases, conflicts
 	byHost     map[string]store.Server               // inventory by hostname
 	byIP       map[string]store.Server               // inventory by any address it answers on
 	annByKey   map[string]store.WGEndpointAnnotation // annotation by peer/interface public key
@@ -200,7 +264,7 @@ type wgTopologyBuilder struct {
 func newWGTopologyBuilder(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, servers []store.Server, annotations []store.WGEndpointAnnotation) *wgTopologyBuilder {
 	b := &wgTopologyBuilder{
 		ifaces: ifaces, peers: peers, servers: servers,
-		pubIdx:     pubIndex(ifaces),
+		endpoints:  buildEndpointIndex(ifaces),
 		byHost:     make(map[string]store.Server, len(servers)),
 		byIP:       make(map[string]store.Server, len(servers)),
 		annByKey:   make(map[string]store.WGEndpointAnnotation, len(annotations)),
@@ -344,6 +408,40 @@ func (b *wgTopologyBuilder) addGateways() {
 // collected interface is one gateway↔gateway tunnel; everything else becomes an
 // external node hanging off its gateway. Either way the tunnel is mapped into
 // edgeFor so the pollers can attribute live rates to the right edge.
+// localPubKey is the public key of the interface a peer row was collected on.
+// Empty when that interface was not collected, which tunnelEdgeID tolerates.
+func (b *wgTopologyBuilder) localPubKey(host, iface string) string {
+	for _, i := range b.ifaces {
+		if i.Host == host && i.Iface == iface {
+			return i.PublicKey
+		}
+	}
+	return ""
+}
+
+// fillEdgeSide records the second end of a tunnel the far side already emitted.
+// Both ends' interface names and routes belong to the edge; only the first one
+// seen used to survive.
+func (b *wgTopologyBuilder) fillEdgeSide(id string, p store.WGPeerRow, localKey string) {
+	for i := range b.topo.Edges {
+		e := &b.topo.Edges[i]
+		if e.ID != id {
+			continue
+		}
+		side := &wgEdgeSide{
+			Host: p.Host, Iface: p.Iface, PubKey: localKey,
+			Allowed: strings.Join(p.AllowedIPs, ", "),
+		}
+		if e.A != nil && e.A.Host == p.Host && e.A.Iface == p.Iface {
+			return // the same side reported twice; nothing new
+		}
+		if e.B == nil {
+			e.B = side
+		}
+		return
+	}
+}
+
 func (b *wgTopologyBuilder) addPeerEdges() {
 	edgeSeen := map[string]bool{}
 	sorted := append([]store.WGPeerRow{}, b.peers...)
@@ -358,23 +456,47 @@ func (b *wgTopologyBuilder) addPeerEdges() {
 	})
 	for _, p := range sorted {
 		k := tunnelKey{p.Host, p.Iface, p.PeerPubKey}
-		if far, ok := b.pubIdx[p.PeerPubKey]; ok {
-			// Both ends collected: one edge, canonical side first so the two
-			// directions collapse into the same id.
-			a, c := p.Host, far.host
-			if a > c {
-				a, c = c, a
-			}
-			id := "gw|" + a + "|" + c + "|" + p.Iface
+		if far, ok := b.endpoints.lookup(p.PeerPubKey); ok {
+			// A tunnel is identified by the pair of public keys, not by an
+			// interface name.
+			//
+			// The id used to be host|host|iface, taken from whichever side was
+			// being processed. Interface names are chosen per host and often
+			// differ across one tunnel — in this fleet 7 tunnels are wg3 on one
+			// end and wg0 on the other — so one tunnel produced two ids and was
+			// drawn twice, each copy carrying one direction's traffic. Where the
+			// names happened to match, the opposite happened: both sides landed
+			// on one id and the later poll overwrote the earlier one.
+			//
+			// Keys are what WireGuard actually negotiates on, so sorting the pair
+			// gives both ends the same answer regardless of scan order.
+			localKey := b.localPubKey(p.Host, p.Iface)
+			id := tunnelEdgeID(localKey, p.PeerPubKey)
 			b.edgeFor[k] = id
 			if edgeSeen[id] {
+				// The far side already emitted this tunnel. Fill in this side's
+				// interface and routes rather than dropping them: AllowedIPs are
+				// per-direction, so the two ends are different facts about one
+				// tunnel, not a repeat of the same one.
+				b.fillEdgeSide(id, p, localKey)
 				continue
 			}
 			edgeSeen[id] = true
-			b.topo.Edges = append(b.topo.Edges, wgEdge{
+			e := wgEdge{
 				ID: id, Source: p.Host, Target: far.host,
 				Iface: p.Iface, Allowed: strings.Join(p.AllowedIPs, ", "),
-			})
+				A: &wgEdgeSide{
+					Host: p.Host, Iface: p.Iface, PubKey: localKey,
+					Allowed: strings.Join(p.AllowedIPs, ", "),
+				},
+			}
+			if hosts := b.endpoints.observedThrough(p.PeerPubKey); len(hosts) > 1 {
+				e.TargetSeenAs = hosts
+			}
+			if b.endpoints.conflicts[p.PeerPubKey] || b.endpoints.conflicts[localKey] {
+				e.Conflict = true
+			}
+			b.topo.Edges = append(b.topo.Edges, e)
 			continue
 		}
 		n := b.externalNode(p)
@@ -586,16 +708,49 @@ func (s *wgServeState) record(host string, peers []wgParsedPeer, at time.Time, e
 			hs = &t
 		}
 		cur := wgSample{rx: p.Rx, tx: p.Tx, hs: hs, at: at}
-		st := edgeStat{HS: -1}
+		side := edgeSideStat{HS: -1, At: at.Unix()}
 		if hs != nil {
-			st.HS = int64(time.Since(*hs).Seconds())
+			side.HS = int64(time.Since(*hs).Seconds())
 		}
 		if old, ok := s.prev[k]; ok {
-			st.RxPS, st.TxPS = computeRate(old, cur)
+			side.RxPS, side.TxPS = computeRate(old, cur)
 		}
 		s.prev[k] = cur
+
+		// Merge into the tunnel rather than replacing it. Both gateways poll the
+		// same tunnel and report counters from their own perspective, so a plain
+		// assignment let whichever polled later erase the other end — and since
+		// A's tx is B's rx, the drawn direction flipped with poll timing rather
+		// than with traffic.
+		st := s.stats[id]
+		if st.Sides == nil {
+			st.Sides = map[string]edgeSideStat{}
+		}
+		st.Sides[host] = side
+		st.RxPS, st.TxPS, st.HS = flattenSides(st.Sides)
 		s.stats[id] = st
 	}
+}
+
+// flattenSides reduces both ends to the single rx/tx/handshake the page draws.
+//
+// Rates take the larger of the two sides. The ends measure the same bytes from
+// opposite directions and neither is more correct, but a side that has not been
+// polled yet reports zero, and taking that would show an idle tunnel as dead.
+//
+// Handshake takes the smaller — the most recent. A handshake is a property of
+// the tunnel, not of the observer, so the fresher observation is simply the
+// better-informed one. -1 means never, which loses to any real value.
+func flattenSides(sides map[string]edgeSideStat) (rx, tx float64, hs int64) {
+	hs = -1
+	for _, s := range sides {
+		rx = max(rx, s.RxPS)
+		tx = max(tx, s.TxPS)
+		if s.HS >= 0 && (hs < 0 || s.HS < hs) {
+			hs = s.HS
+		}
+	}
+	return rx, tx, hs
 }
 
 func (s *wgServeState) fail(host string, err error) {

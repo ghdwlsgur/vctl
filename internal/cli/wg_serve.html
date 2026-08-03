@@ -291,9 +291,24 @@ const slash32=a=>String(a||"").split(",").map(s=>s.trim()).find(s=>/\/32$/.test(
 function wiringModel(N,E,hub){
   const touch=new Map();
   const T=id=>{if(!touch.has(id))touch.set(id,{fwd:[],rev:[]});return touch.get(id)};
+  // The far end's AllowedIPs used to arrive as a second edge, because one tunnel
+  // produced two — the id carried the observing side's interface name. One
+  // tunnel is now one edge with both ends on it, so the reverse route is read
+  // off e.b instead of from an edge that no longer exists.
+  //
+  // sideEdge presents one end of an edge in the shape the layout expects: a
+  // flat iface/allowed pair, since every consumer below reads those two fields.
+  const sideEdge=(e,side,source,target)=>({...e,source,target,
+    iface:(side&&side.iface)||e.iface, allowed:(side&&side.allowed)||"", _side:true});
   for(const e of E){
-    if(e.source===hub.id)T(e.target).fwd.push(e);
-    else if(e.target===hub.id)T(e.source).rev.push(e);
+    if(e.source===hub.id){
+      T(e.target).fwd.push(e);
+      if(e.b)T(e.target).rev.push(sideEdge(e,e.b,e.target,hub.id));
+    }
+    else if(e.target===hub.id){
+      T(e.source).rev.push(e);
+      if(e.b)T(e.source).fwd.push(sideEdge(e,e.b,hub.id,e.source));
+    }
   }
   const perIface=new Map();
   for(const [oid,g] of touch){
