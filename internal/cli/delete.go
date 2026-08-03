@@ -28,23 +28,25 @@ import (
 func deleteCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
-		Use:     "delete <hostname>",
+		Use:     "delete [hostname]",
 		Aliases: []string{"rm"},
 		Short:   "Remove a decommissioned host from the inventory",
 		Long: `delete removes a host from the inventory.
 
+Run with no hostname to pick one from the inventory.
+
 Audit history keyed by the hostname is kept: it records what happened while the
 host existed. Hosts that jump through this one block the delete, because
 repointing them silently would leave them unreachable.`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			host := args[0]
 			return withStore(ctx, true, func(_ *app.App, st *store.Store) error {
-				cur, err := findHost(ctx, st, host)
+				cur, err := resolveHost(ctx, st, args, "Delete which host?")
 				if err != nil {
 					return err
 				}
+				host := cur.Hostname
 				dependents, err := jumpDependents(ctx, st, host)
 				if err != nil {
 					return err

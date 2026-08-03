@@ -31,22 +31,22 @@ import (
 func editCmd() *cobra.Command {
 	var e hostEdits
 	cmd := &cobra.Command{
-		Use:   "edit <hostname>",
+		Use:   "edit [hostname]",
 		Short: "Change an inventory host's operator-managed fields",
 		Long: `edit changes the fields vctl sync will not overwrite: datacenter,
 SSH user, jump host and extra addresses. It can also rename a host.
 
-Only the flags you pass are written. Run with just a hostname to pick the
-fields interactively.`,
-		Args: cobra.ExactArgs(1),
+Run with no hostname to pick one from the inventory. Only the flags you pass
+are written; with none, the fields are asked for interactively.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			host := args[0]
 			return withStore(ctx, true, func(_ *app.App, st *store.Store) error {
-				cur, err := findHost(ctx, st, host)
+				cur, err := resolveHost(ctx, st, args, "Edit which host?")
 				if err != nil {
 					return err
 				}
+				host := cur.Hostname
 				if e.empty() {
 					if !term.IsTerminal(int(os.Stdin.Fd())) {
 						return fmt.Errorf("nothing to change: pass at least one of --dc, --user, --jump, --extra-ip, --name")
