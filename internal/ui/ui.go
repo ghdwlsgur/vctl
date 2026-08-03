@@ -280,7 +280,7 @@ func PadRight(s string, width int) string {
 
 // Truncate shortens s to at most max columns, eliding the middle with "…" so the
 // head and tail both stay visible. Long hostnames (e.g.
-// incheon-vm-[surromind]-…-worker-gpu-new) keep their common prefix and the
+// incheon-vm-[tenant-a]-…-worker-gpu-new) keep their common prefix and the
 // distinguishing suffix instead of overflowing the column and wrapping the row.
 func Truncate(s string, max int) string {
 	if max <= 1 || lipgloss.Width(s) <= max {
