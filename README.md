@@ -444,7 +444,8 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl session [<serial>\|--list\|--json]` | Show what a person did inside an SSH session (host kernel-audit timeline) |
 | `vctl cache status\|refresh\|clear` | Inspect or control the local inventory snapshot used when Postgres is unreachable |
 | `vctl status` | Check login, SSH CA, and inventory DB connectivity |
-| `vctl sync [--migrate] [--prefix sre]` | Sync inventory from `~/.ssh/config` and probes |
+| `vctl sync [--prefix sre]` | Sync inventory from `~/.ssh/config` and probes (`--migrate` is deprecated — use `vctl migrate`) |
+| `vctl migrate [--status]` | Apply pending schema migrations, tracked in `schema_migrations` by name and checksum and serialised on an advisory lock; `--status` reports without changing anything |
 | `vctl logout` | Remove the cached Vault token |
 
 ## Configuration

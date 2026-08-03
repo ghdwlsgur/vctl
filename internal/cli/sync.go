@@ -28,17 +28,13 @@ func syncCmd() *cobra.Command {
 				return err
 			}
 
+			// Kept working, but routed through the same function `vctl migrate`
+			// uses rather than a second copy. Two migrators that could drift apart
+			// is exactly what the ledger exists to prevent.
 			if doMigrate {
-				mst, err := a.OpenStore(ctx, app.PurposeMigrate)
-				if err != nil {
+				if err := applyMigrations(ctx, a); err != nil {
 					return err
 				}
-				if err := mst.MigrateAsOwner(ctx, a.Cfg.DBMigrationOwner); err != nil {
-					mst.Close()
-					return err
-				}
-				mst.Close()
-				ui.Successf(os.Stderr, "schema migration complete")
 			}
 
 			st, err := a.OpenStore(ctx, app.PurposeInventoryWrite)
@@ -87,5 +83,9 @@ func syncCmd() *cobra.Command {
 	cmd.Flags().StringVar(&prefix, "prefix", "sre", "only include ssh config aliases with this prefix")
 	cmd.Flags().StringVar(&path, "config", "", "ssh config path; defaults to ~/.ssh/config")
 	cmd.Flags().BoolVar(&doMigrate, "migrate", false, "run schema migrations before sync")
+	// Deprecated rather than removed: it is in people's shell history and in
+	// runbooks, and breaking it would make the split feel like an outage. The
+	// notice points at the command that does one thing.
+	_ = cmd.Flags().MarkDeprecated("migrate", "use `vctl migrate` — a schema change and an inventory refresh are separate operations")
 	return cmd
 }

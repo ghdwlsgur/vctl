@@ -336,7 +336,8 @@ claude mcp add vctl -- vctl mcp
 | `vctl node-agent [--interval 5m]` | 이미 등록된 인벤토리 호스트의 가벼운 런타임 상태를 보고합니다 |
 | `vctl cache status\|refresh\|clear` | Postgres 불통 시 쓰이는 로컬 인벤토리 스냅샷을 확인·제어합니다 |
 | `vctl status` | 로그인, SSH CA, inventory DB 연결 상태를 확인합니다 |
-| `vctl sync [--migrate] [--prefix sre]` | `~/.ssh/config`와 probe 결과에서 인벤토리를 동기화합니다 |
+| `vctl sync [--prefix sre]` | `~/.ssh/config`와 probe 결과에서 인벤토리를 동기화합니다(`--migrate`는 deprecated — `vctl migrate`를 쓰세요) |
+| `vctl migrate [--status]` | 미적용 스키마 마이그레이션을 적용합니다. `schema_migrations`에 이름·checksum으로 기록하고 advisory lock으로 직렬화합니다. `--status`는 아무것도 바꾸지 않고 현황만 보여줍니다 |
 | `vctl logout` | 캐시된 Vault 토큰을 제거합니다 |
 
 ## Configuration
