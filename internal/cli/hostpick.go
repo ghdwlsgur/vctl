@@ -42,18 +42,29 @@ func resolveHost(ctx context.Context, st inventoryLister, args []string, title s
 
 // pickHost runs the selection itself, split from resolveHost so the empty
 // inventory and the cancel path are reachable without a terminal.
+//
+// Rows are grouped by datacenter so ←/→ narrows the list the way it does in the
+// `vctl ssh` picker. Typing filters too, but the two answer different questions:
+// filtering assumes you know part of the name, and the tabs are for when what
+// you know is the site.
 func pickHost(rows []store.InventoryRow, title string) (store.InventoryRow, error) {
 	if len(rows) == 0 {
 		return store.InventoryRow{}, fmt.Errorf("the inventory is empty; register a host with vctl add")
 	}
-	idxs, cancelled, err := runListPicker(hostPickLabels(rows), title, false)
+	i, err := pickIndex(hostPickLabels(rows), hostPickGroups(rows), title)
 	if err != nil {
 		return store.InventoryRow{}, err
 	}
-	if cancelled || len(idxs) == 0 {
-		return store.InventoryRow{}, fmt.Errorf("selection cancelled")
+	return rows[i], nil
+}
+
+// hostPickGroups is the datacenter of each row, for the picker's tabs.
+func hostPickGroups(rows []store.InventoryRow) *listGroups {
+	of := make([]string, 0, len(rows))
+	for _, r := range rows {
+		of = append(of, r.DC)
 	}
-	return rows[idxs[0]], nil
+	return &listGroups{name: "DC", of: of}
 }
 
 // hostPickNameWidth caps the hostname column. Past this the row wraps and the

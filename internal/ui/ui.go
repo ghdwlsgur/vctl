@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
@@ -360,4 +361,33 @@ func FormTheme() *huh.Theme {
 	t.Blurred.TextInput.Prompt = t.Blurred.TextInput.Prompt.Foreground(muted)
 
 	return t
+}
+
+// FormKeyMap lets the arrow keys move between fields.
+//
+// huh's default binds only shift+tab to "previous field". Enter goes forward,
+// nothing obvious goes back, so a form is effectively one-way: notice a typo in
+// the field above and the way out is to finish the form and run the command
+// again. The key everyone reaches for — ↑ — does nothing, which reads as the
+// form being broken rather than as a keybinding that was never made.
+//
+// Text inputs are single-line, so ↑/↓ carry no in-field meaning there and are
+// free to move between fields.
+//
+// Select is different: ↑/↓ are how an option gets chosen, and taking them would
+// break the field to fix the form. It gets ←/→ instead, which huh leaves unbound
+// on vertical selects. Every field can be left with an arrow; which arrow
+// depends on whether the field itself needs the vertical pair.
+func FormKeyMap() *huh.KeyMap {
+	km := huh.NewDefaultKeyMap()
+
+	km.Input.Prev = key.NewBinding(key.WithKeys("shift+tab", "up"), key.WithHelp("↑", "back"))
+	km.Input.Next = key.NewBinding(key.WithKeys("enter", "tab", "down"), key.WithHelp("↓/enter", "next"))
+
+	km.Select.Prev = key.NewBinding(key.WithKeys("shift+tab", "left"), key.WithHelp("←", "back"))
+	km.Select.Next = key.NewBinding(key.WithKeys("enter", "tab", "right"), key.WithHelp("→/enter", "next"))
+
+	// Confirm keeps ←/→ for toggling Yes/No. It is the last field in every form
+	// that has one, so shift+tab is enough of a way back.
+	return km
 }
