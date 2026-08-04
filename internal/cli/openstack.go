@@ -71,7 +71,19 @@ func openstackCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	cmd.Flags().BoolVar(&all, "all", false, "include hosts a probe examined and found no OpenStack on")
 	cmd.AddCommand(openstackHostCmd())
-	cmd.AddCommand(gate(openstackReconcileCmd(), "openstack-reconcile", classMutate))
+	// Deliberately not app-gated, for the same reason `vctl migrate` is not.
+	//
+	// Vault is the boundary here: reconciling needs kv/teams/sre/vctl-* and
+	// database/creds/vctl-rw, which only vctl-admin and this CronJob's policy
+	// can read. Nobody reaches a farm's credentials without them.
+	//
+	// The app layer cannot answer for this caller anyway. A CronJob
+	// authenticating with kubernetes auth has no per-person identity to look
+	// up — the grant table is a table of people, and putting a workload in it
+	// to satisfy a check is the wrong shape. The gate also opened the store
+	// with vctl-ro, a role this Job has no reason to hold, so the check failed
+	// before the command it guards could run at all.
+	cmd.AddCommand(openstackReconcileCmd())
 	return cmd
 }
 

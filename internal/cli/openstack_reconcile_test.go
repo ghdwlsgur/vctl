@@ -2,6 +2,8 @@ package cli
 
 import (
 	"slices"
+
+	"github.com/spf13/cobra"
 	"strings"
 	"testing"
 )
@@ -69,5 +71,29 @@ func TestVaultFarmKeyIsTypeableAndKeepsThePort(t *testing.T) {
 	}
 	if vaultFarmKey("10.0.0.1:5000") == vaultFarmKey("10.0.0.1:5001") {
 		t.Error("two ports on one address collapsed into one key")
+	}
+}
+
+// reconcile must not be app-gated. A CronJob authenticating with kubernetes
+// auth has no per-person identity, and the gate opened the inventory with
+// vctl-ro — a role this workload has no reason to hold. It failed before the
+// command it guards could run:
+//
+//	rbac: 'openstack-reconcile' needs the inventory database and it is
+//	unreachable: database/creds/vctl-ro: permission denied
+//
+// Vault is the boundary instead: kv/teams/sre/vctl-* and database/creds/vctl-rw.
+func TestReconcileIsNotAppGated(t *testing.T) {
+	var found *cobra.Command
+	for _, c := range openstackCmd().Commands() {
+		if c.Name() == "reconcile" {
+			found = c
+		}
+	}
+	if found == nil {
+		t.Fatal("reconcile is not registered under openstack")
+	}
+	if name := found.Annotations["rbac.command"]; name != "" {
+		t.Errorf("reconcile carries the rbac annotation %q; the gate needs an identity a CronJob does not have", name)
 	}
 }
