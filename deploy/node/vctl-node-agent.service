@@ -46,23 +46,27 @@ ReadWritePaths=/var/lib/vctl
 CPUQuota=2%
 MemoryHigh=32M
 MemoryMax=48M
-# 2026-08-04: was 24, and the agent hit it and died — not a subprocess, the
-# agent itself:
+# Deliberately unchanged at 24.
+#
+# On 2026-08-04 the agent hit this and died — not a subprocess, the agent
+# itself:
 #
 #   runtime: failed to create new OS thread (have 25 already; errno=11)
 #   fatal error: newosproc
 #
-# A Go runtime grows its thread pool on its own schedule: a blocking syscall
-# parks an M and a new one is started to keep the Ps busy, so the count follows
-# what the process is doing, not how it was written. 24 was sized for a
-# heartbeat that read a few files, and reading config off two hosts with slower
-# storage was enough to cross it. Both restarted in a loop, taking the liveness
-# report with them — a status agent that dies is worse than one that reports
-# slowly.
+# Raising the ceiling was the obvious fix and the wrong one. The ceiling was not
+# the problem: an unpinned Go runtime sizes its thread pool to the host's core
+# count, so the same agent used 5 threads on most machines and 23 on the 72-core
+# ones. GOMAXPROCS above pins it, and those hosts now sit at 5 like everything
+# else — measured before and after, same limit:
 #
-# This is a resource ceiling, not a privilege: nothing here widens what the
-# agent may touch. Kept tight enough to still bound a runaway.
-TasksMax=64
+#   without GOMAXPROCS   TasksCurrent=23   (crash loop)
+#   with GOMAXPROCS=2    TasksCurrent=5    (no crashes)
+#
+# So the limit stays where it is. Widening it would have hidden a runtime that
+# was sizing itself for CPU this unit is never given, and left nothing to catch
+# the next thing that leaks threads.
+TasksMax=24
 IOWeight=25
 Nice=10
 LogRateLimitIntervalSec=30s
