@@ -3,7 +3,9 @@ package probes
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -33,6 +35,28 @@ type fakeHost struct {
 
 func (f *fakeHost) probe() *OpenStack {
 	return &OpenStack{root: "/nonexistent", run: f.run}
+}
+
+// probeWithSocket shapes a host that exposes a container engine socket, with
+// the socket file really present under a temp root so the existence check is
+// exercised rather than stubbed. list is what the socket answers.
+func (f *fakeHost) probeWithSocket(t *testing.T, socket string, list func() (map[string]containerInfo, error)) *OpenStack {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(root+socket), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(root+socket, nil, 0o600); err != nil {
+		t.Fatalf("write socket: %v", err)
+	}
+	return &OpenStack{
+		root: root,
+		run:  f.run,
+		listSocket: func(context.Context, string) (map[string]containerInfo, error) {
+			f.calls = append(f.calls, "socket "+socket)
+			return list()
+		},
+	}
 }
 
 func (f *fakeHost) run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -302,33 +326,58 @@ func TestOpenStackReportsEveryRoleAHostHolds(t *testing.T) {
 	}
 }
 
-// The agent runs under ProtectSystem=strict, and `podman ps` takes a write lock
-// on the container store even to list. The direct call fails with
-// "read-only file system"; --remote goes through podman.socket and writes
-// nothing, which is why it is a fallback rather than a ReadWritePaths entry —
-// granting a status agent write access to the container store of every
-// OpenStack host is a far larger permission than reading names is worth.
-func TestOpenStackFallsBackToTheSocketWhenTheStoreIsReadOnly(t *testing.T) {
-	h := &fakeHost{
-		engineRefuses: map[string]bool{"podman": true},
-		containers:    map[string]string{"nova_compute": "running"},
-	}
-	res := h.probe().Collect(context.Background())
+// The engine is asked over its socket, never by running its CLI.
+//
+// The CLI was the first implementation and cannot work here. This agent's unit
+// is sized for a heartbeat — MemoryMax=48M, TasksMax=24, CPUQuota=2% — and a
+// container engine is a large Go program that inherits all of it. On a real
+// controller both engines aborted:
+//
+//	could not list containers (podman: signal: aborted (core dumped);
+//	docker: signal: aborted (core dumped))
+//
+// Widening the unit on every OpenStack host was the alternative. The socket
+// costs no subprocess at all, so the narrow unit stays narrow.
+func TestOpenStackAsksTheSocketAndNeverForksTheEngine(t *testing.T) {
+	h := &fakeHost{}
+	p := h.probeWithSocket(t, "/run/podman/podman.sock", func() (map[string]containerInfo, error) {
+		return map[string]containerInfo{"nova_compute": {
+			State: "running",
+			Image: "172.16.0.11:7777/openstack.kolla/nova-compute:2025.1-rocky-9",
+		}}, nil
+	})
+	res := p.Collect(context.Background())
 
 	if res.Err != nil {
-		t.Fatalf("probe errored instead of using the socket: %v", res.Err)
+		t.Fatalf("probe errored: %v", res.Err)
 	}
 	if !slices.Contains(res.Roles, "compute") {
 		t.Errorf("roles = %v, want compute via the socket", res.Roles)
 	}
-	var remote bool
 	for _, c := range h.calls {
-		if strings.Contains(c, "--remote") {
-			remote = true
+		if strings.HasPrefix(c, "podman ") || strings.HasPrefix(c, "docker ") {
+			t.Errorf("the engine CLI was run (%q); it aborts inside this agent's cgroup", c)
 		}
 	}
-	if !remote {
-		t.Error("the socket was never tried")
+}
+
+// A host that exposes a socket and refuses on it must not fall back to forking
+// the CLI: the CLI is what cannot run here, so the fallback would turn a
+// reportable failure into a crash.
+func TestOpenStackDoesNotForkTheCLIWhenASocketRefuses(t *testing.T) {
+	h := &fakeHost{}
+	p := h.probeWithSocket(t, "/run/podman/podman.sock", func() (map[string]containerInfo, error) {
+		return nil, errors.New("connection refused")
+	})
+	res := p.Collect(context.Background())
+
+	if res.Err == nil {
+		t.Fatal("a refused socket was reported as a successful probe")
+	}
+	for _, c := range h.calls {
+		if strings.HasPrefix(c, "podman ") || strings.HasPrefix(c, "docker ") {
+			t.Errorf("fell back to the engine CLI (%q) after the socket refused", c)
+		}
 	}
 }
 
@@ -410,5 +459,41 @@ func TestOpenStackDiscardsMisshapenSystemdOutput(t *testing.T) {
 
 	if len(res.Roles) != 0 {
 		t.Errorf("roles = %v — misaligned output was read as an answer", res.Roles)
+	}
+}
+
+// A containerised service reports the tag it was deployed with. Reading it out
+// of the listing is free; asking the container would mean `podman exec`, the
+// fork that aborts inside this agent's cgroup.
+func TestOpenStackTakesTheVersionFromTheDeployedImageTag(t *testing.T) {
+	h := &fakeHost{}
+	p := h.probeWithSocket(t, "/run/podman/podman.sock", func() (map[string]containerInfo, error) {
+		return map[string]containerInfo{
+			"nova_compute": {State: "running", Image: "172.16.0.11:7777/openstack.kolla/nova-compute:2025.1-rocky-9"},
+			"keystone":     {State: "running", Image: "172.16.0.11:7777/openstack.kolla/keystone:2025.1-rocky-9"},
+		}, nil
+	})
+	res := p.Collect(context.Background())
+
+	if got := res.Components["nova-compute"].Version; got != "2025.1" {
+		t.Errorf("nova-compute version = %q, want the deployed release 2025.1", got)
+	}
+	if got := res.Components["keystone"].Version; got != "2025.1" {
+		t.Errorf("keystone version = %q", got)
+	}
+}
+
+// The registry in this fleet carries a port, so "everything after the last
+// colon" would read 7777/... as the tag of an untagged image.
+func TestImageTagIsNotConfusedByARegistryPort(t *testing.T) {
+	for ref, want := range map[string]string{
+		"172.16.0.11:7777/openstack.kolla/nova-compute:2025.1-rocky-9": "2025.1-rocky-9",
+		"172.16.0.11:7777/openstack.kolla/nova-compute":                "",
+		"nova-compute:2025.1": "2025.1",
+		"nova-compute":        "",
+	} {
+		if got := imageTag(ref); got != want {
+			t.Errorf("imageTag(%q) = %q, want %q", ref, got, want)
+		}
 	}
 }
