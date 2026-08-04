@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +45,11 @@ type ReconcileResult struct {
 	Confirmed    []string
 	LocalOnly    []string
 	ControlOnly  []string
+
+	// Ambiguous are control-plane names that could belong to more than one
+	// inventory host. They are reported rather than resolved: guessing which
+	// machine a name means is how an inventory starts claiming the wrong one.
+	Ambiguous []string
 }
 
 // ReconcileDeployment records one deployment and the membership of its hosts.
@@ -74,29 +80,11 @@ func (s *Store) ReconcileDeployment(ctx context.Context, in ReconcileInput) (Rec
 		return res, err
 	}
 
-	// The control plane names hosts its own way. Matching on the short name as
-	// well as the full one is what lets a nova host of "sre-srv-0059" meet an
-	// inventory entry of "sre-srv-0059.internal" — and matching no further than
-	// that is deliberate, because a looser rule would start pairing hosts by
-	// resemblance.
-	control := map[string]string{}
-	for _, h := range in.ControlHosts {
-		control[h] = h
-		if short, _, ok := strings.Cut(h, "."); ok {
-			control[short] = h
-		}
-	}
+	pairs, ambiguous := MatchHosts(in.LocalHosts, in.ControlHosts)
 	seen := map[string]bool{}
 
 	for _, host := range in.LocalHosts {
-		short := host
-		if s, _, ok := strings.Cut(host, "."); ok {
-			short = s
-		}
-		novaName, agreed := control[host]
-		if !agreed {
-			novaName, agreed = control[short]
-		}
+		novaName, agreed := pairs[host]
 		confidence := ConfidenceLocalOnly
 		evidence := map[string]any{"local": true, "control": false}
 		if agreed {
@@ -111,6 +99,7 @@ func (s *Store) ReconcileDeployment(ctx context.Context, in ReconcileInput) (Rec
 			return res, err
 		}
 	}
+	res.Ambiguous = ambiguous
 
 	// Registered centrally with nothing found on the host. Not an error and not
 	// something to delete: a compute node that is down still belongs to the
@@ -167,4 +156,98 @@ func (s *Store) LocalOnlyFarms(ctx context.Context) (map[string][]string, error)
 		out[h.Farm] = append(out[h.Farm], h.Hostname)
 	}
 	return out, nil
+}
+
+// MatchHosts pairs inventory hostnames with the names the control plane uses.
+//
+// nova writes its own names and they are shorter than the inventory's in more
+// than one way. Measured across this fleet:
+//
+//	sre-srv-0059        ↔ sre-srv-0059                exact
+//	sre-srv-0059        ↔ sre-srv-0059.internal       a domain suffix
+//	incheon-aio01       ↔ aio01                       an inventory prefix
+//
+// The third is why this is not two lines. The incheon deployment names its
+// hosts aio01/gpu01 while the inventory qualifies them by site, and matching
+// only on exact and short names left all seven local-only — the deployment
+// disowned every machine in it.
+//
+// # Why ambiguity is refused rather than resolved
+//
+// A short name can fit several inventory hosts, and picking one would be an
+// inventory claiming a machine on the strength of a resemblance. Those are
+// returned separately and confirmed for nobody. The rule is applied inside a
+// single deployment's host list, which is what keeps it narrow enough to be
+// safe at all.
+func MatchHosts(local, control []string) (pairs map[string]string, ambiguous []string) {
+	pairs = make(map[string]string, len(local))
+	claimed := map[string]bool{}
+
+	// Exact and domain-suffix first. These are unambiguous by construction, and
+	// taking them before anything looser stops a weaker rule from stealing a
+	// host that already has an exact match.
+	byShort := map[string][]string{}
+	for _, h := range local {
+		byShort[shortName(h)] = append(byShort[shortName(h)], h)
+	}
+	remaining := make([]string, 0, len(control))
+	for _, c := range control {
+		cs := shortName(c)
+		if hosts := byShort[cs]; len(hosts) == 1 {
+			pairs[hosts[0]] = c
+			claimed[hosts[0]] = true
+			continue
+		}
+		remaining = append(remaining, c)
+	}
+
+	for _, c := range remaining {
+		var hits []string
+		for _, h := range local {
+			if !claimed[h] && suffixMatch(h, shortName(c)) {
+				hits = append(hits, h)
+			}
+		}
+		switch len(hits) {
+		case 0:
+			// Not this deployment's, or a host nothing has probed. The caller
+			// reports it as control-only.
+		case 1:
+			pairs[hits[0]] = c
+			claimed[hits[0]] = true
+		default:
+			ambiguous = append(ambiguous, c)
+		}
+	}
+	sort.Strings(ambiguous)
+	return pairs, ambiguous
+}
+
+// shortName drops a domain suffix. sre-srv-0059.internal and sre-srv-0059 are
+// one machine.
+func shortName(h string) string {
+	if s, _, ok := strings.Cut(h, "."); ok {
+		return s
+	}
+	return h
+}
+
+// suffixMatch reports whether an inventory name is the control plane's name
+// with a site prefix on it — incheon-aio01 against aio01.
+//
+// The boundary is required. Without it "u01" would match "sre-gpu01", and a
+// name that merely ends in the same letters is not the same machine.
+func suffixMatch(inventory, control string) bool {
+	if control == "" || len(inventory) <= len(control) {
+		return false
+	}
+	if !strings.EqualFold(inventory[len(inventory)-len(control):], control) {
+		return false
+	}
+	switch inventory[len(inventory)-len(control)-1] {
+	case '-', '_', '.':
+		return true
+	default:
+		return false
+	}
 }
