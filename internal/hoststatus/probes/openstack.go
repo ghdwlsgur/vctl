@@ -129,9 +129,15 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		return res
 	}
 
+	units := make([]string, 0, len(osServices))
+	for _, s := range osServices {
+		units = append(units, s.name+".service")
+	}
+	systemd := p.systemdIndex(ctx, units)
+
 	roles := map[string]bool{}
 	for _, s := range osServices {
-		active, found := p.serviceState(ctx, containers, s.name)
+		active, found := serviceState(systemd, containers, s.name)
 		if !found {
 			continue
 		}
@@ -241,7 +247,7 @@ func (p *OpenStack) containerIndex(ctx context.Context) (map[string]string, erro
 	for _, engine := range containerEngines {
 		var lastErr error
 		var answered bool
-		for _, args := range engine.args {
+		for _, args := range p.engineOrder(engine.name, engine.args) {
 			out, err := p.exec(ctx, engine.name, args...)
 			if err != nil {
 				lastErr = err
@@ -260,6 +266,27 @@ func (p *OpenStack) containerIndex(ctx context.Context) (map[string]string, erro
 		return nil, fmt.Errorf("could not list containers (%s)", strings.Join(failures, "; "))
 	}
 	return index, nil
+}
+
+// engineSockets is where an engine's API socket lives, when it has one.
+var engineSockets = map[string]string{"podman": "/run/podman/podman.sock"}
+
+// engineOrder puts the socket form first on hosts that have a socket.
+//
+// Both forms are tried either way, so this only changes which one pays. On a
+// Kolla host the direct call is the one that fails, and failing costs 3.9s
+// under the agent's CPU quota — measured, not assumed. Asking the socket first
+// where a socket exists spends that time only on hosts where it can succeed.
+func (p *OpenStack) engineOrder(engine string, args [][]string) [][]string {
+	sock, ok := engineSockets[engine]
+	if !ok || len(args) < 2 || !p.exists(sock) {
+		return args
+	}
+	out := make([][]string, 0, len(args))
+	for i := len(args) - 1; i >= 0; i-- {
+		out = append(out, args[i])
+	}
+	return out
 }
 
 // notInstalled reports whether the command was simply absent, which is the one
@@ -283,26 +310,55 @@ func addContainers(index map[string]string, out string) {
 	}
 }
 
+// systemdIndex asks about every unit in one call.
+//
+// LoadState, not is-active. `systemctl is-active` prints "inactive" for a unit
+// that does not exist, so it cannot tell "installed and stopped" from "never
+// installed" — every service in the table came back as present, and an
+// operator's workstation read as a full controller. LoadState says not-found
+// for the second case, which is the distinction this whole probe rests on.
+//
+// One call rather than one per unit, because the agent runs under CPUQuota=2%
+// where a fork costs ~0.4s. Measured on a real controller: eight separate
+// `systemctl show` calls took 3.1s, so the two dozen here were ~9s of a 20s
+// probe budget, and the probe timed out before it could answer.
+//
+// `systemctl show -p A -p B --value u1 u2 u3` prints two value lines per unit,
+// in the order given, separated by a blank line.
+func (p *OpenStack) systemdIndex(ctx context.Context, units []string) map[string][2]string {
+	args := append([]string{"show", "-p", "LoadState", "-p", "ActiveState", "--value"}, units...)
+	out, err := p.exec(ctx, "systemctl", args...)
+	if err != nil {
+		return nil
+	}
+	var values []string
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			values = append(values, line)
+		}
+	}
+	// A mismatch means the output shape is not what this parser assumes, and
+	// pairing up anyway would attribute one unit's state to another — a silently
+	// wrong answer, which is worse than no answer.
+	if len(values) != 2*len(units) {
+		return nil
+	}
+	index := make(map[string][2]string, len(units))
+	for i, u := range units {
+		index[u] = [2]string{values[2*i], values[2*i+1]}
+	}
+	return index
+}
+
 // serviceState reports whether a service exists on this host and whether it is
 // running, covering both systemd units and Kolla's containers.
 //
-// Kolla is the reason this is not just `systemctl is-active`: in that
-// deployment every OpenStack service is a container and the host has no unit
-// for it at all, so a systemd-only probe would report a full controller as
-// empty.
-func (p *OpenStack) serviceState(ctx context.Context, containers map[string]string, name string) (active, found bool) {
-	// LoadState, not is-active.
-	//
-	// `systemctl is-active` prints "inactive" for a unit that does not exist,
-	// so it cannot tell "installed and stopped" from "never installed" — every
-	// service in the table came back as present, and an operator's workstation
-	// read as a full controller. LoadState says not-found for the second case,
-	// which is the distinction this whole probe rests on.
-	if out, err := p.exec(ctx, "systemctl", "show", "-p", "LoadState", "-p", "ActiveState", "--value", name+".service"); err == nil {
-		load, act := parseShow(string(out))
-		if load != "" && load != "not-found" {
-			return act == "active", true
-		}
+// Kolla is the reason this is not just systemd: in that deployment every
+// OpenStack service is a container and the host has no unit for it at all, so a
+// systemd-only probe would report a full controller as empty.
+func serviceState(units map[string][2]string, containers map[string]string, name string) (active, found bool) {
+	if v, ok := units[name+".service"]; ok && v[0] != "" && v[0] != "not-found" {
+		return v[1] == "active", true
 	}
 	for _, cname := range containerNames(name) {
 		if state, ok := containers[cname]; ok {
@@ -373,19 +429,6 @@ func (p *OpenStack) path(abs string) string {
 		return abs
 	}
 	return p.root + abs
-}
-
-// parseShow reads `systemctl show --value` output: one value per line, in the
-// order the -p flags were given.
-func parseShow(out string) (loadState, activeState string) {
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) > 0 {
-		loadState = strings.TrimSpace(lines[0])
-	}
-	if len(lines) > 1 {
-		activeState = strings.TrimSpace(lines[1])
-	}
-	return loadState, activeState
 }
 
 func sortedKeys(m map[string]bool) []string {
