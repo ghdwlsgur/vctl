@@ -1,0 +1,6 @@
+# Managed by Ansible (vctl_host role). --self looks the host up in the inventory,
+# and OS names (e.g. aio01, gpu02) do not match inventory names (e.g.
+# incheon-aio01) — without this the reconciler finds no farm and exits.
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/vctl openstack reconcile --self --hostname '{{ vctl_host_node_hostname }}' --insecure
