@@ -84,6 +84,7 @@ func openstackCmd() *cobra.Command {
 	// with vctl-ro, a role this Job has no reason to hold, so the check failed
 	// before the command it guards could run at all.
 	cmd.AddCommand(openstackReconcileCmd())
+	cmd.AddCommand(gate(openstackFarmCmd(), "openstack-farm", classMutate))
 	return cmd
 }
 
@@ -222,8 +223,11 @@ func groupByFarm(hosts []store.OpenStackHost) []store.OpenStackHost {
 		if (a.Farm == "") != (b.Farm == "") {
 			return b.Farm == ""
 		}
-		if a.Farm != b.Farm {
-			return a.Farm < b.Farm
+		// By what is printed, not by the id behind it. Sorting on the endpoint
+		// while showing the name put "incheon, seoul-b, 172.16.0.21, seoul-a"
+		// on screen — an order that is correct and looks like no order at all.
+		if la, lb := farmLabel(a), farmLabel(b); la != lb {
+			return la < lb
 		}
 		return a.Hostname < b.Hostname
 	})

@@ -30,7 +30,7 @@ func resolveHost(ctx context.Context, st inventoryLister, args []string, title s
 	if len(args) > 0 {
 		return findHost(ctx, st, args[0])
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
+	if !isTerminal() {
 		return store.InventoryRow{}, fmt.Errorf("hostname is required when there is no terminal to pick at")
 	}
 	rows, err := st.ListInventory(ctx, "")
@@ -103,4 +103,14 @@ func hostPickLabels(rows []store.InventoryRow) []string {
 		out = append(out, strings.TrimRight(line, " "))
 	}
 	return out
+}
+
+// isTerminal reports whether there is someone to ask.
+//
+// Every interactive path checks this before offering a picker or a form. A
+// command that falls back to guessing without a terminal is one that does
+// something unattended that nobody chose — which for edit and delete is how a
+// pipeline resolves to whichever host happens to sort first.
+func isTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }

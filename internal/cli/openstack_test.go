@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -323,5 +324,29 @@ func TestFarmShapeIsEmptyWithNoRoles(t *testing.T) {
 	h.Roles = nil
 	if got := farmShape([]store.OpenStackHost{h}); got != "" {
 		t.Errorf("shape = %q, want nothing", got)
+	}
+}
+
+// Groups are ordered by what is printed, not by the id behind it. Sorting on
+// the endpoint while showing the name put "incheon, seoul-b, 172.16.0.21,
+// seoul-a" on screen — an order that is correct and looks like none at all.
+func TestGroupByFarmOrdersByTheVisibleLabel(t *testing.T) {
+	mk := func(id, name string) store.OpenStackHost {
+		h := osHost("h-"+id, id)
+		h.FarmName = name
+		return h
+	}
+	got := groupByFarm([]store.OpenStackHost{
+		mk("172.16.0.10:5000", "incheon"),
+		mk("172.16.0.245:5000", "seoul-a"),
+		mk("172.16.0.21:5000", ""),
+	})
+
+	var labels []string
+	for _, h := range got {
+		labels = append(labels, farmLabel(h))
+	}
+	if !sort.StringsAreSorted(labels) {
+		t.Errorf("group order = %v, want it sorted by what the reader sees", labels)
 	}
 }
