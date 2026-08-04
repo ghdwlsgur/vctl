@@ -3,6 +3,7 @@ package probes
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"slices"
 	"sort"
 	"strings"
@@ -18,7 +19,16 @@ type fakeHost struct {
 	containers map[string]string
 	// versions maps a binary name to its version banner.
 	versions map[string]string
-	calls    []string
+
+	// engineAbsent is an engine that is not installed at all — the one failure
+	// that legitimately means "this host does not use containers".
+	engineAbsent map[string]bool
+	// engineRefuses is an engine that is installed and will not answer the
+	// direct call. This is the real sandbox: `podman ps` takes a write lock on
+	// the container store, and ProtectSystem=strict makes that path read-only.
+	engineRefuses map[string]bool
+
+	calls []string
 }
 
 func (f *fakeHost) probe() *OpenStack {
@@ -38,11 +48,19 @@ func (f *fakeHost) run(_ context.Context, name string, args ...string) ([]byte, 
 		}
 		return []byte("not-found\ninactive\n"), nil
 	case "podman", "docker":
+		if f.engineAbsent[name] {
+			return nil, exec.ErrNotFound
+		}
 		if len(args) > 0 && args[0] == "exec" {
 			if v, ok := f.versions[args[len(args)-2]]; ok {
 				return []byte(v), nil
 			}
 			return nil, errors.New("no such container")
+		}
+		// The direct call opens the local store; --remote goes through the
+		// socket and writes nothing.
+		if f.engineRefuses[name] && !slices.Contains(args, "--remote") {
+			return nil, errors.New("configure storage: open /var/lib/containers/storage/storage.lock: read-only file system")
 		}
 		// One listing for the whole pass, the way the engines are actually
 		// asked. Names are whatever the test put in the map — and for Kolla
@@ -267,5 +285,80 @@ func TestOpenStackReportsEveryRoleAHostHolds(t *testing.T) {
 	// Sorted, so the stored rows and the listing do not reorder between runs.
 	if !slices.IsSorted(res.Roles) {
 		t.Errorf("roles = %v, want a stable order", res.Roles)
+	}
+}
+
+// The agent runs under ProtectSystem=strict, and `podman ps` takes a write lock
+// on the container store even to list. The direct call fails with
+// "read-only file system"; --remote goes through podman.socket and writes
+// nothing, which is why it is a fallback rather than a ReadWritePaths entry —
+// granting a status agent write access to the container store of every
+// OpenStack host is a far larger permission than reading names is worth.
+func TestOpenStackFallsBackToTheSocketWhenTheStoreIsReadOnly(t *testing.T) {
+	h := &fakeHost{
+		engineRefuses: map[string]bool{"podman": true},
+		containers:    map[string]string{"nova_compute": "running"},
+	}
+	res := h.probe().Collect(context.Background())
+
+	if res.Err != nil {
+		t.Fatalf("probe errored instead of using the socket: %v", res.Err)
+	}
+	if !slices.Contains(res.Roles, "compute") {
+		t.Errorf("roles = %v, want compute via the socket", res.Roles)
+	}
+	var remote bool
+	for _, c := range h.calls {
+		if strings.Contains(c, "--remote") {
+			remote = true
+		}
+	}
+	if !remote {
+		t.Error("the socket was never tried")
+	}
+}
+
+// This is the failure that made a full Kolla controller report "probed, none
+// found": the listing was refused, the error was swallowed, and an empty map
+// became an answer. An engine that is installed and will not answer means the
+// probe could not look, and it has to say so.
+func TestOpenStackRefusesToAnswerWhenTheListingFails(t *testing.T) {
+	h := &fakeHost{containers: map[string]string{"nova_compute": "running"}}
+	// Installed, and refusing every way of being asked — the direct call and
+	// the socket both.
+	p := &OpenStack{root: "/nonexistent", run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "podman" || name == "docker" {
+			return nil, errors.New("permission denied")
+		}
+		return h.run(ctx, name, args...)
+	}}
+	res := p.Collect(context.Background())
+
+	if res.Err == nil {
+		t.Fatal("a refused listing was reported as a successful probe")
+	}
+	if res.Detected {
+		t.Error("a probe that could not look claimed to have found something")
+	}
+	if len(res.Roles) != 0 {
+		t.Errorf("roles = %v, want none — nothing was established", res.Roles)
+	}
+}
+
+// Most of the fleet has no container engine at all. That is an answer, not a
+// failure, and turning it into one would put every plain server into the
+// "could not be probed" column.
+func TestOpenStackTreatsAMissingEngineAsAnAnswer(t *testing.T) {
+	h := &fakeHost{
+		engineAbsent: map[string]bool{"podman": true, "docker": true},
+		systemd:      map[string]string{"nova-compute": "active"},
+	}
+	res := h.probe().Collect(context.Background())
+
+	if res.Err != nil {
+		t.Fatalf("a host with no container engine was reported as a probe failure: %v", res.Err)
+	}
+	if !slices.Contains(res.Roles, "compute") {
+		t.Errorf("roles = %v — the systemd answer was lost", res.Roles)
 	}
 }

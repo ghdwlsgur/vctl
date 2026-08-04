@@ -4,6 +4,9 @@ package probes
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"regexp"
@@ -116,7 +119,15 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 	// One listing per engine for the whole pass, not one per service. Asking
 	// podman about each of two dozen services separately was ~50 forks a pass on
 	// a host whose agent runs under CPUQuota=2%.
-	containers := p.containerIndex(ctx)
+	containers, err := p.containerIndex(ctx)
+	if err != nil {
+		// An engine is installed and would not answer. That is not the same as a
+		// host with no containers on it, and the difference is the whole probe:
+		// reporting "none found" here told us a full Kolla controller runs no
+		// OpenStack. Refuse to answer instead.
+		res.Err = err
+		return res
+	}
 
 	roles := map[string]bool{}
 	for _, s := range osServices {
@@ -188,31 +199,88 @@ func (p *OpenStack) deploymentID() string {
 	return strings.TrimSpace(string(b))
 }
 
+// containerEngines is how to ask each engine for its containers, in order.
+//
+// The second form for podman exists because of the sandbox this agent runs in.
+// `podman ps` opens the local container store, and opening it takes a write
+// lock at /var/lib/containers/storage/storage.lock — even to list. The unit
+// sets ProtectSystem=strict, so that path is read-only and the command fails:
+//
+//	Error: configure storage: open /var/lib/containers/storage/storage.lock:
+//	read-only file system
+//
+// `--remote` talks to podman.socket instead and writes nothing, which works
+// inside the sandbox unchanged. That is the reason this is a fallback rather
+// than a ReadWritePaths entry: granting a status agent write access to the
+// container store of every OpenStack host is a much larger permission than
+// reading a list of names is worth.
+var containerEngines = []struct {
+	name string
+	args [][]string
+}{
+	{"podman", [][]string{
+		{"ps", "-a", "--format", "{{.Names}} {{.State}}"},
+		{"--remote", "--url", "unix:///run/podman/podman.sock", "ps", "-a", "--format", "{{.Names}} {{.State}}"},
+	}},
+	// The docker CLI is already a thin client over its socket, so it needs no
+	// equivalent.
+	{"docker", [][]string{
+		{"ps", "-a", "--format", "{{.Names}} {{.State}}"},
+	}},
+}
+
 // containerIndex lists every container on the host once, so the per-service
 // lookup below is a map read rather than a fork.
 //
-// Both engines are asked because a host can have either, and a host with
-// neither answers with an empty map after two failed execs.
-func (p *OpenStack) containerIndex(ctx context.Context) map[string]string {
+// An engine that is not installed is not an error — most of the fleet has
+// none. An engine that is installed and will not answer is, and it must not be
+// allowed to look like a host with nothing on it.
+func (p *OpenStack) containerIndex(ctx context.Context) (map[string]string, error) {
 	index := map[string]string{}
-	for _, engine := range []string{"podman", "docker"} {
-		out, err := p.exec(ctx, engine, "ps", "-a", "--format", "{{.Names}} {{.State}}")
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			f := strings.Fields(line)
-			if len(f) < 2 {
+	var failures []string
+	for _, engine := range containerEngines {
+		var lastErr error
+		var answered bool
+		for _, args := range engine.args {
+			out, err := p.exec(ctx, engine.name, args...)
+			if err != nil {
+				lastErr = err
 				continue
 			}
-			// First engine wins: a host running both should not have the same
-			// service reported twice with different states.
-			if _, seen := index[f[0]]; !seen {
-				index[f[0]] = f[1]
-			}
+			answered = true
+			addContainers(index, string(out))
+			break
+		}
+		if answered || lastErr == nil || notInstalled(lastErr) {
+			continue
+		}
+		failures = append(failures, engine.name+": "+lastErr.Error())
+	}
+	if len(failures) > 0 {
+		return nil, fmt.Errorf("could not list containers (%s)", strings.Join(failures, "; "))
+	}
+	return index, nil
+}
+
+// notInstalled reports whether the command was simply absent, which is the one
+// failure that means "this host does not use that engine" rather than "the
+// probe could not look".
+func notInstalled(err error) bool {
+	return errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist)
+}
+
+func addContainers(index map[string]string, out string) {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		// First engine wins: a host running both should not have the same
+		// service reported twice with different states.
+		if _, seen := index[f[0]]; !seen {
+			index[f[0]] = f[1]
 		}
 	}
-	return index
 }
 
 // serviceState reports whether a service exists on this host and whether it is
