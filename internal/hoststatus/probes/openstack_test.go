@@ -269,10 +269,14 @@ func TestOpenStackListsContainersOncePerEngine(t *testing.T) {
 	}
 }
 
-// A stopped service is a component that is down, not an absent one. Reporting
-// it as absent would make a broken compute node look like a host that never
-// had OpenStack.
-func TestOpenStackReportsAStoppedServiceWithoutClaimingTheRole(t *testing.T) {
+// A stopped service is a component that is down, not an absent one, and the
+// host is still built to do the job.
+//
+// Roles used to require a running service, which made the topology shrink
+// during an outage: a compute node whose nova-compute is down dropped out of
+// the compute count at exactly the moment somebody was looking because
+// something broke. The role is what is deployed; ActiveRoles is what is up.
+func TestOpenStackKeepsTheRoleWhenTheServiceIsDown(t *testing.T) {
 	h := &fakeHost{systemd: map[string]string{"nova-compute": "failed"}}
 	res := h.probe().Collect(context.Background())
 
@@ -285,8 +289,31 @@ func TestOpenStackReportsAStoppedServiceWithoutClaimingTheRole(t *testing.T) {
 	if res.Components["nova-compute"].Active {
 		t.Error("a failed service was reported as active")
 	}
-	if slices.Contains(res.Roles, "compute") {
-		t.Error("a host whose nova-compute is down was still claimed as a compute node")
+	if !slices.Contains(res.Roles, "compute") {
+		t.Errorf("roles = %v — a compute node whose nova-compute is down is still a compute node", res.Roles)
+	}
+	if slices.Contains(res.ActiveRoles, "compute") {
+		t.Errorf("active roles = %v — nothing is running the role", res.ActiveRoles)
+	}
+}
+
+// With everything up the two lists agree, and the difference between them is
+// exactly the outage.
+func TestOpenStackActiveRolesMatchRolesWhenNothingIsDown(t *testing.T) {
+	h := &fakeHost{systemd: map[string]string{
+		"nova-compute":   "active",
+		"nova-conductor": "failed",
+	}}
+	res := h.probe().Collect(context.Background())
+
+	if !slices.Contains(res.Roles, "compute") || !slices.Contains(res.Roles, "controller") {
+		t.Errorf("roles = %v, want both deployed roles", res.Roles)
+	}
+	if !slices.Contains(res.ActiveRoles, "compute") {
+		t.Errorf("active roles = %v, want the running one", res.ActiveRoles)
+	}
+	if slices.Contains(res.ActiveRoles, "controller") {
+		t.Errorf("active roles = %v — nova-conductor is failed", res.ActiveRoles)
 	}
 }
 

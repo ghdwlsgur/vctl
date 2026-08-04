@@ -11,10 +11,13 @@ import (
 // Capability is one platform role a host holds — "this machine is an OpenStack
 // compute node" — with the versions found and how the probe went.
 type Capability struct {
-	Hostname   string
-	Kind       string // openstack | kubernetes | ceph
-	Role       string // compute | controller | network | ...
-	Detected   bool
+	Hostname string
+	Kind     string // openstack | kubernetes | ceph
+	Role     string // compute | controller | network | ...
+	Detected bool
+	// Active says whether a service is actually running behind this role. A
+	// role is what the host is built to do; Active is whether it is doing it.
+	Active     bool
 	Components map[string]CapabilityComponent
 	Details    map[string]string
 	LastError  string
@@ -55,14 +58,15 @@ func (s *Store) UpsertCapability(ctx context.Context, c Capability) (bool, error
 	}
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO server_capabilities
-			(hostname, kind, role, detected, components, details, last_error, observed_at, updated_at)
-		SELECT $1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8, now()
+			(hostname, kind, role, detected, active, components, details, last_error, observed_at, updated_at)
+		SELECT $1,$2,$3,$4,$9,$5::jsonb,$6::jsonb,$7,$8, now()
 		WHERE EXISTS (SELECT 1 FROM servers WHERE hostname=$1)
 		ON CONFLICT (hostname, kind, role) DO UPDATE SET
-			detected=EXCLUDED.detected, components=EXCLUDED.components,
+			detected=EXCLUDED.detected, active=EXCLUDED.active,
+			components=EXCLUDED.components,
 			details=EXCLUDED.details, last_error=EXCLUDED.last_error,
 			observed_at=EXCLUDED.observed_at, updated_at=now()`,
-		c.Hostname, c.Kind, c.Role, c.Detected, string(comps), string(details), c.LastError, at)
+		c.Hostname, c.Kind, c.Role, c.Detected, string(comps), string(details), c.LastError, at, c.Active)
 	if err != nil {
 		return false, err
 	}
@@ -106,7 +110,7 @@ func (s *Store) RecordCapabilityError(ctx context.Context, hostname, kind, messa
 
 // Capabilities returns capability rows, optionally narrowed to one kind.
 func (s *Store) Capabilities(ctx context.Context, kind string) ([]Capability, error) {
-	q := `SELECT hostname, kind, role, detected, components, details, last_error, observed_at, updated_at
+	q := `SELECT hostname, kind, role, detected, active, components, details, last_error, observed_at, updated_at
 		FROM server_capabilities`
 	var args []any
 	if kind != "" {
@@ -120,7 +124,7 @@ func (s *Store) Capabilities(ctx context.Context, kind string) ([]Capability, er
 func scanCapability(r pgx.Rows) (Capability, error) {
 	var c Capability
 	var comps, details []byte
-	if err := r.Scan(&c.Hostname, &c.Kind, &c.Role, &c.Detected, &comps, &details,
+	if err := r.Scan(&c.Hostname, &c.Kind, &c.Role, &c.Detected, &c.Active, &comps, &details,
 		&c.LastError, &c.ObservedAt, &c.UpdatedAt); err != nil {
 		return c, err
 	}

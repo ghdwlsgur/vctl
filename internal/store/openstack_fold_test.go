@@ -339,3 +339,24 @@ func TestFoldFlagsEqualRankClaimsThatDisagree(t *testing.T) {
 		t.Errorf("confidence = %q, want %q — two declarations disagree", got[0].Confidence, ConfidenceConflict)
 	}
 }
+
+// A membership and the host's own Keystone name the same deployment by
+// different labels — the endpoint, and whatever id the reconciler recorded.
+// Ranking them against each other made every reconciled host in the fleet look
+// like a conflict between a deployment and its own Keystone.
+func TestFoldDoesNotFightAMembershipWithTheHostsKeystone(t *testing.T) {
+	row := capRow("h1", "compute", time.Now(), true)
+	row.Details["keystone_url"] = "172.16.0.245:5000"
+	members := map[string][]OpenStackMembership{
+		"h1": {{DeploymentID: "seoul-a", Confidence: ConfidenceLocalOnly}},
+	}
+
+	got := foldCapabilityRows([]capabilityRow{row}, members)
+
+	if got[0].Confidence == ConfidenceConflict {
+		t.Error("a membership beside the host's own Keystone was reported as a conflict")
+	}
+	if got[0].Farm != "seoul-a" {
+		t.Errorf("farm = %q, want the filed membership", got[0].Farm)
+	}
+}

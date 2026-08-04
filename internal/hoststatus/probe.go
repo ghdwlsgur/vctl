@@ -43,10 +43,20 @@ type ProbeResult struct {
 	// conservative: a stray client package is not a deployment.
 	Detected bool
 
-	// Roles are what this host does in that platform, e.g. compute, controller.
-	// A host can hold several — a small deployment often runs controller and
-	// network on one box.
+	// Roles are what this host is built to do in that platform, e.g. compute,
+	// controller. A host can hold several — a small deployment often runs
+	// controller and network on one box.
+	//
+	// A service being deployed is what puts a role here, running or not. Only
+	// counting running ones made the topology shrink during an outage: a
+	// compute node whose nova-compute is down is still a compute node, and a
+	// farm view that drops it reports the deployment as smaller at exactly the
+	// moment somebody is looking because something broke.
 	Roles []string
+
+	// ActiveRoles are the subset with a running service behind them. The
+	// difference between the two lists is the outage.
+	ActiveRoles []string
 
 	// Components are the parts that were found, keyed by name (nova-compute,
 	// libvirt, qemu). Versions are per component because a rolling upgrade

@@ -193,10 +193,14 @@ func (c *statusConn) reportCapability(ctx context.Context, hostname string, res 
 	if len(roles) == 0 {
 		roles = []string{"none"}
 	}
+	active := make(map[string]bool, len(res.ActiveRoles))
+	for _, r := range res.ActiveRoles {
+		active[r] = true
+	}
 	for _, role := range roles {
 		cap := store.Capability{
 			Hostname: hostname, Kind: res.Kind, Role: role,
-			Detected: res.Detected, Details: res.Details,
+			Detected: res.Detected, Active: active[role], Details: res.Details,
 			Components: make(map[string]store.CapabilityComponent, len(res.Components)),
 			ObservedAt: res.ObservedAt,
 		}

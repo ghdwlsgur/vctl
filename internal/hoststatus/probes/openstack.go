@@ -139,12 +139,13 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 	systemd := p.systemdIndex(ctx, units)
 
 	roles := map[string]bool{}
+	active := map[string]bool{}
 	for _, s := range osServices {
-		active, found, image := serviceState(systemd, containers, s.name)
+		isActive, found, image := serviceState(systemd, containers, s.name)
 		if !found {
 			continue
 		}
-		comp := hoststatus.Component{Active: active, Service: true}
+		comp := hoststatus.Component{Active: isActive, Service: true}
 		// For a containerised service the deployed image tag is the version:
 		// it is what was actually rolled out, and it is already in the listing.
 		// Asking the container itself would mean `podman exec`, which is the
@@ -153,11 +154,16 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 			comp.Version = v
 		}
 		res.Components[s.name] = comp
-		// Only a running service claims the role. An installed-but-stopped unit
-		// says the host was meant to do this, which is worth reporting as a
-		// component, but it is not doing it now.
-		if active && s.role != "" {
-			roles[s.role] = true
+		if s.role == "" {
+			continue
+		}
+		// Deployed claims the role; running claims it as active. A stopped
+		// nova-compute means a compute node that is down, not a host that
+		// stopped being one — and the farm view has to keep showing it or the
+		// topology shrinks whenever something breaks.
+		roles[s.role] = true
+		if isActive {
+			active[s.role] = true
 		}
 	}
 
@@ -187,6 +193,7 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 	}
 
 	res.Roles = sortedKeys(roles)
+	res.ActiveRoles = sortedKeys(active)
 	// Detected means "this host is part of a deployment", which requires a
 	// service, not a package. Components with no active service still count —
 	// a stopped nova-compute is a compute node that is down, not a host with no
