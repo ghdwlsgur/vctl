@@ -1,26 +1,48 @@
 package probes
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// fixtureSecret makes a secret-shaped value at run time.
+//
+// Writing one as a literal would put a credential in the repository even though
+// it opens nothing — GitGuardian scans history and cannot tell a fixture from a
+// leak, and "it is only a test value" is a claim a real leak makes too. The
+// same reason scripts/verify-stack.sh generates its passwords with openssl.
+func fixtureSecret(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	return hex.EncodeToString(b)
+}
 
 // nova.conf is present on controllers and compute nodes alike, which is what
 // makes it the right source: a controller and its compute nodes name the same
 // Keystone and are in fact one deployment.
 func TestKeystoneURLIsReadFromNovaConf(t *testing.T) {
 	root := t.TempDir()
-	writeConf(t, root+"/etc/kolla/nova-compute/nova.conf", `
-[DEFAULT]
-transport_url = rabbit://openstack:hunter2@172.16.0.245:5672
-
-[keystone_authtoken]
-www_authenticate_uri = https://172.16.0.245:5000
-auth_url = https://172.16.0.245:5000
-username = nova
-password = super-secret-value
-`)
+	// The secret-shaped values are assembled at run time rather than written
+	// here. A literal credential in a fixture is still a literal credential in
+	// the repository, and the scanner that reads this history cannot tell the
+	// difference — nor should it try.
+	writeConf(t, root+"/etc/kolla/nova-compute/nova.conf", strings.Join([]string{
+		"[DEFAULT]",
+		"transport_url = rabbit://openstack:" + fixtureSecret(t) + "@172.16.0.245:5672",
+		"",
+		"[keystone_authtoken]",
+		"www_authenticate_uri = https://172.16.0.245:5000",
+		"auth_url = https://172.16.0.245:5000",
+		"username = nova",
+		"password = " + fixtureSecret(t),
+	}, "\n"))
 	p := &OpenStack{root: root}
 
 	if got := p.keystoneURL(); got != "172.16.0.245:5000" {
@@ -33,11 +55,13 @@ password = super-secret-value
 // that is what stops a stray line becoming a deployment id in the inventory.
 func TestKeystoneURLRefusesAnythingThatIsNotAnEndpoint(t *testing.T) {
 	for name, conf := range map[string]string{
-		"not a url":     "auth_url = super-secret-value\n",
+		// A secret-shaped value in the auth_url slot is the case that matters:
+		// it must not become a deployment id.
+		"not a url":     "auth_url = " + fixtureSecret(t) + "\n",
 		"no scheme":     "auth_url = 172.16.0.245:5000\n",
 		"wrong scheme":  "auth_url = rabbit://172.16.0.245:5672\n",
 		"empty":         "auth_url =\n",
-		"no auth_url":   "password = hunter2\nusername = nova\n",
+		"no auth_url":   "password = " + fixtureSecret(t) + "\nusername = nova\n",
 		"password only": "[keystone_authtoken]\npassword = auth_url-looking-value\n",
 	} {
 		root := t.TempDir()
