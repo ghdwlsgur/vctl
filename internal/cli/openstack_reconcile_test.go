@@ -57,6 +57,10 @@ func TestCountAndNamesAFewAndCountsTheRest(t *testing.T) {
 // The port still has to survive: two deployments can share an address.
 func TestVaultFarmKeyIsTypeableAndKeepsThePort(t *testing.T) {
 	got := vaultFarmKey("172.16.0.245:5000")
+	// kv/teams/sre is shared with everything else the team stores there.
+	if !strings.HasPrefix(got, "vctl-") {
+		t.Errorf("key = %q, want the vctl- prefix that keeps these apart", got)
+	}
 	if strings.Contains(got, ":") {
 		t.Errorf("key = %q, still carries a colon", got)
 	}
