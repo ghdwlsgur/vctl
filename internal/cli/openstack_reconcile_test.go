@@ -136,3 +136,36 @@ func TestSelfAcceptsAnOverriddenHostname(t *testing.T) {
 		t.Errorf("farmOfHost with an overridden name = %q, %v", got, err)
 	}
 }
+
+// A dry run must decide exactly what a real run decides, including across an
+// inventory prefix. The first version restated the matching rule here instead
+// of calling it, which is how the two drift apart.
+func TestDryRunUsesTheSameMatcherAsTheStore(t *testing.T) {
+	local := []string{"incheon-aio01", "incheon-gpu01", "incheon-orphan"}
+	control := []string{"aio01", "gpu01", "ghost-99"}
+
+	got := previewReconcile(local, control)
+
+	if !slices.Equal(got.Confirmed, []string{"incheon-aio01", "incheon-gpu01"}) {
+		t.Errorf("confirmed = %v, want the two matched across the site prefix", got.Confirmed)
+	}
+	if !slices.Equal(got.LocalOnly, []string{"incheon-orphan"}) {
+		t.Errorf("local-only = %v", got.LocalOnly)
+	}
+	if !slices.Equal(got.ControlOnly, []string{"ghost-99"}) {
+		t.Errorf("control-only = %v", got.ControlOnly)
+	}
+}
+
+// An ambiguous name is a question about which machine is meant, and it must be
+// visible rather than folded into the local-only pile.
+func TestDryRunReportsAmbiguity(t *testing.T) {
+	got := previewReconcile([]string{"incheon-aio01", "seoul-aio01"}, []string{"aio01"})
+
+	if len(got.Confirmed) != 0 {
+		t.Errorf("confirmed = %v, want none", got.Confirmed)
+	}
+	if !slices.Contains(got.Ambiguous, "aio01") {
+		t.Errorf("ambiguous = %v, want the name reported", got.Ambiguous)
+	}
+}

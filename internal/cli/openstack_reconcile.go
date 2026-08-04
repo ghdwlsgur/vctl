@@ -203,37 +203,27 @@ func controlPlaneHosts(ctx context.Context, c openstackapi.Credentials, insecure
 	return client.Hosts(ctx)
 }
 
-// previewReconcile computes what a run would decide, without writing. Same
-// matching rule as the store, so a dry run is not a different answer.
+// previewReconcile computes what a run would decide, without writing.
+//
+// It calls the same matcher the store does rather than restating the rule. The
+// first version restated it, and a dry run that decides differently from the
+// real one is worse than having none — it invites approving a change that then
+// does something else.
 func previewReconcile(local, control []string) store.ReconcileResult {
-	var res store.ReconcileResult
-	known := map[string]bool{}
-	for _, h := range control {
-		known[h] = true
-		if short, _, ok := strings.Cut(h, "."); ok {
-			known[short] = true
-		}
-	}
-	matched := map[string]bool{}
+	pairs, ambiguous := store.MatchHosts(local, control)
+	res := store.ReconcileResult{Ambiguous: ambiguous}
+	taken := map[string]bool{}
 	for _, h := range local {
-		short := h
-		if s, _, ok := strings.Cut(h, "."); ok {
-			short = s
-		}
-		if known[h] || known[short] {
+		if nova, ok := pairs[h]; ok {
 			res.Confirmed = append(res.Confirmed, h)
-			matched[short] = true
+			taken[nova] = true
 			continue
 		}
 		res.LocalOnly = append(res.LocalOnly, h)
 	}
-	for _, h := range control {
-		short := h
-		if s, _, ok := strings.Cut(h, "."); ok {
-			short = s
-		}
-		if !matched[short] {
-			res.ControlOnly = append(res.ControlOnly, h)
+	for _, c := range control {
+		if !taken[c] {
+			res.ControlOnly = append(res.ControlOnly, c)
 		}
 	}
 	return res
@@ -262,6 +252,16 @@ func reportReconcile(id string, r store.ReconcileResult, dry bool) {
 			Key:   "Control only",
 			Value: countAnd(r.ControlOnly) + " — registered centrally, no probe result",
 			State: ui.StateWarn,
+		})
+	}
+	// Reported loudest of the three. A name that fits several hosts is not a
+	// gap in the data — it is a question about which machine is meant, and
+	// nothing will resolve it until somebody answers.
+	if len(r.Ambiguous) > 0 {
+		rows = append(rows, ui.KV{
+			Key:   "Ambiguous",
+			Value: countAnd(r.Ambiguous) + " — the name fits more than one inventory host; confirmed for none",
+			State: ui.StateFail,
 		})
 	}
 	fmt.Fprintf(os.Stdout, "\n%s\n", ui.Title("▌ "+head))
