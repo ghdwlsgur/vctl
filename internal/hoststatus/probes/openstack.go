@@ -325,7 +325,12 @@ func versionFromImage(image string) string {
 	if m := versionRe.FindStringSubmatch(tag); m != nil {
 		return m[1]
 	}
-	return ""
+	// A tag with no version in it is returned whole rather than discarded. One
+	// compute node in this fleet runs nova-compute:260618 — a custom build,
+	// where every other node runs 2025.1-rocky-9 — and reporting nothing for it
+	// hid the single most interesting fact about that host behind an empty
+	// cell. The tag identifies what is deployed even when it is not a release.
+	return tag
 }
 
 // systemdIndex asks about every unit in one call.

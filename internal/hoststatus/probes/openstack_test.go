@@ -497,3 +497,27 @@ func TestImageTagIsNotConfusedByARegistryPort(t *testing.T) {
 		}
 	}
 }
+
+// A tag that is not a release number still identifies what is deployed.
+// gpu02 runs nova-compute:260618, a custom build, where every other compute
+// node in the fleet runs 2025.1-rocky-9 — and discarding the tag hid the most
+// interesting fact about that host behind an empty cell.
+func TestOpenStackKeepsANonReleaseImageTag(t *testing.T) {
+	h := &fakeHost{}
+	p := h.probeWithSocket(t, "/run/podman/podman.sock", func() (map[string]containerInfo, error) {
+		return map[string]containerInfo{
+			"nova_compute": {State: "running", Image: "172.16.0.11:7777/openstack.kolla/nova-compute:260618"},
+			"keystone":     {State: "running", Image: "172.16.0.11:7777/openstack.kolla/keystone:2025.1-rocky-9"},
+		}, nil
+	})
+	res := p.Collect(context.Background())
+
+	if got := res.Components["nova-compute"].Version; got != "260618" {
+		t.Errorf("nova-compute version = %q, want the deployed tag 260618", got)
+	}
+	// The release tag still reduces to the release, so the common case is not
+	// turned into noise.
+	if got := res.Components["keystone"].Version; got != "2025.1" {
+		t.Errorf("keystone version = %q, want 2025.1", got)
+	}
+}
