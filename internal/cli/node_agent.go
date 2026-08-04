@@ -182,7 +182,8 @@ func (c *statusConn) reportCapability(ctx context.Context, hostname string, res 
 		}
 		for name, comp := range res.Components {
 			cap.Components[name] = store.CapabilityComponent{
-				Version: comp.Version, Package: comp.Package, Active: comp.Active,
+				Version: comp.Version, Package: comp.Package,
+				Active: comp.Active, Service: comp.Service,
 			}
 		}
 		if _, err := c.st.UpsertCapability(ctx, cap); err != nil {

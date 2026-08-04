@@ -1,0 +1,173 @@
+package store
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+func seedOpenStackHost(t *testing.T, st *Store, host, state string) {
+	t.Helper()
+	ctx := context.Background()
+	_, _ = st.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=$1`, host)
+	if _, err := st.Insert(ctx, Server{
+		Hostname: host, IP: "198.51.100.91", Port: 22, User: "rocky", DC: "test-dc", CARole: "sre-core",
+	}); err != nil {
+		t.Fatalf("insert %s: %v", host, err)
+	}
+	if state != "" && state != StateActive {
+		if _, err := st.SetState(ctx, host, state); err != nil {
+			t.Fatalf("SetState %s: %v", host, err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = st.pool.Exec(ctx, `DELETE FROM openstack_memberships WHERE hostname=$1`, host)
+		_, _ = st.pool.Exec(ctx, `DELETE FROM server_capabilities WHERE hostname=$1`, host)
+		_, _ = st.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=$1`, host)
+	})
+}
+
+// The listing has to fold the per-role rows back into one host and carry the
+// membership with them.
+// Integration — needs VCTL_TEST_DSN.
+func TestOpenStackHostsJoinsRolesAndMembership(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const host = "os-host-01"
+	const farm = "test-farm-a"
+	seedOpenStackHost(t, st, host, StateActive)
+
+	if _, err := st.pool.Exec(ctx,
+		`INSERT INTO openstack_deployments (id, display_name, region) VALUES ($1,$2,$3)
+		 ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name`,
+		farm, "Test Farm A", "kr-test-1"); err != nil {
+		t.Fatalf("seed deployment: %v", err)
+	}
+	t.Cleanup(func() { _, _ = st.pool.Exec(ctx, `DELETE FROM openstack_deployments WHERE id=$1`, farm) })
+	if _, err := st.pool.Exec(ctx,
+		`INSERT INTO openstack_memberships (hostname, deployment_id, confidence) VALUES ($1,$2,$3)
+		 ON CONFLICT (hostname, deployment_id) DO UPDATE SET confidence=EXCLUDED.confidence`,
+		host, farm, ConfidenceConfirmed); err != nil {
+		t.Fatalf("seed membership: %v", err)
+	}
+
+	at := time.Now().Truncate(time.Second)
+	for _, role := range []string{"compute", "network"} {
+		if _, err := st.UpsertCapability(ctx, Capability{
+			Hostname: host, Kind: KindOpenStack, Role: role, Detected: true,
+			Components: map[string]CapabilityComponent{"nova-compute": {Version: "31.2.0", Active: true}},
+			Details:    map[string]string{"deployment": "unknown"},
+			ObservedAt: at,
+		}); err != nil {
+			t.Fatalf("upsert %s: %v", role, err)
+		}
+	}
+
+	got := findOpenStackHost(t, st, host)
+	if len(got.Roles) != 2 {
+		t.Errorf("roles = %v, want both", got.Roles)
+	}
+	if got.Farm != farm || got.FarmName != "Test Farm A" || got.FarmRegion != "kr-test-1" {
+		t.Errorf("farm = %q/%q/%q, want the joined deployment", got.Farm, got.FarmName, got.FarmRegion)
+	}
+	if got.Confidence != ConfidenceConfirmed {
+		t.Errorf("confidence = %q, want %q", got.Confidence, ConfidenceConfirmed)
+	}
+	if got.DC != "test-dc" {
+		t.Errorf("dc = %q, want the inventory's", got.DC)
+	}
+}
+
+// What an operator declared about the host travels with the capability, so the
+// listing can say whether a silent probe is news.
+// Integration — needs VCTL_TEST_DSN.
+func TestOpenStackHostsCarriesTheDeclaredHostState(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const host = "os-host-02"
+	seedOpenStackHost(t, st, host, StateMaintenance)
+
+	if _, err := st.UpsertCapability(ctx, Capability{
+		Hostname: host, Kind: KindOpenStack, Role: "compute", Detected: true,
+		ObservedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if got := findOpenStackHost(t, st, host).HostState; got != StateMaintenance {
+		t.Errorf("host state = %q, want %q — a host under maintenance reads differently", got, StateMaintenance)
+	}
+}
+
+// A retired host is one nothing is expected of. Counting it against probe
+// coverage would leave the fleet permanently short of complete.
+// Integration — needs VCTL_TEST_DSN.
+func TestOpenStackCoverageExcludesRetiredHosts(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	seedOpenStackHost(t, st, "os-host-03", StateActive)
+
+	before, err := st.OpenStackCoverageOf(ctx)
+	if err != nil {
+		t.Fatalf("coverage: %v", err)
+	}
+	seedOpenStackHost(t, st, "os-host-04", StateRetired)
+	after, err := st.OpenStackCoverageOf(ctx)
+	if err != nil {
+		t.Fatalf("coverage: %v", err)
+	}
+
+	if after.Hosts != before.Hosts {
+		t.Errorf("adding a retired host moved the denominator from %d to %d", before.Hosts, after.Hosts)
+	}
+}
+
+// Probed-and-absent must count as probed. Folding it into "never probed" would
+// send someone to redeploy an agent that is working correctly.
+// Integration — needs VCTL_TEST_DSN.
+func TestOpenStackCoverageSeparatesAbsentFromUnprobed(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const host = "os-host-05"
+	seedOpenStackHost(t, st, host, StateActive)
+
+	before, err := st.OpenStackCoverageOf(ctx)
+	if err != nil {
+		t.Fatalf("coverage: %v", err)
+	}
+	if _, err := st.UpsertCapability(ctx, Capability{
+		Hostname: host, Kind: KindOpenStack, Role: roleNone, Detected: false,
+		ObservedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	after, err := st.OpenStackCoverageOf(ctx)
+	if err != nil {
+		t.Fatalf("coverage: %v", err)
+	}
+
+	if after.Probed != before.Probed+1 {
+		t.Errorf("probed went %d -> %d, want +1 — looking and finding nothing is still looking", before.Probed, after.Probed)
+	}
+	if after.Running != before.Running {
+		t.Errorf("running went %d -> %d, want unchanged", before.Running, after.Running)
+	}
+	if after.Absent != before.Absent+1 {
+		t.Errorf("absent went %d -> %d, want +1", before.Absent, after.Absent)
+	}
+}
+
+func findOpenStackHost(t *testing.T, st *Store, host string) OpenStackHost {
+	t.Helper()
+	hosts, err := st.OpenStackHosts(context.Background())
+	if err != nil {
+		t.Fatalf("OpenStackHosts: %v", err)
+	}
+	for _, h := range hosts {
+		if h.Hostname == host {
+			return h
+		}
+	}
+	t.Fatalf("%s not in the listing", host)
+	return OpenStackHost{}
+}

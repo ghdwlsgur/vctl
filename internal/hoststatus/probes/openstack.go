@@ -87,7 +87,7 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		if !found {
 			continue
 		}
-		res.Components[s.name] = hoststatus.Component{Active: active}
+		res.Components[s.name] = hoststatus.Component{Active: active, Service: true}
 		// Only a running service claims the role. An installed-but-stopped unit
 		// says the host was meant to do this, which is worth reporting as a
 		// component, but it is not doing it now.
@@ -100,9 +100,13 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 	// so they are only gathered when one was found.
 	if roles["compute"] {
 		if v := p.commandVersion(ctx, "libvirtd", "--version"); v != "" {
-			res.Components["libvirt"] = hoststatus.Component{Version: v, Active: true}
+			// libvirtd is a daemon, and it was reached by asking the daemon's own
+			// binary for its version — which only answers when it is installed.
+			res.Components["libvirt"] = hoststatus.Component{Version: v, Active: true, Service: true}
 		}
 		if v := p.commandVersion(ctx, "qemu-system-x86_64", "--version"); v != "" {
+			// Not a service: qemu is exec'd per instance. Marking it as one made
+			// every healthy compute node carry a stopped component.
 			res.Components["qemu"] = hoststatus.Component{Version: v}
 		}
 		if p.exists("/dev/kvm") {

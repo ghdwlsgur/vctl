@@ -89,6 +89,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		lsCmd(),
 		ipCmd(),
 		wgCmd(),
+		openstackCmd(),
 		gate(syncCmd(), "sync", classMutate),
 		addCmd(), editCmd(), deleteCmd(), migrateCmd(), // already gated inside
 		statusCmd(), auditCmd(),

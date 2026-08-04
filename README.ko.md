@@ -327,13 +327,14 @@ claude mcp add vctl -- vctl mcp
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |
 | `vctl ssh [host\|user@addr] [--server <host>]` | exact, fuzzy, IP, interactive 선택으로 접속합니다(픽커는 ←/→로 DC 필터). `--server`는 정확히 또는 IP로 해석해 비대화형으로 접속합니다(스크립트/에이전트용). `user@addr` 형태는 인벤토리를 거치지 않고 주소로 바로 접속합니다 |
 | `vctl list [--dc <dc>]` | 인벤토리 호스트를 나열합니다(primary + extra IP, 비표준 SSH 포트, 관측된 liveness, 그리고 `active` 가 아닐 때의 운영 상태) |
+| `vctl openstack [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | 어떤 호스트가 OpenStack을 돌리는지, 무슨 역할인지, 어느 팜 소속인지 보여줍니다. node-agent의 capability probe 결과를 읽습니다. `vctl openstack host <name>`은 한 호스트의 역할·컴포넌트 버전·소속을 보여줍니다 |
 | `vctl add [flags]` | `sync`가 찾지 못하는 호스트를 인벤토리에 등록합니다. 플래그 없이 실행하면 폼으로 입력합니다 |
 | `vctl edit [host] [flags]` | `sync`가 덮어쓰지 않는 필드를 바꿉니다 — dc · ssh user · 점프 호스트 · extra IP · 호스트명, 그리고 `--state active\|maintenance\|broken\|retired`. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
 | `vctl delete [host] [--yes]` | 폐기한 호스트를 지웁니다. 감사 기록은 남습니다. 이 호스트를 경유하는 호스트가 있으면 삭제를 막습니다. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
 | `vctl mcp` | 인벤토리를 AI 에이전트에 노출하는 읽기 전용 MCP 서버(stdio). `vctl_ssh_exec`로 호스트 명령 실행도 가능. 호출자 신원으로 동작 — RBAC 적용 |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | 앱 계층 커맨드 RBAC 관리(관리자). `assign`/`grant`은 인터랙티브 픽커 |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | 중앙 SSH 접근 감사 row를 보여줍니다 |
-| `vctl node-agent [--interval 5m]` | 이미 등록된 인벤토리 호스트의 가벼운 런타임 상태를 보고합니다 |
+| `vctl node-agent [--interval 5m] [--probe-interval 1h]` | 이미 등록된 인벤토리 호스트의 가벼운 런타임 상태를 보고합니다. 주기가 긴 probe는 그 호스트가 어떤 플랫폼의 무슨 역할인지 기록합니다 |
 | `vctl cache status\|refresh\|clear` | Postgres 불통 시 쓰이는 로컬 인벤토리 스냅샷을 확인·제어합니다 |
 | `vctl status` | 로그인, SSH CA, inventory DB 연결 상태를 확인합니다 |
 | `vctl sync [--prefix sre]` | `~/.ssh/config`와 probe 결과에서 인벤토리를 동기화합니다(`--migrate`는 deprecated — `vctl migrate`를 쓰세요) |

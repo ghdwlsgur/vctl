@@ -27,7 +27,10 @@ type Capability struct {
 type CapabilityComponent struct {
 	Version string `json:"version,omitempty"`
 	Package string `json:"package,omitempty"`
-	Active  bool   `json:"active"`
+
+	// Active is meaningful only when Service is true — see hoststatus.Component.
+	Active  bool `json:"active"`
+	Service bool `json:"service"`
 }
 
 // UpsertCapability records what a probe found, and refuses to create inventory
