@@ -251,3 +251,42 @@ func suffixMatch(inventory, control string) bool {
 		return false
 	}
 }
+
+// Deployment is one OpenStack farm as the inventory records it.
+type Deployment struct {
+	ID          string
+	DisplayName string
+	Region      string
+	KeystoneURL string
+}
+
+// SetDeploymentName gives a farm a name people can read.
+//
+// The farm's id is its Keystone endpoint — 172.16.0.245:5000 — which is stable
+// and says nothing. A name is the only part of this a person chooses, so it is
+// stored rather than derived: deriving it from the hosts (a common prefix, the
+// datacenter) would rename the farm whenever its membership changed.
+//
+// The row is created if the reconciler has not yet seen this deployment, so a
+// name can be given before the first reconcile rather than only after.
+func (s *Store) SetDeploymentName(ctx context.Context, id, name, region string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO openstack_deployments (id, display_name, region, updated_at)
+		VALUES ($1,$2,$3, now())
+		ON CONFLICT (id) DO UPDATE SET
+			display_name=EXCLUDED.display_name, region=EXCLUDED.region, updated_at=now()`,
+		id, name, region)
+	return err
+}
+
+// Deployments lists the farms the inventory knows by name.
+func (s *Store) Deployments(ctx context.Context) ([]Deployment, error) {
+	return queryAndCollect(ctx, s.pool, `
+		SELECT id, display_name, region, keystone_url
+		FROM openstack_deployments ORDER BY id`, nil,
+		func(r pgx.Rows) (Deployment, error) {
+			var d Deployment
+			err := r.Scan(&d.ID, &d.DisplayName, &d.Region, &d.KeystoneURL)
+			return d, err
+		})
+}
