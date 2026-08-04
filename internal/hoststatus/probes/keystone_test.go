@@ -1,6 +1,7 @@
 package probes
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"os"
@@ -108,5 +109,65 @@ func writeConf(t *testing.T, path, body string) {
 	}
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
+	}
+}
+
+// An endpoint with credentials embedded in it must never leave this function
+// carrying them.
+//
+// This is not hypothetical: transport_url in the same file is written
+// rabbit://user:pass@host, and a misconfigured or copy-pasted auth_url can be
+// too. Whatever comes back here is stored in the database as a deployment id
+// and printed by `vctl openstack --json`, so returning the raw string would
+// publish the credential to every reader of the inventory.
+//
+// url.Parse puts userinfo in u.User and the host in u.Host; only u.Host is
+// returned. This pins that.
+func TestKeystoneURLStripsEmbeddedCredentials(t *testing.T) {
+	secret := fixtureSecret(t)
+	for _, raw := range []string{
+		"https://admin:" + secret + "@172.16.0.245:5000",
+		"https://admin:" + secret + "@172.16.0.245:5000/v3",
+		"http://" + secret + "@172.16.0.245:5000",
+	} {
+		got := normalizeKeystoneURL(raw)
+		if got != "172.16.0.245:5000" {
+			t.Errorf("normalizeKeystoneURL(...) = %q, want the bare host", got)
+		}
+		if strings.Contains(got, secret) || strings.Contains(got, "@") {
+			t.Fatalf("a credential survived into the deployment id: %q", got)
+		}
+	}
+}
+
+// The probe reports one field out of a file full of secrets. Anything else
+// reaching Details would be stored as JSONB and printed by --json.
+func TestProbeReportsOnlyTheEndpointFromNovaConf(t *testing.T) {
+	root := t.TempDir()
+	secret := fixtureSecret(t)
+	writeConf(t, root+"/etc/nova/nova.conf", strings.Join([]string{
+		"[DEFAULT]",
+		"transport_url = rabbit://openstack:" + secret + "@172.16.0.245:5672",
+		"[keystone_authtoken]",
+		"auth_url = https://172.16.0.245:5000",
+		"password = " + secret,
+		"memcache_secret_key = " + secret,
+	}, "\n"))
+
+	p := &OpenStack{root: root, run: (&fakeHost{}).run}
+	res := p.Collect(context.Background())
+
+	if got := res.Details["keystone_url"]; got != "172.16.0.245:5000" {
+		t.Errorf("keystone_url = %q", got)
+	}
+	for k, v := range res.Details {
+		if strings.Contains(v, secret) {
+			t.Errorf("a secret from nova.conf reached Details[%q]", k)
+		}
+	}
+	for name, c := range res.Components {
+		if strings.Contains(c.Version, secret) || strings.Contains(c.Package, secret) {
+			t.Errorf("a secret from nova.conf reached Components[%q]", name)
+		}
 	}
 }
