@@ -92,3 +92,12 @@ vctl_host_services: >-
      ((['vctl-watch-sessions'] +
        (['vctl-collect'] if vctl_host_install_collect | bool else []))
       if vctl_host_audit_stack | bool else []) }}
+
+# OpenStack 팜 membership reconciler. 팜당 컨트롤러 한 대에만 opt-in 으로 깐다.
+#
+# 중앙에서 돌리는 것이 먼저였고 성립하지 않았다 — 각 팜의 Keystone VIP 는 그 팜
+# 안에서만 도달한다. node-agent 와 자격증명을 나누는 이유는 vctl-node AppRole 이
+# 함대 43대의 공유 자격이기 때문이다: 거기에 OpenStack admin 읽기를 얹으면 모든
+# 호스트가 그 능력을 갖는다.
+vctl_host_openstack_reconciler: "{{ openstack_reconciler | default(false) }}"
+vctl_host_reconciler_approle: "{{ reconciler_approle | default('vctl-reconciler') }}"

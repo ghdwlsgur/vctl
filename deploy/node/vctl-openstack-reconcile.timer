@@ -1,0 +1,17 @@
+# 여섯 시간마다 팜 소속을 다시 확인한다.
+#
+# 호스트가 배포를 옮기는 일은 배포 주기로 일어나지 probe 주기로 일어나지 않는다.
+# 더 자주 돌면 컨트롤 플레인에 의미 없는 인증 부하만 준다.
+[Unit]
+Description=Run the vctl OpenStack membership reconciler every 6h
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+# 팜마다 컨트롤러가 동시에 자기 Keystone 을 두드리는 것을 흩는다. 같은 팜에 여러
+# 대를 설치하는 경우가 아니어도, 여덟 배포가 정각에 함께 깨어날 이유는 없다.
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

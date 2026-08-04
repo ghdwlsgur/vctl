@@ -31,6 +31,8 @@ const vaultFarmPrefix = "kv/teams/sre"
 func openstackReconcileCmd() *cobra.Command {
 	var (
 		only     string
+		self     bool
+		hostname string
 		insecure bool
 		dryRun   bool
 	)
@@ -53,6 +55,13 @@ func openstackReconcileCmd() *cobra.Command {
 					ui.Warnf(os.Stderr, "no deployments to reconcile. Run the node agents first.")
 					return nil
 				}
+				if self {
+					id, err := farmOfHost(farms, hostname)
+					if err != nil {
+						return err
+					}
+					only = id
+				}
 				ids := make([]string, 0, len(farms))
 				for id := range farms {
 					if only != "" && !strings.EqualFold(id, only) {
@@ -69,9 +78,37 @@ func openstackReconcileCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&only, "farm", "", "reconcile only this deployment")
+	cmd.Flags().BoolVar(&self, "self", false, "reconcile only the deployment this host belongs to")
+	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname for --self; defaults to the os hostname")
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification against the control plane (self-signed endpoints)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what would change without writing")
 	return cmd
+}
+
+// farmOfHost finds which deployment this machine belongs to.
+//
+// It exists so a unit file does not have to carry the farm's name. A host that
+// is moved between deployments, or a farm whose Keystone VIP changes, would
+// otherwise leave a stale identifier in a systemd unit that nobody looks at.
+//
+// The inventory name is not always the os hostname — one host in this fleet
+// reports as k8s-all-01 while the inventory calls it sre-srv-0023 — so the name
+// can be overridden the same way the node agent overrides it.
+func farmOfHost(farms map[string][]string, hostname string) (string, error) {
+	if hostname == "" {
+		hostname, _ = os.Hostname()
+	}
+	if hostname == "" {
+		return "", fmt.Errorf("--self needs a hostname and the os did not provide one; pass --hostname")
+	}
+	for id, hosts := range farms {
+		for _, h := range hosts {
+			if strings.EqualFold(h, hostname) {
+				return id, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("%s is not a member of any deployment the probe has reported; nothing to reconcile", hostname)
 }
 
 func reconcileFarms(ctx context.Context, a *app.App, st *store.Store, ids []string,
