@@ -107,12 +107,12 @@ func TestOpenStackCoverageExcludesRetiredHosts(t *testing.T) {
 	ctx := context.Background()
 	seedOpenStackHost(t, st, "os-host-03", StateActive)
 
-	before, err := st.OpenStackCoverageOf(ctx)
+	before, err := st.coverageNow(ctx, t)
 	if err != nil {
 		t.Fatalf("coverage: %v", err)
 	}
 	seedOpenStackHost(t, st, "os-host-04", StateRetired)
-	after, err := st.OpenStackCoverageOf(ctx)
+	after, err := st.coverageNow(ctx, t)
 	if err != nil {
 		t.Fatalf("coverage: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestOpenStackCoverageSeparatesAbsentFromUnprobed(t *testing.T) {
 	const host = "os-host-05"
 	seedOpenStackHost(t, st, host, StateActive)
 
-	before, err := st.OpenStackCoverageOf(ctx)
+	before, err := st.coverageNow(ctx, t)
 	if err != nil {
 		t.Fatalf("coverage: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestOpenStackCoverageSeparatesAbsentFromUnprobed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	after, err := st.OpenStackCoverageOf(ctx)
+	after, err := st.coverageNow(ctx, t)
 	if err != nil {
 		t.Fatalf("coverage: %v", err)
 	}
@@ -170,4 +170,54 @@ func findOpenStackHost(t *testing.T, st *Store, host string) OpenStackHost {
 	}
 	t.Fatalf("%s not in the listing", host)
 	return OpenStackHost{}
+}
+
+// coverageNow reads the coverage the way the command does: over the folded
+// hosts, so the summary cannot disagree with the table above it.
+func (s *Store) coverageNow(ctx context.Context, t *testing.T) (OpenStackCoverage, error) {
+	t.Helper()
+	hosts, err := s.OpenStackHosts(ctx)
+	if err != nil {
+		return OpenStackCoverage{}, err
+	}
+	return s.OpenStackCoverageOf(ctx, hosts)
+}
+
+// The summary and the table read the same folded hosts. They were two queries
+// once, and they disagreed: a controller whose earlier probes failed and whose
+// latest one succeeded showed nine roles in the table and "1 could not be
+// probed" underneath it, because the stale row was still in the table the
+// summary counted.
+// Integration — needs VCTL_TEST_DSN.
+func TestCoverageAgreesWithTheListingAfterAFailureIsSuperseded(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const host = "os-host-06"
+	seedOpenStackHost(t, st, host, StateActive)
+
+	// A probe fails before anything is known, then a later one succeeds.
+	if err := st.RecordCapabilityError(ctx, host, KindOpenStack, "probe timed out"); err != nil {
+		t.Fatalf("RecordCapabilityError: %v", err)
+	}
+	if _, err := st.UpsertCapability(ctx, Capability{
+		Hostname: host, Kind: KindOpenStack, Role: "compute", Detected: true,
+		ObservedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertCapability: %v", err)
+	}
+
+	got := findOpenStackHost(t, st, host)
+	if !got.Detected || got.LastError != "" {
+		t.Fatalf("the listing still carries the superseded failure: detected=%v err=%q", got.Detected, got.LastError)
+	}
+	before, err := st.coverageNow(ctx, t)
+	if err != nil {
+		t.Fatalf("coverage: %v", err)
+	}
+	// The host counts as running, and its old error must not also count as a
+	// failure — the two together would report it twice, in contradiction.
+	if before.Running+before.Failed+before.Absent != before.Probed {
+		t.Errorf("counts do not add up: running=%d failed=%d absent=%d probed=%d",
+			before.Running, before.Failed, before.Absent, before.Probed)
+	}
 }

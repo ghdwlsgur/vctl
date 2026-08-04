@@ -145,22 +145,37 @@ func (s *Store) OpenStackHosts(ctx context.Context) ([]OpenStackHost, error) {
 	return foldCapabilityRows(rows, members), nil
 }
 
-// OpenStackCoverageOf counts the fleet against what has been probed.
-func (s *Store) OpenStackCoverageOf(ctx context.Context) (OpenStackCoverage, error) {
-	var c OpenStackCoverage
-	err := s.pool.QueryRow(ctx, `
-		SELECT
-		  (SELECT count(*) FROM servers WHERE coalesce(state,'active') <> $2),
-		  (SELECT count(DISTINCT hostname) FROM server_capabilities WHERE kind = $1),
-		  (SELECT count(DISTINCT hostname) FROM server_capabilities WHERE kind = $1 AND detected),
-		  (SELECT count(DISTINCT hostname) FROM server_capabilities
-		     WHERE kind = $1 AND last_error <> '' AND NOT detected)`,
-		KindOpenStack, StateRetired).Scan(&c.Hosts, &c.Probed, &c.Running, &c.Failed)
-	if err != nil {
+// OpenStackCoverageOf counts the fleet against what has been probed, from the
+// same folded hosts the listing renders.
+//
+// The counts were SQL over server_capabilities at first, and that quietly
+// disagreed with the listing: the query judged every row on its own, while the
+// fold judges the newest pass. A controller whose earlier probes had failed and
+// whose latest one succeeded showed nine roles in the table and "1 could not be
+// probed" in the summary underneath it — the stale row was still there, and
+// only one of the two readers knew it was stale.
+//
+// Only the inventory total stays a query, because it is not in these rows.
+func (s *Store) OpenStackCoverageOf(ctx context.Context, hosts []OpenStackHost) (OpenStackCoverage, error) {
+	c := OpenStackCoverage{Probed: len(hosts)}
+	// Retired hosts are excluded: nothing is expected of them, so counting them
+	// would leave coverage permanently short of complete.
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM servers WHERE coalesce(state,'active') <> $1`,
+		StateRetired).Scan(&c.Hosts); err != nil {
 		return c, err
 	}
-	c.Absent = c.Probed - c.Running - c.Failed
-	// Clamped because the two counts come from different tables: a capability
+	for _, h := range hosts {
+		switch {
+		case h.Detected:
+			c.Running++
+		case h.LastError != "":
+			c.Failed++
+		default:
+			c.Absent++
+		}
+	}
+	// Clamped because the two numbers come from different places: a capability
 	// row for a host since retired would otherwise make this negative.
 	if c.Unprobed = c.Hosts - c.Probed; c.Unprobed < 0 {
 		c.Unprobed = 0
