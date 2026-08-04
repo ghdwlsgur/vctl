@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
@@ -242,5 +243,37 @@ func TestUnregisteredHostDoesNotCountAsHealthy(t *testing.T) {
 	}
 	if sink.upserts != 2 {
 		t.Errorf("upserts = %d, want 2: the agent stopped trying", sink.upserts)
+	}
+}
+
+// --once has to mean one of each. The probes run on their own goroutine in the
+// long-running agent, and under --once the process exits as soon as the single
+// heartbeat returns — a probe started in the background loses that race every
+// time, and the command reported success having collected nothing.
+//
+// This pins the contract the fix rests on: with once set, the call collects
+// before it returns.
+func TestCapabilityProbesCollectBeforeReturningWhenOnce(t *testing.T) {
+	sink := &fakeStatusSink{}
+	conn := &statusConn{open: (&opener{sinks: []*fakeStatusSink{sink}}).open}
+
+	runCapabilityProbes(context.Background(), conn, "host-01", time.Hour, true)
+
+	if len(sink.caps) == 0 && len(sink.capErrors) == 0 {
+		t.Fatal("nothing was reported by the time the call returned, so --once collects nothing")
+	}
+}
+
+// A probe that cannot reach the database must not take the heartbeat with it.
+// The agent's whole job is to keep saying the host is alive, and "we could not
+// tell what it runs" is not a reason to stop.
+func TestCapabilityProbeFailureLeavesTheHandleUsable(t *testing.T) {
+	sink := &fakeStatusSink{err: errors.New("write failed")}
+	conn := &statusConn{open: (&opener{sinks: []*fakeStatusSink{sink}}).open}
+
+	runCapabilityProbes(context.Background(), conn, "host-01", time.Hour, true)
+
+	if conn.st == nil {
+		t.Error("a failed capability write dropped the connection the heartbeat shares")
 	}
 }

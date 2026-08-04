@@ -57,14 +57,27 @@ database role for low-risk, low-resource status reporting.`,
 			// them, and the answer changes about as often as somebody upgrades —
 			// which is to say rarely. Running the two at one rate would either
 			// make the heartbeat slow or the capability stale.
-			if probeInterval > 0 {
-				go runCapabilityProbes(ctx, conn, hostname, probeInterval, once)
+			//
+			// Only the long-running agent puts them on a goroutine. Under --once
+			// the process exits as soon as the single heartbeat returns, and a
+			// probe started in the background loses the race every time — the
+			// command reported success having collected nothing. Running it
+			// inline is what makes --once mean one of each.
+			if probeInterval > 0 && !once {
+				go runCapabilityProbes(ctx, conn, hostname, probeInterval, false)
 			}
 
 			report := func() error { return conn.report(ctx, hostname) }
-			return runPeriodic(ctx, once, false, interval, 5*time.Minute, report, func(err error) {
+			err = runPeriodic(ctx, once, false, interval, 5*time.Minute, report, func(err error) {
 				ui.Warnf(os.Stderr, "status report failed: %v", err)
 			})
+			if probeInterval > 0 && once {
+				// After the heartbeat, and regardless of whether it worked. The
+				// two answer different questions and a host that cannot report
+				// liveness can still say what it runs.
+				runCapabilityProbes(ctx, conn, hostname, probeInterval, true)
+			}
+			return err
 		},
 	}
 	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname to report; defaults to os hostname")
