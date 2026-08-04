@@ -127,19 +127,28 @@ func reconcileFarms(ctx context.Context, a *app.App, st *store.Store, ids []stri
 			ui.Warnf(os.Stderr, "%s: %v", id, err)
 			continue
 		}
-		control, err := controlPlaneHosts(ctx, creds, insecure)
+		list, err := controlPlaneHosts(ctx, creds, insecure)
 		if err != nil {
 			ui.Errorf(os.Stderr, "%s: %v", id, err)
 			continue
 		}
 		reached++
+		if !list.Complete {
+			// Said before the result, because it changes what the result means:
+			// nothing below it was allowed to demote.
+			ui.Warnf(os.Stderr, "%s: the control plane answered partially — %s",
+				id, partialReason(list))
+		}
 		if dryRun {
-			reportReconcile(id, previewReconcile(hosts, control), true)
+			res := previewReconcile(hosts, list.Hosts)
+			res.Complete = list.Complete
+			reportReconcile(id, res, true)
 			continue
 		}
 		got, err := st.ReconcileDeployment(ctx, store.ReconcileInput{
 			DeploymentID: id, KeystoneURL: id,
-			LocalHosts: hosts, ControlHosts: control,
+			LocalHosts: hosts, ControlHosts: list.Hosts,
+			Complete:   list.Complete,
 			ObservedAt: time.Now(),
 		})
 		if err != nil {
@@ -189,12 +198,28 @@ func vaultFarmKey(id string) string {
 	return "vctl-" + strings.ReplaceAll(id, ":", "_")
 }
 
-func controlPlaneHosts(ctx context.Context, c openstackapi.Credentials, insecure bool) ([]string, error) {
+// partialReason names which half of the answer is missing, because the two have
+// different consequences: no os-services hides controllers, no os-hypervisors
+// hides compute nodes whose nova-compute is down.
+func partialReason(l openstackapi.HostList) string {
+	switch {
+	case l.HypervisorError != "" && l.ServiceError != "":
+		return "neither endpoint answered"
+	case l.ServiceError != "":
+		return "os-services: " + l.ServiceError + " (controllers are not listed)"
+	case l.HypervisorError != "":
+		return "os-hypervisors: " + l.HypervisorError + " (stopped compute nodes are not listed)"
+	default:
+		return "incomplete"
+	}
+}
+
+func controlPlaneHosts(ctx context.Context, c openstackapi.Credentials, insecure bool) (openstackapi.HostList, error) {
 	ctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	defer cancel()
 	client, err := openstackapi.New(ctx, c, insecure, reconcileTimeout)
 	if err != nil {
-		return nil, err
+		return openstackapi.HostList{}, err
 	}
 	// Hosts, not Hypervisors: a controller runs nova-api and nova-conductor,
 	// not a hypervisor, so asking only for hypervisors left every controller
@@ -257,6 +282,13 @@ func reportReconcile(id string, r store.ReconcileResult, dry bool) {
 	// Reported loudest of the three. A name that fits several hosts is not a
 	// gap in the data — it is a question about which machine is meant, and
 	// nothing will resolve it until somebody answers.
+	if len(r.Held) > 0 {
+		rows = append(rows, ui.KV{
+			Key:   "Held",
+			Value: countAnd(r.Held) + " — the answer was partial, so nothing was demoted",
+			State: ui.StateWarn,
+		})
+	}
 	if len(r.Ambiguous) > 0 {
 		rows = append(rows, ui.KV{
 			Key:   "Ambiguous",

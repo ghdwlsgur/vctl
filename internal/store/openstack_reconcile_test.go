@@ -52,7 +52,7 @@ func TestReconcileConfirmsWhenBothSidesAgree(t *testing.T) {
 		DeploymentID: farm, KeystoneURL: "10.0.0.1:5000",
 		LocalHosts:   []string{"recon-host-01", "recon-host-02"},
 		ControlHosts: []string{"recon-host-01", "recon-host-02"},
-		ObservedAt:   time.Now(),
+		ObservedAt:   time.Now(), Complete: true,
 	})
 	if err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
@@ -84,7 +84,7 @@ func TestReconcileLeavesAnUnconfirmedHostAlone(t *testing.T) {
 		DeploymentID: farm, KeystoneURL: "10.0.0.2:5000",
 		LocalHosts:   []string{"recon-host-03"},
 		ControlHosts: []string{"some-other-host"},
-		ObservedAt:   time.Now(),
+		ObservedAt:   time.Now(), Complete: true,
 	})
 	if err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
@@ -116,7 +116,7 @@ func TestReconcileMatchesShortAndQualifiedNames(t *testing.T) {
 		LocalHosts: []string{"recon-host-04"},
 		// nova reports it qualified; the inventory holds the short name.
 		ControlHosts: []string{"recon-host-04.internal.example"},
-		ObservedAt:   time.Now(),
+		ObservedAt:   time.Now(), Complete: true,
 	})
 	if err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
@@ -140,7 +140,7 @@ func TestReconcileReportsControlOnlyHostsWithoutInventingThem(t *testing.T) {
 		DeploymentID: farm, KeystoneURL: "10.0.0.4:5000",
 		LocalHosts:   []string{"recon-host-05"},
 		ControlHosts: []string{"recon-host-05", "ghost-node-99"},
-		ObservedAt:   time.Now(),
+		ObservedAt:   time.Now(), Complete: true,
 	})
 	if err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
@@ -171,7 +171,7 @@ func TestReconcileDropsAHostThatLeftTheDeployment(t *testing.T) {
 		DeploymentID: farm, KeystoneURL: "10.0.0.5:5000",
 		LocalHosts:   []string{"recon-host-06", "recon-host-07"},
 		ControlHosts: []string{"recon-host-06", "recon-host-07"},
-		ObservedAt:   first,
+		ObservedAt:   first, Complete: true,
 	}); err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestReconcileDropsAHostThatLeftTheDeployment(t *testing.T) {
 		DeploymentID: farm, KeystoneURL: "10.0.0.5:5000",
 		LocalHosts:   []string{"recon-host-06"},
 		ControlHosts: []string{"recon-host-06"},
-		ObservedAt:   time.Now(),
+		ObservedAt:   time.Now(), Complete: true,
 	}); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestReconciledMembershipOutranksTheLocalInference(t *testing.T) {
 		DeploymentID: farm, DisplayName: "Farm F", KeystoneURL: "10.0.0.6:5000",
 		LocalHosts:   []string{host},
 		ControlHosts: []string{host},
-		ObservedAt:   time.Now(),
+		ObservedAt:   time.Now(), Complete: true,
 	}); err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
 	}
@@ -299,5 +299,180 @@ func TestMatchHostsStillPairsAcrossADomain(t *testing.T) {
 
 	if pairs["sre-srv-0059"] != "sre-srv-0059.internal.example" {
 		t.Errorf("pairs = %v, want the qualified nova name paired", pairs)
+	}
+}
+
+// A farm's name and region are things a person set. The reconciler knows the
+// endpoint and nothing else, so writing EXCLUDED unconditionally overwrote them
+// with the empty strings it was not carrying — a farm named today was anonymous
+// again six hours later, and nothing said so.
+// Integration — needs VCTL_TEST_DSN.
+func TestReconcileDoesNotEraseTheFarmName(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const farm = "recon-farm-name"
+	seedFarmHosts(t, st, "10.0.0.7:5000", "recon-host-09")
+	cleanupDeployment(t, st, farm)
+
+	if err := st.SetDeploymentName(ctx, farm, "seoul-x", "kr-seoul-9"); err != nil {
+		t.Fatalf("SetDeploymentName: %v", err)
+	}
+	// The reconciler carries neither field, exactly as the CLI calls it.
+	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+		DeploymentID: farm, KeystoneURL: farm,
+		LocalHosts: []string{"recon-host-09"}, ControlHosts: []string{"recon-host-09"},
+		ObservedAt: time.Now(), Complete: true,
+	}); err != nil {
+		t.Fatalf("ReconcileDeployment: %v", err)
+	}
+
+	ds, err := st.Deployments(ctx)
+	if err != nil {
+		t.Fatalf("Deployments: %v", err)
+	}
+	for _, d := range ds {
+		if d.ID != farm {
+			continue
+		}
+		if d.DisplayName != "seoul-x" {
+			t.Errorf("display_name = %q after a reconcile, want it preserved", d.DisplayName)
+		}
+		if d.Region != "kr-seoul-9" {
+			t.Errorf("region = %q after a reconcile, want it preserved", d.Region)
+		}
+		return
+	}
+	t.Fatalf("%s disappeared from the deployments table", farm)
+}
+
+// Naming is still a write. Somebody passing an empty name is asking to clear
+// it, and the preservation rule must not turn that into a no-op.
+// Integration — needs VCTL_TEST_DSN.
+func TestSetDeploymentNameCanStillClearIt(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const farm = "recon-farm-clear"
+	cleanupDeployment(t, st, farm)
+
+	if err := st.SetDeploymentName(ctx, farm, "temporary", "kr-x"); err != nil {
+		t.Fatalf("SetDeploymentName: %v", err)
+	}
+	if err := st.SetDeploymentName(ctx, farm, "", ""); err != nil {
+		t.Fatalf("SetDeploymentName(clear): %v", err)
+	}
+	ds, _ := st.Deployments(ctx)
+	for _, d := range ds {
+		if d.ID == farm && d.DisplayName != "" {
+			t.Errorf("display_name = %q, want it cleared by an explicit empty name", d.DisplayName)
+		}
+	}
+}
+
+// A partial answer may not demote. os-services being refused hides every
+// controller, so a run that trusted it would strip confirmation from the whole
+// control plane and report a change in the deployment when what changed was one
+// API call.
+// Integration — needs VCTL_TEST_DSN.
+func TestPartialAnswerDoesNotDemoteAConfirmedHost(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const farm = "recon-farm-partial"
+	seedFarmHosts(t, st, "10.0.0.8:5000", "recon-host-10")
+	cleanupDeployment(t, st, farm)
+
+	// A complete run confirms it.
+	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+		DeploymentID: farm, KeystoneURL: farm,
+		LocalHosts: []string{"recon-host-10"}, ControlHosts: []string{"recon-host-10"},
+		ObservedAt: time.Now().Add(-time.Hour), Complete: true,
+	}); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if got := findOpenStackHost(t, st, "recon-host-10"); got.Confidence != ConfidenceConfirmed {
+		t.Fatalf("precondition: confidence = %q", got.Confidence)
+	}
+
+	// The next run gets half an answer that happens not to name the host.
+	got, err := st.ReconcileDeployment(ctx, ReconcileInput{
+		DeploymentID: farm, KeystoneURL: farm,
+		LocalHosts: []string{"recon-host-10"}, ControlHosts: nil,
+		ObservedAt: time.Now(), Complete: false,
+	})
+	if err != nil {
+		t.Fatalf("partial reconcile: %v", err)
+	}
+	if !slices.Contains(got.Held, "recon-host-10") {
+		t.Errorf("held = %v, want the host named as not demoted", got.Held)
+	}
+	if h := findOpenStackHost(t, st, "recon-host-10"); h.Confidence != ConfidenceConfirmed {
+		t.Errorf("confidence = %q after a partial answer, want it held at confirmed", h.Confidence)
+	}
+}
+
+// A complete answer that no longer names the host is real evidence, and must
+// still demote — otherwise confirmation could never be withdrawn.
+// Integration — needs VCTL_TEST_DSN.
+func TestCompleteAnswerStillDemotes(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const farm = "recon-farm-demote"
+	seedFarmHosts(t, st, "10.0.0.11:5000", "recon-host-11")
+	cleanupDeployment(t, st, farm)
+
+	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+		DeploymentID: farm, KeystoneURL: farm,
+		LocalHosts: []string{"recon-host-11"}, ControlHosts: []string{"recon-host-11"},
+		ObservedAt: time.Now().Add(-time.Hour), Complete: true,
+	}); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+		DeploymentID: farm, KeystoneURL: farm,
+		LocalHosts: []string{"recon-host-11"}, ControlHosts: nil,
+		ObservedAt: time.Now(), Complete: true,
+	}); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+
+	if h := findOpenStackHost(t, st, "recon-host-11"); h.Confidence != ConfidenceLocalOnly {
+		t.Errorf("confidence = %q, want %q — a complete answer is evidence", h.Confidence, ConfidenceLocalOnly)
+	}
+}
+
+// The stale sweep must not run on a partial answer either: a host missing from
+// half a listing has not left the deployment.
+// Integration — needs VCTL_TEST_DSN.
+func TestPartialAnswerDoesNotSweepMemberships(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const farm = "recon-farm-sweep"
+	seedFarmHosts(t, st, "10.0.0.12:5000", "recon-host-12", "recon-host-13")
+	cleanupDeployment(t, st, farm)
+
+	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+		DeploymentID: farm, KeystoneURL: farm,
+		LocalHosts:   []string{"recon-host-12", "recon-host-13"},
+		ControlHosts: []string{"recon-host-12", "recon-host-13"},
+		ObservedAt:   time.Now().Add(-time.Hour), Complete: true,
+	}); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	// A partial run that only saw one of them.
+	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+		DeploymentID: farm, KeystoneURL: farm,
+		LocalHosts:   []string{"recon-host-12", "recon-host-13"},
+		ControlHosts: []string{"recon-host-12"},
+		ObservedAt:   time.Now(), Complete: false,
+	}); err != nil {
+		t.Fatalf("partial reconcile: %v", err)
+	}
+
+	var n int
+	if err := st.pool.QueryRow(ctx,
+		`SELECT count(*) FROM openstack_memberships WHERE deployment_id=$1`, farm).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("%d memberships after a partial answer, want both kept", n)
 	}
 }

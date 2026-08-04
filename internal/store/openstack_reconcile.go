@@ -36,6 +36,12 @@ type ReconcileInput struct {
 	// are nova's names, which are not always the inventory's.
 	ControlHosts []string
 
+	// Complete says whether the control plane answered fully. A partial answer
+	// may confirm, because a host both sides name is confirmed either way — but
+	// it may not demote, because absence from a partial list is not evidence of
+	// absence from the deployment.
+	Complete bool
+
 	ObservedAt time.Time
 }
 
@@ -50,6 +56,15 @@ type ReconcileResult struct {
 	// inventory host. They are reported rather than resolved: guessing which
 	// machine a name means is how an inventory starts claiming the wrong one.
 	Ambiguous []string
+
+	// Held are hosts an incomplete answer would have demoted and did not. They
+	// keep whatever confidence they had; this names them so the run does not
+	// look like it confirmed them.
+	Held []string
+
+	// Complete mirrors the input, so a caller rendering this can say whether
+	// the run was allowed to settle anything.
+	Complete bool
 }
 
 // ReconcileDeployment records one deployment and the membership of its hosts.
@@ -58,7 +73,7 @@ type ReconcileResult struct {
 // against a control-plane read that never finished, which is worse than not
 // having run at all.
 func (s *Store) ReconcileDeployment(ctx context.Context, in ReconcileInput) (ReconcileResult, error) {
-	res := ReconcileResult{DeploymentID: in.DeploymentID}
+	res := ReconcileResult{DeploymentID: in.DeploymentID, Complete: in.Complete}
 	at := in.ObservedAt
 	if at.IsZero() {
 		at = time.Now()
@@ -70,12 +85,22 @@ func (s *Store) ReconcileDeployment(ctx context.Context, in ReconcileInput) (Rec
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Empty means "not carrying this", not "clear it".
+	//
+	// The reconciler knows a deployment's endpoint and nothing else about it —
+	// the name and region are things a person set with `vctl openstack farm
+	// name`. Writing EXCLUDED unconditionally meant every run overwrote them
+	// with the empty strings it was not carrying, so a farm named today was
+	// anonymous again six hours later. Only a caller that actually has a value
+	// changes one.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO openstack_deployments (id, display_name, region, keystone_url, updated_at)
 		VALUES ($1,$2,$3,$4, now())
 		ON CONFLICT (id) DO UPDATE SET
-			display_name=EXCLUDED.display_name, region=EXCLUDED.region,
-			keystone_url=EXCLUDED.keystone_url, updated_at=now()`,
+			display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), openstack_deployments.display_name),
+			region       = COALESCE(NULLIF(EXCLUDED.region, ''),       openstack_deployments.region),
+			keystone_url = COALESCE(NULLIF(EXCLUDED.keystone_url, ''), openstack_deployments.keystone_url),
+			updated_at   = now()`,
 		in.DeploymentID, in.DisplayName, in.Region, in.KeystoneURL); err != nil {
 		return res, err
 	}
@@ -85,17 +110,29 @@ func (s *Store) ReconcileDeployment(ctx context.Context, in ReconcileInput) (Rec
 
 	for _, host := range in.LocalHosts {
 		novaName, agreed := pairs[host]
-		confidence := ConfidenceLocalOnly
-		evidence := map[string]any{"local": true, "control": false}
 		if agreed {
-			confidence = ConfidenceConfirmed
-			evidence = map[string]any{"local": true, "control": true, "nova_hostname": novaName}
+			evidence := map[string]any{"local": true, "control": true, "nova_hostname": novaName}
 			seen[novaName] = true
 			res.Confirmed = append(res.Confirmed, host)
-		} else {
-			res.LocalOnly = append(res.LocalOnly, host)
+			if err := upsertMembership(ctx, tx, host, in.DeploymentID, ConfidenceConfirmed, evidence, at); err != nil {
+				return res, err
+			}
+			continue
 		}
-		if err := upsertMembership(ctx, tx, host, in.DeploymentID, confidence, evidence, at); err != nil {
+		res.LocalOnly = append(res.LocalOnly, host)
+		// A partial answer may not demote. os-services being refused hides every
+		// controller, and os-hypervisors being refused hides compute nodes whose
+		// nova-compute is down — writing local-only from either would report a
+		// change in the deployment when what changed was one API call.
+		if !in.Complete {
+			res.Held = append(res.Held, host)
+			if err := touchMembership(ctx, tx, host, in.DeploymentID, at); err != nil {
+				return res, err
+			}
+			continue
+		}
+		evidence := map[string]any{"local": true, "control": false}
+		if err := upsertMembership(ctx, tx, host, in.DeploymentID, ConfidenceLocalOnly, evidence, at); err != nil {
 			return res, err
 		}
 	}
@@ -117,10 +154,16 @@ func (s *Store) ReconcileDeployment(ctx context.Context, in ReconcileInput) (Rec
 	// Anything this deployment claimed on an earlier run and does not now is
 	// stale. Dropping it beats leaving a host confirmed against evidence that
 	// no longer exists.
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM openstack_memberships
-		WHERE deployment_id=$1 AND observed_at < $2`, in.DeploymentID, at); err != nil {
-		return res, err
+	//
+	// Skipped on a partial answer for the same reason demotion is: a host
+	// missing from half a listing has not left the deployment. touchMembership
+	// above keeps held rows current so this cannot sweep them either.
+	if in.Complete {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM openstack_memberships
+			WHERE deployment_id=$1 AND observed_at < $2`, in.DeploymentID, at); err != nil {
+			return res, err
+		}
 	}
 	return res, tx.Commit(ctx)
 }
@@ -138,6 +181,17 @@ func upsertMembership(ctx context.Context, tx pgx.Tx, host, deployment, confiden
 			confidence=EXCLUDED.confidence, evidence=EXCLUDED.evidence,
 			observed_at=EXCLUDED.observed_at`,
 		host, deployment, confidence, string(raw), at)
+	return err
+}
+
+// touchMembership marks a row as seen this run without changing what it says.
+//
+// A held host must not fall behind the stale sweep just because an incomplete
+// answer could not speak for it.
+func touchMembership(ctx context.Context, tx pgx.Tx, host, deployment string, at time.Time) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE openstack_memberships SET observed_at=$3
+		WHERE hostname=$1 AND deployment_id=$2`, host, deployment, at)
 	return err
 }
 
@@ -261,6 +315,10 @@ type Deployment struct {
 }
 
 // SetDeploymentName gives a farm a name people can read.
+//
+// This is the one writer that may clear a name — somebody passing an empty one
+// is asking for that. The reconciler cannot, because it never carries the field
+// at all; see the COALESCE in ReconcileDeployment.
 //
 // The farm's id is its Keystone endpoint — 172.16.0.245:5000 — which is stable
 // and says nothing. A name is the only part of this a person chooses, so it is
