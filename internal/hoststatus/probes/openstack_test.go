@@ -86,6 +86,30 @@ func TestOpenStackDetectsAComputeNode(t *testing.T) {
 	}
 }
 
+// Active is only meaningful for something that runs. qemu is exec'd per
+// instance and has no daemon, so a reader that judges it by Active alone puts a
+// stopped component on every healthy compute node.
+func TestOpenStackMarksWhichComponentsAreServices(t *testing.T) {
+	h := &fakeHost{
+		systemd: map[string]string{"nova-compute": "active"},
+		versions: map[string]string{
+			"nova-compute":       "31.2.0\n",
+			"libvirtd":           "libvirtd (libvirt) 10.0.0\n",
+			"qemu-system-x86_64": "QEMU emulator version 8.2.0\n",
+		},
+	}
+	res := h.probe().Collect(context.Background())
+
+	for _, name := range []string{"nova-compute", "libvirt"} {
+		if !res.Components[name].Service {
+			t.Errorf("%s was not marked as a service, so its run state cannot be read", name)
+		}
+	}
+	if qemu := res.Components["qemu"]; qemu.Service {
+		t.Errorf("qemu was marked as a service; it has a version (%s) and no daemon", qemu.Version)
+	}
+}
+
 // A workstation with the client package installed is not part of the fleet.
 // Counting it would put machines that run nothing into capacity planning.
 func TestOpenStackIgnoresAHostWithNoServices(t *testing.T) {

@@ -356,6 +356,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl agent [--sink <path>]` | トークンを生かし続け、シンクファイルに書き出す |
 | `vctl ssh [host\|user@addr] [--server <host>]` | 完全一致、あいまい一致、IP、対話的な選択で接続する(ピッカーは ←/→ で DC フィルタ)。`--server` は完全一致または IP で解決し、非対話的に接続する(スクリプト/エージェント向け). `user@addr` 形式はインベントリを経由せずアドレスへ直接接続する |
 | `vctl list [--dc <dc>]` | インベントリのホストを一覧表示する(プライマリ + 追加 IP、非標準 SSH ポート、観測された liveness、および `active` でない場合の運用状態) |
+| `vctl openstack [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | どのホストが OpenStack を動かし、どの役割で、どのファームに属するかを表示する。node-agent の capability probe の結果を読む。`vctl openstack host <name>` は 1 台の役割・コンポーネントのバージョン・所属を表示する |
 | `vctl add [flags]` | `sync` が発見できないホストをインベントリに登録する。フラグなしで実行するとフォームで入力する |
 | `vctl edit [host] [flags]` | `sync` が上書きしないフィールドを変更する — dc・ssh user・踏み台・追加 IP・ホスト名、および `--state active\|maintenance\|broken\|retired`。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
 | `vctl delete [host] [--yes]` | 廃止したホストを削除する。監査履歴は残る。このホストを経由するホストがあれば削除を拒否する。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
@@ -364,7 +365,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | 中央の SSH アクセス監査行を表示する |
 | `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | vctl ssh が動作するようホストに Vault SSH CA の信頼をインストールする(一度きりのオンボーディング) |
 | `vctl ca install\|remove\|print` | このマシンの OS ストアで埋め込みルート CA を信頼し、ブラウザ/curl が組織の内部ホスト名を受け入れるようにする(HSTS エラーを解消)。プラットフォームは自動検出 |
-| `vctl node-agent [--interval 5m]` | すでに登録済みのインベントリについて軽量なホストのランタイム状態を報告する |
+| `vctl node-agent [--interval 5m] [--probe-interval 1h]` | すでに登録済みのインベントリについて軽量なホストのランタイム状態を報告する。間隔の長い probe はそのホストがどのプラットフォームのどの役割かを記録する |
 | `vctl session [<serial>\|--list\|--json]` | SSH セッション内で誰が何をしたかを表示する(ホストのカーネル監査タイムライン) |
 | `vctl cache status\|refresh\|clear` | Postgres 不通時に使うローカルインベントリスナップショットを確認・操作する |
 | `vctl status` | ログイン、SSH CA、インベントリ DB の接続性を確認する |

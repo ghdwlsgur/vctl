@@ -430,6 +430,7 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl agent [--sink <path>]` | Keep a token alive and write it to sink files |
 | `vctl ssh [host\|user@addr] [--server <host>]` | Connect by exact, fuzzy, IP, or interactive selection (picker filters by DC with ←/→); `--server` resolves exactly or by IP and connects non-interactively (scripts/agents). `user@addr` connects to an address directly, skipping inventory |
 | `vctl list [--dc <dc>]` | List inventory hosts (primary + extra IPs, non-default SSH port, observed liveness, and the operator-declared state when it is not `active`) |
+| `vctl openstack [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | Show which hosts run OpenStack, in what role, and for which deployment, from the node agents' capability probes. `vctl openstack host <name>` shows one host's roles, component versions and membership |
 | `vctl add [flags]` | Register an inventory host `sync` cannot discover; with no flags the fields are asked for in a form |
 | `vctl edit [host] [flags]` | Change the fields `sync` will not overwrite — dc, ssh user, jump host, extra IPs, hostname, and `--state active\|maintenance\|broken\|retired`. With no host, pick one from a list (←/→ filters by DC) |
 | `vctl delete [host] [--yes]` | Remove a decommissioned host. Audit history is kept; hosts that jump through it block the delete. With no host, pick one from a list (←/→ filters by DC) |
@@ -440,7 +441,7 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | Show central SSH access audit rows |
 | `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | Install Vault SSH CA trust on a host so vctl ssh works (one-time onboarding) |
 | `vctl ca install\|remove\|print` | Trust the embedded root CA in this machine's OS store so browsers/curl accept the organization's internal hostnames (clears HSTS errors); platform auto-detected |
-| `vctl node-agent [--interval 5m]` | Report lightweight host runtime status for already registered inventory |
+| `vctl node-agent [--interval 5m] [--probe-interval 1h]` | Report lightweight host runtime status for already registered inventory. A slower probe pass records what platform the host is part of and in what role |
 | `vctl session [<serial>\|--list\|--json]` | Show what a person did inside an SSH session (host kernel-audit timeline) |
 | `vctl cache status\|refresh\|clear` | Inspect or control the local inventory snapshot used when Postgres is unreachable |
 | `vctl status` | Check login, SSH CA, and inventory DB connectivity |

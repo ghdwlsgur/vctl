@@ -68,7 +68,18 @@ type ProbeResult struct {
 type Component struct {
 	Version string `json:"version,omitempty"`
 	Package string `json:"package,omitempty"`
-	Active  bool   `json:"active"`
+
+	// Active is meaningful only when Service is true.
+	Active bool `json:"active"`
+
+	// Service says whether this component is something that runs, as opposed to
+	// something that is only installed.
+	//
+	// Active alone could not carry the difference, and a listing built on it
+	// rendered qemu — a binary the probe reads a version out of, with no daemon
+	// and no unit — as a stopped service. On a healthy compute node that reads
+	// as a fault and sends somebody to restart a package.
+	Service bool `json:"service"`
 }
 
 // RunProbes collects from every probe, isolating each one.
