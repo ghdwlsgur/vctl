@@ -39,14 +39,28 @@ func (f *fakeHost) run(_ context.Context, name string, args ...string) ([]byte, 
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
 	switch name {
 	case "systemctl":
-		// `systemctl show -p LoadState -p ActiveState --value <unit>` prints one
-		// value per line. A unit that does not exist is "not-found", which is
-		// the distinction `is-active` cannot make — it says "inactive" either way.
-		unit := strings.TrimSuffix(args[len(args)-1], ".service")
-		if s, ok := f.systemd[unit]; ok {
-			return []byte("loaded\n" + s + "\n"), nil
+		// `systemctl show -p LoadState -p ActiveState --value u1 u2 …` prints
+		// two value lines per unit, in the order given, separated by a blank
+		// line — verified against systemd on a real host. A unit that does not
+		// exist is "not-found", which is the distinction `is-active` cannot
+		// make: it says "inactive" either way.
+		var b strings.Builder
+		var n int
+		for _, a := range args {
+			if !strings.HasSuffix(a, ".service") {
+				continue
+			}
+			if n > 0 {
+				b.WriteString("\n")
+			}
+			n++
+			if s, ok := f.systemd[strings.TrimSuffix(a, ".service")]; ok {
+				b.WriteString("loaded\n" + s + "\n")
+				continue
+			}
+			b.WriteString("not-found\ninactive\n")
 		}
-		return []byte("not-found\ninactive\n"), nil
+		return []byte(b.String()), nil
 	case "podman", "docker":
 		if f.engineAbsent[name] {
 			return nil, exec.ErrNotFound
@@ -360,5 +374,41 @@ func TestOpenStackTreatsAMissingEngineAsAnAnswer(t *testing.T) {
 	}
 	if !slices.Contains(res.Roles, "compute") {
 		t.Errorf("roles = %v — the systemd answer was lost", res.Roles)
+	}
+}
+
+// One systemctl call for every unit, not one per unit. Under the agent's
+// CPUQuota=2% a fork costs ~0.4s, and eight separate calls measured 3.1s on a
+// real controller — the two dozen here were most of a 20s probe budget, and the
+// probe timed out before it could answer.
+func TestOpenStackAsksSystemdOnce(t *testing.T) {
+	h := &fakeHost{systemd: map[string]string{"nova-compute": "active"}}
+	h.probe().Collect(context.Background())
+
+	var calls int
+	for _, c := range h.calls {
+		if strings.HasPrefix(c, "systemctl ") {
+			calls++
+		}
+	}
+	if calls != 1 {
+		t.Errorf("%d systemctl calls for %d services, want 1", calls, len(osServices))
+	}
+}
+
+// Pairing values up when the output shape is not what the parser assumes would
+// attribute one unit's state to another. A silently wrong answer is worse than
+// no answer, so a mismatch yields nothing rather than a guess.
+func TestOpenStackDiscardsMisshapenSystemdOutput(t *testing.T) {
+	p := &OpenStack{root: "/nonexistent", run: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return []byte("loaded\nactive\n"), nil // one unit's worth, many asked
+		}
+		return nil, exec.ErrNotFound
+	}}
+	res := p.Collect(context.Background())
+
+	if len(res.Roles) != 0 {
+		t.Errorf("roles = %v — misaligned output was read as an answer", res.Roles)
 	}
 }

@@ -97,7 +97,14 @@ func capabilityProbes() []hoststatus.Probe {
 // probeTimeout bounds one probe. These shell out to commands this code does not
 // own, on hosts that may be under load; a probe that never returns must not
 // hold the agent's only goroutine for capabilities.
-const probeTimeout = 20 * time.Second
+//
+// 20s was too tight and the reason is the sandbox, not the host. The unit sets
+// CPUQuota=2%, where a single fork costs ~0.4s — measured on a real controller,
+// where `podman ps` alone took 3.9s and eight `systemctl show` calls took 3.1s.
+// A full OpenStack controller could not finish inside 20s and recorded a
+// timeout every hour. The probe runs once an hour on its own goroutine, so a
+// wider budget costs nothing the heartbeat can feel.
+const probeTimeout = 90 * time.Second
 
 // runCapabilityProbes reports what platforms this host is part of.
 //
