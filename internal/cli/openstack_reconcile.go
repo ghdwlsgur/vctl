@@ -26,7 +26,7 @@ const reconcileTimeout = 60 * time.Second
 // runs centrally rather than on each host is that a status agent should not be
 // able to read an OpenStack admin credential. Putting it in a file here would
 // give that back.
-const vaultFarmPrefix = "kv/teams/sre/openstack"
+const vaultFarmPrefix = "kv/teams/sre"
 
 func openstackReconcileCmd() *cobra.Command {
 	var (
@@ -41,7 +41,7 @@ func openstackReconcileCmd() *cobra.Command {
 			"look identical from a host, so that inference is recorded as local-only.\n\n" +
 			"This asks nova which compute hosts each deployment actually owns and promotes the\n" +
 			"hosts both sides agree on to confirmed. Disagreements are reported, not resolved.\n\n" +
-			"Credentials are read from Vault under " + vaultFarmPrefix + "/<deployment>, at use time.",
+			"Credentials are read from Vault under " + vaultFarmPrefix + "/vctl-<host_port>, at use time.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
@@ -141,12 +141,15 @@ func farmCredentials(ctx context.Context, a *app.App, id string) (openstackapi.C
 
 // vaultFarmKey turns a deployment id into a path segment.
 //
+// The vctl- prefix is what keeps these apart from everything else the team
+// stores under kv/teams/sre, which is a shared space.
+//
 // The id is a host:port, and a colon in a Vault path is legal but awkward
-// everywhere it is then typed — `vault kv put kv/teams/sre/openstack/10.0.0.1:5000`
-// needs quoting, and it reads like a typo. The port matters (two deployments
-// can share an address), so it is kept and only the separator changes.
+// everywhere it is then typed — it needs quoting, and it reads like a typo. The
+// port matters (two deployments can share an address), so it is kept and only
+// the separator changes.
 func vaultFarmKey(id string) string {
-	return strings.ReplaceAll(id, ":", "_")
+	return "vctl-" + strings.ReplaceAll(id, ":", "_")
 }
 
 func controlPlaneHosts(ctx context.Context, c openstackapi.Credentials, insecure bool) ([]string, error) {
