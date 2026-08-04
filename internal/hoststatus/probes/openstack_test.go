@@ -521,3 +521,31 @@ func TestOpenStackKeepsANonReleaseImageTag(t *testing.T) {
 		t.Errorf("keystone version = %q, want 2025.1", got)
 	}
 }
+
+// docker cannot work without its socket, so the socket's absence is the answer
+// — there are no containers — not a failure to look.
+//
+// One host has docker installed with the unit masked, which is somebody saying
+// on purpose that it does not run there. Calling the CLI anyway returned
+// "Cannot connect to the Docker daemon" and parked the host permanently in the
+// "could not be probed" column.
+func TestOpenStackTreatsAStoppedDockerDaemonAsNoContainers(t *testing.T) {
+	h := &fakeHost{
+		engineAbsent: map[string]bool{"podman": true},
+		systemd:      map[string]string{"nova-compute": "active"},
+	}
+	// docker is installed and would fail: no socket exists under the test root.
+	res := h.probe().Collect(context.Background())
+
+	if res.Err != nil {
+		t.Fatalf("a masked docker was reported as a probe failure: %v", res.Err)
+	}
+	for _, c := range h.calls {
+		if strings.HasPrefix(c, "docker ") {
+			t.Errorf("the docker CLI was run (%q) with no socket for it to reach", c)
+		}
+	}
+	if !slices.Contains(res.Roles, "compute") {
+		t.Errorf("roles = %v — the systemd answer was lost", res.Roles)
+	}
+}

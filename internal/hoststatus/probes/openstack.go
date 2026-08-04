@@ -226,9 +226,20 @@ func (p *OpenStack) deploymentID() string {
 var containerEngines = []struct {
 	name string
 	args []string
+	// daemonSocket, when set, is the socket this engine cannot work without.
+	// Its absence means the daemon is not running, and therefore that there are
+	// no containers — an answer, not a failure to look.
+	//
+	// One host in this fleet has docker installed and the unit masked, which is
+	// somebody saying on purpose that it does not run there. Calling the CLI
+	// anyway produced "Cannot connect to the Docker daemon" and left the host
+	// permanently in the "could not be probed" column.
+	daemonSocket string
 }{
-	{"podman", []string{"ps", "-a", "--format", "{{.Names}} {{.State}}"}},
-	{"docker", []string{"ps", "-a", "--format", "{{.Names}} {{.State}}"}},
+	// podman is daemonless: its CLI reads the local store, so there is nothing
+	// equivalent to check.
+	{"podman", []string{"ps", "-a", "--format", "{{.Names}} {{.State}}"}, ""},
+	{"docker", []string{"ps", "-a", "--format", "{{.Names}} {{.State}}"}, "/var/run/docker.sock"},
 }
 
 // containerIndex lists every container on the host once, so the per-service
@@ -258,6 +269,9 @@ func (p *OpenStack) containerIndex(ctx context.Context) (map[string]containerInf
 	// a failure to report, not a reason to fork the CLI that cannot run here.
 	if !asked {
 		for _, engine := range containerEngines {
+			if engine.daemonSocket != "" && !p.exists(engine.daemonSocket) {
+				continue
+			}
 			out, err := p.exec(ctx, engine.name, engine.args...)
 			if err != nil {
 				if !notInstalled(err) {
