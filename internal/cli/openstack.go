@@ -379,6 +379,11 @@ func coverageLine(c store.OpenStackCoverage) string {
 	if c.Absent > 0 {
 		s += fmt.Sprintf(" · %d do not", c.Absent)
 	}
+	// Kept apart from "do not": a probe that could not answer is not evidence
+	// that the host runs nothing.
+	if c.Failed > 0 {
+		s += fmt.Sprintf(" · %d could not be probed", c.Failed)
+	}
 	if c.Unprobed > 0 {
 		s += fmt.Sprintf(" · %d never probed", c.Unprobed)
 	}
@@ -486,18 +491,29 @@ func renderOpenStackHost(w io.Writer, h store.OpenStackHost, now time.Time) {
 	_ = ui.Table(w, []string{"component", "version", "state"}, table)
 }
 
+// detectedText must not turn a failed probe into an answer. detected=false with
+// an error beside it means "we could not tell", and rendering that as "none
+// found" states as fact the one thing the probe failed to establish.
 func detectedText(h store.OpenStackHost) string {
-	if h.Detected {
+	switch {
+	case h.Detected:
 		return "present"
+	case h.LastError != "":
+		return "unknown — the probe could not complete"
+	default:
+		return "probed, none found"
 	}
-	return "probed, none found"
 }
 
 func detectedState(h store.OpenStackHost) ui.State {
-	if h.Detected {
+	switch {
+	case h.Detected:
 		return ui.StateOK
+	case h.LastError != "":
+		return ui.StateWarn
+	default:
+		return ui.StatePlain
 	}
-	return ui.StatePlain
 }
 
 func hostStateUI(state string) ui.State {

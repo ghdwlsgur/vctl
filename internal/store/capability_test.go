@@ -148,3 +148,83 @@ func TestCapabilityRecordsAnAbsentPlatform(t *testing.T) {
 	}
 	t.Error("an absent platform left no row, so it cannot be told from never having been probed")
 }
+
+// The first probe on a host is the one most likely to fail — that is when the
+// packaging and permissions are still wrong — and it is the one that had
+// nothing to update. An UPDATE-only implementation touched zero rows, returned
+// nil, and left the failure with no trace anywhere: the host read exactly like
+// one nothing had looked at yet.
+// Integration — needs VCTL_TEST_DSN.
+func TestCapabilityErrorOnAHostWithNoRowsIsStillRecorded(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const host = "cap-host-04"
+	seedCapabilityHost(t, st, host)
+
+	if err := st.RecordCapabilityError(ctx, host, "openstack", "probe timed out"); err != nil {
+		t.Fatalf("RecordCapabilityError: %v", err)
+	}
+
+	rows, _ := st.Capabilities(ctx, "openstack")
+	for _, r := range rows {
+		if r.Hostname != host {
+			continue
+		}
+		if r.LastError != "probe timed out" {
+			t.Errorf("last_error = %q, want the probe's message", r.LastError)
+		}
+		if r.Detected {
+			t.Error("a failed probe was recorded as having found OpenStack")
+		}
+		return
+	}
+	t.Fatal("a failed first probe left no row, so the failure is invisible")
+}
+
+// A repeated failure must not accumulate rows or lose the message.
+// Integration — needs VCTL_TEST_DSN.
+func TestCapabilityErrorIsIdempotentOnAHostWithNoRows(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const host = "cap-host-05"
+	seedCapabilityHost(t, st, host)
+
+	for _, msg := range []string{"first failure", "second failure"} {
+		if err := st.RecordCapabilityError(ctx, host, "openstack", msg); err != nil {
+			t.Fatalf("RecordCapabilityError(%s): %v", msg, err)
+		}
+	}
+
+	rows, _ := st.Capabilities(ctx, "openstack")
+	var n int
+	var last string
+	for _, r := range rows {
+		if r.Hostname == host {
+			n++
+			last = r.LastError
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d rows after two failures, want 1", n)
+	}
+	if last != "second failure" {
+		t.Errorf("last_error = %q, want the most recent failure", last)
+	}
+}
+
+// The write refuses to create inventory here too. A host that could file an
+// error for a name it does not own could invent a machine out of a timeout.
+// Integration — needs VCTL_TEST_DSN.
+func TestCapabilityErrorRefusesAnUnknownHost(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	if err := st.RecordCapabilityError(ctx, "cap-host-nowhere", "openstack", "timeout"); err != nil {
+		t.Fatalf("RecordCapabilityError: %v", err)
+	}
+	rows, _ := st.Capabilities(ctx, "openstack")
+	for _, r := range rows {
+		if r.Hostname == "cap-host-nowhere" {
+			t.Error("an error was recorded for a host that is not in the inventory")
+		}
+	}
+}

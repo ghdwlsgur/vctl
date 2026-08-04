@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -43,16 +44,19 @@ func (f *fakeHost) run(_ context.Context, name string, args ...string) ([]byte, 
 			}
 			return nil, errors.New("no such container")
 		}
-		for _, a := range args {
-			if !strings.HasPrefix(a, "name=^") {
-				continue
-			}
-			n := strings.TrimSuffix(strings.TrimPrefix(a, "name=^"), "$")
-			if st, ok := f.containers[n]; ok {
-				return []byte(n + " " + st + "\n"), nil
-			}
+		// One listing for the whole pass, the way the engines are actually
+		// asked. Names are whatever the test put in the map — and for Kolla
+		// those are the real underscored ones.
+		names := make([]string, 0, len(f.containers))
+		for n := range f.containers {
+			names = append(names, n)
 		}
-		return []byte(""), nil
+		sort.Strings(names)
+		var b strings.Builder
+		for _, n := range names {
+			b.WriteString(n + " " + f.containers[n] + "\n")
+		}
+		return []byte(b.String()), nil
 	default:
 		if v, ok := f.versions[name]; ok {
 			return []byte(v), nil
@@ -129,12 +133,25 @@ func TestOpenStackIgnoresAHostWithNoServices(t *testing.T) {
 
 // Kolla runs every service as a container and leaves no systemd unit, so a
 // systemd-only probe reports a full controller as an empty host.
+//
+// The names here are the ones a real Kolla controller answers with — taken off
+// incheon-aio01, not invented. The previous version of this test used
+// hyphenated names, which no Kolla host has ever used, so it agreed with the
+// bug it was meant to catch: the probe filtered on `nova-conductor`, matched
+// nothing, and reported a full controller as a host with no OpenStack on it.
 func TestOpenStackFindsKollaContainers(t *testing.T) {
 	h := &fakeHost{
 		containers: map[string]string{
-			"nova-conductor":   "running",
-			"nova-scheduler":   "running",
-			"neutron-l3-agent": "running",
+			"nova_api":       "running",
+			"nova_conductor": "running",
+			"nova_scheduler": "running",
+			"keystone":       "running",
+			"glance_api":     "running",
+			"placement_api":  "running",
+			"cinder_volume":  "running",
+			"neutron_server": "running",
+			"ovn_northd":     "running",
+			"horizon":        "running",
 		},
 	}
 	res := h.probe().Collect(context.Background())
@@ -142,10 +159,57 @@ func TestOpenStackFindsKollaContainers(t *testing.T) {
 	if !res.Detected {
 		t.Fatal("a Kolla controller was not detected")
 	}
-	for _, want := range []string{"controller", "network"} {
+	for _, want := range []string{"block-storage", "controller", "dashboard", "identity", "image", "network"} {
 		if !slices.Contains(res.Roles, want) {
-			t.Errorf("roles = %v, want %s", res.Roles, want)
+			t.Errorf("roles = %v, missing %s", res.Roles, want)
 		}
+	}
+	if _, ok := res.Components["nova-conductor"]; !ok {
+		t.Error("the container was found but not reported under its service name")
+	}
+}
+
+// A Kolla compute node, as gpu01 actually reports. OVN puts ovn-controller on
+// every hypervisor, so counting it as networking would label the whole compute
+// fleet as network nodes.
+func TestOpenStackKollaComputeIsNotANetworkNode(t *testing.T) {
+	h := &fakeHost{
+		containers: map[string]string{
+			"nova_compute":               "running",
+			"nova_libvirt":               "running",
+			"ovn_controller":             "running",
+			"neutron_ovn_metadata_agent": "running",
+		},
+	}
+	res := h.probe().Collect(context.Background())
+
+	if !slices.Contains(res.Roles, "compute") {
+		t.Errorf("roles = %v, want compute", res.Roles)
+	}
+	if slices.Contains(res.Roles, "network") {
+		t.Errorf("roles = %v — ovn-controller runs on every hypervisor and is not a network role", res.Roles)
+	}
+	// Still worth reporting: it says what the host is running even though it
+	// names no role of its own.
+	if _, ok := res.Components["ovn-controller"]; !ok {
+		t.Error("ovn-controller was not reported as a component")
+	}
+}
+
+// The listing is asked for once per pass, not once per service. Under the
+// agent's CPUQuota=2% a fork per service was ~50 of them a pass.
+func TestOpenStackListsContainersOncePerEngine(t *testing.T) {
+	h := &fakeHost{containers: map[string]string{"nova_compute": "running"}}
+	h.probe().Collect(context.Background())
+
+	var listings int
+	for _, c := range h.calls {
+		if strings.HasPrefix(c, "podman ps") || strings.HasPrefix(c, "docker ps") {
+			listings++
+		}
+	}
+	if listings > 2 {
+		t.Errorf("%d container listings for %d services; want one per engine", listings, len(osServices))
 	}
 }
 

@@ -45,12 +45,20 @@ func NewOpenStack() *OpenStack { return &OpenStack{} }
 
 func (p *OpenStack) Kind() string { return "openstack" }
 
-// osService maps a unit/container name to the role it implies.
+// osService maps a service to the role it implies.
 //
 // Presence of the service is the evidence, not presence of a package. A host
 // with python3-openstackclient installed is an operator's workstation, not a
 // compute node, and treating the two the same is how an inventory ends up
 // claiming machines that run nothing.
+//
+// Names are written the systemd way, with hyphens. Kolla runs the same services
+// as containers named with underscores — nova-compute is nova_compute there —
+// and serviceState looks for both.
+//
+// An empty role means "report this component, claim nothing". ovn-controller
+// runs on every hypervisor in an OVN deployment, so treating it as a network
+// node would label the entire compute fleet as networking.
 var osServices = []struct {
 	name string
 	role string
@@ -59,13 +67,37 @@ var osServices = []struct {
 	{"nova-conductor", "controller"},
 	{"nova-scheduler", "controller"},
 	{"nova-api", "controller"},
+	{"placement-api", "controller"},
+
+	// Classic ML2/agent networking.
 	{"neutron-l3-agent", "network"},
 	{"neutron-dhcp-agent", "network"},
 	{"neutron-openvswitch-agent", "network"},
+	// OVN networking. Without these an OVN deployment — which is what Kolla
+	// installs by default now — reports no network node anywhere, because none
+	// of the agent names above exist in it.
+	{"neutron-server", "network"},
+	{"ovn-northd", "network"},
+	{"ovn-nb-db", "network"},
+	{"ovn-sb-db", "network"},
+
 	{"cinder-volume", "block-storage"},
+	{"cinder-api", "block-storage"},
+	{"cinder-scheduler", "block-storage"},
+	{"cinder-backup", "block-storage"},
 	{"glance-api", "image"},
 	{"keystone", "identity"},
-	{"placement-api", "controller"},
+	{"heat-engine", "orchestration"},
+	{"heat-api", "orchestration"},
+	{"octavia-worker", "load-balancer"},
+	{"octavia-api", "load-balancer"},
+	{"horizon", "dashboard"},
+
+	// Present on every node of their kind, so they describe the host without
+	// naming a role of their own.
+	{"ovn-controller", ""},
+	{"neutron-ovn-metadata-agent", ""},
+	{"nova-libvirt", ""},
 }
 
 // versionRe pulls the first dotted version out of a command's output. Version
@@ -81,9 +113,14 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		ObservedAt: time.Now(),
 	}
 
+	// One listing per engine for the whole pass, not one per service. Asking
+	// podman about each of two dozen services separately was ~50 forks a pass on
+	// a host whose agent runs under CPUQuota=2%.
+	containers := p.containerIndex(ctx)
+
 	roles := map[string]bool{}
 	for _, s := range osServices {
-		active, found := p.serviceState(ctx, s.name)
+		active, found := p.serviceState(ctx, containers, s.name)
 		if !found {
 			continue
 		}
@@ -91,7 +128,7 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		// Only a running service claims the role. An installed-but-stopped unit
 		// says the host was meant to do this, which is worth reporting as a
 		// component, but it is not doing it now.
-		if active {
+		if active && s.role != "" {
 			roles[s.role] = true
 		}
 	}
@@ -151,6 +188,33 @@ func (p *OpenStack) deploymentID() string {
 	return strings.TrimSpace(string(b))
 }
 
+// containerIndex lists every container on the host once, so the per-service
+// lookup below is a map read rather than a fork.
+//
+// Both engines are asked because a host can have either, and a host with
+// neither answers with an empty map after two failed execs.
+func (p *OpenStack) containerIndex(ctx context.Context) map[string]string {
+	index := map[string]string{}
+	for _, engine := range []string{"podman", "docker"} {
+		out, err := p.exec(ctx, engine, "ps", "-a", "--format", "{{.Names}} {{.State}}")
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			f := strings.Fields(line)
+			if len(f) < 2 {
+				continue
+			}
+			// First engine wins: a host running both should not have the same
+			// service reported twice with different states.
+			if _, seen := index[f[0]]; !seen {
+				index[f[0]] = f[1]
+			}
+		}
+	}
+	return index
+}
+
 // serviceState reports whether a service exists on this host and whether it is
 // running, covering both systemd units and Kolla's containers.
 //
@@ -158,7 +222,7 @@ func (p *OpenStack) deploymentID() string {
 // deployment every OpenStack service is a container and the host has no unit
 // for it at all, so a systemd-only probe would report a full controller as
 // empty.
-func (p *OpenStack) serviceState(ctx context.Context, name string) (active, found bool) {
+func (p *OpenStack) serviceState(ctx context.Context, containers map[string]string, name string) (active, found bool) {
 	// LoadState, not is-active.
 	//
 	// `systemctl is-active` prints "inactive" for a unit that does not exist,
@@ -172,18 +236,26 @@ func (p *OpenStack) serviceState(ctx context.Context, name string) (active, foun
 			return act == "active", true
 		}
 	}
-	for _, engine := range []string{"podman", "docker"} {
-		out, err := p.exec(ctx, engine, "ps", "-a", "--filter", "name=^"+name+"$", "--format", "{{.Names}} {{.State}}")
-		if err != nil || len(strings.TrimSpace(string(out))) == 0 {
-			continue
+	for _, cname := range containerNames(name) {
+		if state, ok := containers[cname]; ok {
+			return state == "running", true
 		}
-		line := strings.Fields(strings.TrimSpace(string(out)))
-		if len(line) >= 2 {
-			return line[1] == "running", true
-		}
-		return false, true
 	}
 	return false, false
+}
+
+// containerNames is what this service could be called as a container.
+//
+// Kolla names containers with underscores — nova-compute the unit is
+// nova_compute the container. Filtering on the hyphenated name found nothing on
+// a full controller, and the host reported as having no OpenStack on it at all.
+// The test that was supposed to cover this used hyphenated names in its fake,
+// so it agreed with the bug instead of catching it.
+func containerNames(service string) []string {
+	if under := strings.ReplaceAll(service, "-", "_"); under != service {
+		return []string{under, service}
+	}
+	return []string{service}
 }
 
 // novaVersion asks nova-compute what it is. The binary is authoritative about

@@ -187,3 +187,20 @@ func TestFoldFlagsAHostClaimedByTwoDeployments(t *testing.T) {
 		t.Errorf("memberships = %d, want both kept so the conflict can be read", len(got[0].Memberships))
 	}
 }
+
+// "unknown" is where a failed first probe hangs its error. It is bookkeeping,
+// not something the host does, and listing it as a role would put "unknown" in
+// the list of what a machine runs.
+func TestFoldDoesNotTreatTheErrorPlaceholderAsARole(t *testing.T) {
+	row := capRow("h1", RoleUnknown, time.Now(), false)
+	row.LastError = "probe timed out"
+
+	got := foldCapabilityRows([]capabilityRow{row}, nil)
+
+	if len(got[0].Roles) != 0 {
+		t.Errorf("roles = %v, want none", got[0].Roles)
+	}
+	if got[0].LastError != "probe timed out" {
+		t.Errorf("last_error = %q, want the failure to survive the fold", got[0].LastError)
+	}
+}
