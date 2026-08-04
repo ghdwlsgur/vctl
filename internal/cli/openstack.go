@@ -49,7 +49,10 @@ func openstackCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				cov, err := st.OpenStackCoverageOf(ctx)
+				// Coverage is over the whole fleet, so it is taken before the
+				// filters — otherwise `--role compute` would report the fleet as
+				// having only compute nodes in it.
+				cov, err := st.OpenStackCoverageOf(ctx, hosts)
 				if err != nil {
 					return err
 				}
