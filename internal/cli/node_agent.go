@@ -10,15 +10,17 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
+	"github.com/ghdwlsgur/vctl/internal/hoststatus/probes"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 func nodeAgentCmd() *cobra.Command {
 	var (
-		hostname string
-		interval time.Duration
-		once     bool
+		hostname      string
+		interval      time.Duration
+		probeInterval time.Duration
+		once          bool
 	)
 	cmd := &cobra.Command{
 		Use:   "node-agent",
@@ -47,6 +49,18 @@ database role for low-risk, low-resource status reporting.`,
 			}}
 			defer conn.close()
 
+			// Capability probes run on their own, slower clock.
+			//
+			// The heartbeat answers "is this host alive" and has to stay cheap
+			// enough to run every five minutes forever. A probe asks systemd and
+			// several version commands, on the small fraction of hosts that have
+			// them, and the answer changes about as often as somebody upgrades —
+			// which is to say rarely. Running the two at one rate would either
+			// make the heartbeat slow or the capability stale.
+			if probeInterval > 0 {
+				go runCapabilityProbes(ctx, conn, hostname, probeInterval, once)
+			}
+
 			report := func() error { return conn.report(ctx, hostname) }
 			return runPeriodic(ctx, once, false, interval, 5*time.Minute, report, func(err error) {
 				ui.Warnf(os.Stderr, "status report failed: %v", err)
@@ -55,8 +69,51 @@ database role for low-risk, low-resource status reporting.`,
 	}
 	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname to report; defaults to os hostname")
 	cmd.Flags().DurationVar(&interval, "interval", 5*time.Minute, "heartbeat interval")
+	cmd.Flags().DurationVar(&probeInterval, "probe-interval", time.Hour,
+		"how often to run platform capability probes (OpenStack, ...); 0 disables them")
 	cmd.Flags().BoolVar(&once, "once", false, "report once and exit")
 	return cmd
+}
+
+// capabilityProbes is what this agent knows how to look for. Adding a platform
+// is adding an entry here; nothing else in the agent changes.
+func capabilityProbes() []hoststatus.Probe {
+	return []hoststatus.Probe{probes.NewOpenStack()}
+}
+
+// probeTimeout bounds one probe. These shell out to commands this code does not
+// own, on hosts that may be under load; a probe that never returns must not
+// hold the agent's only goroutine for capabilities.
+const probeTimeout = 20 * time.Second
+
+// runCapabilityProbes reports what platforms this host is part of.
+//
+// It never fails the agent. A probe error is recorded beside the last known
+// facts and logged once; the heartbeat keeps running either way, because "we
+// could not tell what this host runs" is not a reason to stop saying it is
+// alive.
+func runCapabilityProbes(ctx context.Context, conn *statusConn, hostname string, every time.Duration, once bool) {
+	run := func() {
+		for _, res := range hoststatus.RunProbes(ctx, capabilityProbes(), probeTimeout) {
+			if err := conn.reportCapability(ctx, hostname, res); err != nil {
+				ui.Warnf(os.Stderr, "capability probe %s: %v", res.Kind, err)
+			}
+		}
+	}
+	run()
+	if once {
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			run()
+		}
+	}
 }
 
 // statusConn holds the agent's database handle across heartbeats and reopens it
@@ -77,6 +134,8 @@ database role for low-risk, low-resource status reporting.`,
 // this narrow is what makes the reconnect behavior testable without a database.
 type statusSink interface {
 	UpsertServerStatus(context.Context, store.ServerStatus) (bool, error)
+	UpsertCapability(context.Context, store.Capability) (bool, error)
+	RecordCapabilityError(ctx context.Context, hostname, kind, message string) error
 	Close()
 }
 
@@ -89,6 +148,48 @@ type statusConn struct {
 	// first successful report still says so — a silent agent and a working one
 	// would otherwise look identical at startup.
 	healthy bool
+}
+
+// reportCapability writes one probe's findings.
+//
+// A probe that errored records the error against whatever is already stored and
+// stops: overwriting the facts with an empty result would turn "the probe timed
+// out" into "this host runs nothing", which reads as a decommission.
+func (c *statusConn) reportCapability(ctx context.Context, hostname string, res hoststatus.ProbeResult) error {
+	if c.st == nil {
+		st, err := c.open()
+		if err != nil {
+			return err
+		}
+		c.st = st
+	}
+	if res.Err != nil {
+		return c.st.RecordCapabilityError(ctx, hostname, res.Kind, res.Err.Error())
+	}
+	// Nothing found is still an answer, and it needs a row so the listing can
+	// tell "probed, absent" from "never probed". It is filed under the role
+	// name "none".
+	roles := res.Roles
+	if len(roles) == 0 {
+		roles = []string{"none"}
+	}
+	for _, role := range roles {
+		cap := store.Capability{
+			Hostname: hostname, Kind: res.Kind, Role: role,
+			Detected: res.Detected, Details: res.Details,
+			Components: make(map[string]store.CapabilityComponent, len(res.Components)),
+			ObservedAt: res.ObservedAt,
+		}
+		for name, comp := range res.Components {
+			cap.Components[name] = store.CapabilityComponent{
+				Version: comp.Version, Package: comp.Package, Active: comp.Active,
+			}
+		}
+		if _, err := c.st.UpsertCapability(ctx, cap); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *statusConn) report(ctx context.Context, hostname string) error {

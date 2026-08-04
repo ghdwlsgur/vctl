@@ -14,6 +14,9 @@ type fakeStatusSink struct {
 	upserts int
 	closed  bool
 	err     error
+
+	caps      []store.Capability
+	capErrors []string
 }
 
 func (f *fakeStatusSink) UpsertServerStatus(context.Context, store.ServerStatus) (bool, error) {
@@ -22,6 +25,19 @@ func (f *fakeStatusSink) UpsertServerStatus(context.Context, store.ServerStatus)
 		return false, f.err
 	}
 	return true, nil
+}
+
+func (f *fakeStatusSink) UpsertCapability(_ context.Context, c store.Capability) (bool, error) {
+	f.caps = append(f.caps, c)
+	if f.err != nil {
+		return false, f.err
+	}
+	return true, nil
+}
+
+func (f *fakeStatusSink) RecordCapabilityError(_ context.Context, _, kind, msg string) error {
+	f.capErrors = append(f.capErrors, kind+": "+msg)
+	return f.err
 }
 
 func (f *fakeStatusSink) Close() { f.closed = true }
@@ -147,6 +163,16 @@ type unregisteredSink struct {
 func (u *unregisteredSink) UpsertServerStatus(context.Context, store.ServerStatus) (bool, error) {
 	u.upserts++
 	return false, nil
+}
+
+// The unregistered host's capability writes are refused the same way its
+// heartbeat is: matched=false, no error.
+func (u *unregisteredSink) UpsertCapability(context.Context, store.Capability) (bool, error) {
+	return false, nil
+}
+
+func (u *unregisteredSink) RecordCapabilityError(context.Context, string, string, string) error {
+	return nil
 }
 
 func (u *unregisteredSink) Close() { u.closed = true }
