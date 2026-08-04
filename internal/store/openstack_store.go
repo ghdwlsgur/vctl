@@ -94,15 +94,31 @@ const KindOpenStack = "openstack"
 // absent" has a row and can be told from "never probed".
 const roleNone = "none"
 
+// RoleUnknown is filed when a probe could not complete and there was nothing
+// already recorded for the host. It is not a role — it is a place to hang the
+// error so a failed first probe is visible rather than silent.
+const RoleUnknown = "unknown"
+
+// isPlaceholderRole reports whether a row's role is a bookkeeping marker rather
+// than something the host does. Rendering either as a role would put "none" and
+// "unknown" in a list of what a machine runs.
+func isPlaceholderRole(role string) bool {
+	return role == roleNone || role == RoleUnknown
+}
+
 // OpenStackCoverage says how much of the fleet has been looked at, which is the
 // context an empty listing needs: no OpenStack hosts because none were found is
 // a different situation from none because nothing has probed yet.
 type OpenStackCoverage struct {
 	// Hosts is the inventory excluding retired ones — nothing is expected of
 	// those, so counting them would make coverage look permanently incomplete.
-	Hosts    int `json:"hosts"`
-	Probed   int `json:"probed"`
-	Running  int `json:"running"`
+	Hosts   int `json:"hosts"`
+	Probed  int `json:"probed"`
+	Running int `json:"running"`
+
+	// Failed is a probe that could not answer. Folding these into Absent would
+	// report "this host does not run OpenStack" on the strength of a timeout.
+	Failed   int `json:"failed"`
 	Absent   int `json:"absent"`
 	Unprobed int `json:"unprobed"`
 }
@@ -136,12 +152,14 @@ func (s *Store) OpenStackCoverageOf(ctx context.Context) (OpenStackCoverage, err
 		SELECT
 		  (SELECT count(*) FROM servers WHERE coalesce(state,'active') <> $2),
 		  (SELECT count(DISTINCT hostname) FROM server_capabilities WHERE kind = $1),
-		  (SELECT count(DISTINCT hostname) FROM server_capabilities WHERE kind = $1 AND detected)`,
-		KindOpenStack, StateRetired).Scan(&c.Hosts, &c.Probed, &c.Running)
+		  (SELECT count(DISTINCT hostname) FROM server_capabilities WHERE kind = $1 AND detected),
+		  (SELECT count(DISTINCT hostname) FROM server_capabilities
+		     WHERE kind = $1 AND last_error <> '' AND NOT detected)`,
+		KindOpenStack, StateRetired).Scan(&c.Hosts, &c.Probed, &c.Running, &c.Failed)
 	if err != nil {
 		return c, err
 	}
-	c.Absent = c.Probed - c.Running
+	c.Absent = c.Probed - c.Running - c.Failed
 	// Clamped because the two counts come from different tables: a capability
 	// row for a host since retired would otherwise make this negative.
 	if c.Unprobed = c.Hosts - c.Probed; c.Unprobed < 0 {
@@ -224,7 +242,7 @@ func foldCapabilityRows(rows []capabilityRow, members map[string][]OpenStackMemb
 		if !r.ObservedAt.Before(newest[r.Hostname]) {
 			h.ObservedAt = r.ObservedAt
 			h.Detected = h.Detected || r.Detected
-			if r.Role != roleNone {
+			if !isPlaceholderRole(r.Role) {
 				h.Roles = append(h.Roles, r.Role)
 			}
 			mergeInto(&h.Components, r.Components)
@@ -234,7 +252,7 @@ func foldCapabilityRows(rows []capabilityRow, members map[string][]OpenStackMemb
 			}
 			continue
 		}
-		if r.Role != roleNone {
+		if !isPlaceholderRole(r.Role) {
 			h.Dropped = append(h.Dropped, DroppedRole{Role: r.Role, LastSeen: r.ObservedAt})
 		}
 	}

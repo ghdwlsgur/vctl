@@ -253,3 +253,40 @@ func TestHostDetailDoesNotRepeatTheRawDeploymentField(t *testing.T) {
 		t.Errorf("the detail view did not say the host is unclaimed:\n%s", out)
 	}
 }
+
+// A probe that could not answer must not be rendered as an answer.
+// detected=false with an error beside it means "we could not tell", and calling
+// that "none found" states as fact the one thing the probe failed to establish.
+func TestAFailedProbeIsNotReportedAsAbsence(t *testing.T) {
+	h := osHost("srv-01", "")
+	h.Detected, h.Roles = false, nil
+	h.LastError = "probe timed out"
+
+	var buf bytes.Buffer
+	renderOpenStackHost(&buf, h, time.Now())
+
+	out := buf.String()
+	if strings.Contains(out, "none found") {
+		t.Errorf("a failed probe was rendered as an absence:\n%s", out)
+	}
+	if !strings.Contains(out, "unknown") {
+		t.Errorf("the detail view did not say the answer is unknown:\n%s", out)
+	}
+}
+
+// Folding failures into "do not run OpenStack" reports an absence on the
+// strength of a timeout.
+func TestCoverageKeepsFailuresApartFromAbsences(t *testing.T) {
+	var buf bytes.Buffer
+	renderOpenStack(&buf, nil, store.OpenStackCoverage{
+		Hosts: 50, Probed: 10, Running: 4, Failed: 2, Absent: 4, Unprobed: 40,
+	}, false, time.Now())
+
+	out := buf.String()
+	if !strings.Contains(out, "2 could not be probed") {
+		t.Errorf("failures were not reported separately:\n%s", out)
+	}
+	if !strings.Contains(out, "4 do not") {
+		t.Errorf("absences lost their own count:\n%s", out)
+	}
+}

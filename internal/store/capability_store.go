@@ -76,10 +76,31 @@ func (s *Store) UpsertCapability(ctx context.Context, c Capability) (bool, error
 // times out does not mean the host stopped being a compute node, and a listing
 // built from that would show an outage as a decommission. The facts stay, the
 // error sits beside them, and the age says how much to trust it.
+//
+// When there is nothing to sit beside, a row is created for the error alone.
+// An UPDATE was the whole implementation at first, which meant the very first
+// probe on a host — the one most likely to fail, because that is when the
+// packaging and permissions are still wrong — updated zero rows and returned
+// nil. The failure left no trace anywhere, and the host was indistinguishable
+// from one nothing had looked at yet.
 func (s *Store) RecordCapabilityError(ctx context.Context, hostname, kind, message string) error {
-	_, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE server_capabilities SET last_error=$3, updated_at=now()
 		WHERE hostname=$1 AND kind=$2`, hostname, kind, message)
+	if err != nil || tag.RowsAffected() > 0 {
+		return err
+	}
+	// detected=false here means "we do not know", not "we looked and there is
+	// nothing" — last_error is what tells the two apart, and every reader has
+	// to check it before believing detected.
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO server_capabilities
+			(hostname, kind, role, detected, last_error, observed_at, updated_at)
+		SELECT $1,$2,$3,false,$4, now(), now()
+		WHERE EXISTS (SELECT 1 FROM servers WHERE hostname=$1)
+		ON CONFLICT (hostname, kind, role) DO UPDATE SET
+			last_error=EXCLUDED.last_error, updated_at=now()`,
+		hostname, kind, RoleUnknown, message)
 	return err
 }
 
