@@ -290,3 +290,38 @@ func TestCoverageKeepsFailuresApartFromAbsences(t *testing.T) {
 		t.Errorf("absences lost their own count:\n%s", out)
 	}
 }
+
+// The per-host rows say what each machine does; the shape says what the
+// deployment is. Counting "3 controllers, 5 compute" off nine rows each
+// carrying up to nine comma-separated roles is not a reader's job.
+func TestFarmShapeCountsTheRoles(t *testing.T) {
+	hosts := []store.OpenStackHost{
+		osHost("c1", "f", "controller", "identity", "network"),
+		osHost("c2", "f", "controller", "identity"),
+		osHost("n1", "f", "compute"),
+		osHost("n2", "f", "compute"),
+		osHost("n3", "f", "compute"),
+	}
+
+	got := farmShape(hosts)
+	for _, want := range []string{"compute 3", "controller 2", "identity 2", "network 1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("shape = %q, missing %s", got, want)
+		}
+	}
+	// Ordered by how many hosts hold the role, so the shape leads with what the
+	// deployment is mostly made of.
+	if !strings.HasPrefix(got, "compute 3") {
+		t.Errorf("shape = %q, want the largest role first", got)
+	}
+}
+
+// A deployment nothing runs in has no shape to print, and an empty line under
+// the heading reads as a rendering fault.
+func TestFarmShapeIsEmptyWithNoRoles(t *testing.T) {
+	h := osHost("h1", "f")
+	h.Roles = nil
+	if got := farmShape([]store.OpenStackHost{h}); got != "" {
+		t.Errorf("shape = %q, want nothing", got)
+	}
+}

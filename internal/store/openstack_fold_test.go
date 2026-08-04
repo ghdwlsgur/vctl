@@ -204,3 +204,58 @@ func TestFoldDoesNotTreatTheErrorPlaceholderAsARole(t *testing.T) {
 		t.Errorf("last_error = %q, want the failure to survive the fold", got[0].LastError)
 	}
 }
+
+// The Keystone every service authenticates against is the one local fact that
+// groups a deployment. A controller and its compute nodes name the same one.
+func TestFoldGroupsByKeystoneWhenNothingHasClaimedTheHost(t *testing.T) {
+	mk := func(host string) capabilityRow {
+		r := capRow(host, "compute", time.Now(), true)
+		r.Details["deployment"] = "unknown"
+		r.Details["keystone_url"] = "172.16.0.245:5000"
+		return r
+	}
+	got := foldCapabilityRows([]capabilityRow{mk("h1"), mk("h2")}, nil)
+
+	for _, h := range got {
+		if h.Farm != "172.16.0.245:5000" {
+			t.Errorf("%s farm = %q, want the shared Keystone", h.Hostname, h.Farm)
+		}
+		// Never confirmed: two deployments behind one proxy look identical from
+		// a host, and only the control plane can tell them apart.
+		if h.Confidence != ConfidenceLocalOnly {
+			t.Errorf("%s confidence = %q, want %q", h.Hostname, h.Confidence, ConfidenceLocalOnly)
+		}
+	}
+}
+
+// A declaration outranks the observation. Somebody placing an id on the host is
+// a statement; reading a config file is an inference.
+func TestFoldPrefersADeclarationOverTheKeystoneObservation(t *testing.T) {
+	row := capRow("h1", "compute", time.Now(), true)
+	row.Details["deployment"] = "incheon-aio01"
+	row.Details["deployment_source"] = "declared"
+	row.Details["keystone_url"] = "172.16.0.245:5000"
+
+	got := foldCapabilityRows([]capabilityRow{row}, nil)
+
+	if got[0].Farm != "incheon-aio01" || got[0].Confidence != ConfidenceDeclared {
+		t.Errorf("farm = %q/%q, want the declaration", got[0].Farm, got[0].Confidence)
+	}
+}
+
+// Different endpoints are different deployments and must not merge.
+func TestFoldKeepsDifferentKeystonesApart(t *testing.T) {
+	mk := func(host, ks string) capabilityRow {
+		r := capRow(host, "compute", time.Now(), true)
+		r.Details["keystone_url"] = ks
+		return r
+	}
+	got := foldCapabilityRows([]capabilityRow{
+		mk("h1", "192.168.201.130:5000"),
+		mk("h2", "192.168.201.90:5000"),
+	}, nil)
+
+	if got[0].Farm == got[1].Farm {
+		t.Errorf("two deployments collapsed into %q", got[0].Farm)
+	}
+}

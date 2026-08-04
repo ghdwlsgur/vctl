@@ -193,6 +193,13 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 	// OpenStack on it.
 	res.Detected = len(res.Components) > 0
 
+	// Which Keystone this host authenticates against. It is evidence of
+	// membership, not proof: two deployments behind one proxy share an endpoint.
+	// The reader decides what to do with it and labels the result local-only.
+	if v := p.keystoneURL(); v != "" {
+		res.Details["keystone_url"] = v
+	}
+
 	// Deliberately not decided here. Local evidence cannot separate two farms
 	// that share an endpoint, and a wrong answer would be rendered as fact.
 	res.Details["deployment"] = "unknown"

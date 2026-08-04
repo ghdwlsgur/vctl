@@ -315,6 +315,21 @@ func attachFarm(h *OpenStackHost, ms []OpenStackMembership) {
 	if id := h.Details["deployment"]; id != "" && id != "unknown" &&
 		h.Details["deployment_source"] == "declared" {
 		h.Farm, h.Confidence = id, ConfidenceDeclared
+		return
+	}
+	// Failing a statement, the Keystone every service on the host
+	// authenticates against. Hosts that name the same one are almost always one
+	// deployment — in this fleet a controller and its compute nodes all name
+	// 172.16.0.245:5000 and are — but "almost always" is exactly why this is
+	// local-only rather than confirmed. Two deployments behind one proxy would
+	// look identical from here, and only something that can see the control
+	// plane can tell them apart.
+	//
+	// Derived rather than stored: openstack_memberships is for claims somebody
+	// or something made, and this is an observation that changes whenever the
+	// probe runs. Writing it would age into a fact nobody filed.
+	if u := h.Details["keystone_url"]; u != "" {
+		h.Farm, h.Confidence = u, ConfidenceLocalOnly
 	}
 }
 

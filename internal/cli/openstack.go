@@ -169,6 +169,9 @@ func renderOpenStack(w io.Writer, hosts []store.OpenStackHost, cov store.OpenSta
 		}
 		fmt.Fprintf(w, "%s %s\n", farmStyle.Render("▌ "+farmLabel(hosts[i])),
 			ui.Muted(farmSuffix(hosts[i], end-i)))
+		if shape := farmShape(hosts[i:end]); shape != "" {
+			fmt.Fprintf(w, "  %s\n", ui.Muted(shape))
+		}
 		for ; i < end; i++ {
 			var line strings.Builder
 			line.WriteString("  ")
@@ -212,6 +215,44 @@ func groupByFarm(hosts []store.OpenStackHost) []store.OpenStackHost {
 		return a.Hostname < b.Hostname
 	})
 	return out
+}
+
+// farmShape summarises how a deployment is built: how many hosts hold each
+// role.
+//
+// The per-host rows say what each machine does; this says what the deployment
+// is. "3 controllers, 5 compute, 3 network" is the question someone opens this
+// to answer, and counting it off a list of nine hosts each carrying up to nine
+// comma-separated roles is not something a reader should have to do.
+//
+// Roles are ordered by how many hosts hold them, so the shape leads with what
+// the deployment is mostly made of.
+func farmShape(hosts []store.OpenStackHost) string {
+	count := map[string]int{}
+	for _, h := range hosts {
+		for _, r := range h.Roles {
+			count[r]++
+		}
+	}
+	if len(count) == 0 {
+		return ""
+	}
+	roles := make([]string, 0, len(count))
+	for r := range count {
+		roles = append(roles, r)
+	}
+	sort.Slice(roles, func(i, j int) bool {
+		if count[roles[i]] != count[roles[j]] {
+			return count[roles[i]] > count[roles[j]]
+		}
+		// By name within a tie, so the shape does not reshuffle between runs.
+		return roles[i] < roles[j]
+	})
+	parts := make([]string, 0, len(roles))
+	for _, r := range roles {
+		parts = append(parts, fmt.Sprintf("%s %d", r, count[r]))
+	}
+	return strings.Join(parts, " · ")
 }
 
 func farmLabel(h store.OpenStackHost) string {
