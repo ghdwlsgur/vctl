@@ -259,3 +259,83 @@ func TestFoldKeepsDifferentKeystonesApart(t *testing.T) {
 		t.Errorf("two deployments collapsed into %q", got[0].Farm)
 	}
 }
+
+// A membership row used to win outright, which inverted the scale it is ranked
+// on. A dedicated Neutron or Cinder node — one nova never lists — has a
+// declared identifier and gets a local-only membership from the reconciler, and
+// came out of that reconcile weaker than it went in:
+//
+//	declared → reconcile → local-only
+func TestFoldDoesNotLetAWeakerMembershipBeatADeclaration(t *testing.T) {
+	row := capRow("h1", "network", time.Now(), true)
+	row.Details["deployment"] = "incheon"
+	row.Details["deployment_source"] = "declared"
+	members := map[string][]OpenStackMembership{
+		"h1": {{DeploymentID: "incheon", Confidence: ConfidenceLocalOnly}},
+	}
+
+	got := foldCapabilityRows([]capabilityRow{row}, members)
+
+	if got[0].Confidence != ConfidenceDeclared {
+		t.Errorf("confidence = %q, want %q — the declaration is the stronger claim",
+			got[0].Confidence, ConfidenceDeclared)
+	}
+	if got[0].Farm != "incheon" {
+		t.Errorf("farm = %q", got[0].Farm)
+	}
+}
+
+// The ranking still runs the other way: a confirmed membership beats a
+// declaration, because the control plane saw what the label only asserts.
+func TestFoldLetsAConfirmedMembershipBeatADeclaration(t *testing.T) {
+	row := capRow("h1", "compute", time.Now(), true)
+	row.Details["deployment"] = "incheon"
+	row.Details["deployment_source"] = "declared"
+	members := map[string][]OpenStackMembership{
+		"h1": {{DeploymentID: "incheon", Confidence: ConfidenceConfirmed}},
+	}
+
+	got := foldCapabilityRows([]capabilityRow{row}, members)
+
+	if got[0].Confidence != ConfidenceConfirmed {
+		t.Errorf("confidence = %q, want %q", got[0].Confidence, ConfidenceConfirmed)
+	}
+}
+
+// A ranking that resolves cleanly is not a conflict. A stale label beside a
+// confirmed membership is something to fix, not a reason to mark the host
+// unusable — and marking it would bury the conflicts that are real.
+func TestFoldDoesNotCallAResolvedRankingAConflict(t *testing.T) {
+	row := capRow("h1", "compute", time.Now(), true)
+	row.Details["deployment"] = "stale-label"
+	row.Details["deployment_source"] = "declared"
+	members := map[string][]OpenStackMembership{
+		"h1": {{DeploymentID: "incheon", Confidence: ConfidenceConfirmed}},
+	}
+
+	got := foldCapabilityRows([]capabilityRow{row}, members)
+
+	if got[0].Confidence == ConfidenceConflict {
+		t.Error("a confirmed membership over a stale label was reported as a conflict")
+	}
+	if got[0].Farm != "incheon" {
+		t.Errorf("farm = %q, want the confirmed one", got[0].Farm)
+	}
+}
+
+// Equal rank naming different deployments is where the scale has no answer, so
+// there is nothing to report but the disagreement.
+func TestFoldFlagsEqualRankClaimsThatDisagree(t *testing.T) {
+	row := capRow("h1", "compute", time.Now(), true)
+	row.Details["deployment"] = "farm-a"
+	row.Details["deployment_source"] = "declared"
+	members := map[string][]OpenStackMembership{
+		"h1": {{DeploymentID: "farm-b", Confidence: ConfidenceDeclared}},
+	}
+
+	got := foldCapabilityRows([]capabilityRow{row}, members)
+
+	if got[0].Confidence != ConfidenceConflict {
+		t.Errorf("confidence = %q, want %q — two declarations disagree", got[0].Confidence, ConfidenceConflict)
+	}
+}

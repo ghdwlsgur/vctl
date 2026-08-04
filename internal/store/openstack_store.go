@@ -296,26 +296,48 @@ func foldCapabilityRows(rows []capabilityRow, members map[string][]OpenStackMemb
 // Several memberships is not an error to hide. A host genuinely moving between
 // deployments, or claimed by two, is a real state and the listing has to be able
 // to show it.
+// farmClaim is one piece of evidence that a host belongs to a deployment.
+type farmClaim struct {
+	ID         string
+	Name       string
+	Region     string
+	Confidence string
+	// fromMembership marks a claim somebody or something filed, as opposed to
+	// one derived from what the host says. It only breaks ties.
+	fromMembership bool
+}
+
+// attachFarm decides which deployment a host is shown under, by ranking every
+// claim on the same scale.
+//
+// Membership rows used to win outright, which inverted the scale they are
+// ranked on. A host with a declared identifier and a local-only membership —
+// what a dedicated Neutron or Cinder node gets, because nova never lists it —
+// came out of a reconcile weaker than it went in:
+//
+//	declared → reconcile → local-only
+//
+// Now the strongest claim wins wherever it came from. A membership only breaks
+// a tie, on the grounds that something filed it.
+//
+// Several memberships is still a conflict, and so is a declaration that
+// disagrees with one. Both are real states, and picking a side would hide a
+// split-brain inventory behind a confident-looking answer.
 func attachFarm(h *OpenStackHost, ms []OpenStackMembership) {
 	h.Memberships = ms
-	if len(ms) > 0 {
-		best := ms[0]
-		for _, m := range ms[1:] {
-			if confidenceRank(m.Confidence) < confidenceRank(best.Confidence) {
-				best = m
-			}
-		}
-		h.Farm, h.FarmName, h.FarmRegion = best.DeploymentID, best.DisplayName, best.Region
-		h.Confidence = best.Confidence
-		if len(ms) > 1 {
-			h.Confidence = ConfidenceConflict
-		}
-		return
+
+	claims := make([]farmClaim, 0, len(ms)+2)
+	for _, m := range ms {
+		claims = append(claims, farmClaim{
+			ID: m.DeploymentID, Name: m.DisplayName, Region: m.Region,
+			Confidence: m.Confidence, fromMembership: true,
+		})
 	}
+	// An identifier somebody placed on the host on purpose. That is a
+	// statement, not an inference.
 	if id := h.Details["deployment"]; id != "" && id != "unknown" &&
 		h.Details["deployment_source"] == "declared" {
-		h.Farm, h.Confidence = id, ConfidenceDeclared
-		return
+		claims = append(claims, farmClaim{ID: id, Confidence: ConfidenceDeclared})
 	}
 	// Failing a statement, the Keystone every service on the host
 	// authenticates against. Hosts that name the same one are almost always one
@@ -329,8 +351,63 @@ func attachFarm(h *OpenStackHost, ms []OpenStackMembership) {
 	// or something made, and this is an observation that changes whenever the
 	// probe runs. Writing it would age into a fact nobody filed.
 	if u := h.Details["keystone_url"]; u != "" {
-		h.Farm, h.Confidence = u, ConfidenceLocalOnly
+		claims = append(claims, farmClaim{ID: u, Confidence: ConfidenceLocalOnly})
 	}
+	if len(claims) == 0 {
+		return
+	}
+
+	best := claims[0]
+	for _, c := range claims[1:] {
+		if better(c, best) {
+			best = c
+		}
+	}
+	h.Farm, h.FarmName, h.FarmRegion = best.ID, best.Name, best.Region
+	h.Confidence = best.Confidence
+	if conflicting(ms, claims) {
+		h.Confidence = ConfidenceConflict
+	}
+}
+
+// better reports whether a is the stronger claim. Rank first; a filed claim
+// breaks a tie against a derived one.
+func better(a, b farmClaim) bool {
+	ra, rb := confidenceRank(a.Confidence), confidenceRank(b.Confidence)
+	if ra != rb {
+		return ra < rb
+	}
+	return a.fromMembership && !b.fromMembership
+}
+
+// conflicting reports whether the evidence genuinely disagrees.
+//
+// Two things count, and nothing else does.
+//
+// Two filed memberships, whatever their confidence. Two deployments each
+// holding a row for one host is a split-brain inventory, and the stronger row
+// winning does not make the weaker one stop claiming the machine.
+//
+// Two claims of equal rank naming different deployments — there the scale has
+// no answer, so there is nothing to report but the disagreement.
+//
+// A ranking that resolves cleanly is not a conflict. A confirmed membership
+// beside a stale declared label is a label somebody should fix, not a reason to
+// mark the host unusable; and a local-only inference under a confirmed
+// membership is the normal state of every reconciled host in the fleet.
+func conflicting(ms []OpenStackMembership, claims []farmClaim) bool {
+	if len(ms) > 1 {
+		return true
+	}
+	byRank := map[int]string{}
+	for _, c := range claims {
+		r := confidenceRank(c.Confidence)
+		if seen, ok := byRank[r]; ok && seen != c.ID {
+			return true
+		}
+		byRank[r] = c.ID
+	}
+	return false
 }
 
 // confidenceRank orders the evidence, strongest first.
