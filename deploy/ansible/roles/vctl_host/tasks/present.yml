@@ -348,6 +348,11 @@
 
 # node-agent always; watch-sessions + collector only with the full audit stack
 # (collector additionally needs vctl_host_install_collect / Tetragon).
+# OpenStack 팜 reconciler — opt-in, 팜당 컨트롤러 한 대.
+- name: Install the OpenStack membership reconciler
+  when: vctl_host_openstack_reconciler | bool
+  ansible.builtin.include_tasks: reconciler.yml
+
 - name: Enable services (only with secret_id present)
   when: vctl_host_enable_services | bool and (vctl_host_secret_id.stat.exists | default(false))
   ansible.builtin.systemd:

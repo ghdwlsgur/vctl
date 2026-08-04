@@ -1,0 +1,79 @@
+---
+# OpenStack 팜 membership reconciler — 팜당 컨트롤러 한 대에만.
+#
+# 중앙에서 돌리는 것이 먼저였고 성립하지 않았다. 각 팜의 Keystone VIP 는 그 팜
+# 안에서만 도달한다 — 클러스터 파드·노드·WireGuard 허브 어디서도 여섯 팜에
+# 닿지 않는다(deploy/node/vctl-openstack-reconcile.service 주석의 실측 표).
+#
+# node-agent 와 자격증명을 나눈다. vctl-node AppRole 은 함대 43대가 공유하므로,
+# 거기에 OpenStack admin 을 읽을 권한을 얹으면 모든 호스트가 그 능력을 갖는다.
+# 이것은 별도 AppRole(vctl-reconciler)을 쓰고 소수의 호스트에만 깔린다.
+
+- name: Fetch reconciler role_id (control node Vault)
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command: "vault read -field=role_id auth/approle/role/{{ vctl_host_reconciler_approle }}/role-id"
+  register: vctl_host_reconciler_roleid
+  changed_when: false
+
+- name: Install reconciler role_id (not secret)
+  ansible.builtin.copy:
+    content: "{{ vctl_host_reconciler_roleid.stdout }}"
+    dest: /etc/vctl/reconcile-role-id
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Check whether the reconciler secret_id is present
+  ansible.builtin.stat:
+    path: /etc/vctl/reconcile-secret-id
+  register: vctl_host_reconciler_secret_id
+
+# secret_id 는 제어 노드의 Vault 토큰으로 호스트마다 새로 발급한다. 이미지나
+# 저장소에 담기지 않는다.
+- name: Mint a reconciler secret_id
+  when: not vctl_host_reconciler_secret_id.stat.exists
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    argv:
+      - vault
+      - write
+      - -field=secret_id
+      - -force
+      - "auth/approle/role/{{ vctl_host_reconciler_approle }}/secret-id"
+  register: vctl_host_reconciler_new_secret
+  changed_when: true
+  no_log: true
+
+- name: Install the reconciler secret_id
+  when: not vctl_host_reconciler_secret_id.stat.exists
+  ansible.builtin.copy:
+    content: "{{ vctl_host_reconciler_new_secret.stdout }}"
+    dest: /etc/vctl/reconcile-secret-id
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the reconciler unit and timer
+  ansible.builtin.copy:
+    src: "{{ vctl_host_node_src }}/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - vctl-openstack-reconcile.service
+    - vctl-openstack-reconcile.timer
+  notify: Reload systemd
+
+# 서비스가 아니라 타이머를 켠다. oneshot 이므로 서비스를 enable 하면 부팅마다 한
+# 번 돌고 마는데, 그건 주기가 아니라 사고다.
+- name: Enable the reconciler timer (only with a secret_id present)
+  when: vctl_host_enable_services | bool
+  ansible.builtin.systemd:
+    name: vctl-openstack-reconcile.timer
+    enabled: true
+    state: started
+    daemon_reload: true
