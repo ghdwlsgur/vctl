@@ -84,6 +84,7 @@ func openstackCmd() *cobra.Command {
 	// with vctl-ro, a role this Job has no reason to hold, so the check failed
 	// before the command it guards could run at all.
 	cmd.AddCommand(openstackReconcileCmd())
+	cmd.AddCommand(openstackVMCmd())
 	cmd.AddCommand(gate(openstackFarmCmd(), "openstack-farm", classMutate))
 	return cmd
 }

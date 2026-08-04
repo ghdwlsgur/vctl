@@ -331,6 +331,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure]` | 각 배포의 컨트롤 플레인에 어느 호스트가 자기 것인지 묻고, 양쪽이 일치하는 호스트를 `confirmed`로 올립니다. 자격증명은 Vault `kv/teams/sre/vctl-<host_port>`에서 읽습니다(필드: `auth_url`·`username`·`password`, 선택 `project_name`·`user_domain`·`project_domain`) |
 | `vctl openstack farm name [deployment] [name]` | 배포에 사람이 읽을 이름을 붙입니다. 목록이 `172.16.0.10:5000` 대신 `incheon`으로 나옵니다. 인자를 생략하면 목록에서 고르고 폼으로 입력합니다 |
 | `vctl openstack farm show [deployment]` | 한 팜의 아키텍처를 한 화면에: 역할 섹션(컨트롤 플레인 먼저)·릴리스 드리프트·미확정 소속. 인자를 생략하면 목록에서 고릅니다 |
+| `vctl openstack vm [--farm <f>] [--host <h>] [--id <uuid>] [--address <ip>] [--missing]` | 배포별 VM과 각 VM이 올라간 물리 호스트. `--host`는 인벤토리 호스트명, `--id`는 Nova UUID 또는 쿠버네티스 `providerID`(`openstack:///<uuid>`), `--address`는 그 IP를 쓰는 VM을 찾습니다 |
 | `vctl add [flags]` | `sync`가 찾지 못하는 호스트를 인벤토리에 등록합니다. 플래그 없이 실행하면 폼으로 입력합니다 |
 | `vctl edit [host] [flags]` | `sync`가 덮어쓰지 않는 필드를 바꿉니다 — dc · ssh user · 점프 호스트 · extra IP · 호스트명, 그리고 `--state active\|maintenance\|broken\|retired`. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
 | `vctl delete [host] [--yes]` | 폐기한 호스트를 지웁니다. 감사 기록은 남습니다. 이 호스트를 경유하는 호스트가 있으면 삭제를 막습니다. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |

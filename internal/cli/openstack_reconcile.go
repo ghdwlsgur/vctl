@@ -20,6 +20,10 @@ import (
 // whose Keystone is unreachable must not hold up the rest.
 const reconcileTimeout = 60 * time.Second
 
+// instanceTimeout bounds the VM listing, which pages and so takes longer than
+// the two membership calls put together.
+const instanceTimeout = 180 * time.Second
+
 // vaultFarmPrefix is where a deployment's admin credentials live.
 //
 // Read from Vault at use time and never written anywhere: the whole reason this
@@ -57,6 +61,17 @@ func openstackReconcileCmd() *cobra.Command {
 				}
 				if self {
 					id, err := farmOfHost(farms, hostname)
+					if err != nil {
+						return err
+					}
+					only = id
+				}
+				// Accept the name people gave the deployment, not just its
+				// endpoint. `farm show` and `vm` both do, and a --farm that
+				// takes one spelling in one command and another elsewhere is a
+				// flag somebody has to remember the shape of.
+				if only != "" {
+					id, err := resolveFarmID(ctx, st, only)
 					if err != nil {
 						return err
 					}
@@ -145,6 +160,9 @@ func reconcileFarms(ctx context.Context, a *app.App, st *store.Store, ids []stri
 			reportReconcile(id, res, true)
 			continue
 		}
+		if !dryRun {
+			collectInstances(ctx, st, id, creds, insecure)
+		}
 		got, err := st.ReconcileDeployment(ctx, store.ReconcileInput{
 			DeploymentID: id, KeystoneURL: id,
 			LocalHosts: hosts, ControlHosts: list.Hosts,
@@ -196,6 +214,67 @@ func farmCredentials(ctx context.Context, a *app.App, id string) (openstackapi.C
 // the separator changes.
 func vaultFarmKey(id string) string {
 	return "vctl-" + strings.ReplaceAll(id, ":", "_")
+}
+
+// collectInstances records the deployment's VMs alongside its membership.
+//
+// Same pass as the reconcile because it is the same conversation with the same
+// control plane, and a separate schedule would mean two credentials, two
+// timers, and two chances for one of them to be the stale one.
+//
+// A failure here does not fail the reconcile. Membership and the VM listing
+// answer different questions, and a deployment that cannot list servers can
+// still say which hosts are its own.
+func collectInstances(ctx context.Context, st *store.Store, id string, c openstackapi.Credentials, insecure bool) {
+	ctx, cancel := context.WithTimeout(ctx, instanceTimeout)
+	defer cancel()
+	client, err := openstackapi.New(ctx, c, insecure, instanceTimeout)
+	if err != nil {
+		ui.Warnf(os.Stderr, "%s: instances: %v", id, err)
+		return
+	}
+	list, err := client.Instances(ctx)
+	if err != nil {
+		// A partial page is still worth storing — a listing that stopped at the
+		// cap has told us about everything it did reach — but say so.
+		ui.Warnf(os.Stderr, "%s: instances: %v", id, err)
+		if len(list) == 0 {
+			return
+		}
+	}
+	rows := make([]store.Instance, 0, len(list))
+	for _, i := range list {
+		rows = append(rows, toStoreInstance(id, i))
+	}
+	n, err := st.ReplaceInstances(ctx, id, rows, time.Now())
+	if err != nil {
+		ui.Warnf(os.Stderr, "%s: instances: %v", id, err)
+		return
+	}
+	ui.Infof(os.Stdout, "%s: %d VMs", id, n)
+}
+
+func toStoreInstance(deployment string, i openstackapi.Instance) store.Instance {
+	out := store.Instance{
+		DeploymentID: deployment, InstanceID: i.ID, ProjectID: i.ProjectID, Name: i.Name,
+		Status: i.Status, PowerState: i.PowerState, TaskState: i.TaskState,
+		AvailabilityZone: i.AvailabilityZone, HypervisorHostname: i.HypervisorHostname,
+		FlavorID: i.FlavorID, ImageID: i.ImageID,
+	}
+	if !i.Created.IsZero() {
+		t := i.Created
+		out.CreatedAt = &t
+	}
+	if !i.Updated.IsZero() {
+		t := i.Updated
+		out.UpdatedAt = &t
+	}
+	for _, a := range i.Addresses {
+		out.Addresses = append(out.Addresses, store.InstanceAddress{
+			NetworkName: a.NetworkName, Address: a.Address, Type: a.Type, IPVersion: a.IPVersion,
+		})
+	}
+	return out
 }
 
 // partialReason names which half of the answer is missing, because the two have
