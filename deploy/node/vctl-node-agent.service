@@ -22,6 +22,11 @@ Environment=VCTL_AUTH_METHOD=approle
 Environment=VCTL_ROLE_ID_FILE=/etc/vctl/role-id
 Environment=VCTL_SECRET_ID_FILE=/etc/vctl/secret-id
 Environment=HOME=/var/lib/vctl
+# Match the Go scheduler to the CPU this unit is actually given. Without it the
+# runtime sizes itself to every core on the host — 96 on the larger machines
+# here — and builds a thread pool for a share of CPU it will never get. Two is
+# already generous against CPUQuota=2%.
+Environment=GOMAXPROCS=2
 ExecStart=/usr/local/bin/vctl node-agent --interval 5m
 Restart=always
 RestartSec=30
@@ -41,6 +46,26 @@ ReadWritePaths=/var/lib/vctl
 CPUQuota=2%
 MemoryHigh=32M
 MemoryMax=48M
+# Deliberately unchanged at 24.
+#
+# On 2026-08-04 the agent hit this and died — not a subprocess, the agent
+# itself:
+#
+#   runtime: failed to create new OS thread (have 25 already; errno=11)
+#   fatal error: newosproc
+#
+# Raising the ceiling was the obvious fix and the wrong one. The ceiling was not
+# the problem: an unpinned Go runtime sizes its thread pool to the host's core
+# count, so the same agent used 5 threads on most machines and 23 on the 72-core
+# ones. GOMAXPROCS above pins it, and those hosts now sit at 5 like everything
+# else — measured before and after, same limit:
+#
+#   without GOMAXPROCS   TasksCurrent=23   (crash loop)
+#   with GOMAXPROCS=2    TasksCurrent=5    (no crashes)
+#
+# So the limit stays where it is. Widening it would have hidden a runtime that
+# was sizing itself for CPU this unit is never given, and left nothing to catch
+# the next thing that leaks threads.
 TasksMax=24
 IOWeight=25
 Nice=10
