@@ -360,6 +360,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure]` | 各デプロイのコントロールプレーンにどのホストが自分のものかを問い合わせ、両者が一致したホストを `confirmed` に昇格する。認証情報は Vault の `kv/teams/sre/vctl-<host_port>` から読む(フィールド: `auth_url`・`username`・`password`、任意で `project_name`・`user_domain`・`project_domain`) |
 | `vctl openstack farm name [deployment] [name]` | デプロイに人が読める名前を付ける。一覧が `172.16.0.10:5000` ではなく `incheon` と表示される。引数を省略すると一覧から選び、フォームで入力する |
 | `vctl openstack farm show [deployment]` | 1 つのファームのアーキテクチャを 1 画面に: ロール別セクション(コントロールプレーン先頭)・リリースドリフト・未確定メンバーシップ。引数を省略すると一覧から選ぶ |
+| `vctl openstack vm [--farm <f>] [--host <h>] [--id <uuid>] [--address <ip>] [--missing]` | デプロイごとの VM と、それぞれが載る物理ホスト。`--host` はインベントリのホスト名、`--id` は Nova UUID または Kubernetes の `providerID`(`openstack:///<uuid>`)、`--address` はその IP を持つ VM を探す |
 | `vctl add [flags]` | `sync` が発見できないホストをインベントリに登録する。フラグなしで実行するとフォームで入力する |
 | `vctl edit [host] [flags]` | `sync` が上書きしないフィールドを変更する — dc・ssh user・踏み台・追加 IP・ホスト名、および `--state active\|maintenance\|broken\|retired`。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
 | `vctl delete [host] [--yes]` | 廃止したホストを削除する。監査履歴は残る。このホストを経由するホストがあれば削除を拒否する。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
