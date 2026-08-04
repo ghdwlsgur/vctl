@@ -68,6 +68,25 @@
     - vctl-openstack-reconcile.timer
   notify: Reload systemd
 
+- name: Ensure the reconciler drop-in dir
+  ansible.builtin.file:
+    path: /etc/systemd/system/vctl-openstack-reconcile.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# --self 는 인벤토리에서 자기를 찾는다. os hostname 은 인벤토리 이름과 다를 수
+# 있고(aio01 vs incheon-aio01), 그러면 어느 팜에도 속하지 않는다며 끝난다.
+- name: Pin the reconciler to the inventory hostname (drop-in)
+  ansible.builtin.template:
+    src: reconcile-hostname.conf.j2
+    dest: /etc/systemd/system/vctl-openstack-reconcile.service.d/10-hostname.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
 # 서비스가 아니라 타이머를 켠다. oneshot 이므로 서비스를 enable 하면 부팅마다 한
 # 번 돌고 마는데, 그건 주기가 아니라 사고다.
 - name: Enable the reconciler timer (only with a secret_id present)

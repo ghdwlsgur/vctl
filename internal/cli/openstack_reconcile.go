@@ -196,17 +196,11 @@ func controlPlaneHosts(ctx context.Context, c openstackapi.Credentials, insecure
 	if err != nil {
 		return nil, err
 	}
-	hs, err := client.Hypervisors(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(hs))
-	for _, h := range hs {
-		if h.Hostname != "" {
-			out = append(out, h.Hostname)
-		}
-	}
-	return out, nil
+	// Hosts, not Hypervisors: a controller runs nova-api and nova-conductor,
+	// not a hypervisor, so asking only for hypervisors left every controller
+	// permanently local-only — the farm confirmed its compute nodes and
+	// disowned the machine running its own Keystone.
+	return client.Hosts(ctx)
 }
 
 // previewReconcile computes what a run would decide, without writing. Same

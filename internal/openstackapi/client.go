@@ -158,10 +158,71 @@ type Hypervisor struct {
 	Status   string `json:"status"`
 }
 
-// Hypervisors asks nova which compute hosts this deployment owns.
+// Hosts asks nova which machines this deployment owns, compute and control
+// plane alike.
 //
-// This is the whole point of the reconciler: it is the only source that can say
-// a host belongs to a deployment rather than merely pointing at its Keystone.
+// os-hypervisors alone was the first implementation and it left every
+// controller permanently local-only: a controller runs nova-api and
+// nova-conductor, not a hypervisor, so it is simply not in that list. The farm
+// then confirmed its compute nodes and disowned the machine running its own
+// Keystone, which reads as a broken inventory rather than as the API's shape.
+//
+// os-services carries every nova service and the host it runs on, which covers
+// the control plane. Both are asked because the two lists genuinely differ: a
+// compute node whose nova-compute is down drops out of os-services but stays a
+// hypervisor.
+func (c *Client) Hosts(ctx context.Context) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	hs, hErr := c.Hypervisors(ctx)
+	for _, h := range hs {
+		add(h.Hostname)
+	}
+	ss, sErr := c.Services(ctx)
+	for _, s := range ss {
+		add(s.Host)
+	}
+	// Only when neither answered. One of the two failing is survivable — some
+	// deployments restrict os-services by policy — but reporting a partial list
+	// as complete would mark hosts control-only that the other call knows about.
+	if hErr != nil && sErr != nil {
+		return nil, hErr
+	}
+	return out, nil
+}
+
+// Service is one nova service as the control plane knows it.
+type Service struct {
+	Host   string `json:"host"`
+	Binary string `json:"binary"`
+	State  string `json:"state"`
+	Status string `json:"status"`
+}
+
+// Services lists nova's services, which is how a controller becomes visible.
+func (c *Client) Services(ctx context.Context) ([]Service, error) {
+	var last error
+	for _, e := range preferInternal(c.computes) {
+		var out struct {
+			Services []Service `json:"services"`
+		}
+		if err := c.getJSON(ctx, e.url+"/os-services", &out); err != nil {
+			last = err
+			continue
+		}
+		return out.Services, nil
+	}
+	return nil, last
+}
+
+// Hypervisors asks nova which compute hosts this deployment owns.
 func (c *Client) Hypervisors(ctx context.Context) ([]Hypervisor, error) {
 	var last error
 	// Internal first: the reconciler runs inside the cluster, and the public
@@ -178,27 +239,33 @@ func (c *Client) Hypervisors(ctx context.Context) ([]Hypervisor, error) {
 }
 
 func (c *Client) hypervisorsFrom(ctx context.Context, base string) ([]Hypervisor, error) {
-	u := base + "/os-hypervisors/detail"
+	var out struct {
+		Hypervisors []Hypervisor `json:"hypervisors"`
+	}
+	if err := c.getJSON(ctx, base+"/os-hypervisors/detail", &out); err != nil {
+		return nil, err
+	}
+	return out.Hypervisors, nil
+}
+
+// getJSON performs one authenticated read.
+func (c *Client) getJSON(ctx context.Context, u string, into any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("X-Auth-Token", c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: %s", hostOf(u), resp.Status)
+		// The host only. A service catalog URL can carry a project id, and
+		// errors end up in the database.
+		return fmt.Errorf("%s: %s", hostOf(u), resp.Status)
 	}
-	var out struct {
-		Hypervisors []Hypervisor `json:"hypervisors"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&out); err != nil {
-		return nil, err
-	}
-	return out.Hypervisors, nil
+	return json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(into)
 }
 
 func preferInternal(eps []endpoint) []endpoint {
