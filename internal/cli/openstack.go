@@ -71,6 +71,7 @@ func openstackCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	cmd.Flags().BoolVar(&all, "all", false, "include hosts a probe examined and found no OpenStack on")
 	cmd.AddCommand(openstackHostCmd())
+	cmd.AddCommand(gate(openstackReconcileCmd(), "openstack-reconcile", classMutate))
 	return cmd
 }
 
