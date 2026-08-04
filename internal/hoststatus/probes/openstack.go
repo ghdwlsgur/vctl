@@ -41,6 +41,9 @@ type OpenStack struct {
 	root string
 	// run executes a command; swapped in tests. Nil means real execution.
 	run func(ctx context.Context, name string, args ...string) ([]byte, error)
+	// listSocket asks a container engine's socket for its containers; swapped
+	// in tests. Nil means the real HTTP-over-unix-socket client.
+	listSocket func(ctx context.Context, socket string) (map[string]containerInfo, error)
 }
 
 // NewOpenStack returns a probe that reads the live host.
@@ -137,11 +140,19 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 
 	roles := map[string]bool{}
 	for _, s := range osServices {
-		active, found := serviceState(systemd, containers, s.name)
+		active, found, image := serviceState(systemd, containers, s.name)
 		if !found {
 			continue
 		}
-		res.Components[s.name] = hoststatus.Component{Active: active, Service: true}
+		comp := hoststatus.Component{Active: active, Service: true}
+		// For a containerised service the deployed image tag is the version:
+		// it is what was actually rolled out, and it is already in the listing.
+		// Asking the container itself would mean `podman exec`, which is the
+		// fork this probe cannot afford — it aborts inside the agent's cgroup.
+		if v := versionFromImage(image); v != "" {
+			comp.Version = v
+		}
+		res.Components[s.name] = comp
 		// Only a running service claims the role. An installed-but-stopped unit
 		// says the host was meant to do this, which is worth reporting as a
 		// component, but it is not doing it now.
@@ -168,10 +179,11 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		}
 	}
 
-	if v := p.novaVersion(ctx); v != "" {
-		c := res.Components["nova-compute"]
-		c.Version = v
-		res.Components["nova-compute"] = c
+	if c, ok := res.Components["nova-compute"]; ok && c.Version == "" {
+		if v := p.novaVersion(ctx); v != "" {
+			c.Version = v
+			res.Components["nova-compute"] = c
+		}
 	}
 
 	res.Roles = sortedKeys(roles)
@@ -205,62 +217,56 @@ func (p *OpenStack) deploymentID() string {
 	return strings.TrimSpace(string(b))
 }
 
-// containerEngines is how to ask each engine for its containers, in order.
+// containerEngines is the CLI fallback, for hosts with no engine socket.
 //
-// The second form for podman exists because of the sandbox this agent runs in.
-// `podman ps` opens the local container store, and opening it takes a write
-// lock at /var/lib/containers/storage/storage.lock — even to list. The unit
-// sets ProtectSystem=strict, so that path is read-only and the command fails:
-//
-//	Error: configure storage: open /var/lib/containers/storage/storage.lock:
-//	read-only file system
-//
-// `--remote` talks to podman.socket instead and writes nothing, which works
-// inside the sandbox unchanged. That is the reason this is a fallback rather
-// than a ReadWritePaths entry: granting a status agent write access to the
-// container store of every OpenStack host is a much larger permission than
-// reading a list of names is worth.
+// The socket is the primary path (see containers.go): a container engine CLI is
+// a large Go program, and this agent's unit is sized for a heartbeat, so
+// running one inside the cgroup aborts it. This stays for hosts where no socket
+// is exposed but a CLI would work — an agent run outside systemd, for instance.
 var containerEngines = []struct {
 	name string
-	args [][]string
+	args []string
 }{
-	{"podman", [][]string{
-		{"ps", "-a", "--format", "{{.Names}} {{.State}}"},
-		{"--remote", "--url", "unix:///run/podman/podman.sock", "ps", "-a", "--format", "{{.Names}} {{.State}}"},
-	}},
-	// The docker CLI is already a thin client over its socket, so it needs no
-	// equivalent.
-	{"docker", [][]string{
-		{"ps", "-a", "--format", "{{.Names}} {{.State}}"},
-	}},
+	{"podman", []string{"ps", "-a", "--format", "{{.Names}} {{.State}}"}},
+	{"docker", []string{"ps", "-a", "--format", "{{.Names}} {{.State}}"}},
 }
 
 // containerIndex lists every container on the host once, so the per-service
-// lookup below is a map read rather than a fork.
+// lookup is a map read rather than a fork.
 //
 // An engine that is not installed is not an error — most of the fleet has
 // none. An engine that is installed and will not answer is, and it must not be
-// allowed to look like a host with nothing on it.
-func (p *OpenStack) containerIndex(ctx context.Context) (map[string]string, error) {
-	index := map[string]string{}
+// allowed to look like a host with nothing on it: that is exactly what reported
+// a full Kolla controller as running no OpenStack.
+func (p *OpenStack) containerIndex(ctx context.Context) (map[string]containerInfo, error) {
+	index := map[string]containerInfo{}
 	var failures []string
-	for _, engine := range containerEngines {
-		var lastErr error
-		var answered bool
-		for _, args := range p.engineOrder(engine.name, engine.args) {
-			out, err := p.exec(ctx, engine.name, args...)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			answered = true
-			addContainers(index, string(out))
-			break
-		}
-		if answered || lastErr == nil || notInstalled(lastErr) {
+	var asked bool
+	for _, s := range containerSockets {
+		if !p.exists(s.path) {
 			continue
 		}
-		failures = append(failures, engine.name+": "+lastErr.Error())
+		asked = true
+		found, err := p.socketList(ctx, s.path)
+		if err != nil {
+			failures = append(failures, s.engine+" socket: "+err.Error())
+			continue
+		}
+		mergeContainers(index, found)
+	}
+	// Only when no socket exists at all. A host that exposes one and refuses is
+	// a failure to report, not a reason to fork the CLI that cannot run here.
+	if !asked {
+		for _, engine := range containerEngines {
+			out, err := p.exec(ctx, engine.name, engine.args...)
+			if err != nil {
+				if !notInstalled(err) {
+					failures = append(failures, engine.name+": "+err.Error())
+				}
+				continue
+			}
+			addContainers(index, string(out))
+		}
 	}
 	if len(failures) > 0 {
 		return nil, fmt.Errorf("could not list containers (%s)", strings.Join(failures, "; "))
@@ -268,25 +274,21 @@ func (p *OpenStack) containerIndex(ctx context.Context) (map[string]string, erro
 	return index, nil
 }
 
-// engineSockets is where an engine's API socket lives, when it has one.
-var engineSockets = map[string]string{"podman": "/run/podman/podman.sock"}
+func (p *OpenStack) socketList(ctx context.Context, socket string) (map[string]containerInfo, error) {
+	if p.listSocket != nil {
+		return p.listSocket(ctx, socket)
+	}
+	return listViaSocket(ctx, socket)
+}
 
-// engineOrder puts the socket form first on hosts that have a socket.
-//
-// Both forms are tried either way, so this only changes which one pays. On a
-// Kolla host the direct call is the one that fails, and failing costs 3.9s
-// under the agent's CPU quota — measured, not assumed. Asking the socket first
-// where a socket exists spends that time only on hosts where it can succeed.
-func (p *OpenStack) engineOrder(engine string, args [][]string) [][]string {
-	sock, ok := engineSockets[engine]
-	if !ok || len(args) < 2 || !p.exists(sock) {
-		return args
+// mergeContainers keeps the first engine's answer for a name, so a host running
+// both does not report one service twice with different states.
+func mergeContainers(index, found map[string]containerInfo) {
+	for name, state := range found {
+		if _, seen := index[name]; !seen {
+			index[name] = state
+		}
 	}
-	out := make([][]string, 0, len(args))
-	for i := len(args) - 1; i >= 0; i-- {
-		out = append(out, args[i])
-	}
-	return out
 }
 
 // notInstalled reports whether the command was simply absent, which is the one
@@ -296,7 +298,7 @@ func notInstalled(err error) bool {
 	return errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist)
 }
 
-func addContainers(index map[string]string, out string) {
+func addContainers(index map[string]containerInfo, out string) {
 	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 2 {
@@ -305,9 +307,25 @@ func addContainers(index map[string]string, out string) {
 		// First engine wins: a host running both should not have the same
 		// service reported twice with different states.
 		if _, seen := index[f[0]]; !seen {
-			index[f[0]] = f[1]
+			index[f[0]] = containerInfo{State: f[1]}
 		}
 	}
+}
+
+// versionFromImage reads the release out of a deployed image tag.
+//
+// Kolla tags are like 2025.1-rocky-9, so this reports the OpenStack release
+// rather than the component's own package version. That is the honest answer
+// for a containerised service: the tag is what was deployed for it.
+func versionFromImage(image string) string {
+	tag := imageTag(image)
+	if tag == "" {
+		return ""
+	}
+	if m := versionRe.FindStringSubmatch(tag); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // systemdIndex asks about every unit in one call.
@@ -356,16 +374,16 @@ func (p *OpenStack) systemdIndex(ctx context.Context, units []string) map[string
 // Kolla is the reason this is not just systemd: in that deployment every
 // OpenStack service is a container and the host has no unit for it at all, so a
 // systemd-only probe would report a full controller as empty.
-func serviceState(units map[string][2]string, containers map[string]string, name string) (active, found bool) {
+func serviceState(units map[string][2]string, containers map[string]containerInfo, name string) (active, found bool, image string) {
 	if v, ok := units[name+".service"]; ok && v[0] != "" && v[0] != "not-found" {
-		return v[1] == "active", true
+		return v[1] == "active", true, ""
 	}
 	for _, cname := range containerNames(name) {
-		if state, ok := containers[cname]; ok {
-			return state == "running", true
+		if c, ok := containers[cname]; ok {
+			return c.State == "running", true, c.Image
 		}
 	}
-	return false, false
+	return false, false, ""
 }
 
 // containerNames is what this service could be called as a container.
@@ -382,22 +400,15 @@ func containerNames(service string) []string {
 	return []string{service}
 }
 
-// novaVersion asks nova-compute what it is. The binary is authoritative about
-// itself in a way a package name is not — a container image or a source install
-// has no package to read.
+// novaVersion asks the nova-compute binary what it is. The binary is
+// authoritative about itself in a way a package name is not.
+//
+// There is no container fallback. It used to run `podman exec nova_compute`,
+// which aborts inside this agent's cgroup and would leave a core dump on every
+// Kolla host every hour. Containerised nova gets its version from the image tag
+// instead, which the listing already carries.
 func (p *OpenStack) novaVersion(ctx context.Context) string {
-	if v := p.commandVersion(ctx, "nova-compute", "--version"); v != "" {
-		return v
-	}
-	for _, engine := range []string{"podman", "docker"} {
-		out, err := p.exec(ctx, engine, "exec", "nova_compute", "nova-compute", "--version")
-		if err == nil {
-			if m := versionRe.FindSubmatch(out); m != nil {
-				return string(m[1])
-			}
-		}
-	}
-	return ""
+	return p.commandVersion(ctx, "nova-compute", "--version")
 }
 
 func (p *OpenStack) commandVersion(ctx context.Context, name string, args ...string) string {
