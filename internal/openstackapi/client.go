@@ -158,6 +158,23 @@ type Hypervisor struct {
 	Status   string `json:"status"`
 }
 
+// HostList is what the control plane said, and how completely it said it.
+//
+// Complete matters more than the names do. A reconcile that treats a partial
+// answer as the whole truth demotes confirmed hosts to local-only on the
+// strength of an endpoint that happened to be refused — the inventory then
+// reports a change in the deployment when what changed was one API call.
+type HostList struct {
+	Hosts []string `json:"hosts"`
+
+	// Complete is true only when both endpoints answered. Callers that write
+	// membership must refuse to demote anything when it is false.
+	Complete bool `json:"complete"`
+
+	HypervisorError string `json:"hypervisor_error,omitempty"`
+	ServiceError    string `json:"service_error,omitempty"`
+}
+
 // Hosts asks nova which machines this deployment owns, compute and control
 // plane alike.
 //
@@ -171,15 +188,15 @@ type Hypervisor struct {
 // the control plane. Both are asked because the two lists genuinely differ: a
 // compute node whose nova-compute is down drops out of os-services but stays a
 // hypervisor.
-func (c *Client) Hosts(ctx context.Context) ([]string, error) {
+func (c *Client) Hosts(ctx context.Context) (HostList, error) {
 	seen := map[string]bool{}
-	var out []string
+	var out HostList
 	add := func(name string) {
 		if name == "" || seen[name] {
 			return
 		}
 		seen[name] = true
-		out = append(out, name)
+		out.Hosts = append(out.Hosts, name)
 	}
 	hs, hErr := c.Hypervisors(ctx)
 	for _, h := range hs {
@@ -189,11 +206,21 @@ func (c *Client) Hosts(ctx context.Context) ([]string, error) {
 	for _, s := range ss {
 		add(s.Host)
 	}
-	// Only when neither answered. One of the two failing is survivable — some
-	// deployments restrict os-services by policy — but reporting a partial list
-	// as complete would mark hosts control-only that the other call knows about.
+	if hErr != nil {
+		out.HypervisorError = hErr.Error()
+	}
+	if sErr != nil {
+		out.ServiceError = sErr.Error()
+	}
+	out.Complete = hErr == nil && sErr == nil
+
+	// Only when neither answered is there nothing to report at all. One of the
+	// two failing still yields a usable list — some deployments restrict
+	// os-services by policy — but it is explicitly marked incomplete, because
+	// os-services missing hides controllers and os-hypervisors missing hides
+	// compute nodes whose nova-compute is down.
 	if hErr != nil && sErr != nil {
-		return nil, hErr
+		return out, hErr
 	}
 	return out, nil
 }

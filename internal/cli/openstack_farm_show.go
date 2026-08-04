@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -95,6 +96,10 @@ type farmView struct {
 type farmSection struct {
 	Role  string       `json:"role"`
 	Hosts []farmMember `json:"hosts"`
+	// Down is how many of them have no running service behind the role. The
+	// section keeps its full size — the deployment did not shrink — and this
+	// says what is not working in it.
+	Down int `json:"down,omitempty"`
 }
 
 type farmMember struct {
@@ -103,6 +108,8 @@ type farmMember struct {
 	// Roles is how many roles the host holds in total — the signal that a
 	// "controller" is really an all-in-one.
 	Roles int `json:"roles"`
+	// Down marks a host holding this role with nothing running behind it.
+	Down bool `json:"down,omitempty"`
 	// AlsoIn is the earlier section this host already appeared under. Repeating
 	// its release and role count there too would render the same facts twice
 	// and make an all-in-one deployment read as twice its size.
@@ -145,6 +152,10 @@ func buildFarmView(pick farmChoice, all []store.OpenStackHost) farmView {
 		sec := farmSection{Role: role}
 		for _, h := range hs {
 			m := farmMember{Hostname: h.Hostname, Release: releaseOf(h), Roles: len(h.Roles)}
+			if !slices.Contains(h.ActiveRoles, role) {
+				m.Down = true
+				sec.Down++
+			}
 			if prev, seen := firstSeen[h.Hostname]; seen {
 				m.AlsoIn = prev
 			} else {
@@ -226,12 +237,15 @@ func renderFarmShow(w io.Writer, v farmView) {
 		// facts, only the role's membership. One line says that; a tree of
 		// "also controller" seven sections long buried the two sections that
 		// actually said something.
+		count := fmt.Sprintf("(%d)", len(sec.Hosts))
+		if sec.Down > 0 {
+			count += " " + ui.Warn(fmt.Sprintf("%d down", sec.Down))
+		}
 		if repeats := allRepeats(sec); repeats != "" {
-			fmt.Fprintf(w, "\n  %s %s  %s\n", ui.Value(sec.Role),
-				ui.Muted(fmt.Sprintf("(%d)", len(sec.Hosts))), ui.Muted(repeats))
+			fmt.Fprintf(w, "\n  %s %s  %s\n", ui.Value(sec.Role), ui.Muted(count), ui.Muted(repeats))
 			continue
 		}
-		fmt.Fprintf(w, "\n  %s %s\n", ui.Value(sec.Role), ui.Muted(fmt.Sprintf("(%d)", len(sec.Hosts))))
+		fmt.Fprintf(w, "\n  %s %s\n", ui.Value(sec.Role), ui.Muted(count))
 		for i, m := range sec.Hosts {
 			branch := "├─"
 			if i == len(sec.Hosts)-1 {
@@ -240,6 +254,9 @@ func renderFarmShow(w io.Writer, v farmView) {
 			detail := ui.Muted("also " + m.AlsoIn)
 			if m.AlsoIn == "" {
 				detail = fmt.Sprintf("%-10s %s", m.Release, ui.Muted(roleCount(m.Roles)))
+			}
+			if m.Down {
+				detail += "  " + ui.Warn("down")
 			}
 			fmt.Fprintf(w, "  %s %s  %s\n", ui.Muted(branch), ui.PadRight(m.Hostname, 18), detail)
 		}

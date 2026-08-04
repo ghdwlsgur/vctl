@@ -11,6 +11,7 @@ import (
 func showFixture() []store.OpenStackHost {
 	mk := func(name string, roles []string, release string, conf string) store.OpenStackHost {
 		h := osHost(name, "172.16.0.10:5000", roles...)
+		h.ActiveRoles = roles
 		h.Confidence = conf
 		if release != "" {
 			h.Components = map[string]store.CapabilityComponent{
@@ -167,5 +168,55 @@ func TestFarmShowCollapsesAllRepeatSections(t *testing.T) {
 	// compute introduces gpu-01, so it stays a tree.
 	if !strings.Contains(out, "└─ gpu-01") && !strings.Contains(out, "├─ gpu-01") {
 		t.Errorf("compute lost its tree:\n%s", out)
+	}
+}
+
+// A compute node whose nova-compute is down is still a compute node. The
+// section keeps its size — the deployment did not shrink — and the outage is
+// marked on the host and counted in the heading.
+func TestFarmShowKeepsTheRoleAndMarksTheOutage(t *testing.T) {
+	hosts := showFixture()
+	for i := range hosts {
+		if hosts[i].Hostname == "gpu-01" {
+			hosts[i].ActiveRoles = nil // deployed compute, nothing running
+		}
+	}
+	v := buildFarmView(showPick(), hosts)
+
+	var compute *farmSection
+	for i := range v.Sections {
+		if v.Sections[i].Role == "compute" {
+			compute = &v.Sections[i]
+		}
+	}
+	if compute == nil {
+		t.Fatal("no compute section")
+	}
+	if len(compute.Hosts) != 3 {
+		t.Errorf("compute has %d hosts, want 3 — a down node is still a compute node", len(compute.Hosts))
+	}
+	if compute.Down != 1 {
+		t.Errorf("down = %d, want 1", compute.Down)
+	}
+
+	var buf bytes.Buffer
+	renderFarmShow(&buf, v)
+	out := buf.String()
+	if !strings.Contains(out, "1 down") {
+		t.Errorf("the heading does not count the outage:\n%s", out)
+	}
+	if !strings.Contains(out, "down") {
+		t.Errorf("the host is not marked:\n%s", out)
+	}
+}
+
+// With everything up nothing is marked, so the marking means something.
+func TestFarmShowMarksNothingWhenEverythingIsUp(t *testing.T) {
+	v := buildFarmView(showPick(), showFixture())
+
+	for _, sec := range v.Sections {
+		if sec.Down != 0 {
+			t.Errorf("%s down = %d, want 0", sec.Role, sec.Down)
+		}
 	}
 }

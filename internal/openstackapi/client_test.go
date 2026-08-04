@@ -81,20 +81,20 @@ func TestHostsIncludesTheControlPlane(t *testing.T) {
 		hypervisors: []string{"compute-01", "compute-02"},
 		services:    []string{"controller-01", "compute-01"},
 	}
-	got, err := f.client(t).Hosts(context.Background())
+	list, err := f.client(t).Hosts(context.Background())
 	if err != nil {
 		t.Fatalf("Hosts: %v", err)
 	}
 
 	for _, want := range []string{"compute-01", "compute-02", "controller-01"} {
-		if !slices.Contains(got, want) {
-			t.Errorf("hosts = %v, missing %s", got, want)
+		if !slices.Contains(list.Hosts, want) {
+			t.Errorf("hosts = %v, missing %s", list.Hosts, want)
 		}
 	}
 	// compute-01 is in both lists and must appear once, or the caller counts it
 	// twice.
 	var n int
-	for _, h := range got {
+	for _, h := range list.Hosts {
 		if h == "compute-01" {
 			n++
 		}
@@ -110,12 +110,12 @@ func TestHostsIncludesTheControlPlane(t *testing.T) {
 func TestHostsKeepsAHypervisorMissingFromServices(t *testing.T) {
 	f := &fakeCloud{hypervisors: []string{"compute-down"}, services: []string{"controller-01"}}
 
-	got, err := f.client(t).Hosts(context.Background())
+	list, err := f.client(t).Hosts(context.Background())
 	if err != nil {
 		t.Fatalf("Hosts: %v", err)
 	}
-	if !slices.Contains(got, "compute-down") {
-		t.Errorf("hosts = %v, lost the hypervisor that has no live service", got)
+	if !slices.Contains(list.Hosts, "compute-down") {
+		t.Errorf("hosts = %v, lost the hypervisor that has no live service", list.Hosts)
 	}
 }
 
@@ -127,12 +127,12 @@ func TestHostsSurvivesOneEndpointBeingRefused(t *testing.T) {
 		hypervisors: []string{"compute-01"},
 		fail:        map[string]bool{"services": true},
 	}
-	got, err := f.client(t).Hosts(context.Background())
+	list, err := f.client(t).Hosts(context.Background())
 	if err != nil {
 		t.Fatalf("Hosts: %v", err)
 	}
-	if !slices.Contains(got, "compute-01") {
-		t.Errorf("hosts = %v, want the endpoint that did answer", got)
+	if !slices.Contains(list.Hosts, "compute-01") {
+		t.Errorf("hosts = %v, want the endpoint that did answer", list.Hosts)
 	}
 }
 
@@ -143,5 +143,37 @@ func TestHostsFailsWhenNeitherEndpointAnswers(t *testing.T) {
 
 	if _, err := f.client(t).Hosts(context.Background()); err == nil {
 		t.Fatal("both endpoints refused and the deployment was reported as empty")
+	}
+}
+
+// A partial answer must announce itself. Treating it as the whole truth demotes
+// confirmed hosts on the strength of an endpoint that happened to be refused —
+// the inventory then reports a change in the deployment when what changed was
+// one API call.
+func TestHostsMarksAPartialAnswerAndNamesWhichHalf(t *testing.T) {
+	f := &fakeCloud{hypervisors: []string{"compute-01"}, fail: map[string]bool{"services": true}}
+
+	list, err := f.client(t).Hosts(context.Background())
+	if err != nil {
+		t.Fatalf("Hosts: %v", err)
+	}
+	if list.Complete {
+		t.Error("a refused os-services was reported as a complete answer")
+	}
+	if list.ServiceError == "" {
+		t.Error("the failing endpoint was not named")
+	}
+	if list.HypervisorError != "" {
+		t.Errorf("hypervisor_error = %q, but that endpoint answered", list.HypervisorError)
+	}
+}
+
+// Both answering is the only complete case.
+func TestHostsIsCompleteOnlyWhenBothAnswer(t *testing.T) {
+	f := &fakeCloud{hypervisors: []string{"compute-01"}, services: []string{"controller-01"}}
+
+	list, err := f.client(t).Hosts(context.Background())
+	if err != nil || !list.Complete {
+		t.Errorf("complete = %v, err = %v; both endpoints answered", list.Complete, err)
 	}
 }
