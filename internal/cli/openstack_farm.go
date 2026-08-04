@@ -21,6 +21,7 @@ func openstackFarmCmd() *cobra.Command {
 		Short: "Name the deployments so the listing reads as something other than endpoints",
 	}
 	cmd.AddCommand(openstackFarmNameCmd())
+	cmd.AddCommand(openstackFarmShowCmd())
 	return cmd
 }
 
