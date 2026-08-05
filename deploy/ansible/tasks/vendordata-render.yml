@@ -16,6 +16,8 @@
     argv: [vault, read, "-field=public_key", "{{ vendordata_vault_ssh_mount }}/config/ca"]
   register: vendordata_vault_ca
   changed_when: false
+  # Reading is not a change, and --check has to read or it cannot render.
+  check_mode: false
 
 - name: Read the CA public key from the operator-supplied file
   # For a control node without Vault access. An override, not a fallback: a
@@ -27,6 +29,7 @@
   ansible.builtin.slurp:
     src: "{{ vendordata_ca_pub_file }}"
   register: vendordata_slurped_ca
+  check_mode: false
 
 - name: Settle on one CA public key
   ansible.builtin.set_fact:

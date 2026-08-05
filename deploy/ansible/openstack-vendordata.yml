@@ -125,6 +125,14 @@
     state: present
     vendordata_ca_pub_file: ""
     vendordata_vault_ssh_mount: ssh
+    # Service directories to write even though their config.json does not name
+    # the file yet. This is how a farm is onboarded without a window: genconfig
+    # is what makes nova-metadata declare the mount, and between that moment and
+    # the next run of this play the deployed config names a file that is not
+    # there — a restart in that gap leaves the container unable to start. Pre-
+    # placing closes the gap, and genconfig never touches the file itself.
+    #   -e '{"vendordata_extra_dirs":["/etc/kolla/nova-metadata"]}'
+    vendordata_extra_dirs: []
   pre_tasks:
     - name: Render the vendordata document
       when: state == 'present'
@@ -143,6 +151,8 @@
       register: vendordata_declared
       changed_when: false
       failed_when: false
+      # Discovery, not a change. --check needs the answer to say anything useful.
+      check_mode: false
 
     - name: Report services that still need a genconfig
       when:
@@ -152,8 +162,12 @@
         msg: >-
           nova-metadata on {{ inventory_hostname }} does not declare the
           vendordata mount yet, so it is still serving an empty vendor_data.json.
-          Run `kolla-ansible genconfig -t nova --limit {{ inventory_hostname }}`
-          on the deploy host, then re-run this play.
+          Re-run this play with
+          -e '{"vendordata_extra_dirs":["/etc/kolla/nova-metadata"]}' to place the
+          file first, then `kolla-ansible genconfig -t nova --limit
+          {{ inventory_hostname }}` on the deploy host, then restart
+          nova_metadata. In that order there is no moment when the deployed
+          config names a file that is not there.
 
     - name: Install the vendordata into each declaring service directory
       # Matching Kolla's own mode and owner for this file (0660 root:root) so a
@@ -165,7 +179,7 @@
         owner: root
         group: root
         mode: "0660"
-      loop: "{{ vendordata_declared.stdout_lines | default([]) }}"
+      loop: "{{ (vendordata_declared.stdout_lines | default([])) | union(vendordata_extra_dirs) }}"
       notify: Restart nova metadata
 
     - name: Remove deployed copies that are no longer declared (rollback)
@@ -191,6 +205,7 @@
         executable: /bin/bash
       register: vendordata_cli
       changed_when: false
+      check_mode: false
 
     - name: Verify the metadata service can actually read the vendordata
       # The check that the original change lacked. A non-empty file at the path

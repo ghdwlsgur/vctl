@@ -50,11 +50,31 @@ unable to start. This play places the file in every Nova service directory whose
 `config.json` declares it, and refuses to remove one while a `config.json` still
 does.
 
-Order for a farm that has never had this: run the play (writes the source of
-truth), review `kolla-ansible genconfig -t nova --limit <host>` against the
-backup, apply it, then re-run the play so the nova-metadata copy lands and the
-container is restarted. The play verifies that `nova_metadata` can actually read
-the file and says so when it cannot.
+Order for a farm that has never had this, and the order matters:
+
+```bash
+# 1. source of truth + the file placed where genconfig is about to declare it
+ansible-playbook -i inventory/hosts.ini openstack-vendordata.yml -l lab_a \
+    -e '{"vendordata_extra_dirs":["/etc/kolla/nova-metadata"]}'
+
+# 2. back up, regenerate, diff before believing it
+#    (genconfig rewrites config, it does not restart containers)
+kolla-ansible genconfig -t nova --limit <host>
+
+# 3. restart nova_metadata (stop then start), then verify
+```
+
+Placing the file first is what makes this safe. `genconfig` is the step that
+makes `nova-metadata` declare the mount, and it never writes the file itself —
+so doing it the other way round leaves a window where the deployed `config.json`
+names a file that is not there, and any restart in that window leaves the
+container unable to start. The play verifies that `nova_metadata` can actually
+read the file, and says so when it cannot.
+
+One thing to expect at step 2 on a farm that has drifted: `genconfig` regenerates
+*everything* for the services it touches, not just the vendordata. If a service's
+config is months old, that whole diff lands at once. Back up the service
+directory and read the diff before restarting anything.
 
 ## Prerequisites
 
