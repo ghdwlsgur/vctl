@@ -19,28 +19,36 @@
 #
 # Why this is not just "drop a file in node_custom_config"
 # --------------------------------------------------------
-# nova-metadata, not nova-api, is what answers a VM asking 169.254.169.254 for
-# vendor_data.json: the neutron metadata agent proxies to port 8775, which is the
-# nova_metadata container. Measured on a farm where the file had been in place for
-# a month — vendor_data.json returned {} while meta_data.json returned real data
-# for the same signed request. The config was on the service that does not answer
-# and nothing reported it.
+# A VM asking 169.254.169.254 for vendor_data.json is proxied by the neutron
+# metadata agent to port 8775. WHICH service holds that port is not the same on
+# every farm, and putting the config on the other one looks like it worked:
+# measured on a farm where the file had been in place for a month,
+# vendor_data.json returned {} while meta_data.json returned real data for the
+# same signed request, and nothing reported it.
 #
-# Getting the file to nova-metadata depends on the kolla-ansible version doing the
-# deploy, and the versions disagree (measured, not read from release notes):
+# So the play derives the answering service instead of assuming it, and where the
+# file has to land depends on the kolla-ansible version doing the deploy. All of
+# the below is measured on the deploy hosts here, not read from release notes:
 #
-#   18.8.0 (2024.1)   nova_services has no nova-metadata at all. A reconfigure
-#                     run from here leaves that directory untouched — which is
-#                     exactly how one farm ended up with a nova-api config from
-#                     July and a nova-metadata config from June.
-#   20.2.0            copies the file to nova-api only (dest hardcoded), while
-#                     nova-metadata.json.j2 declares a mount for it that is NOT
-#                     marked optional. kolla_set_configs raises
+#   17.3.1, 18.1.0,   No nova-metadata in nova_services at all. nova-api serves
+#   18.8.0            both APIs — one apache vhost on 8774, another on 8775 — and
+#                     kolla copies the vendordata file to nova-api. Copy target
+#                     and answering service agree, so nothing special is needed.
+#                     Restarting it takes the compute API with it, though.
+#   20.2.0            nova-metadata is its own service and answers 8775, but the
+#                     copy destination is still hardcoded to nova-api, while
+#                     nova-metadata.json.j2 declares a mount for the file that is
+#                     NOT marked optional. kolla_set_configs raises
 #                     MissingRequiredSource on a non-optional missing source, so
 #                     once the file exists in node_custom_config a plain
 #                     reconfigure leaves nova_metadata unable to start.
 #   20.4.0            fixed upstream: the copy loops over nova-metadata and
 #                     nova-api. Nothing here is needed for the copy itself.
+#
+# One farm also had a 2024.1 venv sitting next to a 2025.1 one and reconfigured
+# from the older: 18.8.0 does not know nova-metadata exists, so that directory
+# sat a month behind nova-api's with nobody noticing. Check which venv the last
+# run used before assuming a farm's config is current.
 #
 # So this play places the file in every Nova service directory whose config.json
 # declares it, and refuses to remove it while a config.json still does. On 20.4.0
@@ -108,8 +116,9 @@
           Source of truth updated. Nova will not pick it up until its config is
           regenerated. Review first, then apply:
           `kolla-ansible genconfig -t nova --limit {{ inventory_hostname }}`
-          (diff the result against the backup before deploying), then re-run this
-          play so the nova-metadata copy lands, then restart nova_metadata.
+          (diff the result against a backup before deploying), then re-run this
+          play so the deployed copies land, then restart the service that answers
+          metadata — the second play names it for this farm.
 
     # --- rollback ---
     - name: Remove the vendordata source of truth (rollback)
@@ -126,9 +135,9 @@
       ansible.builtin.debug:
         msg: >-
           Source of truth removed. The deployed config.json files still declare
-          the mount, so nova_metadata will fail to start if restarted now. Run
-          `kolla-ansible genconfig -t nova` to drop the mount, then re-run this
-          play with state=absent to clear the deployed copies.
+          the mount, so the metadata service will fail to start if restarted now.
+          Run `kolla-ansible genconfig -t nova` to drop the mount, then re-run
+          this play with state=absent to clear the deployed copies.
 
 - name: Place the vendordata where Kolla declares it but does not copy it
   hosts: openstack_control
@@ -140,15 +149,18 @@
     vendordata_vault_ssh_mount: ssh
     # Service directories to write even though their config.json does not name
     # the file yet. This is how a farm is onboarded without a window: genconfig
-    # is what makes nova-metadata declare the mount, and between that moment and
+    # is what makes the service declare the mount, and between that moment and
     # the next run of this play the deployed config names a file that is not
     # there — a restart in that gap leaves the container unable to start. Pre-
-    # placing closes the gap, and genconfig never touches the file itself.
+    # placing closes the gap, and genconfig never touches the file itself. The
+    # play prints the right directory for this farm.
     #   -e '{"vendordata_extra_dirs":["/etc/kolla/nova-metadata"]}'
     vendordata_extra_dirs: []
-    # Restarting nova_metadata is what makes a new file take effect, and it is
-    # also a brief metadata outage. Set false to stage the file now and restart
-    # in a window — the common shape of this work on a live farm.
+    # Restarting the metadata service is what makes a new file take effect. How
+    # expensive that is depends on the farm: where nova-metadata is its own
+    # service it is a brief metadata blip, but on releases that serve metadata
+    # from nova-api it takes the compute API with it. Set false to stage now and
+    # restart in a window — the common shape of this work on a live farm.
     vendordata_restart: true
   pre_tasks:
     - name: Render the vendordata document
@@ -171,20 +183,50 @@
       # Discovery, not a change. --check needs the answer to say anything useful.
       check_mode: false
 
-    - name: Report services that still need a genconfig
+    - name: Find which Nova services this host actually deploys
+      ansible.builtin.find:
+        paths: /etc/kolla
+        patterns: "nova-*"
+        file_type: directory
+      register: vendordata_nova_dirs
+      changed_when: false
+      check_mode: false
+
+    - name: Name the service that answers instance metadata here
+      # Not always nova-metadata. Releases before the api/metadata split serve
+      # both from nova-api — one apache config with a vhost on 8774 and another
+      # on 8775 — and on those farms nova-metadata does not exist at all.
+      # Measured: 17.3.1, 18.1.0 and 18.8.0 have no nova-metadata in
+      # nova_services; 20.2.0 and 20.4.0 do. Guessing wrong here is the whole
+      # bug this play exists to fix, so it is derived, never assumed.
+      ansible.builtin.set_fact:
+        vendordata_metadata_dir: >-
+          {{ '/etc/kolla/nova-metadata'
+             if '/etc/kolla/nova-metadata' in (vendordata_nova_dirs.files | map(attribute='path') | list)
+             else '/etc/kolla/nova-api' }}
+
+    - name: Name the container that serves it
+      ansible.builtin.set_fact:
+        # Kolla names containers with underscores where the config directory uses
+        # hyphens: nova-metadata -> nova_metadata.
+        vendordata_metadata_container: "{{ vendordata_metadata_dir | basename | replace('-', '_') }}"
+
+    - name: Report that metadata is still served without vendordata
       when:
         - state == 'present'
-        - "'/etc/kolla/nova-metadata' not in (vendordata_declared.stdout_lines | default([]))"
+        - vendordata_metadata_dir not in (vendordata_declared.stdout_lines | default([]))
       ansible.builtin.debug:
         msg: >-
-          nova-metadata on {{ inventory_hostname }} does not declare the
-          vendordata mount yet, so it is still serving an empty vendor_data.json.
-          Re-run this play with
-          -e '{"vendordata_extra_dirs":["/etc/kolla/nova-metadata"]}' to place the
-          file first, then `kolla-ansible genconfig -t nova --limit
-          {{ inventory_hostname }}` on the deploy host, then restart
-          nova_metadata. In that order there is no moment when the deployed
-          config names a file that is not there.
+          {{ vendordata_metadata_container }} on {{ inventory_hostname }} is what
+          answers instance metadata here, and it does not declare the vendordata
+          mount yet — so vendor_data.json is still {}. Place the file first with
+          -e '{"vendordata_extra_dirs":["{{ vendordata_metadata_dir }}"]}', then
+          `kolla-ansible genconfig -t nova --limit {{ inventory_hostname }}` on the
+          deploy host, then restart {{ vendordata_metadata_container }}. In that
+          order there is no moment when the deployed config names a file that is
+          not there.
+          {{ 'Note: this container also serves the compute API, so restarting it
+          is more than a metadata blip.' if vendordata_metadata_container == 'nova_api' else '' }}
 
     - name: Install the vendordata into each declaring service directory
       # Matching Kolla's own mode and owner for this file (0660 root:root) so a
@@ -197,7 +239,7 @@
         group: root
         mode: "0660"
       loop: "{{ (vendordata_declared.stdout_lines | default([])) | union(vendordata_extra_dirs) }}"
-      notify: Restart nova metadata
+      notify: Restart the metadata service
 
     - name: Remove deployed copies that are no longer declared (rollback)
       # Only where the declaration is already gone. Removing a file a config.json
@@ -210,7 +252,7 @@
       loop: >-
         {{ ['/etc/kolla/nova-api', '/etc/kolla/nova-metadata', '/etc/kolla/nova-compute']
            | difference(vendordata_declared.stdout_lines | default([])) }}
-      notify: Restart nova metadata
+      notify: Restart the metadata service
 
   post_tasks:
     - name: Detect the container engine
@@ -231,9 +273,15 @@
       when:
         - state == 'present'
         - vendordata_cli.stdout != 'none'
-        - "'/etc/kolla/nova-metadata' in (vendordata_declared.stdout_lines | default([]))"
+        - vendordata_metadata_dir in (vendordata_declared.stdout_lines | default([]))
       ansible.builtin.command:
-        argv: ["{{ vendordata_cli.stdout }}", exec, nova_metadata, test, -s, /etc/nova/vendordata.json]
+        argv:
+          - "{{ vendordata_cli.stdout }}"
+          - exec
+          - "{{ vendordata_metadata_container }}"
+          - test
+          - "-s"
+          - /etc/nova/vendordata.json"
       register: vendordata_readable
       changed_when: false
       failed_when: false
@@ -246,12 +294,12 @@
         - vendordata_readable.rc != 0
       ansible.builtin.debug:
         msg: >-
-          nova_metadata on {{ inventory_hostname }} cannot read
+          {{ vendordata_metadata_container }} on {{ inventory_hostname }} cannot read
           /etc/nova/vendordata.json. The container has not picked up the new
           config yet — restart it (stop then start, not restart) and re-run.
 
   handlers:
-    - name: Restart nova metadata
+    - name: Restart the metadata service
       # stop then start, never restart: repeated podman restart degrades the
       # engine's responsiveness badly enough to look like a host fault.
       when: vendordata_restart | bool
@@ -259,9 +307,10 @@
         set -e -o pipefail
         CLI=$(command -v podman || command -v docker || true)
         [ -n "$CLI" ] || { echo "no container engine"; exit 0; }
-        "$CLI" ps -a --format '{{ "{{.Names}}" }}' | grep -qx nova_metadata || exit 0
-        "$CLI" stop nova_metadata
-        "$CLI" start nova_metadata
+        C={{ vendordata_metadata_container }}
+        "$CLI" ps -a --format '{{ "{{.Names}}" }}' | grep -qx "$C" || exit 0
+        "$CLI" stop "$C"
+        "$CLI" start "$C"
       args:
         executable: /bin/bash
       changed_when: true

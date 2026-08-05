@@ -33,28 +33,36 @@ ansible-playbook -i inventory/hosts.ini openstack-vendordata.yml \
 
 Two things about this are not obvious, and both have bitten already.
 
-**nova-metadata answers the VM, not nova-api.** A VM asking 169.254.169.254 is
-proxied by the neutron metadata agent to port 8775, which is `nova_metadata`.
-Putting `vendordata_providers` in a `nova-api.conf` override configures the
-service that does *not* answer. Measured on a farm where that had been in place
-for a month: `vendor_data.json` returned `{}` while `meta_data.json` returned
-real data for the same signed request, so nothing looked broken.
+**Which service answers the VM is not the same on every farm.** A VM asking
+169.254.169.254 is proxied by the neutron metadata agent to port 8775. On newer
+releases that port belongs to `nova_metadata`; on older ones there is no such
+service and `nova_api` serves both APIs from one apache config, a vhost on 8774
+and another on 8775. Configuring the wrong one looks like it worked — measured on
+a farm where a `nova-api.conf` override had been in place for a month,
+`vendor_data.json` returned `{}` while `meta_data.json` returned real data for the
+same signed request. The play derives the answering service rather than assuming
+it, and prints which one it picked.
 
 **Whether the file reaches nova-metadata depends on the kolla-ansible version.**
 Measured across the deploy hosts here, not read from release notes:
 
-| kolla-ansible | What it does with the vendordata file |
-|---|---|
-| 18.8.0 (2024.1) | `nova_services` has no `nova-metadata` entry at all. A reconfigure run from here leaves that directory untouched. |
-| 20.2.0 | Copies to `nova-api` only (destination hardcoded), while `nova-metadata.json.j2` declares a mount for it that is **not** marked optional. |
-| 20.4.0 | Fixed upstream — the copy loops over `nova-metadata` and `nova-api`. |
+| kolla-ansible | nova-metadata a service? | Where the file is copied | Net effect |
+|---|---|---|---|
+| 17.3.1, 18.1.0, 18.8.0 | no — `nova_api` serves 8775 | `nova-api` | copy target and answering service agree; nothing special needed |
+| 20.2.0 | yes | `nova-api` only (hardcoded) | **trap** — see below |
+| 20.4.0 | yes | loops `nova-metadata`, `nova-api` | fixed upstream |
 
-On 20.2.0 that combination is a trap: `kolla_set_configs` raises
-`MissingRequiredSource` on a non-optional missing source, so once the file exists
+On 20.2.0 that combination is a trap: `nova-metadata.json.j2` declares a mount
+for the file that is **not** marked optional, and `kolla_set_configs` raises
+`MissingRequiredSource` on a non-optional missing source. So once the file exists
 in `node_custom_config`, a plain reconfigure leaves `nova_metadata` unable to
 start. This play places the file in every Nova service directory whose
 `config.json` declares it, and refuses to remove one while a `config.json` still
 does — a no-op on 20.4.0, and the difference between working and not on 20.2.0.
+
+On the releases with no separate `nova-metadata`, the catch is different: the
+restart that makes the file take effect is a restart of `nova_api`, which is the
+compute API too. Stage with `vendordata_restart=false` and restart in a window.
 
 A deploy host can have more than one kolla-ansible venv. Check which one the last
 run used before assuming: one farm here reconfigured 2025.1 containers from a
