@@ -1,10 +1,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -55,25 +56,15 @@ func openstackFarmShowCmd() *cobra.Command {
 					}
 					pick = farms[i]
 				}
-				hosts, err := st.OpenStackHosts(ctx)
+				now := time.Now()
+				a, err := collectAssessment(ctx, st, pick, now)
 				if err != nil {
-					return err
-				}
-				view := buildFarmView(pick, hosts)
-				runs, err := st.ReconcileRuns(ctx)
-				if err != nil {
-					return err
-				}
-				if r, ok := runs[pick.ID]; ok {
-					view.Reconcile = &r
-				}
-				if view.Ghosts, err = st.ControlHosts(ctx, pick.ID); err != nil {
 					return err
 				}
 				if asJSON {
-					return writeJSON(view)
+					return writeJSON(a)
 				}
-				renderFarmShow(os.Stdout, view, time.Now())
+				renderFarmShow(os.Stdout, a, now)
 				return nil
 			})
 		},
@@ -82,185 +73,81 @@ func openstackFarmShowCmd() *cobra.Command {
 	return cmd
 }
 
-// farmView is one deployment reshaped from per-host rows into an architecture:
-// role sections a reader walks top-down, instead of nine comma-separated roles
-// repeated across seven lines.
-type farmView struct {
-	ID     string `json:"id"`
-	Name   string `json:"name,omitempty"`
-	Region string `json:"region,omitempty"`
+// farmStaleWindow is how old a successful reconcile may be before this view
+// says so. The timer runs every six hours, so two missed runs.
+const farmStaleWindow = 13 * time.Hour
 
-	Confirmed int `json:"confirmed"`
-	Total     int `json:"total"`
-
-	Sections []farmSection `json:"sections,omitempty"`
-
-	// Releases counts hosts per release string, so drift is one line rather
-	// than something the reader assembles by scanning a column.
-	Releases map[string]int `json:"releases,omitempty"`
-
-	// Unsettled are hosts whose membership rests on something weaker than
-	// confirmation, each with the confidence that says why.
-	Unsettled []string `json:"unsettled,omitempty"`
-
-	// Reconcile is the state of the last run against this deployment. Without
-	// it "local-only" is unreadable: it could mean the control plane disagreed
-	// an hour ago or that nothing has asked in three weeks, and those call for
-	// opposite responses.
-	Reconcile *store.ReconcileRun `json:"reconcile,omitempty"`
-
-	// Ghosts are machines nova names that no inventory entry matched.
-	Ghosts []store.ControlHost `json:"ghosts,omitempty"`
-}
-
-type farmSection struct {
-	Role  string       `json:"role"`
-	Hosts []farmMember `json:"hosts"`
-	// Down is how many of them have no running service behind the role. The
-	// section keeps its full size — the deployment did not shrink — and this
-	// says what is not working in it.
-	Down int `json:"down,omitempty"`
-}
-
-type farmMember struct {
-	Hostname string `json:"hostname"`
-	Release  string `json:"release,omitempty"`
-	// Roles is how many roles the host holds in total — the signal that a
-	// "controller" is really an all-in-one.
-	Roles int `json:"roles"`
-	// Down marks a host holding this role with nothing running behind it.
-	Down bool `json:"down,omitempty"`
-	// AlsoIn is the earlier section this host already appeared under. Repeating
-	// its release and role count there too would render the same facts twice
-	// and make an all-in-one deployment read as twice its size.
-	AlsoIn string `json:"also_in,omitempty"`
-}
-
-// roleOrder walks the architecture the way someone reasons about it: the
-// control plane first, then what it controls, then the services around them.
-// Roles outside this list follow alphabetically.
-var roleOrder = []string{"controller", "compute", "network", "block-storage", "image", "identity", "dashboard", "orchestration", "load-balancer"}
-
-func buildFarmView(pick farmChoice, all []store.OpenStackHost) farmView {
-	v := farmView{ID: pick.ID, Name: pick.Name, Region: pick.Region, Releases: map[string]int{}}
-
-	var members []store.OpenStackHost
-	for _, h := range all {
+// collectAssessment gathers what has been stored about one deployment and hands
+// it to the domain package to judge.
+//
+// The judging used to be here. It moved because an API or a web view would have
+// had to make the same calls — is this drifting, is this stale, is this host
+// down — and two implementations of that disagree eventually, with no way to
+// tell which one somebody is looking at.
+func collectAssessment(ctx context.Context, st *store.Store, pick farmChoice, now time.Time) (openstack.Assessment, error) {
+	hosts, err := st.OpenStackHosts(ctx)
+	if err != nil {
+		return openstack.Assessment{}, err
+	}
+	mine := make([]store.OpenStackHost, 0, len(hosts))
+	for _, h := range hosts {
 		if h.Farm == pick.ID && h.Detected {
-			members = append(members, h)
+			mine = append(mine, h)
 		}
 	}
-	v.Total = len(members)
-
-	byRole := map[string][]store.OpenStackHost{}
-	for _, h := range members {
-		if h.Confidence == store.ConfidenceConfirmed {
-			v.Confirmed++
-		} else {
-			v.Unsettled = append(v.Unsettled, fmt.Sprintf("%s (%s)", h.Hostname, h.Confidence))
-		}
-		v.Releases[releaseOf(h)]++
-		for _, r := range h.Roles {
-			byRole[r] = append(byRole[r], h)
-		}
+	// Missing VMs included on purpose: the assessment counts them, so filtering
+	// them out here would hide the number it exists to report.
+	vms, err := st.Instances(ctx, store.InstanceFilter{DeploymentID: pick.ID, IncludeMissing: true})
+	if err != nil {
+		return openstack.Assessment{}, err
 	}
-
-	firstSeen := map[string]string{}
-	for _, role := range orderedRoles(byRole) {
-		hs := byRole[role]
-		sort.Slice(hs, func(i, j int) bool { return hs[i].Hostname < hs[j].Hostname })
-		sec := farmSection{Role: role}
-		for _, h := range hs {
-			m := farmMember{Hostname: h.Hostname, Release: releaseOf(h), Roles: len(h.Roles)}
-			if !slices.Contains(h.ActiveRoles, role) {
-				m.Down = true
-				sec.Down++
-			}
-			if prev, seen := firstSeen[h.Hostname]; seen {
-				m.AlsoIn = prev
-			} else {
-				firstSeen[h.Hostname] = role
-			}
-			sec.Hosts = append(sec.Hosts, m)
-		}
-		v.Sections = append(v.Sections, sec)
+	ghosts, err := st.ControlHosts(ctx, pick.ID)
+	if err != nil {
+		return openstack.Assessment{}, err
 	}
-	sort.Strings(v.Unsettled)
-	return v
+	runs, err := st.ReconcileRuns(ctx)
+	if err != nil {
+		return openstack.Assessment{}, err
+	}
+	in := openstack.Input{
+		ID: pick.ID, Name: pick.Name, Region: pick.Region,
+		Hosts: mine, Instances: vms, Ghosts: ghosts,
+		StaleAfter: farmStaleWindow, Now: now,
+	}
+	if r, ok := runs[pick.ID]; ok {
+		in.Run = &r
+	}
+	return openstack.Assess(in), nil
 }
 
-func orderedRoles(byRole map[string][]store.OpenStackHost) []string {
-	rank := map[string]int{}
-	for i, r := range roleOrder {
-		rank[r] = i
+func renderFarmShow(w io.Writer, a openstack.Assessment, now time.Time) {
+	title := a.ID
+	if a.Name != "" {
+		title = a.Name + " · " + a.ID
 	}
-	out := make([]string, 0, len(byRole))
-	for r := range byRole {
-		out = append(out, r)
+	if a.Region != "" {
+		title += " · " + a.Region
 	}
-	sort.Slice(out, func(i, j int) bool {
-		ri, iOK := rank[out[i]]
-		rj, jOK := rank[out[j]]
-		switch {
-		case iOK && jOK:
-			return ri < rj
-		case iOK != jOK:
-			return iOK
-		default:
-			return out[i] < out[j]
-		}
-	})
-	return out
-}
-
-// releaseOf is the one string that stands for what a host runs: nova's version
-// where nova is present, the first component's otherwise. It deliberately
-// matches how the flat listing summarises the same host, so the two views never
-// disagree about a release.
-func releaseOf(h store.OpenStackHost) string {
-	if c, ok := h.Components["nova-compute"]; ok && c.Version != "" {
-		return c.Version
-	}
-	names := make([]string, 0, len(h.Components))
-	for name := range h.Components {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		if v := h.Components[name].Version; v != "" {
-			return v
-		}
-	}
-	return "-"
-}
-
-func renderFarmShow(w io.Writer, v farmView, now time.Time) {
-	title := v.ID
-	if v.Name != "" {
-		title = v.Name + " · " + v.ID
-	}
-	if v.Region != "" {
-		title += " · " + v.Region
-	}
-	title += fmt.Sprintf(" · confirmed %d/%d", v.Confirmed, v.Total)
+	title += fmt.Sprintf(" · confirmed %d/%d", a.Membership.Confirmed, a.Membership.Total)
 	ui.Section(w, title)
 
-	if v.Total == 0 {
+	if a.Membership.Total == 0 {
 		// Named before anything reported, or every probe has gone quiet. Say
 		// which world this is instead of printing an empty tree.
 		fmt.Fprintln(w, ui.Muted("  no hosts have reported for this deployment"))
+		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("reconciled"), 20), reconcileLine(a.Freshness, now))
 		return
 	}
 
-	for _, sec := range v.Sections {
-		// A section whose every host already appeared above carries no new
-		// facts, only the role's membership. One line says that; a tree of
-		// "also controller" seven sections long buried the two sections that
-		// actually said something.
+	for _, sec := range a.Architecture.Sections {
 		count := fmt.Sprintf("(%d)", len(sec.Hosts))
 		if sec.Down > 0 {
 			count += " " + ui.Warn(fmt.Sprintf("%d down", sec.Down))
 		}
+		// A section whose every host already appeared above carries no new
+		// facts, only the role's membership. One line says that; a tree of
+		// "also controller" seven sections long buried the two sections that
+		// actually said something.
 		if repeats := allRepeats(sec); repeats != "" {
 			fmt.Fprintf(w, "\n  %s %s  %s\n", ui.Value(sec.Role), ui.Muted(count), ui.Muted(repeats))
 			continue
@@ -274,6 +161,9 @@ func renderFarmShow(w io.Writer, v farmView, now time.Time) {
 			detail := ui.Muted("also " + m.AlsoIn)
 			if m.AlsoIn == "" {
 				detail = fmt.Sprintf("%-10s %s", m.Release, ui.Muted(roleCount(m.Roles)))
+				if m.VMs > 0 {
+					detail += "  " + ui.Muted(fmt.Sprintf("%d VMs", m.VMs))
+				}
 			}
 			if m.Down {
 				detail += "  " + ui.Warn("down")
@@ -283,21 +173,43 @@ func renderFarmShow(w io.Writer, v farmView, now time.Time) {
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("release"), 20), releaseLine(v.Releases, v.Total))
-	if len(v.Unsettled) > 0 {
-		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("unsettled"), 20),
-			ui.Warn(strings.Join(v.Unsettled, ", ")))
+	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("release"), 20), releaseLine(a.Versions))
+	if a.Architecture.VMs > 0 || a.Health.VMsMissing > 0 {
+		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("vms"), 20), vmLine(a))
 	}
-	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("keystone"), 20), v.ID)
-	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("reconciled"), 20), reconcileLine(v.Reconcile, now))
-	if len(v.Ghosts) > 0 {
-		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("ghosts"), 20), ghostLine(v.Ghosts, now))
+	if len(a.Membership.Unsettled) > 0 {
+		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("unsettled"), 20),
+			ui.Warn(strings.Join(a.Membership.Unsettled, ", ")))
+	}
+	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("keystone"), 20), a.ID)
+	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("reconciled"), 20), reconcileLine(a.Freshness, now))
+	renderAnomalies(w, a.Anomalies)
+}
+
+// renderAnomalies puts everything worth a second look in one block. Scattered
+// through the sections above they are each a footnote; together they are the
+// answer to "what is wrong with this farm".
+func renderAnomalies(w io.Writer, anomalies []openstack.Anomaly) {
+	if len(anomalies) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n  %s\n", ui.Value("anomalies"))
+	for _, an := range anomalies {
+		mark := ui.Warn("!")
+		if an.Severity == openstack.SeverityError {
+			mark = ui.Fail("!!")
+		}
+		fmt.Fprintf(w, "  %s %s  %s\n", mark, ui.PadRight(an.Subject, 20), ui.Muted(an.Detail))
 	}
 }
 
-// reconcileFreshWindow is how long a membership decision stands before its age
-// is worth saying out loud. The timer runs every six hours, so two missed runs.
-const reconcileFreshWindow = 13 * time.Hour
+func vmLine(a openstack.Assessment) string {
+	s := fmt.Sprintf("%d", a.Architecture.VMs)
+	if a.Health.VMsMissing > 0 {
+		s += " " + ui.Warn(fmt.Sprintf("(+%d no longer listed)", a.Health.VMsMissing))
+	}
+	return s
+}
 
 // reconcileLine says when this farm's membership was last settled, and why not
 // if it was not.
@@ -305,46 +217,57 @@ const reconcileFreshWindow = 13 * time.Hour
 // Without it "local-only" cannot be read. It could mean the control plane
 // disagreed an hour ago, or that nothing has asked in three weeks — and those
 // call for opposite responses.
-func reconcileLine(r *store.ReconcileRun, now time.Time) string {
-	if r == nil {
+func reconcileLine(f openstack.Freshness, now time.Time) string {
+	if f.LastAttempt == nil {
 		return ui.Warn("never — no run has been recorded for this deployment")
 	}
-	if r.SucceededAt == nil {
-		return ui.Fail("never succeeded") + " · " + ui.Muted("last tried "+ui.CompactDuration(now.Sub(r.StartedAt))+" ago: "+ui.Truncate(r.LastError, 60))
+	if f.LastSuccess == nil {
+		return ui.Fail("never succeeded") + " · " +
+			ui.Muted("last tried "+ui.CompactDuration(now.Sub(*f.LastAttempt))+" ago: "+ui.Truncate(f.Error, 60))
 	}
-	age := ui.CompactDuration(now.Sub(*r.SucceededAt))
-	s := age + " ago"
-	if now.Sub(*r.SucceededAt) > reconcileFreshWindow {
+	s := ui.CompactDuration(now.Sub(*f.LastSuccess)) + " ago"
+	if f.Stale {
 		s = ui.Warn(s)
 	}
-	if !r.Complete {
+	if !f.Complete {
 		s += " " + ui.Warn("(partial answer — nothing was demoted)")
 	}
-	// A failure after the last success is the case the two timestamps exist to
-	// separate: the farm looks settled and has been failing since.
-	if r.LastError != "" && r.StartedAt.After(*r.SucceededAt) {
-		s += " · " + ui.Fail("failing since "+ui.CompactDuration(now.Sub(r.StartedAt))+" ago: "+ui.Truncate(r.LastError, 50))
+	if f.Error != "" {
+		s += " · " + ui.Fail("failing since "+ui.CompactDuration(now.Sub(*f.LastAttempt))+" ago: "+ui.Truncate(f.Error, 50))
 	}
 	return s
 }
 
-// ghostLine names machines nova knows and the inventory does not, oldest first.
-//
-// Age is the whole signal. "nova has been telling us about this for three
-// weeks" is a registration somebody forgot; "this appeared today" is a host
-// being built.
-func ghostLine(ghosts []store.ControlHost, now time.Time) string {
-	sort.Slice(ghosts, func(i, j int) bool { return ghosts[i].FirstSeenAt.Before(ghosts[j].FirstSeenAt) })
-	parts := make([]string, 0, len(ghosts))
-	for _, g := range ghosts {
-		parts = append(parts, fmt.Sprintf("%s (%s)", g.NovaHostname, ui.CompactDuration(now.Sub(g.FirstSeenAt))))
+// releaseLine says in one line whether the farm is on one release or drifting —
+// which is the question a farm view usually exists to answer.
+func releaseLine(v openstack.Versions) string {
+	if !v.Drifting {
+		for r, n := range v.ByRelease {
+			return fmt.Sprintf("%s %s", r, ui.Muted(fmt.Sprintf("(all %d)", n)))
+		}
+		return ui.Muted("-")
 	}
-	return ui.Warn(strings.Join(parts, ", ")) + ui.Muted(" — nova knows these, the inventory does not")
+	keys := make([]string, 0, len(v.ByRelease))
+	for r := range v.ByRelease {
+		keys = append(keys, r)
+	}
+	// Largest first: the line reads "mostly X, with stragglers on Y".
+	sort.Slice(keys, func(i, j int) bool {
+		if v.ByRelease[keys[i]] != v.ByRelease[keys[j]] {
+			return v.ByRelease[keys[i]] > v.ByRelease[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	parts := make([]string, 0, len(keys))
+	for _, r := range keys {
+		parts = append(parts, fmt.Sprintf("%s ×%d", r, v.ByRelease[r]))
+	}
+	return ui.Warn("drift: " + strings.Join(parts, " · "))
 }
 
 // allRepeats returns the compact membership line for a section whose every
 // host was already shown, and "" when the section introduces anyone new.
-func allRepeats(sec farmSection) string {
+func allRepeats(sec openstack.RoleSection) string {
 	names := make([]string, 0, len(sec.Hosts))
 	for _, m := range sec.Hosts {
 		if m.AlsoIn == "" {
@@ -360,30 +283,4 @@ func roleCount(n int) string {
 		return "1 role"
 	}
 	return fmt.Sprintf("%d roles", n)
-}
-
-// releaseLine says in one line whether the farm is on one release or drifting —
-// which is the question a farm view usually exists to answer.
-func releaseLine(releases map[string]int, total int) string {
-	if len(releases) == 1 {
-		for r := range releases {
-			return fmt.Sprintf("%s %s", r, ui.Muted(fmt.Sprintf("(all %d)", total)))
-		}
-	}
-	keys := make([]string, 0, len(releases))
-	for r := range releases {
-		keys = append(keys, r)
-	}
-	// Largest first: the line reads "mostly X, with stragglers on Y".
-	sort.Slice(keys, func(i, j int) bool {
-		if releases[keys[i]] != releases[keys[j]] {
-			return releases[keys[i]] > releases[keys[j]]
-		}
-		return keys[i] < keys[j]
-	})
-	parts := make([]string, 0, len(keys))
-	for _, r := range keys {
-		parts = append(parts, fmt.Sprintf("%s ×%d", r, releases[r]))
-	}
-	return ui.Warn("drift: " + strings.Join(parts, " · "))
 }
