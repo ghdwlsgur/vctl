@@ -145,6 +145,14 @@ func reconcileFarms(ctx context.Context, a *app.App, st *store.Store, ids []stri
 		list, err := controlPlaneHosts(ctx, creds, insecure)
 		if err != nil {
 			ui.Errorf(os.Stderr, "%s: %v", id, err)
+			// Recorded so the listing can say this farm has not settled since,
+			// and why. Without it a farm failing every six hours is
+			// indistinguishable from one nobody has configured.
+			if !dryRun {
+				if e := st.RecordReconcileRun(ctx, id, store.ReconcileResult{}, time.Now(), err); e != nil {
+					ui.Warnf(os.Stderr, "%s: recording the failure: %v", id, e)
+				}
+			}
 			continue
 		}
 		reached++
@@ -171,6 +179,17 @@ func reconcileFarms(ctx context.Context, a *app.App, st *store.Store, ids []stri
 		})
 		if err != nil {
 			return fmt.Errorf("%s: %w", id, err)
+		}
+		if e := st.RecordReconcileRun(ctx, id, got, time.Now(), nil); e != nil {
+			ui.Warnf(os.Stderr, "%s: recording the run: %v", id, e)
+		}
+		// The hosts nova named that no inventory entry matched. Printing them
+		// and moving on lost the most interesting rows the reconciler produces:
+		// a nova service on a machine nobody has registered is either a
+		// forgotten host, a name that drifted, or something that should not be
+		// running — and none of those survives being said once.
+		if e := st.RecordControlHosts(ctx, id, got.ControlOnly, time.Now()); e != nil {
+			ui.Warnf(os.Stderr, "%s: recording control-only hosts: %v", id, e)
 		}
 		reportReconcile(id, got, false)
 	}
