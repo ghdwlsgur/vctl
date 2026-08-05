@@ -1,0 +1,30 @@
+#cloud-config
+# Make a new VM trust the vctl SSH CA at first boot.
+#
+# This is the born-in-the-cloud counterpart to `vctl trust-ca`, and it is
+# deliberately a 1:1 reproduction of it (internal/cli/trustca.go): same CA path,
+# same sshd drop-in, same validate-then-reload. A host onboarded by hand and a VM
+# born with this file must end up in the same state — otherwise the two drift and
+# only one of them is ever tested.
+#
+# The CA public key is NOT stored in this template. It is read from Vault
+# (`<mount>/config/ca`) at render time, so the key has one source of truth and a
+# rotation cannot leave a stale copy behind in git.
+#
+# Nothing here removes existing access. authorized_keys stays as the recovery
+# path — a VM that boots with a bad CA must still be reachable.
+write_files:
+  - path: /etc/ssh/vault-ca.pub
+    permissions: '0644'
+    owner: root:root
+    content: |
+      {{ vendordata_ca_pub }}
+  - path: /etc/ssh/sshd_config.d/10-vault-ca.conf
+    permissions: '0644'
+    owner: root:root
+    content: |
+      TrustedUserCAKeys /etc/ssh/vault-ca.pub
+runcmd:
+  # Validate before reloading, and do not fail the boot because an image spells
+  # the sshd unit differently.
+  - sshd -t && (systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || service ssh reload 2>/dev/null || true)

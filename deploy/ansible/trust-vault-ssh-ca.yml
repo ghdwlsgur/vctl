@@ -1,7 +1,9 @@
 ---
 # Make existing fleet hosts trust certificates signed by the Vault SSH CA
 # (TrustedUserCAKeys). This is the already-running-server counterpart to the
-# cloud-init unit new VMs get (trust-vault-ssh-ca.yaml); the effect is the same.
+# cloud-init a new VM gets from Nova vendordata (openstack-vendordata.yml). The
+# two install the same CA at the same paths on purpose, so a hand-onboarded host
+# and a freshly built VM end up in the same state.
 #
 # Idempotent, and safe to re-run:
 #   - Only the CA *public* key is distributed; it is not a secret.

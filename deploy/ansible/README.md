@@ -8,6 +8,84 @@ truth — no duplicated copies here) plus the SSH CA trust.
 |---|---|
 | `trust-vault-ssh-ca.yml` | Install the operator-supplied `files/vault-ca.pub` as system-wide `TrustedUserCAKeys` in `/etc/ssh/sshd_config.d/10-vault-ca.conf` (same as `vctl trust-ca`, in bulk). |
 | `site.yml` | Install node-agent (runtime status) by default. The collector + watch-sessions audit stack, `vctl-host` AppRole, and Tetragon are explicit opt-ins via `vctl_host_audit_stack=true`. |
+| `openstack-vendordata.yml` | Install the same CA trust into an OpenStack farm's Nova vendordata, so a **new VM** trusts vctl certificates from first boot. See below. |
+
+## Nova vendordata (new VMs)
+
+`trust-vault-ssh-ca.yml` onboards a machine that already exists. A VM created
+five minutes from now needs the same trust before anyone can reach it, and the
+only thing running at that point is cloud-init. Nova's vendordata is what hands
+it the cloud-config.
+
+The CA public key is **not** in this repo. It is read from Vault
+(`ssh/config/ca`) each run — the same key `vctl trust-ca` installs — and rendered
+into `templates/vendordata-cloud-config.yml.j2`. One source of truth for the key,
+so a rotation cannot leave a stale copy behind in git.
+
+```bash
+# one farm; deploy host and control hosts are often the same machine
+ansible-playbook -i inventory/hosts.ini openstack-vendordata.yml -l lab_a
+
+# control node without Vault access (an override, not a fallback)
+ansible-playbook -i inventory/hosts.ini openstack-vendordata.yml \
+    -e vendordata_ca_pub_file=files/vault-ca.pub
+```
+
+Two things about this are not obvious, and both have bitten already.
+
+**nova-metadata answers the VM, not nova-api.** A VM asking 169.254.169.254 is
+proxied by the neutron metadata agent to port 8775, which is `nova_metadata`.
+Putting `vendordata_providers` in a `nova-api.conf` override configures the
+service that does *not* answer. Measured on a farm where that had been in place
+for a month: `vendor_data.json` returned `{}` while `meta_data.json` returned
+real data for the same signed request, so nothing looked broken.
+
+**Whether the file reaches nova-metadata depends on the kolla-ansible version.**
+Measured across the deploy hosts here, not read from release notes:
+
+| kolla-ansible | What it does with the vendordata file |
+|---|---|
+| 18.8.0 (2024.1) | `nova_services` has no `nova-metadata` entry at all. A reconfigure run from here leaves that directory untouched. |
+| 20.2.0 | Copies to `nova-api` only (destination hardcoded), while `nova-metadata.json.j2` declares a mount for it that is **not** marked optional. |
+| 20.4.0 | Fixed upstream — the copy loops over `nova-metadata` and `nova-api`. |
+
+On 20.2.0 that combination is a trap: `kolla_set_configs` raises
+`MissingRequiredSource` on a non-optional missing source, so once the file exists
+in `node_custom_config`, a plain reconfigure leaves `nova_metadata` unable to
+start. This play places the file in every Nova service directory whose
+`config.json` declares it, and refuses to remove one while a `config.json` still
+does — a no-op on 20.4.0, and the difference between working and not on 20.2.0.
+
+A deploy host can have more than one kolla-ansible venv. Check which one the last
+run used before assuming: one farm here reconfigured 2025.1 containers from a
+2024.1 venv, which is why its `nova-metadata` config sat a month behind its
+`nova-api` config with nobody noticing.
+
+Order for a farm that has never had this, and the order matters:
+
+```bash
+# 1. source of truth + the file placed where genconfig is about to declare it
+ansible-playbook -i inventory/hosts.ini openstack-vendordata.yml -l lab_a \
+    -e '{"vendordata_extra_dirs":["/etc/kolla/nova-metadata"]}'
+
+# 2. back up, regenerate, diff before believing it
+#    (genconfig rewrites config, it does not restart containers)
+kolla-ansible genconfig -t nova --limit <host>
+
+# 3. restart nova_metadata (stop then start), then verify
+```
+
+Placing the file first is what makes this safe. `genconfig` is the step that
+makes `nova-metadata` declare the mount, and it never writes the file itself —
+so doing it the other way round leaves a window where the deployed `config.json`
+names a file that is not there, and any restart in that window leaves the
+container unable to start. The play verifies that `nova_metadata` can actually
+read the file, and says so when it cannot.
+
+One thing to expect at step 2 on a farm that has drifted: `genconfig` regenerates
+*everything* for the services it touches, not just the vendordata. If a service's
+config is months old, that whole diff lands at once. Back up the service
+directory and read the diff before restarting anything.
 
 ## Prerequisites
 
