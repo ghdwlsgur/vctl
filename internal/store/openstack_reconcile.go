@@ -348,3 +348,144 @@ func (s *Store) Deployments(ctx context.Context) ([]Deployment, error) {
 			return d, err
 		})
 }
+
+// ReconcileRun is the state of one deployment's last reconcile.
+type ReconcileRun struct {
+	DeploymentID string     `json:"deployment_id"`
+	StartedAt    time.Time  `json:"started_at"`
+	SucceededAt  *time.Time `json:"succeeded_at,omitempty"`
+	Complete     bool       `json:"complete"`
+	LastError    string     `json:"last_error,omitempty"`
+
+	Confirmed   int `json:"confirmed"`
+	LocalOnly   int `json:"local_only"`
+	ControlOnly int `json:"control_only"`
+	Held        int `json:"held"`
+	Ambiguous   int `json:"ambiguous"`
+}
+
+// RecordReconcileRun stores what a run did, so a later reader can tell a
+// membership decided an hour ago from one decided three weeks ago.
+//
+// A failure keeps the previous counts and succeeded_at. The counts describe the
+// last run that produced any, and blanking them because a later attempt could
+// not reach the control plane would report a farm as empty on the strength of a
+// timeout — the same mistake the probe's error handling exists to avoid.
+func (s *Store) RecordReconcileRun(ctx context.Context, deployment string, res ReconcileResult, at time.Time, runErr error) error {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	msg := ""
+	if runErr != nil {
+		msg = runErr.Error()
+	}
+	if runErr != nil {
+		_, err := s.pool.Exec(ctx, `
+			INSERT INTO openstack_reconcile_runs (deployment_id, started_at, complete, last_error)
+			VALUES ($1,$2,false,$3)
+			ON CONFLICT (deployment_id) DO UPDATE SET
+				started_at=EXCLUDED.started_at, complete=false, last_error=EXCLUDED.last_error`,
+			deployment, at, msg)
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO openstack_reconcile_runs
+			(deployment_id, started_at, succeeded_at, complete, last_error,
+			 confirmed, local_only, control_only, held, ambiguous)
+		VALUES ($1,$2,$2,$3,'',$4,$5,$6,$7,$8)
+		ON CONFLICT (deployment_id) DO UPDATE SET
+			started_at=EXCLUDED.started_at, succeeded_at=EXCLUDED.succeeded_at,
+			complete=EXCLUDED.complete, last_error='',
+			confirmed=EXCLUDED.confirmed, local_only=EXCLUDED.local_only,
+			control_only=EXCLUDED.control_only, held=EXCLUDED.held,
+			ambiguous=EXCLUDED.ambiguous`,
+		deployment, at, res.Complete,
+		len(res.Confirmed), len(res.LocalOnly), len(res.ControlOnly), len(res.Held), len(res.Ambiguous))
+	return err
+}
+
+// ReconcileRuns returns the last run per deployment.
+func (s *Store) ReconcileRuns(ctx context.Context) (map[string]ReconcileRun, error) {
+	rows, err := queryAndCollect(ctx, s.pool, `
+		SELECT deployment_id, started_at, succeeded_at, complete, last_error,
+		       confirmed, local_only, control_only, held, ambiguous
+		FROM openstack_reconcile_runs`, nil,
+		func(r pgx.Rows) (ReconcileRun, error) {
+			var v ReconcileRun
+			err := r.Scan(&v.DeploymentID, &v.StartedAt, &v.SucceededAt, &v.Complete, &v.LastError,
+				&v.Confirmed, &v.LocalOnly, &v.ControlOnly, &v.Held, &v.Ambiguous)
+			return v, err
+		})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]ReconcileRun, len(rows))
+	for _, r := range rows {
+		out[r.DeploymentID] = r
+	}
+	return out, nil
+}
+
+// ControlHost is a machine the control plane knows and the inventory does not.
+type ControlHost struct {
+	DeploymentID string    `json:"deployment_id"`
+	NovaHostname string    `json:"nova_hostname"`
+	FirstSeenAt  time.Time `json:"first_seen_at"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
+}
+
+// RecordControlHosts keeps the hosts nova named that no inventory entry matched.
+//
+// first_seen_at is preserved across runs: "nova has been telling us about this
+// machine for three weeks" is a different statement from "this appeared today",
+// and only the first is a registration somebody forgot.
+//
+// Rows are removed once they match an inventory host again — the caller passes
+// only the still-unmatched names, and anything else for this deployment is
+// deleted. Keeping them would leave a permanent list of problems already fixed.
+func (s *Store) RecordControlHosts(ctx context.Context, deployment string, names []string, at time.Time) error {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO openstack_control_hosts (deployment_id, nova_hostname, first_seen_at, last_seen_at)
+			VALUES ($1,$2,$3,$3)
+			ON CONFLICT (deployment_id, nova_hostname) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at`,
+			deployment, n, at); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM openstack_control_hosts WHERE deployment_id=$1 AND last_seen_at < $2`,
+		deployment, at); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// ControlHosts lists the machines nova knows that the inventory does not.
+func (s *Store) ControlHosts(ctx context.Context, deployment string) ([]ControlHost, error) {
+	q := `SELECT deployment_id, nova_hostname, first_seen_at, last_seen_at
+		FROM openstack_control_hosts`
+	var args []any
+	if deployment != "" {
+		q += ` WHERE deployment_id=$1`
+		args = append(args, deployment)
+	}
+	return queryAndCollect(ctx, s.pool, q+` ORDER BY deployment_id, nova_hostname`, args,
+		func(r pgx.Rows) (ControlHost, error) {
+			var c ControlHost
+			err := r.Scan(&c.DeploymentID, &c.NovaHostname, &c.FirstSeenAt, &c.LastSeenAt)
+			return c, err
+		})
+}

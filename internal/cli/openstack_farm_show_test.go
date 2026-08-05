@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
@@ -95,7 +96,7 @@ func TestFarmViewCountsReleaseDrift(t *testing.T) {
 		t.Errorf("releases = %v", v.Releases)
 	}
 	var buf bytes.Buffer
-	renderFarmShow(&buf, v)
+	renderFarmShow(&buf, v, time.Now())
 	if !strings.Contains(buf.String(), "drift") {
 		t.Errorf("a two-release farm was not reported as drifting:\n%s", buf.String())
 	}
@@ -107,7 +108,7 @@ func TestFarmViewSaysWhenThereIsNoDrift(t *testing.T) {
 	v := buildFarmView(showPick(), hosts)
 
 	var buf bytes.Buffer
-	renderFarmShow(&buf, v)
+	renderFarmShow(&buf, v, time.Now())
 	out := buf.String()
 	if strings.Contains(out, "drift") {
 		t.Errorf("a single-release farm was reported as drifting:\n%s", out)
@@ -137,7 +138,7 @@ func TestFarmViewSaysWhenNothingHasReported(t *testing.T) {
 	v := buildFarmView(farmChoice{ID: "10.0.0.9:5000", Name: "new-farm"}, showFixture())
 
 	var buf bytes.Buffer
-	renderFarmShow(&buf, v)
+	renderFarmShow(&buf, v, time.Now())
 	if !strings.Contains(buf.String(), "no hosts have reported") {
 		t.Errorf("an empty deployment did not say so:\n%s", buf.String())
 	}
@@ -150,7 +151,7 @@ func TestFarmShowCollapsesAllRepeatSections(t *testing.T) {
 	v := buildFarmView(showPick(), showFixture())
 
 	var buf bytes.Buffer
-	renderFarmShow(&buf, v)
+	renderFarmShow(&buf, v, time.Now())
 	out := buf.String()
 
 	// identity holds only aio-01, already shown under controller — one line,
@@ -200,7 +201,7 @@ func TestFarmShowKeepsTheRoleAndMarksTheOutage(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	renderFarmShow(&buf, v)
+	renderFarmShow(&buf, v, time.Now())
 	out := buf.String()
 	if !strings.Contains(out, "1 down") {
 		t.Errorf("the heading does not count the outage:\n%s", out)

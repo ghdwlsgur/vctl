@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -59,10 +60,20 @@ func openstackFarmShowCmd() *cobra.Command {
 					return err
 				}
 				view := buildFarmView(pick, hosts)
+				runs, err := st.ReconcileRuns(ctx)
+				if err != nil {
+					return err
+				}
+				if r, ok := runs[pick.ID]; ok {
+					view.Reconcile = &r
+				}
+				if view.Ghosts, err = st.ControlHosts(ctx, pick.ID); err != nil {
+					return err
+				}
 				if asJSON {
 					return writeJSON(view)
 				}
-				renderFarmShow(os.Stdout, view)
+				renderFarmShow(os.Stdout, view, time.Now())
 				return nil
 			})
 		},
@@ -91,6 +102,15 @@ type farmView struct {
 	// Unsettled are hosts whose membership rests on something weaker than
 	// confirmation, each with the confidence that says why.
 	Unsettled []string `json:"unsettled,omitempty"`
+
+	// Reconcile is the state of the last run against this deployment. Without
+	// it "local-only" is unreadable: it could mean the control plane disagreed
+	// an hour ago or that nothing has asked in three weeks, and those call for
+	// opposite responses.
+	Reconcile *store.ReconcileRun `json:"reconcile,omitempty"`
+
+	// Ghosts are machines nova names that no inventory entry matched.
+	Ghosts []store.ControlHost `json:"ghosts,omitempty"`
 }
 
 type farmSection struct {
@@ -214,7 +234,7 @@ func releaseOf(h store.OpenStackHost) string {
 	return "-"
 }
 
-func renderFarmShow(w io.Writer, v farmView) {
+func renderFarmShow(w io.Writer, v farmView, now time.Time) {
 	title := v.ID
 	if v.Name != "" {
 		title = v.Name + " · " + v.ID
@@ -269,6 +289,57 @@ func renderFarmShow(w io.Writer, v farmView) {
 			ui.Warn(strings.Join(v.Unsettled, ", ")))
 	}
 	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("keystone"), 20), v.ID)
+	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("reconciled"), 20), reconcileLine(v.Reconcile, now))
+	if len(v.Ghosts) > 0 {
+		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("ghosts"), 20), ghostLine(v.Ghosts, now))
+	}
+}
+
+// reconcileFreshWindow is how long a membership decision stands before its age
+// is worth saying out loud. The timer runs every six hours, so two missed runs.
+const reconcileFreshWindow = 13 * time.Hour
+
+// reconcileLine says when this farm's membership was last settled, and why not
+// if it was not.
+//
+// Without it "local-only" cannot be read. It could mean the control plane
+// disagreed an hour ago, or that nothing has asked in three weeks — and those
+// call for opposite responses.
+func reconcileLine(r *store.ReconcileRun, now time.Time) string {
+	if r == nil {
+		return ui.Warn("never — no run has been recorded for this deployment")
+	}
+	if r.SucceededAt == nil {
+		return ui.Fail("never succeeded") + " · " + ui.Muted("last tried "+ui.CompactDuration(now.Sub(r.StartedAt))+" ago: "+ui.Truncate(r.LastError, 60))
+	}
+	age := ui.CompactDuration(now.Sub(*r.SucceededAt))
+	s := age + " ago"
+	if now.Sub(*r.SucceededAt) > reconcileFreshWindow {
+		s = ui.Warn(s)
+	}
+	if !r.Complete {
+		s += " " + ui.Warn("(partial answer — nothing was demoted)")
+	}
+	// A failure after the last success is the case the two timestamps exist to
+	// separate: the farm looks settled and has been failing since.
+	if r.LastError != "" && r.StartedAt.After(*r.SucceededAt) {
+		s += " · " + ui.Fail("failing since "+ui.CompactDuration(now.Sub(r.StartedAt))+" ago: "+ui.Truncate(r.LastError, 50))
+	}
+	return s
+}
+
+// ghostLine names machines nova knows and the inventory does not, oldest first.
+//
+// Age is the whole signal. "nova has been telling us about this for three
+// weeks" is a registration somebody forgot; "this appeared today" is a host
+// being built.
+func ghostLine(ghosts []store.ControlHost, now time.Time) string {
+	sort.Slice(ghosts, func(i, j int) bool { return ghosts[i].FirstSeenAt.Before(ghosts[j].FirstSeenAt) })
+	parts := make([]string, 0, len(ghosts))
+	for _, g := range ghosts {
+		parts = append(parts, fmt.Sprintf("%s (%s)", g.NovaHostname, ui.CompactDuration(now.Sub(g.FirstSeenAt))))
+	}
+	return ui.Warn(strings.Join(parts, ", ")) + ui.Muted(" — nova knows these, the inventory does not")
 }
 
 // allRepeats returns the compact membership line for a section whose every
