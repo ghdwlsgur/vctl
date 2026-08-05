@@ -6,156 +6,45 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
-func showFixture() []store.OpenStackHost {
-	mk := func(name string, roles []string, release string, conf string) store.OpenStackHost {
-		h := osHost(name, "172.16.0.10:5000", roles...)
-		h.ActiveRoles = roles
-		h.Confidence = conf
-		if release != "" {
-			h.Components = map[string]store.CapabilityComponent{
-				"nova-compute": {Version: release, Active: true, Service: true},
-			}
-		}
-		return h
+// The judging lives in internal/openstack and is tested there. What is left
+// here is rendering, so these check what a reader sees rather than what was
+// decided.
+
+func assessed(hosts []store.OpenStackHost, in openstack.Input) openstack.Assessment {
+	in.Hosts = hosts
+	if in.ID == "" {
+		in.ID = "172.16.0.10:5000"
 	}
-	return []store.OpenStackHost{
-		mk("aio-01", []string{"controller", "compute", "identity"}, "2025.1", store.ConfidenceConfirmed),
-		mk("aio-02", []string{"controller", "compute"}, "2025.1", store.ConfidenceConfirmed),
-		mk("gpu-01", []string{"compute"}, "2024.2", store.ConfidenceLocalOnly),
-		// A different farm's host: must not leak into this view.
-		func() store.OpenStackHost { h := osHost("other-01", "10.9.9.9:5000", "compute"); return h }(),
-	}
+	return openstack.Assess(in)
 }
 
-func showPick() farmChoice {
-	return farmChoice{ID: "172.16.0.10:5000", Name: "incheon", Region: "kr-inc-1"}
-}
-
-// The whole point of the view: roles become sections a reader walks top-down,
-// control plane first, and only this farm's hosts are in them.
-func TestFarmViewSectionsAreOrderedControlPlaneFirst(t *testing.T) {
-	v := buildFarmView(showPick(), showFixture())
-
-	if v.Total != 3 {
-		t.Fatalf("total = %d, want only this farm's hosts", v.Total)
-	}
-	var order []string
-	for _, s := range v.Sections {
-		order = append(order, s.Role)
-	}
-	if len(order) < 2 || order[0] != "controller" || order[1] != "compute" {
-		t.Errorf("section order = %v, want the control plane first", order)
-	}
-	for _, s := range v.Sections {
-		for _, m := range s.Hosts {
-			if m.Hostname == "other-01" {
-				t.Error("another farm's host leaked into the view")
-			}
-		}
-	}
-}
-
-// A host repeated across sections must not repeat its facts. An all-in-one
-// deployment where every host is controller+compute+network would otherwise
-// read as three times its size.
-func TestFarmViewMarksRepeatsInsteadOfRestatingThem(t *testing.T) {
-	v := buildFarmView(showPick(), showFixture())
-
-	var compute *farmSection
-	for i := range v.Sections {
-		if v.Sections[i].Role == "compute" {
-			compute = &v.Sections[i]
-		}
-	}
-	if compute == nil {
-		t.Fatal("no compute section")
-	}
-	for _, m := range compute.Hosts {
-		switch m.Hostname {
-		case "aio-01", "aio-02":
-			if m.AlsoIn != "controller" {
-				t.Errorf("%s AlsoIn = %q, want the section it already appeared in", m.Hostname, m.AlsoIn)
-			}
-		case "gpu-01":
-			if m.AlsoIn != "" {
-				t.Errorf("gpu-01 AlsoIn = %q — compute is its first section", m.AlsoIn)
-			}
-		}
-	}
-}
-
-// Release drift is the question this view usually exists to answer, and it has
-// to be one line rather than something assembled by scanning a column.
-func TestFarmViewCountsReleaseDrift(t *testing.T) {
-	v := buildFarmView(showPick(), showFixture())
-
-	if v.Releases["2025.1"] != 2 || v.Releases["2024.2"] != 1 {
-		t.Errorf("releases = %v", v.Releases)
-	}
-	var buf bytes.Buffer
-	renderFarmShow(&buf, v, time.Now())
-	if !strings.Contains(buf.String(), "drift") {
-		t.Errorf("a two-release farm was not reported as drifting:\n%s", buf.String())
-	}
-}
-
-// A single-release farm must say so plainly — "no drift" is the good news.
-func TestFarmViewSaysWhenThereIsNoDrift(t *testing.T) {
-	hosts := showFixture()[:2] // both 2025.1
-	v := buildFarmView(showPick(), hosts)
-
-	var buf bytes.Buffer
-	renderFarmShow(&buf, v, time.Now())
-	out := buf.String()
-	if strings.Contains(out, "drift") {
-		t.Errorf("a single-release farm was reported as drifting:\n%s", out)
-	}
-	if !strings.Contains(out, "all 2") {
-		t.Errorf("the release line does not say it covers every host:\n%s", out)
-	}
-}
-
-// Membership that rests on anything weaker than confirmation is called out with
-// the confidence that says why — the same rule every other view follows.
-func TestFarmViewCallsOutUnsettledMembership(t *testing.T) {
-	v := buildFarmView(showPick(), showFixture())
-
-	if v.Confirmed != 2 || v.Total != 3 {
-		t.Errorf("confirmed = %d/%d", v.Confirmed, v.Total)
-	}
-	if len(v.Unsettled) != 1 || !strings.Contains(v.Unsettled[0], "gpu-01") ||
-		!strings.Contains(v.Unsettled[0], store.ConfidenceLocalOnly) {
-		t.Errorf("unsettled = %v, want the host and its confidence", v.Unsettled)
-	}
-}
-
-// A deployment named before anything reported renders as an answer, not as an
-// empty tree that reads like a rendering fault.
-func TestFarmViewSaysWhenNothingHasReported(t *testing.T) {
-	v := buildFarmView(farmChoice{ID: "10.0.0.9:5000", Name: "new-farm"}, showFixture())
-
-	var buf bytes.Buffer
-	renderFarmShow(&buf, v, time.Now())
-	if !strings.Contains(buf.String(), "no hosts have reported") {
-		t.Errorf("an empty deployment did not say so:\n%s", buf.String())
+func aioHost(name string, roles []string, active []string, release, conf string) store.OpenStackHost {
+	return store.OpenStackHost{
+		Hostname: name, Detected: true, Roles: roles, ActiveRoles: active, Confidence: conf,
+		Components: map[string]store.CapabilityComponent{
+			"nova-compute": {Version: release, Active: true, Service: true},
+		},
 	}
 }
 
 // A section whose every host already appeared carries no new facts, only the
-// role's membership. Rendering it as a tree buried the two sections that said
-// something under seven that repeated "also controller".
+// role's membership. Rendering it as a tree buried the sections that said
+// something under ones that repeated "also controller".
 func TestFarmShowCollapsesAllRepeatSections(t *testing.T) {
-	v := buildFarmView(showPick(), showFixture())
+	a := assessed([]store.OpenStackHost{
+		aioHost("aio-01", []string{"controller", "compute", "identity"},
+			[]string{"controller", "compute", "identity"}, "2025.1", store.ConfidenceConfirmed),
+		aioHost("gpu-01", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
+	}, openstack.Input{})
 
 	var buf bytes.Buffer
-	renderFarmShow(&buf, v, time.Now())
+	renderFarmShow(&buf, a, time.Now())
 	out := buf.String()
 
-	// identity holds only aio-01, already shown under controller — one line,
-	// with the membership inline rather than a one-branch tree.
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "identity") {
 			if !strings.Contains(line, "aio-01") {
@@ -166,58 +55,124 @@ func TestFarmShowCollapsesAllRepeatSections(t *testing.T) {
 			}
 		}
 	}
-	// compute introduces gpu-01, so it stays a tree.
-	if !strings.Contains(out, "└─ gpu-01") && !strings.Contains(out, "├─ gpu-01") {
-		t.Errorf("compute lost its tree:\n%s", out)
+	if !strings.Contains(out, "gpu-01") {
+		t.Errorf("compute lost the host that introduces it:\n%s", out)
 	}
 }
 
-// A compute node whose nova-compute is down is still a compute node. The
-// section keeps its size — the deployment did not shrink — and the outage is
-// marked on the host and counted in the heading.
-func TestFarmShowKeepsTheRoleAndMarksTheOutage(t *testing.T) {
-	hosts := showFixture()
-	for i := range hosts {
-		if hosts[i].Hostname == "gpu-01" {
-			hosts[i].ActiveRoles = nil // deployed compute, nothing running
-		}
-	}
-	v := buildFarmView(showPick(), hosts)
-
-	var compute *farmSection
-	for i := range v.Sections {
-		if v.Sections[i].Role == "compute" {
-			compute = &v.Sections[i]
-		}
-	}
-	if compute == nil {
-		t.Fatal("no compute section")
-	}
-	if len(compute.Hosts) != 3 {
-		t.Errorf("compute has %d hosts, want 3 — a down node is still a compute node", len(compute.Hosts))
-	}
-	if compute.Down != 1 {
-		t.Errorf("down = %d, want 1", compute.Down)
-	}
+// A down role is marked on the host and counted in the heading, and the section
+// keeps its size — the deployment did not shrink.
+func TestFarmShowMarksOutageWithoutShrinkingTheSection(t *testing.T) {
+	a := assessed([]store.OpenStackHost{
+		aioHost("n1", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
+		aioHost("n2", []string{"compute"}, nil, "2025.1", store.ConfidenceConfirmed),
+	}, openstack.Input{})
 
 	var buf bytes.Buffer
-	renderFarmShow(&buf, v, time.Now())
+	renderFarmShow(&buf, a, time.Now())
 	out := buf.String()
-	if !strings.Contains(out, "1 down") {
-		t.Errorf("the heading does not count the outage:\n%s", out)
+	if !strings.Contains(out, "compute") || !strings.Contains(out, "1 down") {
+		t.Errorf("the outage was not counted in the heading:\n%s", out)
 	}
-	if !strings.Contains(out, "down") {
-		t.Errorf("the host is not marked:\n%s", out)
+	if !strings.Contains(out, "n1") || !strings.Contains(out, "n2") {
+		t.Errorf("a down host was dropped from the section:\n%s", out)
 	}
 }
 
-// With everything up nothing is marked, so the marking means something.
-func TestFarmShowMarksNothingWhenEverythingIsUp(t *testing.T) {
-	v := buildFarmView(showPick(), showFixture())
+// Drift is the question this view usually exists to answer, and the good news
+// is stated too.
+func TestFarmShowStatesDriftAndItsAbsence(t *testing.T) {
+	drift := assessed([]store.OpenStackHost{
+		aioHost("a", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
+		aioHost("b", []string{"compute"}, []string{"compute"}, "2024.2", store.ConfidenceConfirmed),
+	}, openstack.Input{})
+	var buf bytes.Buffer
+	renderFarmShow(&buf, drift, time.Now())
+	if !strings.Contains(buf.String(), "drift") {
+		t.Errorf("two releases were not reported as drifting:\n%s", buf.String())
+	}
 
-	for _, sec := range v.Sections {
-		if sec.Down != 0 {
-			t.Errorf("%s down = %d, want 0", sec.Role, sec.Down)
-		}
+	same := assessed([]store.OpenStackHost{
+		aioHost("a", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
+	}, openstack.Input{})
+	buf.Reset()
+	renderFarmShow(&buf, same, time.Now())
+	out := buf.String()
+	if strings.Contains(out, "drift") || !strings.Contains(out, "all 1") {
+		t.Errorf("a single-release farm did not say so plainly:\n%s", out)
+	}
+}
+
+// Anomalies go in one block. Scattered through the sections they are each a
+// footnote; together they answer "what is wrong with this farm".
+func TestFarmShowGathersAnomalies(t *testing.T) {
+	gone := time.Now().Add(-72 * time.Hour)
+	a := assessed([]store.OpenStackHost{
+		aioHost("n1", []string{"compute"}, nil, "2025.1", store.ConfidenceLocalOnly),
+	}, openstack.Input{
+		Ghosts: []store.ControlHost{{NovaHostname: "sre-svr-0032", FirstSeenAt: gone}},
+	})
+
+	var buf bytes.Buffer
+	renderFarmShow(&buf, a, time.Now())
+	out := buf.String()
+	if !strings.Contains(out, "anomalies") {
+		t.Fatalf("no anomaly block:\n%s", out)
+	}
+	if !strings.Contains(out, "sre-svr-0032") {
+		t.Errorf("the ghost host is not in the block:\n%s", out)
+	}
+}
+
+// A deployment named before anything reported renders as an answer, not as an
+// empty tree that reads like a rendering fault — and it still says nothing has
+// reconciled it.
+func TestFarmShowSaysWhenNothingHasReported(t *testing.T) {
+	a := openstack.Assess(openstack.Input{ID: "10.0.0.9:5000", Name: "new-farm"})
+
+	var buf bytes.Buffer
+	renderFarmShow(&buf, a, time.Now())
+	out := buf.String()
+	if !strings.Contains(out, "no hosts have reported") {
+		t.Errorf("an empty deployment did not say so:\n%s", out)
+	}
+	if !strings.Contains(out, "never") {
+		t.Errorf("an unreconciled deployment did not say so:\n%s", out)
+	}
+}
+
+// A farm that looks settled and has been failing since is the case the two
+// timestamps exist to separate.
+func TestFarmShowReportsFailingSinceTheLastSuccess(t *testing.T) {
+	success := time.Now().Add(-2 * time.Hour)
+	run := store.ReconcileRun{
+		StartedAt: time.Now().Add(-10 * time.Minute), SucceededAt: &success,
+		LastError: "keystone unreachable", Complete: true,
+	}
+	a := assessed([]store.OpenStackHost{
+		aioHost("n1", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
+	}, openstack.Input{Run: &run, StaleAfter: 13 * time.Hour})
+
+	var buf bytes.Buffer
+	renderFarmShow(&buf, a, time.Now())
+	out := buf.String()
+	if !strings.Contains(out, "failing since") {
+		t.Errorf("a farm failing since its last success did not say so:\n%s", out)
+	}
+}
+
+// VMs are counted per host, which is the join the whole chain rests on.
+func TestFarmShowCountsVMsPerHost(t *testing.T) {
+	a := assessed([]store.OpenStackHost{
+		aioHost("gpu01", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
+	}, openstack.Input{Instances: []store.Instance{
+		{InstanceID: "u1", HypervisorHostname: "gpu01"},
+		{InstanceID: "u2", HypervisorHostname: "gpu01"},
+	}})
+
+	var buf bytes.Buffer
+	renderFarmShow(&buf, a, time.Now())
+	if !strings.Contains(buf.String(), "2 VMs") {
+		t.Errorf("VMs were not counted against the host:\n%s", buf.String())
 	}
 }
