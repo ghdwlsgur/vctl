@@ -1,0 +1,57 @@
+---
+# Produce `vendordata_json`: the Nova vendordata document, with the current SSH
+# CA public key in it.
+#
+# Included by both plays in openstack-vendordata.yml rather than passed between
+# them. Rendering twice is cheap and deterministic; carrying a file from the
+# deploy host to the control hosts would make the two disagree the moment one of
+# them is run alone.
+
+- name: Read the vctl SSH CA public key from Vault
+  when: vendordata_ca_pub_file | length == 0
+  delegate_to: localhost
+  become: false
+  run_once: true
+  ansible.builtin.command:
+    argv: [vault, read, "-field=public_key", "{{ vendordata_vault_ssh_mount }}/config/ca"]
+  register: vendordata_vault_ca
+  changed_when: false
+
+- name: Read the CA public key from the operator-supplied file
+  # For a control node without Vault access. An override, not a fallback: a
+  # silent fall back to a local file is how a rotated CA goes unnoticed.
+  when: vendordata_ca_pub_file | length > 0
+  delegate_to: localhost
+  become: false
+  run_once: true
+  ansible.builtin.slurp:
+    src: "{{ vendordata_ca_pub_file }}"
+  register: vendordata_slurped_ca
+
+- name: Settle on one CA public key
+  ansible.builtin.set_fact:
+    vendordata_ca_pub: >-
+      {{ (vendordata_slurped_ca.content | b64decode
+          if vendordata_ca_pub_file | length > 0
+          else vendordata_vault_ca.stdout) | trim }}
+
+- name: Refuse a CA public key that is not one
+  # Fail closed. An empty or truncated key renders a vendordata that parses,
+  # deploys, and grants nothing — every VM built under it would be unreachable
+  # by certificate with no error anywhere to say why.
+  ansible.builtin.assert:
+    that:
+      - vendordata_ca_pub | regex_search('^(ssh-rsa|ssh-ed25519|ecdsa-sha2-[a-z0-9-]+) [A-Za-z0-9+/=]{64,}$') is not none
+      - vendordata_ca_pub.splitlines() | length == 1
+    fail_msg: >-
+      The SSH CA public key does not look like one. Check that the control node
+      can reach Vault and that {{ vendordata_vault_ssh_mount }}/config/ca is the
+      right mount.
+    quiet: true
+
+- name: Render the vendordata document
+  # to_json rather than a hand-escaped JSON template: the document is one JSON
+  # string containing a whole YAML file, and getting that escaping right by hand
+  # is a trap nobody notices until cloud-init silently ignores the payload.
+  ansible.builtin.set_fact:
+    vendordata_json: "{{ {'cloud-init': lookup('template', 'vendordata-cloud-config.yml.j2')} | to_json }}"

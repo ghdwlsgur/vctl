@@ -8,6 +8,53 @@ truth — no duplicated copies here) plus the SSH CA trust.
 |---|---|
 | `trust-vault-ssh-ca.yml` | Install the operator-supplied `files/vault-ca.pub` as system-wide `TrustedUserCAKeys` in `/etc/ssh/sshd_config.d/10-vault-ca.conf` (same as `vctl trust-ca`, in bulk). |
 | `site.yml` | Install node-agent (runtime status) by default. The collector + watch-sessions audit stack, `vctl-host` AppRole, and Tetragon are explicit opt-ins via `vctl_host_audit_stack=true`. |
+| `openstack-vendordata.yml` | Install the same CA trust into an OpenStack farm's Nova vendordata, so a **new VM** trusts vctl certificates from first boot. See below. |
+
+## Nova vendordata (new VMs)
+
+`trust-vault-ssh-ca.yml` onboards a machine that already exists. A VM created
+five minutes from now needs the same trust before anyone can reach it, and the
+only thing running at that point is cloud-init. Nova's vendordata is what hands
+it the cloud-config.
+
+The CA public key is **not** in this repo. It is read from Vault
+(`ssh/config/ca`) each run — the same key `vctl trust-ca` installs — and rendered
+into `templates/vendordata-cloud-config.yml.j2`. One source of truth for the key,
+so a rotation cannot leave a stale copy behind in git.
+
+```bash
+# one farm; deploy host and control hosts are often the same machine
+ansible-playbook -i inventory/hosts.ini openstack-vendordata.yml -l lab_a
+
+# control node without Vault access (an override, not a fallback)
+ansible-playbook -i inventory/hosts.ini openstack-vendordata.yml \
+    -e vendordata_ca_pub_file=files/vault-ca.pub
+```
+
+Two things about this are not obvious, and both have bitten already.
+
+**nova-metadata answers the VM, not nova-api.** A VM asking 169.254.169.254 is
+proxied by the neutron metadata agent to port 8775, which is `nova_metadata`.
+Putting `vendordata_providers` in a `nova-api.conf` override configures the
+service that does *not* answer. Measured on a farm where that had been in place
+for a month: `vendor_data.json` returned `{}` while `meta_data.json` returned
+real data for the same signed request, so nothing looked broken.
+
+**Kolla declares the mount for nova-metadata but never copies the file.** In
+kolla-ansible 2025.1, `roles/nova/tasks/config.yml` hardcodes the copy
+destination to `nova-api`, while `nova-metadata.json.j2` declares a mount for
+`vendordata.json` that is not marked optional — and `kolla_set_configs` raises
+`MissingRequiredSource` on a non-optional missing source. So once the file
+exists in `node_custom_config`, a plain reconfigure leaves `nova_metadata`
+unable to start. This play places the file in every Nova service directory whose
+`config.json` declares it, and refuses to remove one while a `config.json` still
+does.
+
+Order for a farm that has never had this: run the play (writes the source of
+truth), review `kolla-ansible genconfig -t nova --limit <host>` against the
+backup, apply it, then re-run the play so the nova-metadata copy lands and the
+container is restarted. The play verifies that `nova_metadata` can actually read
+the file and says so when it cannot.
 
 ## Prerequisites
 
