@@ -247,3 +247,65 @@ func TestAnEmptyDeploymentAssessesCleanly(t *testing.T) {
 		t.Errorf("anomalies = %v, want never-reconciled", kinds(got))
 	}
 }
+
+// A declared state accounts for what follows from it. The anomalies stay —
+// somebody marking a farm broken still needs to see what is broken about it —
+// but they stop being news, which is what separates an unattended fault from a
+// known one.
+func TestDeclaredBrokenMarksTheFaultExpectedWithoutHidingIt(t *testing.T) {
+	run := store.ReconcileRun{StartedAt: time.Now(), LastError: "nova 500"}
+	got := Assess(Input{State: store.StateBroken, Run: &run, StaleAfter: time.Hour})
+
+	var found bool
+	for _, a := range got.Anomalies {
+		if a.Kind == AnomalyReconcileNG {
+			found = true
+			if !a.Expected {
+				t.Error("a declared-broken farm's reconcile failure was reported as news")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the failure disappeared once the farm was declared broken: %v", kinds(got))
+	}
+}
+
+// An active farm's failure is news, which is the whole point of the
+// distinction.
+func TestAnActiveFarmsFailureIsNews(t *testing.T) {
+	run := store.ReconcileRun{StartedAt: time.Now(), LastError: "nova 500"}
+	got := Assess(Input{Run: &run, StaleAfter: time.Hour})
+
+	for _, a := range got.Anomalies {
+		if a.Kind == AnomalyReconcileNG && a.Expected {
+			t.Error("an active farm's failure was marked expected")
+		}
+	}
+}
+
+// A declared state explains what follows from it and nothing else. Marking
+// unrelated problems expected would let a farm declared broken hide things that
+// have nothing to do with the fault.
+func TestDeclaredBrokenDoesNotExcuseUnrelatedProblems(t *testing.T) {
+	got := Assess(Input{
+		State: store.StateBroken,
+		Hosts: []store.OpenStackHost{
+			host("a", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
+			host("b", []string{"compute"}, []string{"compute"}, "2024.2", store.ConfidenceConfirmed),
+		},
+	})
+
+	for _, a := range got.Anomalies {
+		if a.Kind == AnomalyDrift && a.Expected {
+			t.Error("release drift was excused by a broken declaration; it has nothing to do with the fault")
+		}
+	}
+}
+
+// Empty means active, so a caller that has not declared anything gets the
+// default rather than a farm with no state at all.
+func TestEmptyStateReadsAsActive(t *testing.T) {
+	if got := Assess(Input{}).State; got != store.StateActive {
+		t.Errorf("state = %q, want %q", got, store.StateActive)
+	}
+}
