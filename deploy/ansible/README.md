@@ -40,15 +40,26 @@ service that does *not* answer. Measured on a farm where that had been in place
 for a month: `vendor_data.json` returned `{}` while `meta_data.json` returned
 real data for the same signed request, so nothing looked broken.
 
-**Kolla declares the mount for nova-metadata but never copies the file.** In
-kolla-ansible 2025.1, `roles/nova/tasks/config.yml` hardcodes the copy
-destination to `nova-api`, while `nova-metadata.json.j2` declares a mount for
-`vendordata.json` that is not marked optional — and `kolla_set_configs` raises
-`MissingRequiredSource` on a non-optional missing source. So once the file
-exists in `node_custom_config`, a plain reconfigure leaves `nova_metadata`
-unable to start. This play places the file in every Nova service directory whose
+**Whether the file reaches nova-metadata depends on the kolla-ansible version.**
+Measured across the deploy hosts here, not read from release notes:
+
+| kolla-ansible | What it does with the vendordata file |
+|---|---|
+| 18.8.0 (2024.1) | `nova_services` has no `nova-metadata` entry at all. A reconfigure run from here leaves that directory untouched. |
+| 20.2.0 | Copies to `nova-api` only (destination hardcoded), while `nova-metadata.json.j2` declares a mount for it that is **not** marked optional. |
+| 20.4.0 | Fixed upstream — the copy loops over `nova-metadata` and `nova-api`. |
+
+On 20.2.0 that combination is a trap: `kolla_set_configs` raises
+`MissingRequiredSource` on a non-optional missing source, so once the file exists
+in `node_custom_config`, a plain reconfigure leaves `nova_metadata` unable to
+start. This play places the file in every Nova service directory whose
 `config.json` declares it, and refuses to remove one while a `config.json` still
-does.
+does — a no-op on 20.4.0, and the difference between working and not on 20.2.0.
+
+A deploy host can have more than one kolla-ansible venv. Check which one the last
+run used before assuming: one farm here reconfigured 2025.1 containers from a
+2024.1 venv, which is why its `nova-metadata` config sat a month behind its
+`nova-api` config with nobody noticing.
 
 Order for a farm that has never had this, and the order matters:
 

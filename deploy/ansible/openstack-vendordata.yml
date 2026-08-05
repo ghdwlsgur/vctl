@@ -17,22 +17,35 @@
 #   /etc/kolla/nova-*/...      Deployment artifacts. Kolla owns them. This play
 #                              touches them only to work around the gap below.
 #
-# The upstream gap this play works around
-# ---------------------------------------
-# In kolla-ansible 2025.1, roles/nova/tasks/config.yml copies the vendordata file
-# to nova-api ONLY (the destination is hardcoded), while nova-metadata.json.j2
-# declares a mount for it that is not marked optional. kolla_set_configs raises
-# MissingRequiredSource on a non-optional missing source, so once the file exists
-# in node_custom_config, a plain reconfigure leaves nova_metadata unable to start.
+# Why this is not just "drop a file in node_custom_config"
+# --------------------------------------------------------
+# nova-metadata, not nova-api, is what answers a VM asking 169.254.169.254 for
+# vendor_data.json: the neutron metadata agent proxies to port 8775, which is the
+# nova_metadata container. Measured on a farm where the file had been in place for
+# a month — vendor_data.json returned {} while meta_data.json returned real data
+# for the same signed request. The config was on the service that does not answer
+# and nothing reported it.
 #
-# That matters because nova-metadata, not nova-api, is what answers a VM asking
-# 169.254.169.254 for vendor_data.json. Measured on a farm where the file had
-# been in place for a month: vendor_data.json returned {} while meta_data.json
-# returned real data for the same signed request — the config was on the wrong
-# service and nothing reported it.
+# Getting the file to nova-metadata depends on the kolla-ansible version doing the
+# deploy, and the versions disagree (measured, not read from release notes):
+#
+#   18.8.0 (2024.1)   nova_services has no nova-metadata at all. A reconfigure
+#                     run from here leaves that directory untouched — which is
+#                     exactly how one farm ended up with a nova-api config from
+#                     July and a nova-metadata config from June.
+#   20.2.0            copies the file to nova-api only (dest hardcoded), while
+#                     nova-metadata.json.j2 declares a mount for it that is NOT
+#                     marked optional. kolla_set_configs raises
+#                     MissingRequiredSource on a non-optional missing source, so
+#                     once the file exists in node_custom_config a plain
+#                     reconfigure leaves nova_metadata unable to start.
+#   20.4.0            fixed upstream: the copy loops over nova-metadata and
+#                     nova-api. Nothing here is needed for the copy itself.
 #
 # So this play places the file in every Nova service directory whose config.json
-# declares it, and refuses to remove it while a config.json still does.
+# declares it, and refuses to remove it while a config.json still does. On 20.4.0
+# that is a no-op the second time; on 20.2.0 it is the difference between a
+# working metadata service and one that will not start.
 #
 # Usage
 # -----
@@ -133,6 +146,10 @@
     # placing closes the gap, and genconfig never touches the file itself.
     #   -e '{"vendordata_extra_dirs":["/etc/kolla/nova-metadata"]}'
     vendordata_extra_dirs: []
+    # Restarting nova_metadata is what makes a new file take effect, and it is
+    # also a brief metadata outage. Set false to stage the file now and restart
+    # in a window — the common shape of this work on a live farm.
+    vendordata_restart: true
   pre_tasks:
     - name: Render the vendordata document
       when: state == 'present'
@@ -237,6 +254,7 @@
     - name: Restart nova metadata
       # stop then start, never restart: repeated podman restart degrades the
       # engine's responsiveness badly enough to look like a host fault.
+      when: vendordata_restart | bool
       ansible.builtin.shell: |
         set -e -o pipefail
         CLI=$(command -v podman || command -v docker || true)
