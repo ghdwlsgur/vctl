@@ -22,6 +22,7 @@ func openstackFarmCmd() *cobra.Command {
 	}
 	cmd.AddCommand(openstackFarmNameCmd())
 	cmd.AddCommand(openstackFarmShowCmd())
+	cmd.AddCommand(openstackFarmStateCmd())
 	return cmd
 }
 
@@ -75,6 +76,7 @@ type farmChoice struct {
 	ID      string
 	Name    string
 	Region  string
+	State   string
 	Hosts   int
 	Roles   string
 	Unnamed bool
@@ -117,7 +119,7 @@ func farmChoices(ctx context.Context, st *store.Store) ([]farmChoice, error) {
 	for id, hs := range byFarm {
 		c := farmChoice{ID: id, Hosts: len(hs), Roles: farmShape(hs)}
 		if d, ok := named[id]; ok {
-			c.Name, c.Region = d.DisplayName, d.Region
+			c.Name, c.Region, c.State = d.DisplayName, d.Region, d.State
 		}
 		c.Unnamed = c.Name == ""
 		out = append(out, c)
@@ -166,6 +168,9 @@ func farmPickLabels(farms []farmChoice) []string {
 		if f.Name != "" {
 			label += "  " + ui.Value(f.Name)
 		}
+		if f.State != "" && f.State != store.StateActive {
+			label += "  " + stateCell(f.State)
+		}
 		if f.Hosts > 0 {
 			label += "  " + ui.Muted(fmt.Sprintf("%d hosts · %s", f.Hosts, ui.Truncate(f.Roles, 48)))
 		}
@@ -202,4 +207,108 @@ func farmNameForm(f farmChoice, region string) (string, string, string, error) {
 		return "", "", "", err
 	}
 	return f.ID, strings.TrimSpace(name), strings.TrimSpace(region), nil
+}
+
+func openstackFarmStateCmd() *cobra.Command {
+	var note string
+	cmd := &cobra.Command{
+		Use:   "state [deployment] [state]",
+		Short: "Declare what an operator knows about a deployment: active, maintenance, broken, retired",
+		Long: "Observation cannot tell a farm that is broken from one being rebuilt. A reconcile\n" +
+			"failing every six hours against a farm somebody is mid-upgrade on is expected; the\n" +
+			"same failure against a farm nobody touched is news, and nothing collected separates\n" +
+			"them.\n\n" +
+			"Anomalies are still reported once a state is declared — a declared fault does not\n" +
+			"stop being a fault, and somebody has to see what it is — but they are marked as\n" +
+			"expected rather than as news.\n\n" +
+			"With no arguments the deployment is picked from a list and the state asked for in a form.",
+		Args: cobra.MaximumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+				ctx := cmd.Context()
+				farms, err := farmChoices(ctx, st)
+				if err != nil {
+					return err
+				}
+				if len(farms) == 0 {
+					ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
+					return nil
+				}
+				id, state := "", ""
+				if len(args) > 0 {
+					id = args[0]
+				}
+				if len(args) > 1 {
+					state = args[1]
+				}
+				id, state, note, err = resolveFarmState(farms, id, state, note)
+				if err != nil {
+					return err
+				}
+				if err := st.SetDeploymentState(ctx, id, state, note); err != nil {
+					return err
+				}
+				ui.Successf(os.Stdout, "%s is now %s", id, state)
+				return nil
+			})
+		},
+	}
+	cmd.Flags().StringVar(&note, "note", "", "why — the state says what to expect, this says what happened")
+	return cmd
+}
+
+// resolveFarmState fills in whatever was not given on the command line.
+func resolveFarmState(farms []farmChoice, id, state, note string) (string, string, string, error) {
+	if id != "" {
+		i := indexOfFarm(farms, id)
+		if i < 0 {
+			return "", "", "", fmt.Errorf("no deployment %q; run 'vctl openstack' to see them", id)
+		}
+		if state != "" {
+			if !store.ValidState(state) {
+				return "", "", "", fmt.Errorf("%q is not a state; use one of %s",
+					state, strings.Join(store.HostStates, ", "))
+			}
+			return farms[i].ID, state, strings.TrimSpace(note), nil
+		}
+		return farmStateForm(farms[i], note)
+	}
+	if !isTerminal() {
+		return "", "", "", fmt.Errorf("a deployment is required when there is no terminal to pick at")
+	}
+	i, err := pickIndex(farmPickLabels(farms), nil, "Declare a deployment's state")
+	if err != nil {
+		return "", "", "", err
+	}
+	return farmStateForm(farms[i], note)
+}
+
+func farmStateForm(f farmChoice, note string) (string, string, string, error) {
+	if !isTerminal() {
+		return "", "", "", fmt.Errorf("a state is required when there is no terminal to ask at")
+	}
+	state := f.State
+	if state == "" {
+		state = store.StateActive
+	}
+	desc := f.ID
+	if f.Hosts > 0 {
+		desc = fmt.Sprintf("%s · %d hosts · %s", f.ID, f.Hosts, f.Roles)
+	}
+	form := huh.NewForm(huh.NewGroup(
+		// A Select, not free text: the database constrains the column, and
+		// typing "down" into a field that takes only these four should fail at
+		// the form rather than after the note has been written.
+		huh.NewSelect[string]().Title("State").
+			Description(desc).
+			Options(stateOptions()...).
+			Value(&state),
+		huh.NewInput().Title("Note").
+			Description("optional; what happened, for whoever reads this a week later").
+			Value(&note),
+	))
+	if err := form.WithTheme(ui.FormTheme()).WithKeyMap(ui.FormKeyMap()).Run(); err != nil {
+		return "", "", "", err
+	}
+	return f.ID, state, strings.TrimSpace(note), nil
 }

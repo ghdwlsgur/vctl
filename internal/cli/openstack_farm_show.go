@@ -110,9 +110,19 @@ func collectAssessment(ctx context.Context, st *store.Store, pick farmChoice, no
 		return openstack.Assessment{}, err
 	}
 	in := openstack.Input{
-		ID: pick.ID, Name: pick.Name, Region: pick.Region,
+		ID: pick.ID, Name: pick.Name, Region: pick.Region, State: pick.State,
 		Hosts: mine, Instances: vms, Ghosts: ghosts,
 		StaleAfter: farmStaleWindow, Now: now,
+	}
+	// The note and when it was declared come from the deployment row, which
+	// farmChoices does not carry — an age is most of what makes a declared
+	// fault readable a week later.
+	if ds, err := st.Deployments(ctx); err == nil {
+		for _, d := range ds {
+			if d.ID == pick.ID {
+				in.StateNote, in.StateSince = d.StateNote, d.StateChangedAt
+			}
+		}
 	}
 	if r, ok := runs[pick.ID]; ok {
 		in.Run = &r
@@ -130,6 +140,9 @@ func renderFarmShow(w io.Writer, a openstack.Assessment, now time.Time) {
 	}
 	title += fmt.Sprintf(" · confirmed %d/%d", a.Membership.Confirmed, a.Membership.Total)
 	ui.Section(w, title)
+	if line := declaredStateLine(a, now); line != "" {
+		fmt.Fprintf(w, "  %s\n", line)
+	}
 
 	if a.Membership.Total == 0 {
 		// Named before anything reported, or every probe has gone quiet. Say
@@ -183,13 +196,13 @@ func renderFarmShow(w io.Writer, a openstack.Assessment, now time.Time) {
 	}
 	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("keystone"), 20), a.ID)
 	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("reconciled"), 20), reconcileLine(a.Freshness, now))
-	renderAnomalies(w, a.Anomalies)
+	renderAnomalies(w, a.Anomalies, a.State)
 }
 
 // renderAnomalies puts everything worth a second look in one block. Scattered
 // through the sections above they are each a footnote; together they are the
 // answer to "what is wrong with this farm".
-func renderAnomalies(w io.Writer, anomalies []openstack.Anomaly) {
+func renderAnomalies(w io.Writer, anomalies []openstack.Anomaly, state string) {
 	if len(anomalies) == 0 {
 		return
 	}
@@ -199,8 +212,33 @@ func renderAnomalies(w io.Writer, anomalies []openstack.Anomaly) {
 		if an.Severity == openstack.SeverityError {
 			mark = ui.Fail("!!")
 		}
-		fmt.Fprintf(w, "  %s %s  %s\n", mark, ui.PadRight(an.Subject, 20), ui.Muted(an.Detail))
+		detail := an.Detail
+		if an.Expected {
+			// Still shown — a farm declared broken has to be able to say what
+			// is broken about it — but marked as following from the
+			// declaration rather than as news.
+			mark = ui.Muted("·")
+			detail += ui.Muted(" (expected while " + state + ")")
+		}
+		fmt.Fprintf(w, "  %s %s  %s\n", mark, ui.PadRight(an.Subject, 20), ui.Muted(detail))
 	}
+}
+
+// declaredStateLine renders what an operator said about the farm, and how long
+// ago. A farm broken for an hour and one broken for a month are different
+// situations and the word alone does not say which.
+func declaredStateLine(a openstack.Assessment, now time.Time) string {
+	if a.State == "" || a.State == store.StateActive {
+		return ""
+	}
+	s := stateCell(a.State)
+	if a.StateSince != nil {
+		s += ui.Muted(" for " + ui.CompactDuration(now.Sub(*a.StateSince)))
+	}
+	if a.StateNote != "" {
+		s += ui.Muted(" — " + a.StateNote)
+	}
+	return s
 }
 
 func vmLine(a openstack.Assessment) string {

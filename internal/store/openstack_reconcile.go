@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -312,6 +313,36 @@ type Deployment struct {
 	DisplayName string
 	Region      string
 	KeystoneURL string
+
+	// State is what an operator declared about it, in the same words hosts use.
+	// Observation cannot tell a farm that is broken from one being rebuilt.
+	State          string
+	StateNote      string
+	StateChangedAt *time.Time
+}
+
+// SetDeploymentState records what an operator declares about a deployment.
+//
+// The row is created if the reconciler has not seen this deployment yet, so a
+// farm can be marked broken before anything has successfully collected from it
+// — which is exactly when somebody wants to.
+func (s *Store) SetDeploymentState(ctx context.Context, id, state, note string) error {
+	if !ValidState(state) {
+		return fmt.Errorf("%q is not a state; use one of %s", state, strings.Join(HostStates, ", "))
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO openstack_deployments (id, state, state_note, state_changed_at, updated_at)
+		VALUES ($1,$2,$3, now(), now())
+		ON CONFLICT (id) DO UPDATE SET
+			state=EXCLUDED.state, state_note=EXCLUDED.state_note,
+			-- Only when it actually changes: re-declaring the same state should
+			-- not reset the age somebody is reading to decide how stale a fault is.
+			state_changed_at = CASE
+				WHEN openstack_deployments.state IS DISTINCT FROM EXCLUDED.state
+				THEN now() ELSE openstack_deployments.state_changed_at END,
+			updated_at=now()`,
+		id, state, note)
+	return err
 }
 
 // SetDeploymentName gives a farm a name people can read.
@@ -340,11 +371,13 @@ func (s *Store) SetDeploymentName(ctx context.Context, id, name, region string) 
 // Deployments lists the farms the inventory knows by name.
 func (s *Store) Deployments(ctx context.Context) ([]Deployment, error) {
 	return queryAndCollect(ctx, s.pool, `
-		SELECT id, display_name, region, keystone_url
+		SELECT id, display_name, region, keystone_url,
+		       coalesce(state,'active'), state_note, state_changed_at
 		FROM openstack_deployments ORDER BY id`, nil,
 		func(r pgx.Rows) (Deployment, error) {
 			var d Deployment
-			err := r.Scan(&d.ID, &d.DisplayName, &d.Region, &d.KeystoneURL)
+			err := r.Scan(&d.ID, &d.DisplayName, &d.Region, &d.KeystoneURL,
+				&d.State, &d.StateNote, &d.StateChangedAt)
 			return d, err
 		})
 }

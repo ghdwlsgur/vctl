@@ -28,6 +28,14 @@ type Assessment struct {
 	Name   string `json:"name,omitempty"`
 	Region string `json:"region,omitempty"`
 
+	// State is what an operator declared about this deployment. Anomalies are
+	// still reported when it is not active — a declared fault does not stop
+	// being a fault — but they are marked as expected, so an unattended farm
+	// and a known-broken one do not read the same.
+	State      string     `json:"state,omitempty"`
+	StateNote  string     `json:"state_note,omitempty"`
+	StateSince *time.Time `json:"state_since,omitempty"`
+
 	Architecture Architecture `json:"architecture"`
 	Membership   Membership   `json:"membership"`
 	Health       Health       `json:"health"`
@@ -118,6 +126,12 @@ type Anomaly struct {
 	// Severity orders them: "warn" is something to look at, "error" is
 	// something wrong now.
 	Severity string `json:"severity"`
+
+	// Expected marks an anomaly that the declared state already accounts for.
+	// It is still reported — hiding it would make a farm declared broken look
+	// healthy, and somebody has to be able to see what the fault actually is —
+	// but it is not news.
+	Expected bool `json:"expected,omitempty"`
 }
 
 // Anomaly kinds.
@@ -145,6 +159,11 @@ type Input struct {
 	ID     string
 	Name   string
 	Region string
+
+	// State is what an operator declared. Empty is treated as active.
+	State      string
+	StateNote  string
+	StateSince *time.Time
 
 	// Hosts are this deployment's hosts, already filtered to it.
 	Hosts []store.OpenStackHost
@@ -175,7 +194,13 @@ func Assess(in Input) Assessment {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	a := Assessment{ID: in.ID, Name: in.Name, Region: in.Region}
+	a := Assessment{
+		ID: in.ID, Name: in.Name, Region: in.Region,
+		State: in.State, StateNote: in.StateNote, StateSince: in.StateSince,
+	}
+	if a.State == "" {
+		a.State = store.StateActive
+	}
 	a.Versions.ByRelease = map[string]int{}
 
 	vmsByHypervisor := map[string]int{}
@@ -284,6 +309,18 @@ func Assess(in Input) Assessment {
 		})
 	}
 
+	// A declared state accounts for what follows from it. The anomalies stay —
+	// somebody marking a farm broken still needs to see what is broken about it,
+	// and hiding them would make the farm look healthy — but they stop being
+	// news, which is what separates an unattended fault from a known one.
+	if a.State != store.StateActive {
+		for i := range a.Anomalies {
+			if expectedUnder(a.State, a.Anomalies[i].Kind) {
+				a.Anomalies[i].Expected = true
+			}
+		}
+	}
+
 	// Errors first, then by kind, so the order is the same every run and the
 	// worst thing is the first thing.
 	sort.SliceStable(a.Anomalies, func(i, j int) bool {
@@ -296,6 +333,24 @@ func Assess(in Input) Assessment {
 		return a.Anomalies[i].Subject < a.Anomalies[j].Subject
 	})
 	return a
+}
+
+// expectedUnder says whether a declared state already accounts for an anomaly.
+//
+// Narrow on purpose. "broken" explains a control plane that will not answer; it
+// does not explain a release drift or a host claimed by two deployments, and
+// marking those expected would let a farm declared broken hide problems that
+// have nothing to do with the fault.
+func expectedUnder(state, kind string) bool {
+	switch kind {
+	case AnomalyReconcileNG, AnomalyStale, AnomalyRoleDown, AnomalyVMMissing:
+		return state == store.StateBroken || state == store.StateMaintenance ||
+			state == store.StateRetired
+	case AnomalyNeverRun, AnomalyUnsettled:
+		return state == store.StateRetired
+	default:
+		return false
+	}
 }
 
 func assessFreshness(r *store.ReconcileRun, staleAfter time.Duration, now time.Time) Freshness {
