@@ -20,7 +20,7 @@ import (
 )
 
 func sshCmd() *cobra.Command {
-	var server string
+	var server, vm, user string
 	cmd := &cobra.Command{
 		Use:   "ssh [host|user@addr]",
 		Short: "Connect to an inventory host, or to an address directly",
@@ -33,6 +33,14 @@ Non-interactive (scripts/agents):
 Direct:       vctl ssh ubuntu@192.0.2.10        an address, not an inventory name
               vctl ssh ubuntu@192.0.2.10:2222
 
+VM:           vctl ssh --vm <nova-uuid> --user rocky
+              vctl ssh --vm openstack:///<nova-uuid> --user rocky
+
+A VM is addressed by its Nova id only — a name can fit several VMs across farms,
+and resolving that by position would connect to whichever sorted first. The
+address is the one the VM listing shows; --user is required because Nova does
+not record a login user and the answer depends on the image.
+
 A direct target skips inventory entirely, so it reaches a host that was never
 registered — as long as the host already trusts the Vault SSH CA (see
 'vctl trust-ca'). The certificate, the RBAC gate and the access-log row are the
@@ -44,6 +52,12 @@ the configured default.`,
 			ctx := cmd.Context()
 			if server != "" && len(args) > 0 {
 				return fmt.Errorf("pass the host via --server or as a positional argument, not both")
+			}
+			if vm != "" && (server != "" || len(args) > 0) {
+				return fmt.Errorf("pass a VM via --vm, or a host, not both")
+			}
+			if vm != "" {
+				return sshVM(ctx, vm, user)
 			}
 			query := server
 			if query == "" && len(args) > 0 {
@@ -93,6 +107,8 @@ the configured default.`,
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "exact inventory host, or user@addr, to connect to (non-interactive; for scripts/agents)")
+	cmd.Flags().StringVar(&vm, "vm", "", "a Nova instance id, or a Kubernetes providerID (openstack:///<uuid>)")
+	cmd.Flags().StringVar(&user, "user", "", "login user for --vm (Nova does not record one)")
 	return cmd
 }
 
@@ -225,4 +241,67 @@ func withLiveStatus(ctx context.Context, st invcache.Reader, cands []store.Serve
 		}
 	}
 	return out, nil
+}
+
+// sshVM connects to a Nova instance.
+//
+// Exact identity only. A VM name fits several VMs across farms — this fleet has
+// two called secloudit-pkg-bastion in different deployments — and resolving that
+// by position would connect to whichever sorted first, which is the kind of
+// mistake nothing downstream can catch. The id is what kubectl prints, what
+// `vctl openstack vm` prints, and what a person is likely to have.
+//
+// Host key policy follows whether somebody is present, not the flag's shape.
+//
+// Strict was the first choice, on the reasoning that an identifier is what
+// scripts use. Running it showed why that cannot stand alone: the refusal reads
+// "connect interactively once to verify it", and there is no interactive way to
+// reach a VM — --vm is the only door. Every first connection was a dead end.
+//
+// A physical host has both doors: the positional form prompts, --server does
+// not. Here the terminal is what says which one this is.
+func sshVM(ctx context.Context, selector, user string) error {
+	id, ok := access.NovaID(selector)
+	if !ok {
+		return fmt.Errorf("--vm takes a Nova instance id or openstack:///<id>, not %q; "+
+			"run 'vctl openstack vm' to find it", selector)
+	}
+	return withStore(ctx, false, func(a *app.App, st *store.Store) error {
+		vms, err := st.Instances(ctx, store.InstanceFilter{InstanceID: id, IncludeMissing: true})
+		if err != nil {
+			return err
+		}
+		if len(vms) == 0 {
+			return fmt.Errorf("no VM %s; run 'vctl openstack reconcile' if it is new", id)
+		}
+		v := vms[0]
+		if v.MissingSince != nil {
+			// The control plane stopped listing it. Connecting anyway would be
+			// reaching for an address that belonged to something else by now.
+			return fmt.Errorf("%s (%s) is no longer listed by its control plane", v.Name, id)
+		}
+		if user == "" {
+			user = a.Cfg.SSHDefaultUser
+		}
+		tgt, err := access.VMTarget(v.Name, v.Addresses, access.VMPolicy{
+			User: user, CARole: a.Cfg.CARole, OperatorNets: a.Cfg.OperatorNetworks,
+		})
+		if err != nil {
+			return err
+		}
+		ui.Infof(os.Stderr, "connecting to %s (%s@%s) — VM in %s, project %s",
+			tgt.Name, tgt.User, tgt.Addr, v.DeploymentID, orUnknown(v.ProjectName))
+		policy := access.HostKeyStrict
+		if isTerminal() {
+			policy = access.HostKeyPrompt
+		}
+		return newConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+	})
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
 }
