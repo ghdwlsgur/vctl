@@ -166,6 +166,13 @@
     # service it is a brief metadata blip, but on releases that serve metadata
     # from nova-api it takes the compute API with it. Set false to stage now and
     # restart in a window — the common shape of this work on a live farm.
+    #
+    # Rolling back never restarts on its own (see the handler). Removing the
+    # file is not what makes the old behaviour return — the running container
+    # already has whatever config it started with — so a restart there buys
+    # nothing and costs an outage. Measured: a rollback on a farm that had never
+    # been restarted since the change took its compute API down for ~20s for no
+    # effect at all.
     vendordata_restart: true
   pre_tasks:
     - name: Render the vendordata document
@@ -307,7 +314,13 @@
     - name: Restart the metadata service
       # stop then start, never restart: repeated podman restart degrades the
       # engine's responsiveness badly enough to look like a host fault.
-      when: vendordata_restart | bool
+      #
+      # state=absent is excluded rather than left to the operator to remember.
+      # Rolling back is the moment you least want a surprise outage, and the
+      # running container is already serving the config you are rolling back to.
+      when:
+        - vendordata_restart | bool
+        - state == 'present'
       ansible.builtin.shell: |
         set -e -o pipefail
         CLI=$(command -v podman || command -v docker || true)
