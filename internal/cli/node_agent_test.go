@@ -31,11 +31,13 @@ func (f *fakeStatusSink) UpsertServerStatus(context.Context, store.ServerStatus)
 	return true, nil
 }
 
-func (f *fakeStatusSink) UpsertCapability(_ context.Context, c store.Capability) (bool, error) {
-	f.caps = append(f.caps, c)
+func (f *fakeStatusSink) ReplaceCapabilities(_ context.Context, _, _ string, caps []store.Capability) (bool, error) {
+	// The whole pass or none of it — the same all-or-nothing the transaction
+	// gives, so a test cannot pass here and tear in production.
 	if f.err != nil {
 		return false, f.err
 	}
+	f.caps = append(f.caps, caps...)
 	return true, nil
 }
 
@@ -182,7 +184,7 @@ func (u *unregisteredSink) UpsertServerStatus(context.Context, store.ServerStatu
 
 // The unregistered host's capability writes are refused the same way its
 // heartbeat is: matched=false, no error.
-func (u *unregisteredSink) UpsertCapability(context.Context, store.Capability) (bool, error) {
+func (u *unregisteredSink) ReplaceCapabilities(context.Context, string, string, []store.Capability) (bool, error) {
 	return false, nil
 }
 
@@ -473,7 +475,7 @@ func (h *hangingSink) UpsertServerStatus(ctx context.Context, _ store.ServerStat
 	return true, h.block(ctx, "status")
 }
 
-func (h *hangingSink) UpsertCapability(ctx context.Context, _ store.Capability) (bool, error) {
+func (h *hangingSink) ReplaceCapabilities(ctx context.Context, _, _ string, _ []store.Capability) (bool, error) {
 	return true, h.block(ctx, "capability")
 }
 

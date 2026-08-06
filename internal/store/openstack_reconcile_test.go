@@ -18,12 +18,11 @@ func seedFarmHosts(t *testing.T, st *Store, keystone string, hosts ...string) {
 	ctx := context.Background()
 	for _, h := range hosts {
 		seedOpenStackHost(t, st, h, StateActive)
-		if _, err := st.UpsertCapability(ctx, Capability{
-			Hostname: h, Kind: KindOpenStack, Role: "compute", Detected: true,
-			Details:    map[string]string{"keystone_url": keystone},
-			ObservedAt: time.Now(),
-		}); err != nil {
-			t.Fatalf("seed capability %s: %v", h, err)
+		if _, err := st.ReplaceCapabilities(ctx, h, KindOpenStack, []Capability{{
+			Role: "compute", Detected: true,
+			Details: map[string]string{"keystone_url": keystone},
+		}}); err != nil {
+			t.Fatalf("seed capability for %s: %v", h, err)
 		}
 	}
 }

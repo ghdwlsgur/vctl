@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"testing"
-	"time"
 )
 
 func seedOpenStackHost(t *testing.T, st *Store, host, state string) {
@@ -51,16 +50,16 @@ func TestOpenStackHostsJoinsRolesAndMembership(t *testing.T) {
 		t.Fatalf("seed membership: %v", err)
 	}
 
-	at := time.Now().Truncate(time.Second)
+	caps := make([]Capability, 0, 2)
 	for _, role := range []string{"compute", "network"} {
-		if _, err := st.UpsertCapability(ctx, Capability{
-			Hostname: host, Kind: KindOpenStack, Role: role, Detected: true,
+		caps = append(caps, Capability{
+			Role: role, Detected: true,
 			Components: map[string]CapabilityComponent{"nova-compute": {Version: "31.2.0", Active: true}},
 			Details:    map[string]string{"deployment": "unknown"},
-			ObservedAt: at,
-		}); err != nil {
-			t.Fatalf("upsert %s: %v", role, err)
-		}
+		})
+	}
+	if _, err := st.ReplaceCapabilities(ctx, host, KindOpenStack, caps); err != nil {
+		t.Fatalf("ReplaceCapabilities: %v", err)
 	}
 
 	got := findOpenStackHost(t, st, host)
@@ -87,11 +86,9 @@ func TestOpenStackHostsCarriesTheDeclaredHostState(t *testing.T) {
 	const host = "os-host-02"
 	seedOpenStackHost(t, st, host, StateMaintenance)
 
-	if _, err := st.UpsertCapability(ctx, Capability{
-		Hostname: host, Kind: KindOpenStack, Role: "compute", Detected: true,
-		ObservedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
+	if _, err := st.ReplaceCapabilities(ctx, host, KindOpenStack,
+		[]Capability{{Role: "compute", Detected: true}}); err != nil {
+		t.Fatalf("ReplaceCapabilities: %v", err)
 	}
 
 	if got := findOpenStackHost(t, st, host).HostState; got != StateMaintenance {
@@ -135,11 +132,9 @@ func TestOpenStackCoverageSeparatesAbsentFromUnprobed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("coverage: %v", err)
 	}
-	if _, err := st.UpsertCapability(ctx, Capability{
-		Hostname: host, Kind: KindOpenStack, Role: roleNone, Detected: false,
-		ObservedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
+	if _, err := st.ReplaceCapabilities(ctx, host, KindOpenStack,
+		[]Capability{{Role: roleNone}}); err != nil {
+		t.Fatalf("ReplaceCapabilities: %v", err)
 	}
 	after, err := st.coverageNow(ctx, t)
 	if err != nil {
@@ -199,11 +194,9 @@ func TestCoverageAgreesWithTheListingAfterAFailureIsSuperseded(t *testing.T) {
 	if err := st.RecordCapabilityError(ctx, host, KindOpenStack, "probe timed out"); err != nil {
 		t.Fatalf("RecordCapabilityError: %v", err)
 	}
-	if _, err := st.UpsertCapability(ctx, Capability{
-		Hostname: host, Kind: KindOpenStack, Role: "compute", Detected: true,
-		ObservedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("UpsertCapability: %v", err)
+	if _, err := st.ReplaceCapabilities(ctx, host, KindOpenStack,
+		[]Capability{{Role: "compute", Detected: true}}); err != nil {
+		t.Fatalf("ReplaceCapabilities: %v", err)
 	}
 
 	got := findOpenStackHost(t, st, host)

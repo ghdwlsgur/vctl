@@ -234,7 +234,7 @@ func runCapabilityProbes(ctx context.Context, conn *statusConn, hostname string,
 // this narrow is what makes the reconnect behavior testable without a database.
 type statusSink interface {
 	UpsertServerStatus(context.Context, store.ServerStatus) (bool, error)
-	UpsertCapability(context.Context, store.Capability) (bool, error)
+	ReplaceCapabilities(ctx context.Context, hostname, kind string, caps []store.Capability) (bool, error)
 	RecordCapabilityError(ctx context.Context, hostname, kind, message string) error
 	Close()
 }
@@ -352,12 +352,15 @@ func (c *statusConn) reportCapability(ctx context.Context, hostname string, res 
 		for _, r := range res.ActiveRoles {
 			active[r] = true
 		}
+		// Built first, written once. A role at a time was how this used to go,
+		// and a failure halfway through left the host looking like it had
+		// dropped the roles the loop had not reached yet.
+		caps := make([]store.Capability, 0, len(roles))
 		for _, role := range roles {
 			cap := store.Capability{
 				Hostname: hostname, Kind: res.Kind, Role: role,
 				Detected: res.Detected, Active: active[role], Details: res.Details,
 				Components: make(map[string]store.CapabilityComponent, len(res.Components)),
-				ObservedAt: res.ObservedAt,
 			}
 			for name, comp := range res.Components {
 				cap.Components[name] = store.CapabilityComponent{
@@ -365,11 +368,10 @@ func (c *statusConn) reportCapability(ctx context.Context, hostname string, res 
 					Active: comp.Active, Service: comp.Service,
 				}
 			}
-			if _, err := st.UpsertCapability(ctx, cap); err != nil {
-				return err
-			}
+			caps = append(caps, cap)
 		}
-		return nil
+		_, err := st.ReplaceCapabilities(ctx, hostname, res.Kind, caps)
+		return err
 	})
 }
 
