@@ -51,11 +51,6 @@ database role for low-risk, low-resource status reporting.`,
 			}}
 			defer conn.close()
 
-			// Spread the fleet. Every agent is installed and restarted in the
-			// same pass, so their clocks line up and stay lined up.
-			interval = jitterInterval(interval, hostname)
-			probeInterval = jitterInterval(probeInterval, hostname)
-
 			// Capability probes run on their own, slower clock.
 			//
 			// The heartbeat answers "is this host alive" and has to stay cheap
@@ -72,6 +67,17 @@ database role for low-risk, low-resource status reporting.`,
 			// inline is what makes --once mean one of each.
 			if probeInterval > 0 && !once {
 				go runCapabilityProbes(ctx, conn, hostname, probeInterval, false)
+			}
+
+			// Spread the fleet's first heartbeat. Every agent is installed and
+			// restarted in the same pass, so without this they all reach Vault
+			// in the same second. After this the interval is exact.
+			//
+			// Under --once there is no fleet and no next run, so a delay is
+			// nothing but a slow command. The capability goroutine is already
+			// running and waits out its own, longer offset.
+			if !once && !waitForContext(ctx, startPhase(heartbeatPhase, hostname, "heartbeat")) {
+				return nil
 			}
 
 			report := func() error { return conn.report(ctx, hostname) }
@@ -95,38 +101,55 @@ database role for low-risk, low-resource status reporting.`,
 	return cmd
 }
 
-// jitterFraction is how far an agent's clock may sit from the nominal interval.
+// How far into its window each loop's first run may be pushed.
 //
 // The whole fleet is installed in one pass and restarted in one pass, so every
-// agent's five-minute and one-hour ticks align and stay aligned: forty-odd hosts
-// asking Vault for a credential and Postgres for a connection in the same
-// second, twelve times an hour. Nothing here is heavy enough for that to hurt
-// yet — which is the reason to spread it while it is still cheap, rather than
-// after the fleet is large enough to notice.
+// agent's first heartbeat lands in the same second: forty-odd AppRole logins,
+// forty-odd dynamic database credentials, forty-odd pools. Nothing here is
+// heavy enough for that to hurt yet, which is the reason to spread it while it
+// is still cheap.
 //
-// ±10% of five minutes is ±30s, enough that the pile-up dissolves within a
-// couple of hours and small enough that nobody reading a heartbeat age has to
-// think about it.
-const jitterFraction = 0.1
+// The offset goes on the *first run only*; the interval afterwards is exact.
+// Skewing the interval instead was the first attempt and it was the wrong
+// shape: it left the startup pile-up completely untouched — both loops run once
+// immediately, before any ticker exists — while making every host's heartbeat
+// permanently something other than five minutes, so "the agent reports every
+// five minutes" stopped being true of any host in the fleet.
+//
+// The heartbeat's window is short because a fresh deployment should confirm
+// itself quickly; the capability probe's is longer because it is the expensive
+// half — it forks systemctl, reads container sockets, and writes a row per role
+// — and nothing waits on it.
+const (
+	heartbeatPhase  = 30 * time.Second
+	capabilityPhase = 5 * time.Minute
+)
 
-// jitterInterval offsets a schedule deterministically by hostname.
+// startPhase is how long a loop waits before its first run.
 //
-// Not jitterWatchDelay, which is the other half of the same idea and draws
-// fresh each call. That one spreads *retries* after a fleet-wide outage, where
-// a new draw every attempt is exactly right. This one spreads a *standing*
-// schedule, so the offset has to survive: derived from the name, a host keeps
-// its slot across restarts instead of re-rolling into a fresh collision every
-// time the unit bounces, and "these two always land together" becomes something
-// reproducible rather than something to wait for.
-func jitterInterval(d time.Duration, hostname string) time.Duration {
-	if d <= 0 || hostname == "" {
-		return d
+// Derived from the host's name rather than drawn at random, so a host keeps its
+// slot across restarts instead of re-rolling into a fresh collision every time
+// the unit bounces, and so "these two hosts always land together" is something
+// that can be reproduced rather than waited for.
+//
+// The loop name is in the hash as well, so the two loops on one host get
+// different offsets. With a single per-host fraction the capability probe
+// landed on exactly the same tick as every twelfth heartbeat, on every host,
+// forever — safe now that they share a lock, but the opposite of two clocks
+// being kept apart.
+//
+// Not jitterWatchDelay, which draws fresh each call. That one spreads retries
+// after an outage, where a new draw every attempt is right. This is a standing
+// position in a schedule, so it has to be stable.
+func startPhase(window time.Duration, hostname, loop string) time.Duration {
+	if window <= 0 || hostname == "" {
+		return 0
 	}
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(hostname))
-	// Evenly spread over [-1, +1].
-	frac := float64(int32(h.Sum32()%2001)-1000) / 1000
-	return d + time.Duration(float64(d)*jitterFraction*frac)
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(loop))
+	return time.Duration(uint64(h.Sum32()) % uint64(window))
 }
 
 // capabilityProbes is what this agent knows how to look for. Adding a platform
@@ -161,10 +184,18 @@ func runCapabilityProbes(ctx context.Context, conn *statusConn, hostname string,
 			}
 		}
 	}
-	run()
 	if once {
+		// Inline and immediate: --once has to mean one of each, and the caller
+		// exits the moment this returns.
+		run()
 		return
 	}
+	// The expensive half of the agent, and nothing waits on it — so it takes
+	// the longer offset, on its own hash, before it runs at all.
+	if !waitForContext(ctx, startPhase(capabilityPhase, hostname, "capability")) {
+		return
+	}
+	run()
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {

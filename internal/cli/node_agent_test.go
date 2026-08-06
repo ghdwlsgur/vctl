@@ -47,20 +47,24 @@ func (f *fakeStatusSink) Close() { f.closed = true }
 
 // opener hands out sinks in order and counts how many times it was asked.
 //
-// delay widens the window a second caller could slip through. Without it a
-// concurrency test passes on timing rather than on the lock.
+// hold, when set, keeps the first open inside the call until the test closes
+// it, and entered says when that has happened. That is the window a second
+// caller would slip through without the lock: held open explicitly rather than
+// for some duration a slow machine could outrun.
 type opener struct {
-	sinks []*fakeStatusSink
-	errs  []error
-	calls int
-	delay time.Duration
+	sinks   []*fakeStatusSink
+	errs    []error
+	calls   int
+	hold    chan struct{}
+	entered chan struct{}
 }
 
 func (o *opener) open(context.Context) (statusSink, error) {
 	i := o.calls
 	o.calls++
-	if o.delay > 0 {
-		time.Sleep(o.delay)
+	if i == 0 && o.hold != nil {
+		close(o.entered)
+		<-o.hold
 	}
 	if i < len(o.errs) && o.errs[i] != nil {
 		return nil, o.errs[i]
@@ -320,17 +324,28 @@ func TestHeartbeatAndCapabilityShareTheHandleSafely(t *testing.T) {
 // lease with nothing holding them: the second assignment overwrote the first,
 // which was never closed. Once an hour, per host, against the central side.
 func TestConcurrentFirstUseOpensOneConnection(t *testing.T) {
-	o := &opener{sinks: []*fakeStatusSink{{}, {}}, delay: 20 * time.Millisecond}
+	o := &opener{
+		sinks:   []*fakeStatusSink{{}, {}},
+		hold:    make(chan struct{}),
+		entered: make(chan struct{}),
+	}
 	conn := &statusConn{open: o.open}
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(1)
 	go func() { defer wg.Done(); _ = conn.report(ctx, "host-01") }()
+	<-o.entered // the first caller is now inside open, and stays there
+
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		_ = conn.reportCapability(ctx, "host-01", hoststatus.ProbeResult{Kind: "openstack"})
 	}()
+	// Give the second caller time to reach either open (no lock) or the mutex
+	// (locked). Only this hand-off needs waiting on; the window itself is held.
+	time.Sleep(50 * time.Millisecond)
+	close(o.hold)
 	wg.Wait()
 
 	if o.calls != 1 {
@@ -363,33 +378,157 @@ func TestAHangingDependencyDoesNotHangTheHeartbeat(t *testing.T) {
 	}
 }
 
-// The whole fleet is deployed in one pass, so without an offset every agent
-// asks Vault and Postgres in the same second forever.
-func TestJitterSpreadsTheFleetAndHoldsPerHost(t *testing.T) {
-	const base = 5 * time.Minute
+// The whole fleet is deployed in one pass, so without an offset on the *first*
+// run every agent reaches Vault in the same second.
+//
+// The offset goes on the first run and nowhere else. Skewing the recurring
+// interval instead was the first attempt: it left the startup pile-up entirely
+// untouched — both loops run once immediately, before any ticker exists — and
+// made every host's heartbeat permanently something other than five minutes.
+func TestStartPhaseSpreadsTheFleetWithoutMovingTheInterval(t *testing.T) {
+	hosts := []string{"sre-srv-0047", "sre-srv-0048", "incheon-aio01", "incheon-gpu02", "sre-srv-0058"}
 
 	// Same host, same answer: an offset redrawn on every restart just rolls
-	// into a fresh collision.
-	if a, b := jitterInterval(base, "sre-srv-0047"), jitterInterval(base, "sre-srv-0047"); a != b {
-		t.Errorf("jitterInterval is not stable for one host: %v then %v", a, b)
+	// into a fresh collision, and "these two always land together" stops being
+	// reproducible.
+	if a, b := startPhase(heartbeatPhase, "sre-srv-0047", "heartbeat"), startPhase(heartbeatPhase, "sre-srv-0047", "heartbeat"); a != b {
+		t.Errorf("startPhase is not stable for one host: %v then %v", a, b)
 	}
 	seen := map[time.Duration]bool{}
-	for _, h := range []string{"sre-srv-0047", "sre-srv-0048", "incheon-aio01", "incheon-gpu02"} {
-		got := jitterInterval(base, h)
-		if lo, hi := base-base/10, base+base/10; got < lo || got > hi {
-			t.Errorf("jitterInterval(%s) = %v, outside %v..%v", h, got, lo, hi)
+	for _, h := range hosts {
+		got := startPhase(heartbeatPhase, h, "heartbeat")
+		if got < 0 || got >= heartbeatPhase {
+			t.Errorf("startPhase(%s) = %v, outside [0, %v)", h, got, heartbeatPhase)
 		}
 		seen[got] = true
 	}
-	if len(seen) < 3 {
-		t.Errorf("four hosts landed on %d distinct intervals; they are not being spread", len(seen))
+	if len(seen) < len(hosts)-1 {
+		t.Errorf("%d hosts landed on %d distinct offsets; they are not being spread", len(hosts), len(seen))
 	}
-	// A host with no name has nothing to derive an offset from, and a probe
-	// interval of 0 means "disabled" — neither may be turned into a schedule.
-	if got := jitterInterval(base, ""); got != base {
-		t.Errorf("jitterInterval with no hostname = %v, want the interval unchanged", got)
+	// The two loops on one host must not share an offset. With a single
+	// per-host fraction the capability probe landed on exactly the same tick as
+	// every twelfth heartbeat, on every host, forever.
+	same := 0
+	for _, h := range hosts {
+		if startPhase(heartbeatPhase, h, "heartbeat") == startPhase(heartbeatPhase, h, "capability") {
+			same++
+		}
 	}
-	if got := jitterInterval(0, "sre-srv-0047"); got != 0 {
-		t.Errorf("jitterInterval(0) = %v, want 0 to keep meaning disabled", got)
+	if same == len(hosts) {
+		t.Error("both loops draw the same offset on every host; they are one clock, not two")
+	}
+	// No name to derive from, or no window to spread over: run now rather than
+	// invent a schedule.
+	if got := startPhase(heartbeatPhase, "", "heartbeat"); got != 0 {
+		t.Errorf("startPhase with no hostname = %v, want 0", got)
+	}
+	if got := startPhase(0, "sre-srv-0047", "heartbeat"); got != 0 {
+		t.Errorf("startPhase with no window = %v, want 0", got)
+	}
+}
+
+// hangingSink blocks in whichever call the test names, until its context is
+// cancelled. A sink that hangs is the realistic shape of a blackholed route:
+// the connection was established, the query went out, nothing came back.
+type hangingSink struct {
+	on string // "status" | "capability" | "caperror"
+}
+
+func (h *hangingSink) block(ctx context.Context, which string) error {
+	if h.on == which {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
+
+func (h *hangingSink) UpsertServerStatus(ctx context.Context, _ store.ServerStatus) (bool, error) {
+	return true, h.block(ctx, "status")
+}
+
+func (h *hangingSink) UpsertCapability(ctx context.Context, _ store.Capability) (bool, error) {
+	return true, h.block(ctx, "capability")
+}
+
+func (h *hangingSink) RecordCapabilityError(ctx context.Context, _, _, _ string) error {
+	return h.block(ctx, "caperror")
+}
+
+func (h *hangingSink) Close() {}
+
+// The deadline has to cover the writes, not just the open. An established
+// connection whose query never returns is the same outage as one that never
+// connected, and the agent must come back from both.
+func TestEveryDatabasePathIsBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name, on string
+		call     func(*statusConn) error
+	}{
+		{
+			name: "heartbeat upsert", on: "status",
+			call: func(c *statusConn) error { return c.report(context.Background(), "host-01") },
+		},
+		{
+			name: "capability upsert", on: "capability",
+			call: func(c *statusConn) error {
+				return c.reportCapability(context.Background(), "host-01",
+					hoststatus.ProbeResult{Kind: "openstack", Detected: true, Roles: []string{"compute"}})
+			},
+		},
+		{
+			name: "capability error record", on: "caperror",
+			call: func(c *statusConn) error {
+				return c.reportCapability(context.Background(), "host-01",
+					hoststatus.ProbeResult{Kind: "openstack", Err: errors.New("probe timed out")})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &statusConn{
+				attempt: 50 * time.Millisecond,
+				open:    func(context.Context) (statusSink, error) { return &hangingSink{on: tc.on}, nil },
+			}
+			done := make(chan error, 1)
+			go func() { done <- tc.call(c) }()
+
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Errorf("a write that never returned was reported as success")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%s is still waiting; the deadline does not reach this path", tc.name)
+			}
+		})
+	}
+}
+
+// A timed-out attempt must release the lock. Holding it would take the other
+// loop down with it and turn one slow query into an agent that never reports
+// again — the exact silent stop the deadline exists to prevent.
+func TestATimedOutAttemptReleasesTheLock(t *testing.T) {
+	sinks := []statusSink{&hangingSink{on: "status"}, &fakeStatusSink{}}
+	var n int
+	c := &statusConn{
+		attempt: 50 * time.Millisecond,
+		open: func(context.Context) (statusSink, error) {
+			s := sinks[n]
+			n++
+			return s, nil
+		},
+	}
+
+	if err := c.report(context.Background(), "host-01"); err == nil {
+		t.Fatal("the hanging write was reported as success")
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.report(context.Background(), "host-01") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("the heartbeat after a timeout failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the next heartbeat never ran: the timed-out attempt still holds the lock")
 	}
 }
