@@ -53,7 +53,7 @@ func TestVaultFarmKeyIsTypeableAndKeepsThePort(t *testing.T) {
 // Vault is the boundary instead: kv/teams/sre/vctl-* and database/creds/vctl-rw.
 func TestReconcileIsNotAppGated(t *testing.T) {
 	var found *cobra.Command
-	for _, c := range openstackCmd().Commands() {
+	for _, c := range openstackCmd(CommandEnv{}).Commands() {
 		if c.Name() == "reconcile" {
 			found = c
 		}

@@ -89,7 +89,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		lsCmd(),
 		ipCmd(),
 		wgCmd(),
-		openstackCmd(),
+		openstackCmd(CommandEnv{NewApp: deps.withDefaults().NewApp}),
 		gate(syncCmd(), "sync", classMutate),
 		addCmd(), editCmd(), deleteCmd(), migrateCmd(), // already gated inside
 		statusCmd(), auditCmd(),
@@ -204,4 +204,49 @@ func withAuditStore(ctx context.Context, fn func(*app.App, *store.Store) error) 
 
 func withAuditIngestStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
 	return withPurposeStore(ctx, app.PurposeAuditIngest, fn)
+}
+
+// CommandEnv is what a command needs from the place it was built, instead of
+// from package state.
+//
+// newApp() is a package-level variable that NewRoot points at the resolved
+// Dependencies. That works because callers build one tree at a time — the
+// comment on appFactory says so, and it is true today: nothing in this package
+// runs tests in parallel, and vctl builds one root per process. It is a
+// constraint held by convention, and conventions are what a second root
+// instance quietly breaks.
+//
+// Converted subtree by subtree rather than all at once. A command holding this
+// takes its app from here; the rest still take it from the global, and the two
+// coexist while the boundary moves.
+type CommandEnv struct {
+	// NewApp builds the App this subtree's commands use.
+	NewApp func() (*app.App, error)
+}
+
+func (e CommandEnv) newApp() (*app.App, error) {
+	if e.NewApp != nil {
+		return e.NewApp()
+	}
+	return newApp()
+}
+
+// withApp is CommandEnv's version of the package function, for commands that
+// need the app but not the store.
+func (e CommandEnv) withApp(fn func(*app.App) error) error {
+	a, err := e.newApp()
+	if err != nil {
+		return err
+	}
+	return fn(a)
+}
+
+// withStore opens the inventory store for this subtree's app (rw=true for write
+// roles), runs fn, and closes it.
+func (e CommandEnv) withStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) error) error {
+	p := app.PurposeInventoryRead
+	if rw {
+		p = app.PurposeInventoryWrite
+	}
+	return withStoreFrom(ctx, e.newApp, p, fn)
 }

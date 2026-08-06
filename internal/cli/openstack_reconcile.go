@@ -31,7 +31,7 @@ const instanceTimeout = 180 * time.Second
 // give that back.
 const vaultFarmPrefix = "kv/teams/sre"
 
-func openstackReconcileCmd() *cobra.Command {
+func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 	var (
 		only     string
 		self     bool
@@ -48,7 +48,7 @@ func openstackReconcileCmd() *cobra.Command {
 			"hosts both sides agree on to confirmed. Disagreements are reported, not resolved.\n\n" +
 			"Credentials are read from Vault under " + vaultFarmPrefix + "/vctl-<host_port>, at use time.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				farms, err := st.LocalOnlyFarms(ctx)
 				if err != nil {

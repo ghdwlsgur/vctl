@@ -23,7 +23,7 @@ import (
 // Node.spec.providerID. It is the join between a cluster and the farm under it.
 const providerIDPrefix = "openstack:///"
 
-func openstackVMCmd() *cobra.Command {
+func openstackVMCmd(env CommandEnv) *cobra.Command {
 	var (
 		farm     string
 		host     string
@@ -47,7 +47,7 @@ func openstackVMCmd() *cobra.Command {
 			"  vctl openstack vm 10.3.1         every VM answering on an address that starts there",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				// One argument, read by its shape. A UUID is an identity and a
 				// word is a search, and asking somebody to say which is which
