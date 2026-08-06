@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -404,6 +405,32 @@ func TestStartPhaseSpreadsTheFleetWithoutMovingTheInterval(t *testing.T) {
 	}
 	if len(seen) < len(hosts)-1 {
 		t.Errorf("%d hosts landed on %d distinct offsets; they are not being spread", len(hosts), len(seen))
+	}
+	// The offsets have to reach across the window, not merely stay inside it.
+	//
+	// Checking only the upper bound is what let a 32-bit hash through: a
+	// Duration is a nanosecond count, FNV-32 tops out at 4294967295, and 4.29s
+	// is under every window here — so `hash % window` did nothing and both
+	// windows silently collapsed to [0, 4.29s), the capability probe's 70×
+	// narrower than written. Every assertion still passed.
+	for _, w := range []struct {
+		name   string
+		window time.Duration
+		loop   string
+	}{
+		{"heartbeat", heartbeatPhase, "heartbeat"},
+		{"capability", capabilityPhase, "capability"},
+	} {
+		var widest time.Duration
+		for i := range 200 {
+			if got := startPhase(w.window, fmt.Sprintf("sre-srv-%04d", i), w.loop); got > widest {
+				widest = got
+			}
+		}
+		if widest < w.window/2 {
+			t.Errorf("%s: 200 hosts span only %v of a %v window; the offsets do not reach across it",
+				w.name, widest, w.window)
+		}
 	}
 	// The two loops on one host must not share an offset. With a single
 	// per-host fraction the capability probe landed on exactly the same tick as

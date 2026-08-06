@@ -141,15 +141,23 @@ const (
 // Not jitterWatchDelay, which draws fresh each call. That one spreads retries
 // after an outage, where a new draw every attempt is right. This is a standing
 // position in a schedule, so it has to be stable.
+// The hash is 64-bit because a Duration is a nanosecond count and the windows
+// here are larger than a 32-bit hash can express. FNV-32 tops out at 4294967295,
+// which as a Duration is 4.29s — smaller than either window, so `hash % window`
+// did nothing at all and the hash fell through as the offset. Both windows
+// collapsed to [0, 4.29s): the capability probe's was 70× narrower than written.
+//
+// Modulo bias with 64 bits is not worth correcting — a five-minute window
+// divides 2^64 into some 60 million whole cycles.
 func startPhase(window time.Duration, hostname, loop string) time.Duration {
 	if window <= 0 || hostname == "" {
 		return 0
 	}
-	h := fnv.New32a()
+	h := fnv.New64a()
 	_, _ = h.Write([]byte(hostname))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(loop))
-	return time.Duration(uint64(h.Sum32()) % uint64(window))
+	return time.Duration(h.Sum64() % uint64(window))
 }
 
 // capabilityProbes is what this agent knows how to look for. Adding a platform
