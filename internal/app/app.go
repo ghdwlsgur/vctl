@@ -28,6 +28,11 @@ type App struct {
 	// OnSpoolFlush reports the result of replaying access records that were
 	// queued while Postgres was unreachable. Optional; nil flushes silently.
 	OnSpoolFlush func(sent int, err error)
+
+	// Interactive reports whether somebody is present to answer a prompt, and
+	// decides whether the configured login method outranks the unattended ones.
+	// Optional; nil asks the terminal.
+	Interactive func() bool
 }
 
 func New() (*App, error) {
@@ -45,8 +50,23 @@ func New() (*App, error) {
 // EnsureLogin keeps a token alive like an agent:
 //  1. Reuse a valid token.
 //  2. Renew it if possible.
-//  3. Re-authenticate with AppRole if credentials are available.
-//  4. Fall back to interactive login.
+//  3. Use the configured method, when one was named and somebody can answer it.
+//  4. Otherwise authenticate unattended — AppRole, then Kubernetes.
+//  5. Fall back to the configured method anyway.
+//
+// Step 3 did not exist, and its absence was a quiet downgrade. AppRole went
+// first whenever credentials happened to be on disk, so a workstation carrying
+// both `auth_method: userpass` and a role-id became the AppRole's identity every
+// time its token lapsed. Measured on a real one: the operator's own login was
+// configured and never used, and vctl ran as vctl-user — a role that can read
+// the inventory and little else. Reads kept working, so nothing looked wrong,
+// while `vctl ssh`, `vctl edit` and `vctl openstack reconcile` all returned 403
+// on paths that person's own identity holds.
+//
+// Naming a method is a statement about which identity this installation should
+// have. AppRole is what to do when nobody is there to be asked, not a shortcut
+// past that statement — so it still goes first whenever there is no terminal,
+// which is every pod, timer and CI job.
 func (a *App) EnsureLogin(ctx context.Context) error {
 	if a.Vault.HasValidToken() {
 		return nil
@@ -56,16 +76,71 @@ func (a *App) EnsureLogin(ctx context.Context) error {
 			return nil
 		}
 	}
-	if ok, err := a.tryAppRoleLogin(ctx); ok && err == nil {
-		return nil
-	}
-	// Kubernetes before the configured method, for the same reason AppRole is:
-	// both are unattended, and a pod that could authenticate itself should not
-	// fall through to a method that prompts.
-	if ok, err := a.tryKubernetesLogin(ctx); ok && err == nil {
-		return nil
+	for _, method := range a.loginOrder() {
+		switch method {
+		case loginConfigured:
+			// Its failure is the answer. Falling through to AppRole from here
+			// would reproduce the downgrade this exists to stop, and do it at
+			// the one moment somebody is watching.
+			return a.Login(ctx, a.Cfg.AuthMethod)
+		case loginAppRole:
+			if ok, err := a.tryAppRoleLogin(ctx); ok && err == nil {
+				return nil
+			}
+		case loginKubernetes:
+			if ok, err := a.tryKubernetesLogin(ctx); ok && err == nil {
+				return nil
+			}
+		}
 	}
 	return a.Login(ctx, a.Cfg.AuthMethod)
+}
+
+// The ways EnsureLogin can obtain a token, in the order it tries them.
+const (
+	loginConfigured = "configured"
+	loginAppRole    = "approle"
+	loginKubernetes = "kubernetes"
+)
+
+// loginOrder is the sequence EnsureLogin walks.
+//
+// Split out because the order *is* the behaviour here, and the bug was in the
+// order: with it inline, a test could only reach the predicate below and would
+// still pass with the whole branch deleted.
+//
+// Kubernetes stays behind AppRole for the reason it always did — both are
+// unattended, and a pod that can authenticate itself should not fall through to
+// something that prompts.
+func (a *App) loginOrder() []string {
+	if a.preferConfiguredLogin() {
+		return []string{loginConfigured}
+	}
+	return []string{loginAppRole, loginKubernetes, loginConfigured}
+}
+
+// preferConfiguredLogin reports whether the named method should go ahead of the
+// unattended ones.
+//
+// Only for a method that asks a human something. "approle" and "kubernetes"
+// name the unattended paths themselves, so preferring them here would be the
+// same order by a longer route, and an unset method expresses no preference at
+// all. Without a terminal there is nobody to ask, whatever the config says.
+func (a *App) preferConfiguredLogin() bool {
+	switch strings.ToLower(a.Cfg.AuthMethod) {
+	case "userpass", "oidc":
+		return a.interactive()
+	default:
+		return false
+	}
+}
+
+// interactive is injectable so the login order can be tested without a tty.
+func (a *App) interactive() bool {
+	if a.Interactive != nil {
+		return a.Interactive()
+	}
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // Login authenticates with userpass, oidc, approle, or kubernetes.

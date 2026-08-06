@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -22,7 +23,7 @@ func statusCmd() *cobra.Command {
 				ui.Section(os.Stdout, "vctl status")
 				rows := []ui.KV{
 					{Key: "Vault", Value: a.Cfg.VaultAddr},
-					{Key: "Auth method", Value: a.Cfg.AuthMethod},
+					authMethodRow(ctx, a),
 				}
 				tokenRow, authenticated := tokenStatus(ctx, a)
 				rows = append(rows, tokenRow)
@@ -72,6 +73,32 @@ func statusCmd() *cobra.Command {
 				return nil
 			})
 		},
+	}
+}
+
+// authMethodRow reports the configured method and, when the live token was
+// issued by a different one, says so.
+//
+// This row used to print the configuration alone, which is the one thing that
+// cannot be wrong. A workstation configured for userpass was running on an
+// AppRole token the whole time — reads worked, so nothing looked amiss, while
+// ssh, edit and reconcile returned 403 — and this line said "userpass" through
+// all of it. What somebody needs here is which identity vctl actually has.
+func authMethodRow(ctx context.Context, a *app.App) ui.KV {
+	want := a.Cfg.AuthMethod
+	if want == "" {
+		want = "userpass"
+	}
+	got := a.Vault.TokenAuthMethod(ctx)
+	if got == "" || strings.EqualFold(got, want) {
+		return ui.KV{Key: "Auth method", Value: want}
+	}
+	return ui.KV{
+		Key: "Auth method",
+		Value: fmt.Sprintf("%s configured, but this token came from %s — "+
+			"reads work; ssh, edit and reconcile will not. Run 'vctl login' to use %s",
+			want, got, want),
+		State: ui.StateWarn,
 	}
 }
 

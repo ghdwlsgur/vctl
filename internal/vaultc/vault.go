@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	vault "github.com/hashicorp/vault/api"
@@ -202,4 +203,29 @@ func (c *Client) Logout() error {
 		return err
 	}
 	return nil
+}
+
+// TokenAuthMethod names the auth method that issued the current token.
+//
+// Vault's display_name carries it: "approle", "userpass-albert",
+// "oidc-vctl". The part before the first hyphen is the method.
+//
+// Worth asking because it is not always the method that was configured. A
+// workstation with an AppRole credential on disk could authenticate as the
+// AppRole while its config named userpass, and nothing said so — the tool kept
+// working for reads and returned 403 for everything else. Comparing the two is
+// how that becomes visible instead of being diagnosed.
+func (c *Client) TokenAuthMethod(ctx context.Context) string {
+	if c.api.Token() == "" {
+		return ""
+	}
+	sec, err := c.api.Auth().Token().LookupSelfWithContext(ctx)
+	if err != nil || sec == nil || sec.Data == nil {
+		return ""
+	}
+	dn, _ := sec.Data["display_name"].(string)
+	if i := strings.IndexByte(dn, '-'); i > 0 {
+		return dn[:i]
+	}
+	return dn
 }
