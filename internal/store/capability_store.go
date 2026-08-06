@@ -36,41 +36,92 @@ type CapabilityComponent struct {
 	Service bool `json:"service"`
 }
 
-// UpsertCapability records what a probe found, and refuses to create inventory
-// the way UpsertServerStatus does: a capability for a host that is not in
-// servers is dropped.
+// ReplaceCapabilities records one probe pass as a single observation.
 //
-// A host that can write status for a name it does not own could otherwise
-// invent a compute node, and anything reading this to plan maintenance would
-// believe it.
-func (s *Store) UpsertCapability(ctx context.Context, c Capability) (bool, error) {
-	comps, err := json.Marshal(orEmptyComponents(c.Components))
+// One pass, one transaction, one timestamp. Every role the probe found is
+// written together or none of it is, and the reader's notion of "the latest
+// pass" is exactly the set of rows this wrote.
+//
+// Per-role writes were the first implementation and they tore. The reader takes
+// the newest observed_at for a host and reads every older row as a role the
+// host has stopped holding (foldCapabilityRows), so a failure partway through
+// the loop left the written roles current and the rest looking dropped: a
+// controller reported nine roles until a write timed out and five afterwards,
+// and stayed that way until the next hourly pass succeeded. The listing cannot
+// tell "this host lost a role" from "we only got half the rows in", and it is
+// the first of those that sends somebody to a machine.
+//
+// The timestamp is the database's, not the caller's. It used to be the host's
+// clock — and a host is exactly the machine whose clock nobody has checked. One
+// running ahead stamps rows that later passes cannot beat, pinning stale facts
+// until somebody fixes the clock. greatest() over what is already stored keeps
+// the sequence monotonic per host whatever is in there, including rows an older
+// agent wrote from a skewed clock, which is the state part of the fleet is in
+// right now.
+//
+// Refuses to create inventory the way UpsertServerStatus does: a capability for
+// a host that is not in servers is dropped. A host able to write status for a
+// name it does not own could invent a compute node, and anything reading this
+// to plan maintenance would believe it. Reported as false rather than an error,
+// because an unregistered host is a standing misconfiguration and not a failure
+// of this call.
+func (s *Store) ReplaceCapabilities(ctx context.Context, hostname, kind string, caps []Capability) (bool, error) {
+	if len(caps) == 0 {
+		return false, nil
+	}
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
-	details, err := json.Marshal(orEmptyDetails(c.Details))
-	if err != nil {
+	// Rollback after a successful commit is a no-op, so this needs no flag:
+	// whichever return runs first, nothing half-written survives.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var known bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM servers WHERE hostname=$1)`, hostname).Scan(&known); err != nil {
 		return false, err
 	}
-	at := c.ObservedAt
-	if at.IsZero() {
-		at = time.Now()
+	if !known {
+		return false, nil
 	}
-	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO server_capabilities
-			(hostname, kind, role, detected, active, components, details, last_error, observed_at, updated_at)
-		SELECT $1,$2,$3,$4,$9,$5::jsonb,$6::jsonb,$7,$8, now()
-		WHERE EXISTS (SELECT 1 FROM servers WHERE hostname=$1)
-		ON CONFLICT (hostname, kind, role) DO UPDATE SET
-			detected=EXCLUDED.detected, active=EXCLUDED.active,
-			components=EXCLUDED.components,
-			details=EXCLUDED.details, last_error=EXCLUDED.last_error,
-			observed_at=EXCLUDED.observed_at, updated_at=now()`,
-		c.Hostname, c.Kind, c.Role, c.Detected, string(comps), string(details), c.LastError, at, c.Active)
-	if err != nil {
+
+	// One instant for the whole pass, ahead of anything already recorded for
+	// this host. greatest() ignores NULLs, so a host's first pass is just now().
+	var at time.Time
+	if err := tx.QueryRow(ctx, `
+		SELECT greatest(now(), max(observed_at) + interval '1 microsecond')
+		FROM server_capabilities WHERE hostname=$1 AND kind=$2`,
+		hostname, kind).Scan(&at); err != nil {
 		return false, err
 	}
-	return tag.RowsAffected() > 0, nil
+
+	for _, c := range caps {
+		comps, err := json.Marshal(orEmptyComponents(c.Components))
+		if err != nil {
+			return false, err
+		}
+		details, err := json.Marshal(orEmptyDetails(c.Details))
+		if err != nil {
+			return false, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO server_capabilities
+				(hostname, kind, role, detected, active, components, details, last_error, observed_at, updated_at)
+			VALUES ($1,$2,$3,$4,$9,$5::jsonb,$6::jsonb,$7,$8, now())
+			ON CONFLICT (hostname, kind, role) DO UPDATE SET
+				detected=EXCLUDED.detected, active=EXCLUDED.active,
+				components=EXCLUDED.components,
+				details=EXCLUDED.details, last_error=EXCLUDED.last_error,
+				observed_at=EXCLUDED.observed_at, updated_at=now()`,
+			hostname, kind, c.Role, c.Detected, string(comps), string(details), c.LastError, at, c.Active); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // RecordCapabilityError notes that a probe could not complete, without touching
