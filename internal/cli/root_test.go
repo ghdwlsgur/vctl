@@ -12,10 +12,12 @@ import (
 )
 
 // fakeDeps injects an app factory that never touches Vault, so building and
-// driving the command tree in tests can't hit the network. Restores the global
-// factory afterward so later tests see production defaults.
+// driving the command tree in tests can't hit the network.
+//
+// No cleanup: the factory travels with the tree it was given to, so a test that
+// builds one cannot leave anything behind for the next.
 func fakeDeps(t *testing.T) Dependencies {
-	t.Cleanup(func() { appFactory = app.New })
+	t.Helper()
 	return Dependencies{NewApp: func() (*app.App, error) {
 		return nil, errors.New("fake app: no vault in test")
 	}}
@@ -81,24 +83,31 @@ func TestUnknownCommandErrorsWithoutApp(t *testing.T) {
 	}
 }
 
+// The injected factory has to reach the commands, which is the whole reason
+// Dependencies exists. Asserted through a command rather than through a package
+// variable — there is no longer one to read, and the variable was never the
+// thing that mattered.
 func TestDependenciesNewAppInjected(t *testing.T) {
 	called := false
-	NewRoot(Dependencies{NewApp: func() (*app.App, error) {
+	root := NewRoot(Dependencies{NewApp: func() (*app.App, error) {
 		called = true
 		return nil, errors.New("sentinel")
 	}})
-	t.Cleanup(func() { appFactory = app.New })
 
-	a, err := newApp()
-	if a != nil || err == nil || !called {
-		t.Fatalf("injected NewApp not used: app=%v called=%v err=%v", a, called, err)
+	cmd := findCmd(root, "openstack")
+	if cmd == nil {
+		t.Fatal("no openstack command in the tree")
+	}
+	if err := cmd.RunE(cmd, nil); err == nil {
+		t.Fatal("expected the injected factory's error")
+	}
+	if !called {
+		t.Error("injected NewApp was not used")
 	}
 }
 
 func TestDefaultDependenciesUseAppNew(t *testing.T) {
-	NewRoot(Dependencies{}) // no NewApp → withDefaults() should fill app.New
-	t.Cleanup(func() { appFactory = app.New })
-	if appFactory == nil {
-		t.Fatal("default appFactory is nil")
+	if (Dependencies{}).withDefaults().NewApp == nil {
+		t.Fatal("an unset NewApp was not filled in with app.New")
 	}
 }

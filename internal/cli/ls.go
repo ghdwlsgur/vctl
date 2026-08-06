@@ -17,7 +17,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func lsCmd() *cobra.Command {
+func lsCmd(env CommandEnv) *cobra.Command {
 	var (
 		dc     string
 		allIPs bool
@@ -27,7 +27,7 @@ func lsCmd() *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List accessible inventory hosts",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withInventory(cmd.Context(), func(_ *app.App, inv *app.Inventory) error {
+			return env.withInventory(cmd.Context(), func(_ *app.App, inv *app.Inventory) error {
 				servers, err := inv.ListInventory(cmd.Context(), dc)
 				if err != nil {
 					return err

@@ -27,7 +27,7 @@ import (
 // --status is the read-only half, and it opens the store with read credentials
 // on purpose: "what does this database have" should be answerable without
 // holding the rights to change it.
-func migrateCmd() *cobra.Command {
+func migrateCmd(env CommandEnv) *cobra.Command {
 	var status bool
 	cmd := &cobra.Command{
 		Use:   "migrate",
@@ -45,7 +45,7 @@ and the error is reported; re-run it deliberately once you have looked.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}

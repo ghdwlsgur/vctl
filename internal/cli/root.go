@@ -31,14 +31,6 @@ func (d Dependencies) withDefaults() Dependencies {
 	return d
 }
 
-// appFactory is the injection point behind the package-level newApp() that every
-// command calls. NewRoot points it at the resolved Dependencies. It is package
-// state (not threaded through each command) to keep the seam bounded; callers
-// build one tree at a time, so it is not safe for concurrent NewRoot calls.
-var appFactory = app.New
-
-func newApp() (*app.App, error) { return appFactory() }
-
 // Execute builds the production command tree and runs it.
 func Execute() error {
 	return NewRoot(Dependencies{}).Execute()
@@ -49,7 +41,7 @@ func Execute() error {
 // help/version output — and run commands with a fake app, instead of only being
 // reachable through main with a real Vault.
 func NewRoot(deps Dependencies) *cobra.Command {
-	appFactory = deps.withDefaults().NewApp
+	env := CommandEnv{NewApp: deps.withDefaults().NewApp}
 
 	root := &cobra.Command{
 		Version: Version,
@@ -76,36 +68,33 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		// App-layer RBAC (layer 2) gate. Runs before every command; ungated
 		// commands (no rbac annotation) pass through. vctl-admin bypasses.
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			return enforceRBAC(cmd)
+			return enforceRBAC(env, cmd)
 		},
 	}
 	// Only mutate/connect commands are gated (default-deny without a grant).
 	// Read commands (list/status/audit/session) are ungated = allowed to any
 	// authenticated user. The `vctl rbac` mutations gate themselves (classAdmin).
 	root.AddCommand(
-		loginCmd(), logoutCmd(), tokenCmd(),
-		gate(execCmd(), "exec", classMutate), agentCmd(),
-		gate(sshCmd(), "ssh", classMutate),
-		lsCmd(),
-		ipCmd(),
-		wgCmd(),
-		openstackCmd(CommandEnv{NewApp: deps.withDefaults().NewApp}),
-		gate(syncCmd(), "sync", classMutate),
-		addCmd(), editCmd(), deleteCmd(), migrateCmd(), // already gated inside
-		statusCmd(), auditCmd(),
-		gate(trustCACmd(), "trust-ca", classMutate), caCmd(),
-		sessionCmd(), sessionStartCmd(), collectCmd(),
-		gate(retentionCmd(), "retention", classRead),
-		watchSessionsCmd(), nodeAgentCmd(),
-		rbacCmd(), mcpCmd(), cacheCmd(),
+		loginCmd(env), logoutCmd(env), tokenCmd(env),
+		gate(execCmd(env), "exec", classMutate), agentCmd(env),
+		gate(sshCmd(env), "ssh", classMutate),
+		lsCmd(env),
+		ipCmd(env),
+		wgCmd(env),
+		openstackCmd(env),
+		gate(syncCmd(env), "sync", classMutate),
+		addCmd(env), editCmd(env), deleteCmd(env), migrateCmd(env), // already gated inside
+		statusCmd(env), auditCmd(env),
+		gate(trustCACmd(env), "trust-ca", classMutate), caCmd(env),
+		sessionCmd(env), sessionStartCmd(env), collectCmd(env),
+		gate(retentionCmd(env), "retention", classRead),
+		watchSessionsCmd(env), nodeAgentCmd(env),
+		rbacCmd(env), mcpCmd(env), cacheCmd(env),
 	)
 	return root
 }
 
-// withApp builds the app and runs fn with it — for commands that need the app
-// (Vault/config) but not the inventory store, or that open the store themselves
-// with bespoke error handling (e.g. status).
-func withApp(fn func(*app.App) error) error {
+func withAppFrom(newApp func() (*app.App, error), fn func(*app.App) error) error {
 	a, err := newApp()
 	if err != nil {
 		return err
@@ -120,7 +109,7 @@ func withApp(fn func(*app.App) error) error {
 // Commands that write, or that read data with no offline meaning (audit history,
 // RBAC administration), keep using withStore and keep failing loudly when the
 // database is gone — which is the correct outcome for them.
-func withInventory(ctx context.Context, fn func(*app.App, *app.Inventory) error) error {
+func withInventoryFrom(ctx context.Context, newApp func() (*app.App, error), fn func(*app.App, *app.Inventory) error) error {
 	a, err := newApp()
 	if err != nil {
 		return err
@@ -163,20 +152,6 @@ func reportSpoolFlush(sent int, err error) {
 // and runs fn with both — closing the store afterward. It collapses the
 // new-app + open-store + defer-close preamble repeated by every store-backed
 // command into one call.
-func withStore(ctx context.Context, rw bool, fn func(*app.App, *store.Store) error) error {
-	p := app.PurposeInventoryRead
-	if rw {
-		p = app.PurposeInventoryWrite
-	}
-	return withPurposeStore(ctx, p, fn)
-}
-
-// withPurposeStore builds the app, opens the store for one purpose, runs fn, and
-// closes it afterward — the shared preamble for every store-backed command.
-func withPurposeStore(ctx context.Context, p app.Purpose, fn func(*app.App, *store.Store) error) error {
-	return withStoreFrom(ctx, newApp, p, fn)
-}
-
 // withStoreFrom is withPurposeStore with the app constructor left open.
 //
 // The MCP server needs the same open/run/close discipline but a different app:
@@ -198,29 +173,27 @@ func withStoreFrom(ctx context.Context, newApp func() (*app.App, error), p app.P
 	return fn(a, st)
 }
 
-func withAuditStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
-	return withPurposeStore(ctx, app.PurposeAuditRead, fn)
+func (e CommandEnv) withAuditStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
+	return e.withPurposeStore(ctx, app.PurposeAuditRead, fn)
 }
 
-func withAuditIngestStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
-	return withPurposeStore(ctx, app.PurposeAuditIngest, fn)
+func (e CommandEnv) withAuditIngestStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
+	return e.withPurposeStore(ctx, app.PurposeAuditIngest, fn)
 }
 
-// CommandEnv is what a command needs from the place it was built, instead of
-// from package state.
+// CommandEnv is what a command needs from the place it was built.
 //
-// newApp() is a package-level variable that NewRoot points at the resolved
-// Dependencies. That works because callers build one tree at a time — the
-// comment on appFactory says so, and it is true today: nothing in this package
-// runs tests in parallel, and vctl builds one root per process. It is a
-// constraint held by convention, and conventions are what a second root
-// instance quietly breaks.
+// It replaced a package variable that NewRoot pointed at the resolved
+// Dependencies. That worked because callers build one tree at a time, which was
+// true and was a convention rather than a guarantee: a second NewRoot
+// overwrote the first tree's factory, and from then on whichever tree ran used
+// the other's app. Nothing failed — the wrong dependency simply answered — and
+// with no parallel tests in the package there was nothing to notice it.
 //
-// Converted subtree by subtree rather than all at once. A command holding this
-// takes its app from here; the rest still take it from the global, and the two
-// coexist while the boundary moves.
+// The zero value builds a real app, which is what a test constructing a tree
+// only to read its shape gets. Anything that runs a command supplies one.
 type CommandEnv struct {
-	// NewApp builds the App this subtree's commands use.
+	// NewApp builds the App this tree's commands use.
 	NewApp func() (*app.App, error)
 }
 
@@ -228,17 +201,26 @@ func (e CommandEnv) newApp() (*app.App, error) {
 	if e.NewApp != nil {
 		return e.NewApp()
 	}
-	return newApp()
+	// The zero value is what tests build a command tree with when they only
+	// want its shape. Production always comes through NewRoot.
+	return app.New()
 }
 
 // withApp is CommandEnv's version of the package function, for commands that
 // need the app but not the store.
 func (e CommandEnv) withApp(fn func(*app.App) error) error {
-	a, err := e.newApp()
-	if err != nil {
-		return err
-	}
-	return fn(a)
+	return withAppFrom(e.newApp, fn)
+}
+
+// withInventory is CommandEnv's version of the package function: the store when
+// it answers, the local snapshot when it does not.
+func (e CommandEnv) withInventory(ctx context.Context, fn func(*app.App, *app.Inventory) error) error {
+	return withInventoryFrom(ctx, e.newApp, fn)
+}
+
+// withPurposeStore opens the store for one purpose.
+func (e CommandEnv) withPurposeStore(ctx context.Context, p app.Purpose, fn func(*app.App, *store.Store) error) error {
+	return withStoreFrom(ctx, e.newApp, p, fn)
 }
 
 // withStore opens the inventory store for this subtree's app (rw=true for write

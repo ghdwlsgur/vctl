@@ -31,7 +31,7 @@ type monTarget struct {
 	tgt  *sshc.Target
 }
 
-func wgMonitorCmd() *cobra.Command {
+func wgMonitorCmd(env CommandEnv) *cobra.Command {
 	var (
 		intervalSec, timeoutSec int
 		syncFirst, all          bool
@@ -48,7 +48,7 @@ does not write to the DB. Non-interactive stdout prints a single snapshot.
 has data). Because that writes, it additionally requires the 'wg-sync' grant.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}

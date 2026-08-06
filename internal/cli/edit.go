@@ -28,7 +28,7 @@ import (
 // rewrote every field from its defaults would silently blank the ones the
 // operator did not mention, which is the failure a partial edit exists to
 // avoid.
-func editCmd() *cobra.Command {
+func editCmd(env CommandEnv) *cobra.Command {
 	var e hostEdits
 	cmd := &cobra.Command{
 		Use:   "edit [hostname]",
@@ -41,7 +41,7 @@ are written; with none, the fields are asked for interactively.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(ctx, true, func(_ *app.App, st *store.Store) error {
 				cur, err := resolveHost(ctx, st, args, "Edit which host?")
 				if err != nil {
 					return err

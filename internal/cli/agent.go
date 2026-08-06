@@ -11,7 +11,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func agentCmd() *cobra.Command {
+func agentCmd(env CommandEnv) *cobra.Command {
 	var sinks []string
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -26,7 +26,7 @@ func agentCmd() *cobra.Command {
   vctl agent --sink /run/vault-token
   VAULT_TOKEN=$(cat ~/.vctl/token-sink) vault kv get ...`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}

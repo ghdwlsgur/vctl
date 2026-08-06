@@ -15,7 +15,7 @@ import (
 
 var wgEndpointKinds = []string{"vm", "physical-host", "device", "gateway"}
 
-func wgEndpointCmd() *cobra.Command {
+func wgEndpointCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "endpoint",
 		Short: "Manage endpoint identity and VM-to-physical-host placement",
@@ -23,17 +23,17 @@ func wgEndpointCmd() *cobra.Command {
 For VM endpoints, --parent records the physical inventory host that runs the
 VM, allowing 'wg serve' to draw the endpoint together with its host network.`,
 	}
-	cmd.AddCommand(wgEndpointListCmd(), wgEndpointSetCmd(), wgEndpointRmCmd())
+	cmd.AddCommand(wgEndpointListCmd(env), wgEndpointSetCmd(env), wgEndpointRmCmd(env))
 	return cmd
 }
 
-func wgEndpointListCmd() *cobra.Command {
+func wgEndpointListCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List endpoint annotations",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				items, err := st.WGEndpointAnnotations(cmd.Context())
 				if err != nil {
 					return err
@@ -55,7 +55,7 @@ func wgEndpointListCmd() *cobra.Command {
 	return gate(cmd, "wg", classRead)
 }
 
-func wgEndpointSetCmd() *cobra.Command {
+func wgEndpointSetCmd(env CommandEnv) *cobra.Command {
 	var a store.WGEndpointAnnotation
 	cmd := &cobra.Command{
 		Use:   "set <public-key>",
@@ -72,7 +72,7 @@ func wgEndpointSetCmd() *cobra.Command {
 				return fmt.Errorf("invalid --tunnel-ip: %q", a.TunnelIP)
 			}
 			a.PublicKey = args[0]
-			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				if err := st.WGEndpointAnnotationUpsert(cmd.Context(), a); err != nil {
 					return err
 				}
@@ -93,14 +93,14 @@ func wgEndpointSetCmd() *cobra.Command {
 	return gate(cmd, "wg-sync", classMutate)
 }
 
-func wgEndpointRmCmd() *cobra.Command {
+func wgEndpointRmCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rm <public-key>",
 		Aliases: []string{"delete"},
 		Short:   "Remove an endpoint annotation",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				if err := st.WGEndpointAnnotationDelete(cmd.Context(), args[0]); err != nil {
 					return err
 				}

@@ -9,7 +9,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func loginCmd() *cobra.Command {
+func loginCmd(env CommandEnv) *cobra.Command {
 	var (
 		method   string
 		register bool
@@ -29,7 +29,7 @@ identity — once it takes over, audit attributes to the approle, not the person
 so use it only for automation/bootstrap, never for day-to-day human access.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}
@@ -72,12 +72,12 @@ so use it only for automation/bootstrap, never for day-to-day human access.`,
 	return cmd
 }
 
-func logoutCmd() *cobra.Command {
+func logoutCmd(env CommandEnv) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
 		Short: "Remove the cached Vault token",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}

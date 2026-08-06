@@ -34,7 +34,7 @@ import (
 // delete-only job returns space to the table's free list rather than the volume,
 // so a burst parks the high-water mark and nothing reports it. That is what this
 // command answers.
-func retentionCmd() *cobra.Command {
+func retentionCmd(env CommandEnv) *cobra.Command {
 	var (
 		days        int
 		sessionDays int
@@ -56,7 +56,7 @@ Horizons default to config (kernel_retention_days / session_retention_days).
   vctl retention --days 30          # report against a different event horizon`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withAuditStore(cmd.Context(), func(a *app.App, st *store.Store) error {
+			return env.withAuditStore(cmd.Context(), func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				if !cmd.Flags().Changed("days") {
 					days = a.Cfg.KernelRetentionDays

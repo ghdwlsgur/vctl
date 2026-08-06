@@ -933,7 +933,7 @@ func (s *wgServeState) driftList() []wgDriftPeer {
 
 // --- command ---
 
-func wgServeCmd() *cobra.Command {
+func wgServeCmd(env CommandEnv) *cobra.Command {
 	var (
 		addr        string
 		intervalSec int
@@ -948,7 +948,7 @@ density follow live rx/tx rates polled over SSH). The topology comes from the
 DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}

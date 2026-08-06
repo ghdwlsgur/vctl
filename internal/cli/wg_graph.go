@@ -23,7 +23,7 @@ const wgHandshakeWindow = 3 * time.Minute
 
 // wgGraphCmd renders the collected WireGuard topology, as a terminal summary or
 // a mermaid diagram. Read (default-allow).
-func wgGraphCmd() *cobra.Command {
+func wgGraphCmd(env CommandEnv) *cobra.Command {
 	var format, hostFilter string
 	cmd := &cobra.Command{
 		Use:     "graph",
@@ -34,7 +34,7 @@ renders it as an aligned terminal summary (default) or a mermaid diagram
 (--format mermaid) you can paste into docs. Peers are matched to the far-end
 gateway by public key when both ends were collected.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ifaces, err := st.WGInterfaces(cmd.Context())
 				if err != nil {
 					return err

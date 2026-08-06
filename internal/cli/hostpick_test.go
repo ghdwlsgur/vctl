@@ -112,8 +112,8 @@ func TestHostPickLabelsCapTheHostnameColumn(t *testing.T) {
 // second.
 func TestEditAndDeleteTakeAtMostOneHostname(t *testing.T) {
 	for name, cmd := range map[string]*cobra.Command{
-		"edit":   editCmd(),
-		"delete": deleteCmd(),
+		"edit":   editCmd(CommandEnv{}),
+		"delete": deleteCmd(CommandEnv{}),
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, args := range [][]string{nil, {"web-01"}} {

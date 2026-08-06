@@ -19,7 +19,7 @@ import (
 // The subcommands are inspection and manual control only; the snapshot refreshes
 // itself during ordinary online use, so `refresh` exists for the case where
 // someone knows they are about to lose connectivity.
-func cacheCmd() *cobra.Command {
+func cacheCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cache",
 		Short: "Inspect the local inventory snapshot used when Postgres is unreachable",
@@ -31,17 +31,17 @@ the inventory database cannot be reached. Writes always go to Postgres.
   vctl cache refresh    refresh the snapshot now (before going offline)
   vctl cache clear      delete the snapshot and cached grants`,
 	}
-	cmd.AddCommand(cacheStatusCmd(), cacheRefreshCmd(), cacheClearCmd())
+	cmd.AddCommand(cacheStatusCmd(env), cacheRefreshCmd(env), cacheClearCmd(env))
 	return cmd
 }
 
-func cacheStatusCmd() *cobra.Command {
+func cacheStatusCmd(env CommandEnv) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show local snapshot age and queued audit records",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return withApp(func(a *app.App) error {
+			return env.withApp(func(a *app.App) error {
 				ui.Section(os.Stdout, "Local inventory cache")
 				if a.Cfg.CacheDisabled {
 					ui.Warnf(os.Stdout, "disabled (VCTL_CACHE_DISABLE / cache_disabled)")
@@ -118,14 +118,14 @@ func renderCachedGrants(a *app.App, snap *invcache.Snapshot) {
 	}
 }
 
-func cacheRefreshCmd() *cobra.Command {
+func cacheRefreshCmd(env CommandEnv) *cobra.Command {
 	return &cobra.Command{
 		Use:   "refresh",
 		Short: "Refresh the local snapshot from Postgres now",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			return withApp(func(a *app.App) error {
+			return env.withApp(func(a *app.App) error {
 				st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
 				if err != nil {
 					return err
@@ -143,13 +143,13 @@ func cacheRefreshCmd() *cobra.Command {
 	}
 }
 
-func cacheClearCmd() *cobra.Command {
+func cacheClearCmd(env CommandEnv) *cobra.Command {
 	return &cobra.Command{
 		Use:   "clear",
 		Short: "Delete the local snapshot and cached grants",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return withApp(func(a *app.App) error {
+			return env.withApp(func(a *app.App) error {
 				f := a.CacheFile()
 				if err := f.Clear(); err != nil {
 					return err

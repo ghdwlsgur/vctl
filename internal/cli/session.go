@@ -13,7 +13,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func sessionCmd() *cobra.Command {
+func sessionCmd(env CommandEnv) *cobra.Command {
 	var (
 		list        bool
 		host        string
@@ -39,7 +39,7 @@ Two uses:
   vctl session <cert-serial> --json   machine-readable export`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withAuditStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
+			return env.withAuditStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				if list || len(args) == 0 {
 					sessions, err := st.ListSessions(ctx, host, limit)
@@ -79,14 +79,14 @@ Two uses:
 
 // sessionStartCmd registers an SSH session (cert serial -> human, on a host).
 // Hidden: invoked by the host-side login stamper, not by humans.
-func sessionStartCmd() *cobra.Command {
+func sessionStartCmd(env CommandEnv) *cobra.Command {
 	var a store.AuditSession
 	cmd := &cobra.Command{
 		Use:    "session-start",
 		Short:  "Register an SSH session for kernel audit (host stamper use)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
+			return env.withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
 				id, err := st.RecordSession(cmd.Context(), a)
 				if err != nil {
 					return err

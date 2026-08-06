@@ -19,7 +19,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func sshCmd() *cobra.Command {
+func sshCmd(env CommandEnv) *cobra.Command {
 	var server, vm, user string
 	cmd := &cobra.Command{
 		Use:   "ssh [host|user@addr]",
@@ -57,7 +57,7 @@ the configured default.`,
 				return fmt.Errorf("pass a VM via --vm, or a host, not both")
 			}
 			if vm != "" {
-				return sshVM(ctx, vm, user)
+				return sshVM(ctx, env, vm, user)
 			}
 			query := server
 			if query == "" && len(args) > 0 {
@@ -75,14 +75,14 @@ the configured default.`,
 			// open it. That also makes this the way in when the inventory
 			// database itself is unreachable and the snapshot cannot help.
 			if ep, ok := parseUserAtAddr(query); ok {
-				return withApp(func(a *app.App) error {
+				return env.withApp(func(a *app.App) error {
 					tgt := ep.target(a.Cfg)
 					ui.Infof(os.Stderr, "connecting to %s@%s (direct, not from inventory)", tgt.User, tgt.Addr)
 					return newConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
 				})
 			}
 
-			return withInventory(ctx, func(a *app.App, inv *app.Inventory) error {
+			return env.withInventory(ctx, func(a *app.App, inv *app.Inventory) error {
 				var (
 					target *store.Server
 					err    error
@@ -260,13 +260,13 @@ func withLiveStatus(ctx context.Context, st invcache.Reader, cands []store.Serve
 //
 // A physical host has both doors: the positional form prompts, --server does
 // not. Here the terminal is what says which one this is.
-func sshVM(ctx context.Context, selector, user string) error {
+func sshVM(ctx context.Context, env CommandEnv, selector, user string) error {
 	id, ok := access.NovaID(selector)
 	if !ok {
 		return fmt.Errorf("--vm takes a Nova instance id or openstack:///<id>, not %q; "+
 			"run 'vctl openstack vm' to find it", selector)
 	}
-	return withStore(ctx, false, func(a *app.App, st *store.Store) error {
+	return env.withStore(ctx, false, func(a *app.App, st *store.Store) error {
 		vms, err := st.Instances(ctx, store.InstanceFilter{InstanceID: id, IncludeMissing: true})
 		if err != nil {
 			return err

@@ -53,7 +53,7 @@ type tetraEvent struct {
 	ProcessExit *tetraExit `json:"process_exit"`
 }
 
-func collectCmd() *cobra.Command {
+func collectCmd(env CommandEnv) *cobra.Command {
 	var (
 		from           string
 		host           string
@@ -83,7 +83,7 @@ storing it buys nothing and costs everything. A miss is held for
 before watch-sessions has written the session row. Pass --require-session=false
 for full host capture.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
+			return env.withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				var r io.Reader = os.Stdin
 				if from != "" {

@@ -28,7 +28,7 @@ func ChildExitCode(err error) (int, bool) {
 	return exitErr.Code, true
 }
 
-func execCmd() *cobra.Command {
+func execCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "exec -- <command> [args...]",
 		Short: "Run a child process with VAULT_TOKEN and VAULT_ADDR",
@@ -42,7 +42,7 @@ vctl renews or re-authenticates the token while the child process is alive.
 			if len(args) == 0 {
 				return fmt.Errorf("missing command: vctl exec -- <command>")
 			}
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}
