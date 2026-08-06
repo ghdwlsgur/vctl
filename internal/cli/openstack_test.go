@@ -150,9 +150,41 @@ func TestRolesCellMarksWhatTheHostNoLongerRuns(t *testing.T) {
 	h := osHost("srv-01", "farm-a", "compute")
 	h.Dropped = []store.DroppedRole{{Role: "network"}}
 
-	got := rolesCell(h)
+	got := rolesCell(h, false)
 	if !strings.Contains(got, "compute") || !strings.Contains(got, "-network") {
 		t.Errorf("roles cell = %q, want compute and a marked -network", got)
+	}
+}
+
+// A controller's nine roles are ~90 characters of near-identical text on every
+// controller in the farm, and because the widths are shared they pushed release
+// and age to the right on every other farm's rows too. The summary has to name
+// what the host is for and admit how much it is leaving out.
+func TestRolesCellSummarisesAControllerAndKeepsTheCount(t *testing.T) {
+	h := osHost("srv-01", "farm-a", "block-storage", "compute", "controller",
+		"dashboard", "identity", "image", "load-balancer", "network", "orchestration")
+
+	got := rolesCell(h, false)
+	if !strings.Contains(got, "controller") {
+		t.Errorf("roles cell = %q, want the role that says what the host is for", got)
+	}
+	if !strings.Contains(got, "9") {
+		t.Errorf("roles cell = %q — dropping the count reads as the whole answer", got)
+	}
+	if strings.Contains(got, "orchestration") {
+		t.Errorf("roles cell = %q, want the long list collapsed", got)
+	}
+	// --wide is the escape hatch, so nothing is unreachable.
+	if wide := rolesCell(h, true); !strings.Contains(wide, "orchestration") {
+		t.Errorf("--wide roles = %q, want every role", wide)
+	}
+}
+
+// A compute node running the L3 agent is not a controller, and calling it one
+// would be a worse answer than the list it replaced. Short lists stay lists.
+func TestRolesCellLeavesShortListsAlone(t *testing.T) {
+	if got := rolesCell(osHost("srv-01", "f", "compute", "network"), false); got != "compute,network" {
+		t.Errorf("roles cell = %q, want the two roles listed", got)
 	}
 }
 
@@ -223,14 +255,17 @@ func TestFarmHeadingCarriesTheEvidence(t *testing.T) {
 	guessed := osHost("srv-02", "farm-b")
 	guessed.Confidence = store.ConfidenceLocalOnly
 
-	if s := farmSuffix(guessed, 1); !strings.Contains(s, store.ConfidenceLocalOnly) {
+	if s := farmSuffix(guessed, 1, sharedCols{}); !strings.Contains(s, store.ConfidenceLocalOnly) {
 		t.Errorf("heading = %q, want the weak evidence named", s)
 	}
-	if s := farmSuffix(confirmed, 1); strings.Contains(s, store.ConfidenceConfirmed) {
+	if s := farmSuffix(confirmed, 1, sharedCols{}); strings.Contains(s, store.ConfidenceConfirmed) {
 		t.Errorf("heading = %q — a confirmed farm needs no annotation", s)
 	}
-	if s := farmSuffix(osHost("srv-03", ""), 2); !strings.Contains(s, "nothing has claimed") {
+	if s := farmSuffix(osHost("srv-03", ""), 2, sharedCols{}); !strings.Contains(s, "nothing has claimed") {
 		t.Errorf("unassigned heading = %q, want it said plainly", s)
+	}
+	if s := farmSuffix(confirmed, 1, sharedCols{}); !strings.Contains(s, "1 host") || strings.Contains(s, "1 hosts") {
+		t.Errorf("heading = %q, want \"1 host\"", s)
 	}
 }
 
@@ -304,7 +339,7 @@ func TestFarmShapeCountsTheRoles(t *testing.T) {
 		osHost("n3", "f", "compute"),
 	}
 
-	got := farmShape(hosts)
+	got := farmShape(hosts, true)
 	for _, want := range []string{"compute 3", "controller 2", "identity 2", "network 1"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("shape = %q, missing %s", got, want)
@@ -317,13 +352,162 @@ func TestFarmShapeCountsTheRoles(t *testing.T) {
 	}
 }
 
+// Nine roles with their counts is the wall of text this line exists to spare the
+// reader. It stops, and says how much it stopped short by.
+func TestFarmShapeStopsSummarisingBeforeItBecomesTheList(t *testing.T) {
+	got := farmShape([]store.OpenStackHost{
+		osHost("c1", "f", "controller", "identity", "network", "image",
+			"dashboard", "orchestration", "load-balancer", "block-storage"),
+	}, false)
+
+	if strings.Count(got, "·") != shapeRoles {
+		t.Errorf("shape = %q, want %d roles then a remainder", got, shapeRoles)
+	}
+	if !strings.Contains(got, "+5 more") {
+		t.Errorf("shape = %q — a silent cut reads as the whole census", got)
+	}
+}
+
 // A deployment nothing runs in has no shape to print, and an empty line under
 // the heading reads as a rendering fault.
 func TestFarmShapeIsEmptyWithNoRoles(t *testing.T) {
 	h := osHost("h1", "f")
 	h.Roles = nil
-	if got := farmShape([]store.OpenStackHost{h}); got != "" {
+	if got := farmShape([]store.OpenStackHost{h}, false); got != "" {
 		t.Errorf("shape = %q, want nothing", got)
+	}
+}
+
+// osFarm builds a farm whose hosts carry a release and a probe age, which is
+// what the heading either absorbs or leaves on the rows.
+func osFarm(farm string, specs ...struct {
+	name, release string
+	age           time.Duration
+}) []store.OpenStackHost {
+	hosts := make([]store.OpenStackHost, 0, len(specs))
+	for _, s := range specs {
+		h := osHost(s.name, farm, "compute")
+		h.Components = map[string]store.CapabilityComponent{
+			"nova-compute": {Version: s.release, Active: true, Service: true},
+		}
+		h.ObservedAt = time.Now().Add(-s.age)
+		hosts = append(hosts, h)
+	}
+	return hosts
+}
+
+type farmSpec = struct {
+	name, release string
+	age           time.Duration
+}
+
+// A column reading the same on every row describes the farm, not the row. Seven
+// hosts on 2025.1 printed the release seven times and pushed everything after it
+// to the right.
+func TestAValueEveryHostAgreesOnIsSaidOnceInTheHeading(t *testing.T) {
+	var buf bytes.Buffer
+	renderOpenStack(&buf, osFarm("f",
+		farmSpec{"srv-01", "2025.1", 17 * time.Minute},
+		farmSpec{"srv-02", "2025.1", 18 * time.Minute},
+		farmSpec{"srv-03", "2025.1", 18 * time.Minute},
+	), store.OpenStackCoverage{Hosts: 3, Probed: 3, Running: 3}, false, time.Now())
+
+	out := buf.String()
+	if n := strings.Count(out, "2025.1"); n != 1 {
+		t.Errorf("the release appears %d times, want once in the heading:\n%s", n, out)
+	}
+	// The oldest, never the newest: folding must not make a farm look fresher
+	// than its slowest reporter.
+	head, _, _ := strings.Cut(out, "\n")
+	if !strings.Contains(head, "18m") {
+		t.Errorf("heading = %q, want the oldest probe age", head)
+	}
+	if strings.Contains(out, "17m") {
+		t.Errorf("a per-host age survived the fold:\n%s", out)
+	}
+}
+
+// The age column earns its place by showing the one host that stopped
+// reporting. Folding it away on a farm that has one is how a dead agent goes
+// unnoticed, so a single stale host keeps the column for everybody.
+func TestAStaleHostKeepsTheAgeColumnOnEveryRow(t *testing.T) {
+	var buf bytes.Buffer
+	renderOpenStack(&buf, osFarm("f",
+		farmSpec{"srv-01", "2025.1", 10 * time.Minute},
+		farmSpec{"srv-02", "2025.1", 10 * time.Minute},
+		farmSpec{"srv-03", "2025.1", capabilityFreshWindow + time.Hour},
+	), store.OpenStackCoverage{Hosts: 3, Probed: 3, Running: 3}, false, time.Now())
+
+	out := buf.String()
+	if n := strings.Count(out, "10m"); n != 2 {
+		t.Errorf("the age column was folded away with a stale host present:\n%s", out)
+	}
+	if !strings.Contains(out, "4h") {
+		t.Errorf("the stale host's age is missing:\n%s", out)
+	}
+}
+
+// Disagreement is the thing worth seeing, so the column comes back the moment
+// two hosts differ.
+func TestAColumnComesBackWhenTheHostsDisagree(t *testing.T) {
+	var buf bytes.Buffer
+	renderOpenStack(&buf, osFarm("f",
+		farmSpec{"srv-01", "2025.1", 10 * time.Minute},
+		farmSpec{"srv-02", "2024.2", 10 * time.Minute},
+	), store.OpenStackCoverage{Hosts: 2, Probed: 2, Running: 2}, false, time.Now())
+
+	out := buf.String()
+	for _, want := range []string{"2025.1", "2024.2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("release %s went missing:\n%s", want, out)
+		}
+	}
+}
+
+// --wide is for the reader who wants every value on every row. Folding rows
+// away is the opposite of what they asked for.
+func TestWideFoldsNothingIntoTheHeading(t *testing.T) {
+	hosts := osFarm("f",
+		farmSpec{"srv-01", "2025.1", 10 * time.Minute},
+		farmSpec{"srv-02", "2025.1", 10 * time.Minute},
+	)
+	var buf bytes.Buffer
+	renderOpenStack(&buf, hosts, store.OpenStackCoverage{Hosts: 2, Probed: 2, Running: 2}, true, time.Now())
+
+	if n := strings.Count(buf.String(), "2025.1"); n < 2 {
+		t.Errorf("--wide folded a column into the heading:\n%s", buf.String())
+	}
+}
+
+// Dropping the component name off a stand-in release makes the column readable
+// and the value ambiguous. The mark and its legend keep the caveat.
+func TestAStandInReleaseIsMarkedAndExplained(t *testing.T) {
+	h := osHost("srv-01", "f", "controller")
+	h.Components = map[string]store.CapabilityComponent{
+		"cinder-api": {Version: "2025.1", Active: true, Service: true},
+	}
+
+	var buf bytes.Buffer
+	renderOpenStack(&buf, []store.OpenStackHost{h},
+		store.OpenStackCoverage{Hosts: 1, Probed: 1, Running: 1}, false, time.Now())
+
+	out := buf.String()
+	if !strings.Contains(out, "2025.1"+standInMark) {
+		t.Errorf("a non-nova release was not marked:\n%s", out)
+	}
+	if !strings.Contains(out, "--wide names it") {
+		t.Errorf("the mark has no legend, so it reads as noise:\n%s", out)
+	}
+	// A nova release is the norm and must not pick up a footnote.
+	n := osHost("srv-02", "f", "compute")
+	n.Components = map[string]store.CapabilityComponent{
+		"nova-compute": {Version: "2025.1", Active: true, Service: true},
+	}
+	buf.Reset()
+	renderOpenStack(&buf, []store.OpenStackHost{n},
+		store.OpenStackCoverage{Hosts: 1, Probed: 1, Running: 1}, false, time.Now())
+	if strings.Contains(buf.String(), standInMark) {
+		t.Errorf("a nova release was marked as a stand-in:\n%s", buf.String())
 	}
 }
 

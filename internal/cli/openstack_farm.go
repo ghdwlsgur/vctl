@@ -129,7 +129,9 @@ func farmChoices(ctx context.Context, st *store.Store) ([]farmChoice, error) {
 
 	out := make([]farmChoice, 0, len(byFarm))
 	for id, hs := range byFarm {
-		c := farmChoice{ID: id, Hosts: len(hs), Roles: farmShape(hs)}
+		// Capped: this is a one-line label in a chooser, where the full role
+		// census would push the farm's own name off the row.
+		c := farmChoice{ID: id, Hosts: len(hs), Roles: farmShape(hs, false)}
 		if d, ok := named[id]; ok {
 			c.Name, c.Region, c.State = d.DisplayName, d.Region, d.State
 		}
