@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
@@ -71,7 +73,11 @@ func openstackVMCmd() *cobra.Command {
 				if asJSON {
 					return writeJSON(vms)
 				}
-				renderVMs(os.Stdout, vms, time.Now())
+				names, err := farmNames(ctx, st)
+				if err != nil {
+					return err
+				}
+				renderVMs(os.Stdout, vms, names, time.Now())
 				return nil
 			})
 		},
@@ -130,35 +136,103 @@ func novaNameFor(ctx context.Context, st *store.Store, inventoryHost, deployment
 	return "", fmt.Errorf("no VMs are recorded on %s; it may not be a compute node, or nothing has collected yet", inventoryHost)
 }
 
-func renderVMs(w io.Writer, vms []store.Instance, now time.Time) {
+// farmNames maps deployment id to what people call it, for the grouping header.
+func farmNames(ctx context.Context, st *store.Store) (map[string]string, error) {
+	deps, err := st.Deployments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(deps))
+	for _, d := range deps {
+		if d.DisplayName != "" {
+			out[d.ID] = d.DisplayName
+		}
+	}
+	return out, nil
+}
+
+// renderVMs groups by farm and names the owning project.
+//
+// The farm is a header rather than a column: without --farm this listing mixes
+// every deployment together, and a VM's name says nothing about which one it is
+// in. Repeating the farm on every row would cost more width than it buys, and
+// the same listing already groups this way for hosts.
+//
+// The project is a column because it varies within a farm — it is the question
+// "whose VM is this", asked one row at a time.
+func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, now time.Time) {
 	if len(vms) == 0 {
 		ui.Infof(w, "no VMs to show.")
 		return
 	}
-	cells := make([][]string, len(vms))
-	for i, v := range vms {
-		cells[i] = []string{
-			ui.Truncate(nameOrID(v), 32),
-			vmStateCell(v),
-			ui.Truncate(v.HypervisorHostname, 20),
-			ui.Truncate(primaryAddress(v), 24),
-			ui.Muted(ui.Truncate(v.AvailabilityZone, 12)),
-			vmMissingCell(v, now),
-		}
+	byFarm := map[string][]store.Instance{}
+	for _, v := range vms {
+		byFarm[v.DeploymentID] = append(byFarm[v.DeploymentID], v)
 	}
-	widths := ui.ColumnWidths(cells)
-	for i := range vms {
-		var line strings.Builder
-		line.WriteString("  ")
-		for j, c := range cells[i] {
-			if j > 0 {
-				line.WriteString("  ")
+	ids := make([]string, 0, len(byFarm))
+	for id := range byFarm {
+		ids = append(ids, id)
+	}
+	// By what is printed, not by the id behind it — sorting on the endpoint
+	// while showing the name produces an order that looks like no order at all.
+	sort.Slice(ids, func(i, j int) bool {
+		return vmFarmLabel(ids[i], farms) < vmFarmLabel(ids[j], farms)
+	})
+
+	// The same header the host listing uses, so one farm reads the same in both.
+	farmStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	for _, id := range ids {
+		group := byFarm[id]
+		fmt.Fprintf(w, "\n%s %s\n", farmStyle.Render("▌ "+vmFarmLabel(id, farms)),
+			ui.Muted(fmt.Sprintf("· %d VMs", len(group))))
+		cells := make([][]string, len(group))
+		for i, v := range group {
+			cells[i] = []string{
+				ui.Truncate(nameOrID(v), 32),
+				vmStateCell(v),
+				ui.Muted(ui.Truncate(vmProjectLabel(v), 22)),
+				ui.Truncate(v.HypervisorHostname, 20),
+				ui.Truncate(primaryAddress(v), 24),
+				ui.Muted(ui.Truncate(v.AvailabilityZone, 12)),
+				vmMissingCell(v, now),
 			}
-			line.WriteString(ui.PadRight(c, widths[j]))
 		}
-		fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
+		widths := ui.ColumnWidths(cells)
+		for i := range group {
+			var line strings.Builder
+			line.WriteString("  ")
+			for j, c := range cells[i] {
+				if j > 0 {
+					line.WriteString("  ")
+				}
+				line.WriteString(ui.PadRight(c, widths[j]))
+			}
+			fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
+		}
 	}
-	fmt.Fprintln(w, ui.Muted(fmt.Sprintf("%d VMs", len(vms))))
+	fmt.Fprintln(w, ui.Muted(fmt.Sprintf("\n%d VMs · %d farms", len(vms), len(byFarm))))
+}
+
+// vmFarmLabel is the name if the farm has one, the endpoint otherwise. Nothing
+// claims the farm is unnamed — an endpoint is a real answer to "which one".
+func vmFarmLabel(id string, farms map[string]string) string {
+	if n := farms[id]; n != "" {
+		return n
+	}
+	return id
+}
+
+// vmProjectLabel prefers the name and falls back to the id.
+//
+// The id is kept in the data because it is the identifier; the name is what the
+// last collection saw it called. An empty name means nothing has resolved it
+// yet — usually a farm collected before this column existed — and showing the
+// id then is better than showing a blank.
+func vmProjectLabel(v store.Instance) string {
+	if v.ProjectName != "" {
+		return v.ProjectName
+	}
+	return v.ProjectID
 }
 
 func nameOrID(v store.Instance) string {

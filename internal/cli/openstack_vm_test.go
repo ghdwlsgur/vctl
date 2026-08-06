@@ -71,7 +71,7 @@ func TestMissingVMShowsHowLongItHasBeenGone(t *testing.T) {
 	v := store.Instance{InstanceID: "uuid-x", Name: "ghost", MissingSince: &gone}
 
 	var buf bytes.Buffer
-	renderVMs(&buf, []store.Instance{v}, time.Now())
+	renderVMs(&buf, []store.Instance{v}, nil, time.Now())
 	if !strings.Contains(buf.String(), "gone") {
 		t.Errorf("a missing VM was not marked:\n%s", buf.String())
 	}
@@ -82,5 +82,29 @@ func TestMissingVMShowsHowLongItHasBeenGone(t *testing.T) {
 func TestUnnamedVMFallsBackToItsUUID(t *testing.T) {
 	if got := nameOrID(store.Instance{InstanceID: "uuid-y"}); got != "uuid-y" {
 		t.Errorf("nameOrID = %q", got)
+	}
+}
+
+// The project column falls back to the id. A farm collected before names were
+// resolved has the id and nothing else, and a blank cell would read as "no
+// owner" rather than "not looked up yet".
+func TestProjectLabelFallsBackToTheID(t *testing.T) {
+	if got := vmProjectLabel(store.Instance{ProjectID: "abc", ProjectName: "platform"}); got != "platform" {
+		t.Errorf("with a name: got %q, want platform", got)
+	}
+	if got := vmProjectLabel(store.Instance{ProjectID: "abc"}); got != "abc" {
+		t.Errorf("without a name: got %q, want the id", got)
+	}
+}
+
+// An unnamed farm is grouped under its endpoint, not under a placeholder. The
+// endpoint is a real answer to "which deployment is this".
+func TestFarmLabelFallsBackToTheEndpoint(t *testing.T) {
+	names := map[string]string{"a": "lab-a"}
+	if got := vmFarmLabel("a", names); got != "lab-a" {
+		t.Errorf("named farm: got %q", got)
+	}
+	if got := vmFarmLabel("172.29.0.100:5000", names); got != "172.29.0.100:5000" {
+		t.Errorf("unnamed farm: got %q, want the endpoint", got)
 	}
 }
