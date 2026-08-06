@@ -32,6 +32,7 @@ func openstackCmd() *cobra.Command {
 		wide   bool
 		asJSON bool
 		all    bool
+		parked bool
 	)
 	cmd := &cobra.Command{
 		Use:     "openstack",
@@ -48,6 +49,15 @@ func openstackCmd() *cobra.Command {
 				hosts, err := st.OpenStackHosts(ctx)
 				if err != nil {
 					return err
+				}
+				// Parked hosts go first, before coverage, so the denominator and
+				// the table are counting the same fleet.
+				if !parked {
+					deps, err := st.Deployments(ctx)
+					if err != nil {
+						return err
+					}
+					hosts = store.InService(hosts, deps)
 				}
 				// Coverage is over the whole fleet, so it is taken before the
 				// filters — otherwise `--role compute` would report the fleet as
@@ -70,6 +80,7 @@ func openstackCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&wide, "wide", false, "show every component and version instead of the summary column")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	cmd.Flags().BoolVar(&all, "all", false, "include hosts a probe examined and found no OpenStack on")
+	cmd.Flags().BoolVar(&parked, "parked", false, "include hosts the inventory has in maintenance or retired, and the farms made only of them")
 	cmd.AddCommand(openstackHostCmd())
 	// Deliberately not app-gated, for the same reason `vctl migrate` is not.
 	//

@@ -112,11 +112,71 @@ func isPlaceholderRole(role string) bool {
 	return role == roleNone || role == RoleUnknown
 }
 
+// Parked reports whether the inventory says nothing is expected of this host
+// right now.
+//
+// A machine in a maintenance window or already decommissioned is not a gap in
+// the fleet's OpenStack coverage — somebody decided it should be out, and
+// reporting its roles, its farm and its anomalies argues with that decision
+// every time the listing is read. A farm whose hosts are all parked stops being
+// listed at all, which is the point: some farms exist only as hardware nobody
+// is operating.
+//
+// Broken is deliberately not parked. A broken host is one somebody wants to see.
+func (h OpenStackHost) Parked() bool {
+	switch h.HostState {
+	case StateMaintenance, StateRetired:
+		return true
+	}
+	return false
+}
+
+// InService drops what a fleet listing should not argue about: hosts the
+// inventory has parked, and hosts belonging to a deployment somebody retired.
+//
+// Two keys, not one, because they answer different questions. A host in a
+// maintenance window is one machine out; a farm nobody operates is a whole
+// deployment out. Deriving the second from the first — hiding a farm because
+// any host in it is parked — would make one controller going into maintenance
+// take its entire farm off the listing, which is exactly when you want to see
+// the rest of it.
+//
+// A function over the result rather than a filter in the query, because several
+// readers must NOT use it:
+//
+//   - the reconciler matches inventory against what the control plane reports,
+//     and hiding a parked host there would make nova's record of it look like a
+//     machine no inventory has. It would then be filed as control-only, which is
+//     the opposite of what parking it meant.
+//   - asking for one host or one farm by name is an explicit request. Answering
+//     "no such host" because somebody parked it would be a lie about the
+//     inventory.
+//   - the farm picker has to reach parked farms, or a retired one could never be
+//     brought back.
+//
+// So the fleet listing hides them and everything you address by name does not.
+func InService(hosts []OpenStackHost, deployments []Deployment) []OpenStackHost {
+	retired := make(map[string]bool, len(deployments))
+	for _, d := range deployments {
+		if d.State == StateRetired {
+			retired[d.ID] = true
+		}
+	}
+	out := make([]OpenStackHost, 0, len(hosts))
+	for _, h := range hosts {
+		if h.Parked() || retired[h.Farm] {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
 // OpenStackCoverage says how much of the fleet has been looked at, which is the
 // context an empty listing needs: no OpenStack hosts because none were found is
 // a different situation from none because nothing has probed yet.
 type OpenStackCoverage struct {
-	// Hosts is the inventory excluding retired ones — nothing is expected of
+	// Hosts is the inventory excluding parked ones — nothing is expected of
 	// those, so counting them would make coverage look permanently incomplete.
 	Hosts   int `json:"hosts"`
 	Probed  int `json:"probed"`
@@ -164,11 +224,14 @@ func (s *Store) OpenStackHosts(ctx context.Context) ([]OpenStackHost, error) {
 // Only the inventory total stays a query, because it is not in these rows.
 func (s *Store) OpenStackCoverageOf(ctx context.Context, hosts []OpenStackHost) (OpenStackCoverage, error) {
 	c := OpenStackCoverage{Probed: len(hosts)}
-	// Retired hosts are excluded: nothing is expected of them, so counting them
-	// would leave coverage permanently short of complete.
+	// Parked hosts are excluded: nothing is expected of them, so counting them
+	// would leave coverage permanently short of complete. Same set as
+	// OpenStackHost.Parked, so the denominator and the listing agree — they
+	// disagreed once already, and a summary that contradicts the table above it
+	// is worse than no summary.
 	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM servers WHERE coalesce(state,'active') <> $1`,
-		StateRetired).Scan(&c.Hosts); err != nil {
+		`SELECT count(*) FROM servers WHERE coalesce(state,'active') <> ALL($1)`,
+		[]string{StateMaintenance, StateRetired}).Scan(&c.Hosts); err != nil {
 		return c, err
 	}
 	for _, h := range hosts {
