@@ -6,12 +6,14 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/hoststatus/probes"
 	"github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -194,9 +196,50 @@ func renderFarmShow(w io.Writer, a openstack.Assessment, now time.Time) {
 		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("unsettled"), 20),
 			ui.Warn(strings.Join(a.Membership.Unsettled, ", ")))
 	}
+	if line := caTrustLine(a.CATrust); line != "" {
+		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("ca-trust"), 20), line)
+	}
 	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("keystone"), 20), a.ID)
 	fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("reconciled"), 20), reconcileLine(a.Freshness, now))
 	renderAnomalies(w, a.Anomalies, a.State)
+}
+
+// caTrustLine answers "will a VM created here trust vctl's certificates".
+//
+// It says which service was asked, because that is the part people get wrong,
+// and it names the disagreeing hosts when a farm's controllers do not agree —
+// "partly on" without saying which one is no use at three in the morning.
+//
+// Read from the deployed config, so a farm whose config landed but whose
+// container has not been restarted yet still reads as on. The word is "config"
+// rather than something stronger for exactly that reason.
+func caTrustLine(c openstack.CATrust) string {
+	if c.State == "" {
+		return ""
+	}
+	svc := ""
+	if len(c.Hosts) > 0 {
+		svc = " · " + strconv.Itoa(len(c.Hosts)) + " metadata host(s)"
+	}
+	switch c.State {
+	case probes.VendordataOn:
+		return ui.OK("on") + ui.Muted(" · new VMs trust the SSH CA"+svc)
+	case probes.VendordataOff:
+		return ui.Muted("off · new VMs will not trust the SSH CA" + svc)
+	}
+	return ui.Warn(c.State) + ui.Muted(" · "+strings.Join(caTrustOdd(c), ", "))
+}
+
+// caTrustOdd names the hosts that are not simply on, worst first.
+func caTrustOdd(c openstack.CATrust) []string {
+	out := make([]string, 0, len(c.Hosts))
+	for host, state := range c.Hosts {
+		if state != probes.VendordataOn {
+			out = append(out, host+"="+state)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // renderAnomalies puts everything worth a second look in one block. Scattered

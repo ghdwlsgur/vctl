@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ghdwlsgur/vctl/internal/hoststatus/probes"
+
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -41,6 +43,7 @@ type Assessment struct {
 	Health       Health       `json:"health"`
 	Freshness    Freshness    `json:"freshness"`
 	Versions     Versions     `json:"versions"`
+	CATrust      CATrust      `json:"ca_trust"`
 
 	// Anomalies are the things worth a second look, in one place. Scattered
 	// across the other sections they are each a footnote; together they are the
@@ -117,6 +120,20 @@ type Versions struct {
 	Drifting bool `json:"drifting"`
 }
 
+// CATrust is whether this farm hands the vctl SSH CA to the VMs it creates.
+//
+// Folded from the hosts that answer instance metadata, and only from those: a
+// compute node has nothing to say about it. The farm's answer is the worst one
+// among them, because a VM's request lands on whichever host the VIP picks —
+// two controllers out of three is not "on", it is a coin toss.
+type CATrust struct {
+	// State is the farm's answer, empty when nothing here serves metadata.
+	State string `json:"state,omitempty"`
+	// Hosts is what each metadata-serving host says, so a mixed farm shows
+	// which one is the odd it out rather than just "something is wrong".
+	Hosts map[string]string `json:"hosts,omitempty"`
+}
+
 // Anomaly is one thing about the deployment worth a second look.
 type Anomaly struct {
 	// Kind is a stable slug so a caller can filter without parsing prose.
@@ -144,7 +161,8 @@ const (
 	AnomalyStale       = "stale"         // nothing has reconciled recently
 	AnomalyNeverRun    = "never-reconciled"
 	AnomalyReconcileNG = "reconcile-failing"
-	AnomalyVMMissing   = "vm-missing" // a VM the control plane no longer lists
+	AnomalyVMMissing   = "vm-missing"    // a VM the control plane no longer lists
+	AnomalyCATrust     = "ca-trust-half" // the SSH CA is half-installed, not absent
 )
 
 // Severities.
@@ -232,9 +250,23 @@ func Assess(in Input) Assessment {
 			a.Health.HostsDown++
 		}
 		a.Versions.ByRelease[ReleaseOf(h)]++
+		if v := h.Details["vendordata"]; v != "" {
+			if a.CATrust.Hosts == nil {
+				a.CATrust.Hosts = map[string]string{}
+			}
+			a.CATrust.Hosts[h.Hostname] = v
+			if caTrustRank(v) > caTrustRank(a.CATrust.State) {
+				a.CATrust.State = v
+			}
+		}
 		for _, r := range h.Roles {
 			byRole[r] = append(byRole[r], h)
 		}
+	}
+	if d := caTrustAnomaly(a.CATrust); d != "" {
+		a.Anomalies = append(a.Anomalies, Anomaly{
+			Kind: AnomalyCATrust, Subject: in.ID, Severity: SeverityError, Detail: d,
+		})
 	}
 	a.Architecture.Hosts = a.Membership.Total
 
@@ -335,6 +367,44 @@ func Assess(in Input) Assessment {
 	return a
 }
 
+// caTrustRank orders the states by how much they should worry somebody, so a
+// farm's answer can be the worst of its metadata hosts.
+//
+// "off" outranks "on" because a farm nobody onboarded is further from working
+// than one that is; the two half-states outrank both because they are not
+// stages on the way to "on", they are mistakes that look like progress.
+func caTrustRank(state string) int {
+	switch state {
+	case probes.VendordataOn:
+		return 1
+	case probes.VendordataOff:
+		return 2
+	case probes.VendordataNoConfig:
+		return 3
+	case probes.VendordataNoFile:
+		return 4
+	}
+	return 0
+}
+
+// caTrustAnomaly reports the half-installed states and nothing else.
+//
+// "off" is deliberately not an anomaly. A farm nobody has onboarded yet is a
+// decision or a backlog item, not a fault, and reporting it as one would put a
+// permanent red line under every farm somebody has not got to. The half-states
+// are different: each is a specific mistake with a specific consequence.
+func caTrustAnomaly(c CATrust) string {
+	switch c.State {
+	case probes.VendordataNoFile:
+		return "the metadata service is configured for vendordata but the file is not there — " +
+			"the mount is not optional, so it will fail to start when anything restarts it"
+	case probes.VendordataNoConfig:
+		return "the vendordata file is in place and the service that answers instance metadata " +
+			"does not read it — new VMs get an empty vendor_data.json and will not trust the SSH CA"
+	}
+	return ""
+}
+
 // expectedUnder says whether a declared state already accounts for an anomaly.
 //
 // Narrow on purpose. "broken" explains a control plane that will not answer; it
@@ -343,7 +413,7 @@ func Assess(in Input) Assessment {
 // have nothing to do with the fault.
 func expectedUnder(state, kind string) bool {
 	switch kind {
-	case AnomalyReconcileNG, AnomalyStale, AnomalyRoleDown, AnomalyVMMissing:
+	case AnomalyReconcileNG, AnomalyStale, AnomalyRoleDown, AnomalyVMMissing, AnomalyCATrust:
 		return state == store.StateBroken || state == store.StateMaintenance ||
 			state == store.StateRetired
 	case AnomalyNeverRun, AnomalyUnsettled:
