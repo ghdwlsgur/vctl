@@ -153,11 +153,11 @@ func resolveFarmID(ctx context.Context, st *store.Store, v string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	i := indexOfFarm(farms, v)
-	if i < 0 {
-		return "", fmt.Errorf("no deployment %q; run 'vctl openstack' to see them", v)
+	f, err := resolveFarm(farms, v)
+	if err != nil {
+		return "", err
 	}
-	return farms[i].ID, nil
+	return f.ID, nil
 }
 
 // novaNameFor maps an inventory hostname onto the name nova files VMs under.

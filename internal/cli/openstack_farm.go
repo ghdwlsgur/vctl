@@ -145,14 +145,17 @@ func farmChoices(ctx context.Context, st *store.Store) ([]farmChoice, error) {
 // resolveFarmName fills in whatever was not given on the command line.
 func resolveFarmName(farms []farmChoice, id, name, region string) (string, string, string, error) {
 	if id != "" {
-		i := indexOfFarm(farms, id)
-		if i < 0 {
-			return "", "", "", fmt.Errorf("no deployment %q; run 'vctl openstack' to see them", id)
+		// resolveFarm rather than a position lookup: this path renames a
+		// deployment, and its error says which ids share a name instead of
+		// picking one of them.
+		f, err := resolveFarm(farms, id)
+		if err != nil {
+			return "", "", "", err
 		}
 		if name != "" {
-			return farms[i].ID, strings.TrimSpace(name), region, nil
+			return f.ID, strings.TrimSpace(name), region, nil
 		}
-		return farmNameForm(farms[i], region)
+		return farmNameForm(f, region)
 	}
 	if !isTerminal() {
 		return "", "", "", fmt.Errorf("a deployment is required when there is no terminal to pick at")
@@ -164,9 +167,67 @@ func resolveFarmName(farms []farmChoice, id, name, region string) (string, strin
 	return farmNameForm(farms[i], region)
 }
 
-func indexOfFarm(farms []farmChoice, id string) int {
+// resolveFarm turns what somebody typed into exactly one deployment.
+//
+// Every command that takes a deployment goes through here, because the rules
+// only mean anything if they are the same everywhere. They were not: the
+// listing matched ids and membership ids and never the name on screen, so
+// `--farm seoul-b` — the name the listing itself prints — returned nothing and
+// called it an empty result. The picker matched names too, but took the first
+// one it found.
+//
+// The rules:
+//
+//   - An exact id wins outright. It is the identifier; nothing overrides it,
+//     including another deployment that happens to be *named* that.
+//   - A display name is accepted only when it belongs to one deployment.
+//   - Two deployments sharing a name is not something to resolve by position.
+//     `farm state` and `farm name` change things, and picking whichever sorted
+//     first would change the wrong one silently. Both ids are printed and the
+//     command stops.
+//   - A selector that matches nothing is an error. An empty listing looks like
+//     an answer, and "this farm has no hosts" is a very different sentence from
+//     "there is no such farm".
+func resolveFarm(farms []farmChoice, selector string) (farmChoice, error) {
+	if selector == "" {
+		return farmChoice{}, fmt.Errorf("a deployment is required")
+	}
+	for _, f := range farms {
+		if strings.EqualFold(f.ID, selector) {
+			return f, nil
+		}
+	}
+	var byName []farmChoice
+	for _, f := range farms {
+		if f.Name != "" && strings.EqualFold(f.Name, selector) {
+			byName = append(byName, f)
+		}
+	}
+	switch len(byName) {
+	case 1:
+		return byName[0], nil
+	case 0:
+		return farmChoice{}, fmt.Errorf("no deployment %q; run 'vctl openstack' to see them", selector)
+	default:
+		ids := make([]string, 0, len(byName))
+		for _, f := range byName {
+			ids = append(ids, f.ID)
+		}
+		return farmChoice{}, fmt.Errorf(
+			"%q names %d deployments (%s); use the id",
+			selector, len(byName), strings.Join(ids, ", "))
+	}
+}
+
+// indexOfFarm is resolveFarm for the callers that need a position in the list
+// they were given, such as the interactive picker's starting cursor.
+func indexOfFarm(farms []farmChoice, selector string) int {
+	got, err := resolveFarm(farms, selector)
+	if err != nil {
+		return -1
+	}
 	for i, f := range farms {
-		if strings.EqualFold(f.ID, id) || (f.Name != "" && strings.EqualFold(f.Name, id)) {
+		if f.ID == got.ID {
 			return i
 		}
 	}
