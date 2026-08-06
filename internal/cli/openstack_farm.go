@@ -15,18 +15,18 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func openstackFarmCmd() *cobra.Command {
+func openstackFarmCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "farm",
 		Short: "Name the deployments so the listing reads as something other than endpoints",
 	}
-	cmd.AddCommand(openstackFarmNameCmd())
-	cmd.AddCommand(openstackFarmShowCmd())
-	cmd.AddCommand(openstackFarmStateCmd())
+	cmd.AddCommand(openstackFarmNameCmd(env))
+	cmd.AddCommand(openstackFarmShowCmd(env))
+	cmd.AddCommand(openstackFarmStateCmd(env))
 	return cmd
 }
 
-func openstackFarmNameCmd() *cobra.Command {
+func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 	var region string
 	cmd := &cobra.Command{
 		Use:   "name [deployment] [name]",
@@ -38,7 +38,7 @@ func openstackFarmNameCmd() *cobra.Command {
 			"With no arguments the deployment is picked from a list and the name asked for in a form.",
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				farms, err := farmChoices(ctx, st)
 				if err != nil {
@@ -284,7 +284,7 @@ func farmNameForm(f farmChoice, region string) (string, string, string, error) {
 	return f.ID, strings.TrimSpace(name), strings.TrimSpace(region), nil
 }
 
-func openstackFarmStateCmd() *cobra.Command {
+func openstackFarmStateCmd(env CommandEnv) *cobra.Command {
 	var note string
 	cmd := &cobra.Command{
 		Use:   "state [deployment] [state]",
@@ -299,7 +299,7 @@ func openstackFarmStateCmd() *cobra.Command {
 			"With no arguments the deployment is picked from a list and the state asked for in a form.",
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				farms, err := farmChoices(ctx, st)
 				if err != nil {

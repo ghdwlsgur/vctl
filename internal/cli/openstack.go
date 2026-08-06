@@ -26,7 +26,7 @@ import (
 // is more likely to be the agent than the schedule.
 const capabilityFreshWindow = 3 * time.Hour
 
-func openstackCmd() *cobra.Command {
+func openstackCmd(env CommandEnv) *cobra.Command {
 	var (
 		farm   string
 		role   string
@@ -45,7 +45,7 @@ func openstackCmd() *cobra.Command {
 			"is shown when something declared or confirmed it — never inferred from what a host runs,\n" +
 			"because two unrelated deployments behind one endpoint look identical from a host.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				hosts, err := st.OpenStackHosts(ctx)
 				if err != nil {
@@ -98,7 +98,7 @@ func openstackCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	cmd.Flags().BoolVar(&all, "all", false, "include hosts a probe examined and found no OpenStack on")
 	cmd.Flags().BoolVar(&parked, "parked", false, "include hosts the inventory has in maintenance or retired, and the farms made only of them")
-	cmd.AddCommand(openstackHostCmd())
+	cmd.AddCommand(openstackHostCmd(env))
 	// Deliberately not app-gated, for the same reason `vctl migrate` is not.
 	//
 	// Vault is the boundary here: reconciling needs kv/teams/sre/vctl-* and
@@ -111,9 +111,9 @@ func openstackCmd() *cobra.Command {
 	// to satisfy a check is the wrong shape. The gate also opened the store
 	// with vctl-ro, a role this Job has no reason to hold, so the check failed
 	// before the command it guards could run at all.
-	cmd.AddCommand(openstackReconcileCmd())
-	cmd.AddCommand(openstackVMCmd())
-	cmd.AddCommand(gate(openstackFarmCmd(), "openstack-farm", classMutate))
+	cmd.AddCommand(openstackReconcileCmd(env))
+	cmd.AddCommand(openstackVMCmd(env))
+	cmd.AddCommand(gate(openstackFarmCmd(env), "openstack-farm", classMutate))
 	return cmd
 }
 
@@ -647,14 +647,14 @@ func coverageLine(c store.OpenStackCoverage) string {
 	return s
 }
 
-func openstackHostCmd() *cobra.Command {
+func openstackHostCmd(env CommandEnv) *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "host [hostname]",
 		Short: "Show one host's OpenStack roles, components and farm",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				row, err := resolveHost(ctx, st, args, "OpenStack detail")
 				if err != nil {

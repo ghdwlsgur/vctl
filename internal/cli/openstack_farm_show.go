@@ -19,7 +19,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func openstackFarmShowCmd() *cobra.Command {
+func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "show [deployment]",
@@ -31,7 +31,7 @@ func openstackFarmShowCmd() *cobra.Command {
 			"argument it is picked from a list.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				farms, err := farmChoices(ctx, st)
 				if err != nil {
