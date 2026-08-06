@@ -42,13 +42,13 @@ func gate(cmd *cobra.Command, name string, class authz.Class) *cobra.Command {
 // enforceRBAC is the persistent pre-run gate. It authenticates, then asks the
 // authorizer whether the current identity may run this command. Ungated
 // commands carry no annotation and pass straight through.
-func enforceRBAC(cmd *cobra.Command) error {
+func enforceRBAC(env CommandEnv, cmd *cobra.Command) error {
 	name := cmd.Annotations["rbac.command"]
 	if name == "" {
 		return nil
 	}
 	ctx := cmd.Context()
-	a, err := newApp()
+	a, err := env.newApp()
 	if err != nil {
 		return err
 	}

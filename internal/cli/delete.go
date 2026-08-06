@@ -25,7 +25,7 @@ import (
 // What does not stay is any jump chain pointing at this host, and that is why
 // the command refuses rather than cascades: silently rewriting other hosts to
 // "direct" would leave them unreachable with no sign of why.
-func deleteCmd() *cobra.Command {
+func deleteCmd(env CommandEnv) *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:     "delete [hostname]",
@@ -41,7 +41,7 @@ repointing them silently would leave them unreachable.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(ctx, true, func(_ *app.App, st *store.Store) error {
 				cur, err := resolveHost(ctx, st, args, "Delete which host?")
 				if err != nil {
 					return err

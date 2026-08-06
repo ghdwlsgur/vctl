@@ -21,7 +21,7 @@ import (
 // ipKinds are the allowed allocation categories for the 201.x ledger.
 var ipKinds = []string{"personal", "server", "vm", "floating-ip", "router-gw", "dnat-vip"}
 
-func ipCmd() *cobra.Command {
+func ipCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ip",
 		Short: "Manage the 192.168.201.0/24 IP allocation ledger (IPAM)",
@@ -30,12 +30,12 @@ inventory (servers). It records who/what holds each 192.168.201.x address —
 personal devices, OpenStack VMs, floating IPs, DNAT VIPs and physical hosts —
 so the ledger survives sync and covers non-SSH addresses too.`,
 	}
-	cmd.AddCommand(ipListCmd(), ipSetCmd(), ipRmCmd(), ipBindWGCmd())
+	cmd.AddCommand(ipListCmd(env), ipSetCmd(env), ipRmCmd(env), ipBindWGCmd(env))
 	return cmd
 }
 
 // ipListCmd prints the ledger, optionally filtered. Read (default-allow).
-func ipListCmd() *cobra.Command {
+func ipListCmd(env CommandEnv) *cobra.Command {
 	var kind, owner string
 	cmd := &cobra.Command{
 		Use:     "list [filter]",
@@ -47,7 +47,7 @@ func ipListCmd() *cobra.Command {
 			if len(args) == 1 {
 				filter = args[0]
 			}
-			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				rows, err := st.IPAllocList(cmd.Context(), kind, owner, filter)
 				if err != nil {
 					return err
@@ -67,7 +67,7 @@ func ipListCmd() *cobra.Command {
 }
 
 // ipSetCmd creates or updates one allocation. Mutate (default-deny w/o grant).
-func ipSetCmd() *cobra.Command {
+func ipSetCmd(env CommandEnv) *cobra.Command {
 	var a store.IPAllocation
 	cmd := &cobra.Command{
 		Use:   "set <ip>",
@@ -85,7 +85,7 @@ func ipSetCmd() *cobra.Command {
 				return fmt.Errorf("invalid --farm-vip: %q", a.FarmVIP)
 			}
 			a.IP = ip
-			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				if err := st.IPAllocUpsert(cmd.Context(), a); err != nil {
 					return err
 				}
@@ -112,7 +112,7 @@ func ipSetCmd() *cobra.Command {
 }
 
 // ipRmCmd deletes one allocation. Mutate (default-deny w/o grant).
-func ipRmCmd() *cobra.Command {
+func ipRmCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rm <ip>",
 		Aliases: []string{"delete"},
@@ -123,7 +123,7 @@ func ipRmCmd() *cobra.Command {
 			if net.ParseIP(ip) == nil {
 				return fmt.Errorf("invalid IP: %q", ip)
 			}
-			return withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				if err := st.IPAllocDelete(cmd.Context(), ip); err != nil {
 					return err
 				}
@@ -281,7 +281,7 @@ func ipStatusState(status string) ui.State {
 // The endpoint is named as host/interface because that is what an operator can
 // read off `vctl wg graph`; the public key it resolves to is what gets stored,
 // since that is the identity the rest of the schema uses.
-func ipBindWGCmd() *cobra.Command {
+func ipBindWGCmd(env CommandEnv) *cobra.Command {
 	var endpoint string
 	var clear bool
 	cmd := &cobra.Command{
@@ -305,7 +305,7 @@ is stored as that interface's public key.
 			if clear == (endpoint != "") {
 				return fmt.Errorf("pass exactly one of --endpoint or --clear")
 			}
-			return withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(ctx, true, func(_ *app.App, st *store.Store) error {
 				key := ""
 				if !clear {
 					var err error

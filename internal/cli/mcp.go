@@ -28,7 +28,7 @@ import (
 // a login prompt that would corrupt the JSON-RPC channel.
 const mcpProtocolVersion = "2024-11-05"
 
-func mcpCmd() *cobra.Command {
+func mcpCmd(env CommandEnv) *cobra.Command {
 	return &cobra.Command{
 		Use:   "mcp",
 		Short: "Run a read-only MCP server (stdio) exposing the inventory to AI agents",

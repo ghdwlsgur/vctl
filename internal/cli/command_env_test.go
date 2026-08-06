@@ -9,20 +9,12 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
-// A converted subtree has to take its app from the env it was built with, not
-// from package state.
+// A command takes its app from the env it was built with.
 //
-// Changing the signatures is the easy half and proves nothing on its own: a
-// command that accepts a CommandEnv and then calls the package newApp() looks
-// converted and is not. This sets the global to something that fails loudly and
-// checks the env's factory is what actually runs.
-func TestAConvertedCommandTakesItsAppFromTheEnv(t *testing.T) {
-	saved := appFactory
-	t.Cleanup(func() { appFactory = saved })
-	appFactory = func() (*app.App, error) {
-		return nil, errors.New("package appFactory was used")
-	}
-
+// There is no package-level factory to fall back to any more, which is the
+// point: the previous shape worked because callers built one tree at a time,
+// and that was a convention rather than a guarantee.
+func TestACommandTakesItsAppFromTheEnv(t *testing.T) {
 	var used bool
 	env := CommandEnv{NewApp: func() (*app.App, error) {
 		used = true
@@ -40,47 +32,67 @@ func TestAConvertedCommandTakesItsAppFromTheEnv(t *testing.T) {
 	}
 }
 
-// An empty CommandEnv still works. The conversion moves subtree by subtree, so
-// for a while some commands are built without one — and a nil factory that
-// panicked would turn a half-finished migration into a crash.
-func TestAnEmptyEnvFallsBackToThePackageFactory(t *testing.T) {
-	saved := appFactory
-	t.Cleanup(func() { appFactory = saved })
-	var used bool
-	appFactory = func() (*app.App, error) {
-		used = true
-		return nil, errors.New("package factory")
+// Two trees built with different dependencies keep them apart.
+//
+// This is the property the package variable could not offer: a second NewRoot
+// overwrote the first's factory, so whichever tree ran later used the other's
+// app. Nothing failed — the wrong dependency simply answered — and with no
+// parallel tests in this package nothing was ever going to notice.
+func TestTwoTreesDoNotShareDependencies(t *testing.T) {
+	var ranA, ranB bool
+	rootA := NewRoot(Dependencies{NewApp: func() (*app.App, error) {
+		ranA = true
+		return nil, errors.New("A")
+	}})
+	rootB := NewRoot(Dependencies{NewApp: func() (*app.App, error) {
+		ranB = true
+		return nil, errors.New("B")
+	}})
+
+	// Build B second, then run A. Under the old shape A would reach B's factory.
+	osA := findCmd(rootA, "openstack")
+	if osA == nil {
+		t.Fatal("no openstack command in tree A")
+	}
+	if err := osA.RunE(osA, nil); err == nil {
+		t.Fatal("expected tree A's factory to fail")
+	}
+	if !ranA {
+		t.Error("tree A used something other than its own factory")
+	}
+	if ranB {
+		t.Error("tree A reached tree B's factory")
 	}
 
-	_ = CommandEnv{}.withApp(func(*app.App) error { return nil })
-	if !used {
-		t.Error("an empty env did not fall back to the package factory")
+	osB := findCmd(rootB, "openstack")
+	if err := osB.RunE(osB, nil); err == nil {
+		t.Fatal("expected tree B's factory to fail")
+	}
+	if !ranB {
+		t.Error("tree B used something other than its own factory")
 	}
 }
 
-// The tree wires the resolved dependency into the subtree it hands out, which
-// is the whole point: NewRoot's Dependencies must reach the commands.
-func TestNewRootGivesTheOpenStackSubtreeItsFactory(t *testing.T) {
-	saved := appFactory
-	t.Cleanup(func() { appFactory = saved })
-
+// Every gated command reaches the RBAC pre-run through the same env, so a tree
+// built with a fake app does not authenticate against a real Vault.
+func TestTheRBACGateUsesTheTreesEnv(t *testing.T) {
 	var used bool
 	root := NewRoot(Dependencies{NewApp: func() (*app.App, error) {
 		used = true
 		return nil, errors.New("injected")
 	}})
-	// Point the global somewhere else entirely: if the subtree reaches for it,
-	// this test fails rather than passing by coincidence.
-	appFactory = func() (*app.App, error) { return nil, errors.New("package appFactory was used") }
 
-	os := findCmd(root, "openstack")
-	if os == nil {
-		t.Fatal("no openstack command in the tree")
+	ssh := findCmd(root, "ssh")
+	if ssh == nil {
+		t.Fatal("no ssh command in the tree")
 	}
-	if err := os.RunE(os, nil); err == nil {
-		t.Fatal("expected the fake factory's error")
+	if root.PersistentPreRunE == nil {
+		t.Fatal("the tree has no pre-run gate")
+	}
+	if err := root.PersistentPreRunE(ssh, nil); err == nil {
+		t.Fatal("expected the injected factory's error")
 	}
 	if !used {
-		t.Error("the openstack subtree did not use the injected factory")
+		t.Error("the RBAC gate did not use the tree's factory")
 	}
 }

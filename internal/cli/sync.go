@@ -12,7 +12,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func syncCmd() *cobra.Command {
+func syncCmd(env CommandEnv) *cobra.Command {
 	var (
 		prefix    string
 		path      string
@@ -23,7 +23,7 @@ func syncCmd() *cobra.Command {
 		Short: "Sync central inventory from ~/.ssh/config and probes",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}

@@ -20,7 +20,7 @@ import (
 //
 // The bootstrap connection uses the operator's normal SSH auth (agent/key/
 // password) — not a Vault certificate, which the host does not trust yet.
-func trustCACmd() *cobra.Command {
+func trustCACmd(env CommandEnv) *cobra.Command {
 	var (
 		identity string
 		useSudo  bool
@@ -43,7 +43,7 @@ validates sshd config before reloading, rolling back on failure.
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}

@@ -32,7 +32,7 @@ import (
 // Mutate class, and writing the inventory needs a Vault role the baseline user
 // policy no longer carries, so this is an operator command by construction
 // rather than by convention.
-func addCmd() *cobra.Command {
+func addCmd(env CommandEnv) *cobra.Command {
 	var (
 		sv    store.Server
 		force bool
@@ -49,7 +49,7 @@ A later sync will not undo this: sync refreshes probe-derived columns only and
 leaves ssh_user, dc and jump_via as entered here.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(ctx, true, func(_ *app.App, st *store.Store) error {
 				if err := completeServer(ctx, st, &sv); err != nil {
 					return err
 				}

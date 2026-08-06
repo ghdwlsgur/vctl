@@ -17,7 +17,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func nodeAgentCmd() *cobra.Command {
+func nodeAgentCmd(env CommandEnv) *cobra.Command {
 	var (
 		hostname      string
 		interval      time.Duration
@@ -34,7 +34,7 @@ otherwise the heartbeat is ignored. Use AppRole credentials and a narrow
 database role for low-risk, low-resource status reporting.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}

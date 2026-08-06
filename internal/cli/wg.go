@@ -23,7 +23,7 @@ import (
 // covers root logins. Both are silenced so a non-WG host yields empty output.
 const wgCollectCmd = `{ sudo -n wg show all dump 2>/dev/null || wg show all dump 2>/dev/null; }; echo '@@ADDR@@'; { ip -o -4 addr show 2>/dev/null; ip -o -6 addr show 2>/dev/null; }`
 
-func wgCmd() *cobra.Command {
+func wgCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "wg",
 		Short: "Collect and inspect the WireGuard topology (from vctl-postgres)",
@@ -31,12 +31,12 @@ func wgCmd() *cobra.Command {
 peers (topology edges) and per-peer runtime status, collected by SSHing into the
 gateways and running 'wg show'. No secrets are stored — only public keys.`,
 	}
-	cmd.AddCommand(wgSyncCmd(), wgGraphCmd(), wgMonitorCmd(), wgServeCmd(), wgEndpointCmd())
+	cmd.AddCommand(wgSyncCmd(env), wgGraphCmd(env), wgMonitorCmd(env), wgServeCmd(env), wgEndpointCmd(env))
 	return cmd
 }
 
 // wgSyncCmd collects WireGuard state from gateways into postgres.
-func wgSyncCmd() *cobra.Command {
+func wgSyncCmd(env CommandEnv) *cobra.Command {
 	var (
 		dc          string
 		all         bool
@@ -52,7 +52,7 @@ each host's WireGuard interfaces, peers and runtime status. Hosts without
 WireGuard are skipped. --dry-run parses and prints without writing.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := newApp()
+			a, err := env.newApp()
 			if err != nil {
 				return err
 			}

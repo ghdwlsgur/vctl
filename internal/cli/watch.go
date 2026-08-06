@@ -34,7 +34,7 @@ type sessionRecorder interface {
 	EndSession(context.Context, int64, time.Time, string) error
 }
 
-func watchSessionsCmd() *cobra.Command {
+func watchSessionsCmd(env CommandEnv) *cobra.Command {
 	var (
 		dir      string
 		hostname string
@@ -57,7 +57,7 @@ name differs from its inventory name (aio01 vs incheon-aio01) gets its audit row
 to line up with the rest of the inventory. This mirrors node-agent --hostname.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
+			return env.withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				if len(args) == 1 {
 					dir = args[0]
