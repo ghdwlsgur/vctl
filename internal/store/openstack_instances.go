@@ -146,6 +146,10 @@ type InstanceFilter struct {
 	// InstanceID answers the Kubernetes join: a node's spec.providerID is
 	// openstack:///<uuid> and carries no deployment.
 	InstanceID string
+	// Search matches a fragment of the name or of any address the VM answers
+	// on. It is what somebody has when they know a machine as "the bastion" or
+	// remember only the last octet — neither of which the exact filters take.
+	Search string
 	// IncludeMissing brings back VMs nova no longer lists. Off by default: the
 	// common question is what is running now.
 	IncludeMissing bool
@@ -180,6 +184,18 @@ func (s *Store) Instances(ctx context.Context, f InstanceFilter) ([]Instance, er
 			WHERE a.deployment_id = openstack_instances.deployment_id
 			  AND a.instance_id = openstack_instances.instance_id
 			  AND a.address = $` + itoa(len(args)) + `)`
+	}
+	if f.Search != "" {
+		// Name or address, because somebody searching does not yet know which
+		// one they have. ILIKE on the name so case does not have to be guessed;
+		// the address is matched as text so "201.207" and "10.3.1" both work.
+		args = append(args, "%"+f.Search+"%")
+		n := itoa(len(args))
+		q += ` AND (name ILIKE $` + n + ` OR EXISTS (
+			SELECT 1 FROM openstack_instance_addresses a
+			WHERE a.deployment_id = openstack_instances.deployment_id
+			  AND a.instance_id = openstack_instances.instance_id
+			  AND a.address LIKE $` + n + `))`
 	}
 	if !f.IncludeMissing {
 		q += ` AND missing_since IS NULL`

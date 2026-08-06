@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
+
+	"github.com/ghdwlsgur/vctl/internal/config"
 )
 
 // OpenStack detects an OpenStack deployment on the local host and reports the
@@ -44,10 +46,23 @@ type OpenStack struct {
 	// listSocket asks a container engine's socket for its containers; swapped
 	// in tests. Nil means the real HTTP-over-unix-socket client.
 	listSocket func(ctx context.Context, socket string) (map[string]containerInfo, error)
+	// operatorNets are the address prefixes people reach things on, used to
+	// pick which of Horizon's several binds to report.
+	operatorNets []string
 }
 
 // NewOpenStack returns a probe that reads the live host.
-func NewOpenStack() *OpenStack { return &OpenStack{} }
+//
+// The operator networks come from config so the dashboard address this reports
+// is one somebody can open. A config that will not load costs the preference
+// and nothing else — the probe still reports, it just cannot rank the binds.
+func NewOpenStack() *OpenStack {
+	p := &OpenStack{}
+	if cfg, err := config.Load(); err == nil {
+		p.operatorNets = cfg.OperatorNetworks
+	}
+	return p
+}
 
 func (p *OpenStack) Kind() string { return "openstack" }
 
@@ -203,8 +218,21 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 	// Which Keystone this host authenticates against. It is evidence of
 	// membership, not proof: two deployments behind one proxy share an endpoint.
 	// The reader decides what to do with it and labels the result local-only.
-	if v := p.keystoneURL(); v != "" {
-		res.Details["keystone_url"] = v
+	keystone := p.keystoneURL()
+	if keystone != "" {
+		res.Details["keystone_url"] = keystone
+	}
+
+	// Where a person points a browser. Horizon is not in the service catalog —
+	// it is not an API — so the address only exists in the haproxy frontend on
+	// the host, which binds it several times over.
+	if urls := p.horizonURLs(); len(urls) > 0 {
+		res.Details["horizon_url"] = urls[0]
+		if len(urls) > 1 {
+			// The rest, in order, so a reader on a controller can take the
+			// internal one instead of the one meant for a laptop.
+			res.Details["horizon_alt"] = strings.Join(urls[1:], " ")
+		}
 	}
 
 	// Whether new VMs on this farm will trust the vctl SSH CA. Filed per host

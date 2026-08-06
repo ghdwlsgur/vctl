@@ -71,7 +71,7 @@ func TestMissingVMShowsHowLongItHasBeenGone(t *testing.T) {
 	v := store.Instance{InstanceID: "uuid-x", Name: "ghost", MissingSince: &gone}
 
 	var buf bytes.Buffer
-	renderVMs(&buf, []store.Instance{v}, nil, time.Now())
+	renderVMs(&buf, []store.Instance{v}, nil, nil, time.Now())
 	if !strings.Contains(buf.String(), "gone") {
 		t.Errorf("a missing VM was not marked:\n%s", buf.String())
 	}

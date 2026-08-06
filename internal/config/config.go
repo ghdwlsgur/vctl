@@ -19,6 +19,18 @@ import (
 )
 
 type Config struct {
+	// OperatorNetworks are the address prefixes people actually reach things on.
+	//
+	// A machine here answers on several: a tenant network nobody outside the
+	// farm can route to, a storage network, and one an operator can open in a
+	// browser or ssh to. Nothing in the data says which is which — they are all
+	// just addresses — so the listing would otherwise show whichever came first
+	// and be right by accident.
+	//
+	// Org-specific, and overridable, because the answer is a fact about a
+	// network rather than about OpenStack.
+	OperatorNetworks []string `yaml:"operator_networks"`
+
 	VaultAddr  string `yaml:"vault_addr"`
 	AuthMethod string `yaml:"auth_method"` // userpass | oidc | approle | kubernetes
 	OIDCRole   string `yaml:"oidc_role"`   // Vault OIDC role (phase 2)

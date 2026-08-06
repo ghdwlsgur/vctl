@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -39,16 +40,30 @@ func openstackVMCmd() *cobra.Command {
 			"  OpenStack farm → physical compute host → VM → Kubernetes node → cluster\n\n" +
 			"--host takes an inventory hostname and resolves it to nova's name for the same\n" +
 			"machine, so a physical host answers for the VMs on it. --id takes a Nova UUID or a\n" +
-			"Kubernetes providerID (openstack:///<uuid>) and goes the other way.",
+			"Kubernetes providerID (openstack:///<uuid>) and goes the other way.\n\n" +
+			"An argument that is not a UUID is searched for in VM names and addresses:\n\n" +
+			"  vctl openstack vm bastion        every VM whose name contains it\n" +
+			"  vctl openstack vm 10.3.1         every VM answering on an address that starts there",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				if len(args) > 0 && id == "" {
-					id = args[0]
+				// One argument, read by its shape. A UUID is an identity and a
+				// word is a search, and asking somebody to say which is which
+				// with a flag would be asking them to describe what they can
+				// already see.
+				search := ""
+				if len(args) > 0 {
+					if v := normalizeInstanceID(args[0]); isInstanceID(v) {
+						if id == "" {
+							id = v
+						}
+					} else {
+						search = args[0]
+					}
 				}
 				f := store.InstanceFilter{
-					ProjectID: project, Address: address,
+					ProjectID: project, Address: address, Search: search,
 					InstanceID:     normalizeInstanceID(id),
 					IncludeMissing: showGone,
 				}
@@ -77,7 +92,13 @@ func openstackVMCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				renderVMs(os.Stdout, vms, names, time.Now())
+				// A config that will not load is not a reason to refuse a
+				// listing; it only costs the address preference.
+				var nets []string
+				if cfg, err := config.Load(); err == nil {
+					nets = cfg.OperatorNetworks
+				}
+				renderVMs(os.Stdout, vms, names, nets, time.Now())
 				return nil
 			})
 		},
@@ -99,6 +120,31 @@ func openstackVMCmd() *cobra.Command {
 // substring being pasted.
 func normalizeInstanceID(v string) string {
 	return strings.TrimPrefix(strings.TrimSpace(v), providerIDPrefix)
+}
+
+// isInstanceID reports whether a string is a Nova UUID rather than a search.
+//
+// Shape, not a lookup: deciding by querying would make an argument that finds
+// nothing change meaning, so "the VM I called abc-123 that was deleted" would
+// silently become a substring search across the fleet.
+func isInstanceID(v string) bool {
+	if len(v) != 36 {
+		return false
+	}
+	for i, c := range v {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // resolveFarmID turns a name people use into the deployment id rows carry.
@@ -160,7 +206,7 @@ func farmNames(ctx context.Context, st *store.Store) (map[string]string, error) 
 //
 // The project is a column because it varies within a farm — it is the question
 // "whose VM is this", asked one row at a time.
-func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, now time.Time) {
+func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, operatorNets []string, now time.Time) {
 	if len(vms) == 0 {
 		ui.Infof(w, "no VMs to show.")
 		return
@@ -192,7 +238,7 @@ func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, now t
 				vmStateCell(v),
 				ui.Muted(ui.Truncate(vmProjectLabel(v), 22)),
 				ui.Truncate(v.HypervisorHostname, 20),
-				ui.Truncate(primaryAddress(v), 24),
+				ui.Truncate(primaryAddress(v, operatorNets), 24),
 				ui.Muted(ui.Truncate(v.AvailabilityZone, 12)),
 				vmMissingCell(v, now),
 			}
@@ -269,22 +315,49 @@ func vmStateCell(v store.Instance) string {
 	}
 }
 
-// primaryAddress prefers a floating address, which is the one somebody reaches
-// the VM on.
-func primaryAddress(v store.Instance) string {
-	var fixed string
+// primaryAddress leads with the address somebody can actually reach the VM on
+// and mutes the rest.
+//
+// A VM answers on several — a tenant network that does not route past its own
+// farm, sometimes a storage one, and one an operator can open. Nothing in the
+// data marks them apart, so leading with whichever nova listed first was right
+// by accident: half the rows showed a 10.x that nobody outside the farm can
+// open, and the address column is the column people copy out of.
+//
+// Order: a floating address, then one on an operator network, then anything.
+// Floating first because it exists for exactly this reason — somebody attached
+// it to make the VM reachable — and it outranks a guess based on a prefix.
+func primaryAddress(v store.Instance, operatorNets []string) string {
+	best, bestRank := "", 0
 	for _, a := range v.Addresses {
-		if a.Type == "floating" {
-			return a.Address
+		r := 1
+		switch {
+		case a.Type == "floating":
+			r = 3
+		case onOperatorNetwork(a.Address, operatorNets):
+			r = 2
 		}
-		if fixed == "" {
-			fixed = a.Address
+		if r > bestRank {
+			best, bestRank = a.Address, r
 		}
 	}
-	if extra := len(v.Addresses) - 1; extra > 0 && fixed != "" {
-		return fixed + ui.Muted(fmt.Sprintf(" (+%d)", extra))
+	if extra := len(v.Addresses) - 1; extra > 0 && best != "" {
+		return best + ui.Muted(fmt.Sprintf(" (+%d)", extra))
 	}
-	return fixed
+	return best
+}
+
+// onOperatorNetwork reports whether an address is on a network people reach
+// things from. Prefix matching rather than CIDR: the config says "192.168."
+// because that is how somebody describes it, and parsing it as a network would
+// turn a typo into a silent no-match instead of an obvious one.
+func onOperatorNetwork(addr string, nets []string) bool {
+	for _, n := range nets {
+		if n != "" && strings.HasPrefix(addr, n) {
+			return true
+		}
+	}
+	return false
 }
 
 func vmMissingCell(v store.Instance, now time.Time) string {
