@@ -147,3 +147,128 @@ func TestDashboardLegendNamesEveryState(t *testing.T) {
 		t.Error(`the key still says "down"; that word stood for three different states`)
 	}
 }
+
+// A VIP naming any interface — not just the first — must match exactly.
+func TestDashboardVipMatchesAnyInterfaceKey(t *testing.T) {
+	got := runDashboardJS(t, `
+vipFocusNodes=new Map();
+const N=new Map([["lb",{label:"lb",pub:"KPERSONAL",ifaces:[{name:"wg-personal",pub:"KPERSONAL"},{name:"wg1",pub:"KWG1"}]}]]);
+const spokes=[{oid:"lb",iface:"wg1"}];
+// Names the SECOND interface's key, which the node-level key alone would miss.
+const r=attachVips({vips:[{ip:"1.2.3.4",label:"unrelated text",iface:"wg1",owner:"KWG1"}]},N,spokes);
+const v=(r.get("lb")||[])[0];
+console.log(v?String(v.guessed):"unmatched");
+`)
+	if got != "false" {
+		t.Errorf("a VIP naming the second interface was %q, want an exact match (false)", got)
+	}
+}
+
+// what made a stale graph read as current.
+func TestDashboardSeparatesTopologyAndTelemetryClocks(t *testing.T) {
+	page := string(wgServeHTML)
+	for _, want := range []string{
+		`id="topology-at"`, // structural age, from collectedAt
+		`id="updated-at"`,  // live poll time
+		">Topology<",
+		">Telemetry<",
+		"collectedAt",
+		"TOPOLOGY_STALE_SECONDS",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("dashboard does not carry %q", want)
+		}
+	}
+	// The old single-clock label would put the two facts back under one word.
+	if strings.Contains(page, ">Updated<") {
+		t.Error(`the dashboard still labels a clock "Updated"; that is the ambiguity this removes`)
+	}
+}
+
+// leaves the reader with a number and no action.
+func TestDashboardDriftPanelSaysWhatToRun(t *testing.T) {
+	got := runDashboardJS(t, `
+let text="";
+document.getElementById=()=>({set textContent(v){text=v}});
+renderDrift([{host:"gw-a",iface:"wg0",pub:"ABCDEFGHIJKLMNOP",endpoint:"203.0.113.9:51820",allowed:["10.9.0.0/24"]}]);
+console.log(text);
+`)
+	for _, want := range []string{"not in this snapshot", "gw-a/wg0", "203.0.113.9:51820", "10.9.0.0/24", "vctl wg sync"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("drift panel does not mention %q:\n%s", want, got)
+		}
+	}
+}
+
+// The page has to name the peers and say what to run. A count with no next step
+// Nothing to report means nothing on screen.
+func TestDashboardDriftPanelIsEmptyWithNoDrift(t *testing.T) {
+	got := runDashboardJS(t, `
+let text="unset";
+document.getElementById=()=>({set textContent(v){text=v}});
+renderDrift([]);
+console.log(JSON.stringify(text));
+`)
+	if got != `""` {
+		t.Errorf("drift panel rendered %s with nothing to report", got)
+	}
+}
+
+// The VIP's owner has to survive to the browser under a name the page reads.
+func TestVipCarriesTheRecordedOwner(t *testing.T) {
+	page := string(wgServeHTML)
+	// The page prefers the stated owner and only then falls back.
+	for _, want := range []string{"v.owner", "byKey", "guessed"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page does not use %q", want)
+		}
+	}
+	// And it must still be able to fall back, or every un-annotated VIP vanishes.
+	if !strings.Contains(page, "v.label.includes(tok)") {
+		t.Error("the label fallback is gone; VIPs with no recorded owner would disappear")
+	}
+}
+
+// A stated owner attaches exactly; a missing one falls back to label text and is
+// marked. Substring matching on two human-typed strings attaches a VIP to the
+// wrong endpoint when one label contains another's prefix, and the screen could
+// not say which had happened.
+func TestDashboardVipPrefersTheRecordedOwner(t *testing.T) {
+	got := runDashboardJS(t, `
+vipFocusNodes=new Map();
+const N=new Map([
+  ["sre-lb",{label:"sre-lb",pub:"LBKEY"}],
+  ["sre-lb-standby",{label:"sre-lb-standby",pub:"SBKEY"}],
+]);
+const spokes=[{oid:"sre-lb",iface:"wg1"},{oid:"sre-lb-standby",iface:"wg1"}];
+// The label contains "sre-lb", which is also a prefix of "sre-lb-standby" —
+// exactly the ambiguity substring matching cannot resolve.
+const stated=attachVips({vips:[{ip:"1.2.3.4",label:"sre-lb DNAT",iface:"wg1",owner:"SBKEY"}]},N,spokes);
+const out=[];
+out.push([...stated.keys()].join(",")+":"+(stated.get("sre-lb-standby")||[{}])[0].guessed);
+vipFocusNodes=new Map();
+const guessed=attachVips({vips:[{ip:"1.2.3.4",label:"sre-lb DNAT",iface:"wg1"}]},N,spokes);
+const g=[...guessed.keys()][0];
+out.push(g+":"+guessed.get(g)[0].guessed);
+console.log(out.join(" | "));
+`)
+	// Stated: lands on SBKEY's node and is not marked as a guess.
+	// Guessed: lands wherever the longest token matched, and is marked.
+	if !strings.HasPrefix(got, "sre-lb-standby:false") {
+		t.Errorf("a recorded owner was not honoured: %s", got)
+	}
+	if !strings.Contains(got, ":true") {
+		t.Errorf("the fallback was not marked as a guess: %s", got)
+	}
+}
+
+// The legend has to separate recorded from inferred, or the shapes carry a
+// distinction nothing explains.
+func TestDashboardLegendSeparatesRecordedFromInferred(t *testing.T) {
+	page := string(wgServeHTML)
+	for _, want := range []string{">recorded<", ">inferred<", "conf i.hollow"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the confidence legend does not carry %q", want)
+		}
+	}
+}

@@ -1,8 +1,7 @@
-package cli
+package wireguard
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +22,7 @@ func ifaceAt(host, iface, key string, at time.Time) store.WGInterfaceRow {
 // said it had just updated.
 func TestTopologyCarriesTheCollectionTime(t *testing.T) {
 	at := time.Date(2026, 7, 28, 9, 6, 45, 0, time.UTC)
-	topo, _ := buildWGTopology(
+	topo, _ := Build(
 		[]store.WGInterfaceRow{ifaceAt("gw-a", "wg0", "AKEY", at)},
 		nil, nil, nil)
 
@@ -39,13 +38,13 @@ func TestTopologyCarriesTheCollectionTime(t *testing.T) {
 func TestTopologyCollectedAtTakesTheNewestRow(t *testing.T) {
 	old := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	recent := time.Date(2026, 7, 28, 9, 6, 45, 0, time.UTC)
-	got := topologyCollectedAt([]store.WGInterfaceRow{
+	got := CollectedAt([]store.WGInterfaceRow{
 		ifaceAt("stuck-gw", "wg0", "OLD", old),
 		ifaceAt("gw-a", "wg0", "AKEY", recent),
 		ifaceAt("gw-b", "wg0", "BKEY", old),
 	})
 	if !got.Equal(recent) {
-		t.Errorf("topologyCollectedAt = %v, want the newest row %v", got, recent)
+		t.Errorf("CollectedAt = %v, want the newest row %v", got, recent)
 	}
 }
 
@@ -53,8 +52,8 @@ func TestTopologyCollectedAtTakesTheNewestRow(t *testing.T) {
 // page renders zero as "never" and asks for a sync; a 1970 timestamp would
 // render as an absurd age and read like a bug in the clock.
 func TestTopologyCollectedAtIsZeroWithNoRows(t *testing.T) {
-	if got := topologyCollectedAt(nil); !got.IsZero() {
-		t.Errorf("topologyCollectedAt(nil) = %v, want the zero time", got)
+	if got := CollectedAt(nil); !got.IsZero() {
+		t.Errorf("CollectedAt(nil) = %v, want the zero time", got)
 	}
 }
 
@@ -62,7 +61,7 @@ func TestTopologyCollectedAtIsZeroWithNoRows(t *testing.T) {
 // contract between the handler and the page.
 func TestTopologyJSONExposesCollectedAt(t *testing.T) {
 	at := time.Date(2026, 7, 28, 9, 6, 45, 0, time.UTC)
-	topo, _ := buildWGTopology(
+	topo, _ := Build(
 		[]store.WGInterfaceRow{ifaceAt("gw-a", "wg0", "AKEY", at)},
 		nil, nil, nil)
 
@@ -82,23 +81,3 @@ func TestTopologyJSONExposesCollectedAt(t *testing.T) {
 }
 
 // The page has to show two clocks and label them apart. A single "Updated" is
-// what made a stale graph read as current.
-func TestDashboardSeparatesTopologyAndTelemetryClocks(t *testing.T) {
-	page := string(wgServeHTML)
-	for _, want := range []string{
-		`id="topology-at"`, // structural age, from collectedAt
-		`id="updated-at"`,  // live poll time
-		">Topology<",
-		">Telemetry<",
-		"collectedAt",
-		"TOPOLOGY_STALE_SECONDS",
-	} {
-		if !strings.Contains(page, want) {
-			t.Errorf("dashboard does not carry %q", want)
-		}
-	}
-	// The old single-clock label would put the two facts back under one word.
-	if strings.Contains(page, ">Updated<") {
-		t.Error(`the dashboard still labels a clock "Updated"; that is the ambiguity this removes`)
-	}
-}

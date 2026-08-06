@@ -1,4 +1,4 @@
-package cli
+package wireguard
 
 import (
 	"encoding/json"
@@ -10,7 +10,7 @@ import (
 )
 
 // wgDashboardFixture builds the topology used to exercise the `vctl wg serve`
-// dashboard in a browser. It runs through the real buildWGTopology so the shape
+// dashboard in a browser. It runs through the real Build so the shape
 // matches what the served /topology endpoint produces, and it is deliberately
 // wide enough to reach every branch the wiring renderer can take.
 //
@@ -30,7 +30,7 @@ import (
 // TestWGDashboardFixtureCoversRenderBranches locks those preconditions down, so
 // an edit that quietly flattens the fixture fails instead of silently shrinking
 // what the browser harness can check.
-func wgDashboardFixture() wgTopology {
+func wgDashboardFixture() Topology {
 	ifaces := []store.WGInterfaceRow{
 		// Hub owns the most interfaces, so prep() elects it hub.
 		{WGInterface: store.WGInterface{Host: "wg-hub", Iface: "wg0", ListenPort: 51820, PublicKey: "HUB0"}},
@@ -99,10 +99,10 @@ func wgDashboardFixture() wgTopology {
 		{PublicKey: "SEOUL7", Label: "seoul-gw-alt", Kind: "gateway", Site: "seoul-onprem"},
 	}
 
-	topo, _ := buildWGTopology(ifaces, peers, servers, annotations)
+	topo, _ := Build(ifaces, peers, servers, annotations)
 	// A VIP attaches to the endpoint whose label's first token appears in the VIP
 	// label, so the label has to name lb-gw for the wg3 focus path to see it.
-	topo.Vips = append(topo.Vips, wgVip{IP: "10.99.0.7", Label: "lb-gw tunnel DNAT (wg3)", Iface: "wg3", Note: "dnat"})
+	topo.Vips = append(topo.Vips, Vip{IP: "10.99.0.7", Label: "lb-gw tunnel DNAT (wg3)", Iface: "wg3", Note: "dnat"})
 	return topo
 }
 
@@ -110,7 +110,7 @@ func wgDashboardFixture() wgTopology {
 // it as window.WG_BOOT, which is how the dashboard gets driven without a database
 // or SSH. Skipped unless asked for, so normal runs and CI stay unaffected.
 //
-//	WG_FIXTURE_OUT=/tmp/topology.json go test ./internal/cli/ -run TestWGDashboardFixtureDump
+//	WG_FIXTURE_OUT=/tmp/topology.json go test ./internal/wireguard/ -run TestWGDashboardFixtureDump
 //
 // Then splice a <script>window.WG_BOOT={topology:<that json>,frames:[]}</script>
 // ahead of wg_serve.html's own <script> and open the result.
@@ -140,7 +140,7 @@ func TestWGDashboardFixtureCoversRenderBranches(t *testing.T) {
 
 	hub := ""
 	most := 0
-	byIface := map[string][]wgEdge{}
+	byIface := map[string][]Edge{}
 	zones := map[string]bool{}
 	kinds := map[string]bool{}
 	for _, n := range topo.Nodes {

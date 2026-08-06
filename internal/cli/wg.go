@@ -15,6 +15,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
+	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
 
 // wgCollectCmd is the remote command run on each gateway: dump WireGuard state
@@ -326,4 +327,23 @@ func parseFwmark(s string) int64 {
 		return 0
 	}
 	return n
+}
+
+// samples converts what the dump parser produced into what the overlay model
+// takes.
+//
+// One small function against the domain package knowing how `wg show all dump`
+// formats its columns. The parser's row carries fields the model has no use for
+// (keepalive), and the model should not grow them just because they were in the
+// output.
+func samples(peers []wgParsedPeer) []wireguard.PeerSample {
+	out := make([]wireguard.PeerSample, 0, len(peers))
+	for _, p := range peers {
+		out = append(out, wireguard.PeerSample{
+			Iface: p.Iface, PubKey: p.PubKey,
+			Endpoint: p.Endpoint, AllowedIPs: p.AllowedIPs,
+			Rx: p.Rx, Tx: p.Tx, Handshake: p.Handshake,
+		})
+	}
+	return out
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
 
 // sampleDump mimics `wg show all dump` (tab-separated) plus the @@ADDR@@ marker
@@ -126,7 +127,7 @@ func TestBuildWGTopologyPlacesAnnotatedVMOnPhysicalHost(t *testing.T) {
 		},
 	}
 
-	topo, _ := buildWGTopology(ifaces, peers, servers, annotations)
+	topo, _ := wireguard.Build(ifaces, peers, servers, annotations)
 
 	vm := topologyNode(topo, "endpoint|VMKEY")
 	if vm == nil {
@@ -165,7 +166,7 @@ func TestBuildWGTopologyKeepsEndpointVisibleWhenParentIsUnknown(t *testing.T) {
 		},
 	}
 
-	topo, _ := buildWGTopology(ifaces, peers, nil, annotations)
+	topo, _ := wireguard.Build(ifaces, peers, nil, annotations)
 
 	vm := topologyNode(topo, "endpoint|VMKEY")
 	if vm == nil {
@@ -193,7 +194,7 @@ func TestBuildWGTopologyInheritsEndpointIdentityFromInventoryHost(t *testing.T) 
 		{PublicKey: "VMKEY", Kind: "vm", InventoryHost: "ai-platform-incheon-gw"},
 	}
 
-	topo, _ := buildWGTopology(ifaces, peers, servers, annotations)
+	topo, _ := wireguard.Build(ifaces, peers, servers, annotations)
 
 	vm := topologyNode(topo, "endpoint|VMKEY")
 	if vm == nil || vm.Label != "ai-platform-incheon-gw" ||
@@ -220,7 +221,7 @@ func TestBuildWGTopologyPlacesCollectedGatewayVMOnPhysicalHost(t *testing.T) {
 		},
 	}
 
-	topo, _ := buildWGTopology(ifaces, nil, servers, annotations)
+	topo, _ := wireguard.Build(ifaces, nil, servers, annotations)
 
 	vm := topologyNode(topo, "sre-lb")
 	if vm == nil || vm.Kind != "vm" || vm.Parent != "host|compute-49" || len(vm.Ifaces) != 1 {
@@ -254,7 +255,7 @@ func TestBuildWGTopologyMergesAnnotationAcrossHostInterfaces(t *testing.T) {
 		},
 	}
 
-	topo, _ := buildWGTopology(ifaces, nil, servers, annotations)
+	topo, _ := wireguard.Build(ifaces, nil, servers, annotations)
 
 	vm := topologyNode(topo, "multi-gw")
 	if vm == nil || vm.Label != "multi-gw-vm" || vm.Parent != "host|compute-49" ||
@@ -278,7 +279,7 @@ func TestBuildWGTopologyWarnsOnConflictingHostInterfaceAnnotations(t *testing.T)
 		{PublicKey: "WG1KEY", Kind: "vm", ParentHostname: "compute-02", TunnelIP: "10.0.91.1"},
 	}
 
-	topo, _ := buildWGTopology(ifaces, nil, servers, annotations)
+	topo, _ := wireguard.Build(ifaces, nil, servers, annotations)
 
 	node := topologyNode(topo, "multi-gw")
 	if node == nil || len(node.Warnings) == 0 {
@@ -309,7 +310,7 @@ func TestBuildWGTopologySeparatesPhysicalHostFromItsWGEndpoint(t *testing.T) {
 		},
 	}
 
-	topo, _ := buildWGTopology(ifaces, nil, servers, annotations)
+	topo, _ := wireguard.Build(ifaces, nil, servers, annotations)
 
 	host := topologyNode(topo, "host|compute-49")
 	wgEndpoint := topologyNode(topo, "compute-49")
@@ -338,7 +339,7 @@ func TestBuildWGTopologyResolvesEndpointIPFromInventory(t *testing.T) {
 		{Hostname: "gpu-worker-incheon", IP: "192.168.40.76", DC: "incheon-vm"},
 	}
 
-	topo, _ := buildWGTopology(ifaces, peers, servers, nil)
+	topo, _ := wireguard.Build(ifaces, peers, servers, nil)
 
 	endpoint := topologyNode(topo, "inventory|gpu-worker-incheon")
 	if endpoint == nil {
@@ -365,7 +366,7 @@ func TestBuildWGTopologyDoesNotResolveSharedNATEndpointAsPeer(t *testing.T) {
 		{Hostname: "incheon-edge", IP: "192.168.10.1", DC: "incheon-onprem"},
 	}
 
-	topo, _ := buildWGTopology(ifaces, peers, servers, nil)
+	topo, _ := wireguard.Build(ifaces, peers, servers, nil)
 
 	if topologyNode(topo, "inventory|incheon-edge") != nil {
 		t.Fatal("shared NAT endpoint was incorrectly asserted as both peer identities")
@@ -392,7 +393,7 @@ func TestBuildWGTopologyComposesAnnotationWithObservedEndpointCandidate(t *testi
 		{PublicKey: "GPUKEY", Label: "gpu endpoint", Kind: "device"},
 	}
 
-	topo, _ := buildWGTopology(ifaces, peers, servers, annotations)
+	topo, _ := wireguard.Build(ifaces, peers, servers, annotations)
 
 	endpoint := topologyNode(topo, "endpoint|GPUKEY")
 	if endpoint == nil || endpoint.Label != "gpu endpoint" || endpoint.Kind != "device" ||
@@ -404,16 +405,7 @@ func TestBuildWGTopologyComposesAnnotationWithObservedEndpointCandidate(t *testi
 	}
 }
 
-func topologyNode(topo wgTopology, id string) *wgNode {
-	for i := range topo.Nodes {
-		if topo.Nodes[i].ID == id {
-			return &topo.Nodes[i]
-		}
-	}
-	return nil
-}
-
-func hasTopologyLink(topo wgTopology, source, target, kind string) bool {
+func hasTopologyLink(topo wireguard.Topology, source, target, kind string) bool {
 	for _, link := range topo.Links {
 		if link.Source == source && link.Target == target && link.Kind == kind {
 			return true
@@ -483,18 +475,18 @@ func TestWGServeInterfaceFilterIsolatesOneTunnel(t *testing.T) {
 
 func TestComputeRate(t *testing.T) {
 	t0 := time.Unix(1_000_000, 0)
-	prev := wgSample{rx: 1000, tx: 500, at: t0}
-	cur := wgSample{rx: 3000, tx: 1500, at: t0.Add(2 * time.Second)}
-	rx, tx := computeRate(prev, cur)
+	prev := wireguard.Sample{Rx: 1000, Tx: 500, At: t0}
+	cur := wireguard.Sample{Rx: 3000, Tx: 1500, At: t0.Add(2 * time.Second)}
+	rx, tx := wireguard.ComputeRate(prev, cur)
 	if rx != 1000 || tx != 500 { // (3000-1000)/2, (1500-500)/2
 		t.Errorf("rate = %v/%v, want 1000/500", rx, tx)
 	}
 	// counter reset: cur < prev -> 0, not negative
-	if r, _ := computeRate(wgSample{rx: 5000, at: t0}, wgSample{rx: 10, at: t0.Add(time.Second)}); r != 0 {
+	if r, _ := wireguard.ComputeRate(wireguard.Sample{Rx: 5000, At: t0}, wireguard.Sample{Rx: 10, At: t0.Add(time.Second)}); r != 0 {
 		t.Errorf("reset rate = %v, want 0", r)
 	}
 	// non-positive dt -> 0
-	if r, _ := computeRate(prev, wgSample{rx: 9999, at: t0}); r != 0 {
+	if r, _ := wireguard.ComputeRate(prev, wireguard.Sample{Rx: 9999, At: t0}); r != 0 {
 		t.Errorf("zero-dt rate = %v, want 0", r)
 	}
 }
@@ -520,7 +512,7 @@ func fieldsOf(ifaces []store.WGInterface, peers []store.WGPeer) []string {
 }
 
 // Management links come from servers.jump_via and were the one part of the
-// graph with no test at all — the gap only became visible once buildWGTopology
+// graph with no test at all — the gap only became visible once wireguard.Build
 // was split into phases and addLinks reported its own coverage.
 //
 // Each end resolves to a gateway hostname, or to the aggregate node the host
@@ -539,7 +531,7 @@ func TestBuildWGTopologyDrawsManagementLinksFromJumpVia(t *testing.T) {
 		{Hostname: "app-02", IP: "10.10.0.21", DC: "incheon", JumpVia: "app-01"},
 	}
 
-	topo, _ := buildWGTopology(ifaces, nil, servers, nil)
+	topo, _ := wireguard.Build(ifaces, nil, servers, nil)
 
 	agg := "agg|incheon|10.10.0.0/24"
 	if !hasTopologyLink(topo, agg, "gw-a", "management") {
@@ -566,7 +558,7 @@ func TestBuildWGTopologyDropsUnresolvableJumpVia(t *testing.T) {
 		{Hostname: "far-01", IP: "10.99.0.5", DC: "nowhere", JumpVia: "gw-a"},
 	}
 
-	topo, _ := buildWGTopology(ifaces, nil, servers, nil)
+	topo, _ := wireguard.Build(ifaces, nil, servers, nil)
 
 	for _, l := range topo.Links {
 		if l.Kind != "management" {
@@ -591,7 +583,7 @@ func TestBuildWGTopologyDeduplicatesManagementLinks(t *testing.T) {
 		})
 	}
 
-	topo, _ := buildWGTopology(ifaces, nil, servers, nil)
+	topo, _ := wireguard.Build(ifaces, nil, servers, nil)
 
 	var management int
 	for _, l := range topo.Links {
@@ -602,4 +594,16 @@ func TestBuildWGTopologyDeduplicatesManagementLinks(t *testing.T) {
 	if management != 1 {
 		t.Errorf("3 hosts through one gateway produced %d management links, want 1: %+v", management, topo.Links)
 	}
+}
+
+// topologyNode finds a node by id, or nil. The page tests below assert on one
+// node at a time and reading it out of the slice by hand at each call site was
+// the same three lines repeated.
+func topologyNode(topo wireguard.Topology, id string) *wireguard.Node {
+	for i := range topo.Nodes {
+		if topo.Nodes[i].ID == id {
+			return &topo.Nodes[i]
+		}
+	}
+	return nil
 }

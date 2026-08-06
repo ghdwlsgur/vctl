@@ -15,7 +15,9 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
+	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
 
 // ipKinds are the allowed allocation categories for the 201.x ledger.
@@ -180,7 +182,7 @@ func renderIPAllocations(w io.Writer, rows []store.IPAllocation) {
 				a.IP,
 				orDashMuted(a.Owner),
 				label,
-				ui.Muted(ui.Truncate(firstNonEmpty(a.Project, a.Rack, a.OS), 30)),
+				ui.Muted(ui.Truncate(strutil.FirstNonEmpty(a.Project, a.Rack, a.OS), 30)),
 				orDashMuted(a.Farm),
 				ipWGCell(a.WGTunnel),
 			}
@@ -225,15 +227,6 @@ func renderIPAllocations(w io.Writer, rows []store.IPAllocation) {
 		fmt.Fprintln(w)
 	}
 	fmt.Fprintln(w, ui.Muted(fmt.Sprintf("%d addresses", len(rows))))
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // orDashMuted renders a muted '-' for an empty cell, otherwise the value.
@@ -324,7 +317,7 @@ is stored as that interface's public key.
 					ui.Successf(os.Stdout, "cleared the endpoint binding for %s", ip)
 					return nil
 				}
-				ui.Successf(os.Stdout, "%s fronts %s (%s)", ip, endpoint, shortKey(key))
+				ui.Successf(os.Stdout, "%s fronts %s (%s)", ip, endpoint, wireguard.ShortKey(key))
 				return nil
 			})
 		},

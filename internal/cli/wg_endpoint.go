@@ -11,6 +11,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
+	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
 
 var wgEndpointKinds = []string{"vm", "physical-host", "device", "gateway"}
@@ -41,7 +42,7 @@ func wgEndpointListCmd(env CommandEnv) *cobra.Command {
 				rows := make([][]string, 0, len(items))
 				for _, a := range items {
 					rows = append(rows, []string{
-						shortKey(a.PublicKey), ui.OrDash(a.Label), a.Kind,
+						wireguard.ShortKey(a.PublicKey), ui.OrDash(a.Label), a.Kind,
 						ui.OrDash(a.UnderlayIP), ui.OrDash(a.TunnelIP),
 						ui.OrDash(a.ParentHostname), ui.OrDash(a.Site),
 					})
@@ -76,7 +77,7 @@ func wgEndpointSetCmd(env CommandEnv) *cobra.Command {
 				if err := st.WGEndpointAnnotationUpsert(cmd.Context(), a); err != nil {
 					return err
 				}
-				ui.Successf(os.Stdout, "saved WireGuard endpoint %s", shortKey(a.PublicKey))
+				ui.Successf(os.Stdout, "saved WireGuard endpoint %s", wireguard.ShortKey(a.PublicKey))
 				return nil
 			})
 		},
@@ -104,7 +105,7 @@ func wgEndpointRmCmd(env CommandEnv) *cobra.Command {
 				if err := st.WGEndpointAnnotationDelete(cmd.Context(), args[0]); err != nil {
 					return err
 				}
-				ui.Successf(os.Stdout, "removed WireGuard endpoint %s", shortKey(args[0]))
+				ui.Successf(os.Stdout, "removed WireGuard endpoint %s", wireguard.ShortKey(args[0]))
 				return nil
 			})
 		},
