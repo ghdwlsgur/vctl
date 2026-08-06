@@ -76,29 +76,55 @@ func statusCmd() *cobra.Command {
 	}
 }
 
-// authMethodRow reports the configured method and, when the live token was
-// issued by a different one, says so.
+// authMethodRow says which identity vctl actually holds.
 //
-// This row used to print the configuration alone, which is the one thing that
-// cannot be wrong. A workstation configured for userpass was running on an
-// AppRole token the whole time — reads worked, so nothing looked amiss, while
-// ssh, edit and reconcile returned 403 — and this line said "userpass" through
-// all of it. What somebody needs here is which identity vctl actually has.
+// This row used to print the configured method alone, which is the one thing
+// that cannot be wrong. A workstation configured for userpass ran on an AppRole
+// token for hours — reads worked, so nothing looked amiss, while ssh, edit and
+// reconcile returned 403 — and this line said "userpass" throughout.
+//
+// The signal is not "the method differs from the config". A person logging in
+// gets oidc here even where the config says userpass, and that is a working
+// session rather than a fault. What separates the two is the entity behind the
+// token: a human login carries identity policies from group membership, a
+// machine login carries none. Both cases measured on this workstation had the
+// *same* token policy — the AppRole's was `default, vctl-user` with no identity
+// policies, the person's was the same plus five from their groups.
+//
+// It reports what the identity is and does not predict which commands will
+// fail. A first version did, and printed "ssh will not work" directly above a
+// line reporting that the SSH CA read had succeeded.
 func authMethodRow(ctx context.Context, a *app.App) ui.KV {
-	want := a.Cfg.AuthMethod
-	if want == "" {
-		want = "userpass"
-	}
-	got := a.Vault.TokenAuthMethod(ctx)
-	if got == "" || strings.EqualFold(got, want) {
+	who := a.Vault.Identity(ctx)
+	if who == "" {
+		want := a.Cfg.AuthMethod
+		if want == "" {
+			want = "userpass"
+		}
 		return ui.KV{Key: "Auth method", Value: want}
+	}
+	// Unattended callers name their own method, so this only fires where
+	// somebody meant to be themselves and is not.
+	if !machineIdentity(a.Vault.TokenAuthMethod(ctx)) || machineIdentity(a.Cfg.AuthMethod) {
+		return ui.KV{Key: "Auth method", Value: who}
 	}
 	return ui.KV{
 		Key: "Auth method",
-		Value: fmt.Sprintf("%s configured, but this token came from %s — "+
-			"reads work; ssh, edit and reconcile will not. Run 'vctl login' to use %s",
-			want, got, want),
+		Value: fmt.Sprintf("%s — a machine identity, not yours. "+
+			"Run 'vctl login' to hold your own group policies", who),
 		State: ui.StateWarn,
+	}
+}
+
+// machineIdentity reports whether a method authenticates a workload rather than
+// a person. Those tokens carry no group membership, and that absence is what
+// the narrow policy set comes down to.
+func machineIdentity(method string) bool {
+	switch strings.ToLower(method) {
+	case "approle", "kubernetes":
+		return true
+	default:
+		return false
 	}
 }
 
