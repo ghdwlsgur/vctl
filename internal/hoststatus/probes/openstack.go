@@ -207,6 +207,14 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		res.Details["keystone_url"] = v
 	}
 
+	// Whether new VMs on this farm will trust the vctl SSH CA. Filed per host
+	// because only the host can see it; folded per farm by the reader, since a
+	// farm is only as onboarded as the service that answers 169.254.169.254.
+	if st, svc := p.vendordataState(); st != "" {
+		res.Details["vendordata"] = st
+		res.Details["vendordata_service"] = svc
+	}
+
 	// Deliberately not decided here. Local evidence cannot separate two farms
 	// that share an endpoint, and a wrong answer would be rendered as fact.
 	res.Details["deployment"] = "unknown"
