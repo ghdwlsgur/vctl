@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -11,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
-	"github.com/ghdwlsgur/vctl/internal/openstackapi"
+	"github.com/ghdwlsgur/vctl/internal/openstack/reconcile"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -88,7 +87,23 @@ func openstackReconcileCmd() *cobra.Command {
 				if len(ids) == 0 {
 					return fmt.Errorf("no deployment matches %q", only)
 				}
-				return reconcileFarms(ctx, a, st, ids, farms, insecure, dryRun)
+				req := reconcile.Request{Insecure: insecure, DryRun: dryRun}
+				for _, id := range ids {
+					hosts := farms[id]
+					sort.Strings(hosts)
+					req.Farms = append(req.Farms, reconcile.Farm{ID: id, LocalHosts: hosts})
+				}
+				svc := &reconcile.Service{
+					Creds: vaultCredentials{app: a},
+					Cloud: novaCloud{},
+					Repo:  storeRepo{st: st},
+				}
+				ui.Section(os.Stdout, "openstack reconcile")
+				rep, err := svc.Run(ctx, req)
+				// Rendered before the error is returned: a run that reached
+				// nothing still has per-farm reasons worth reading.
+				renderReconcile(rep, dryRun)
+				return err
 			})
 		},
 	}
@@ -126,102 +141,6 @@ func farmOfHost(farms map[string][]string, hostname string) (string, error) {
 	return "", fmt.Errorf("%s is not a member of any deployment the probe has reported; nothing to reconcile", hostname)
 }
 
-func reconcileFarms(ctx context.Context, a *app.App, st *store.Store, ids []string,
-	farms map[string][]string, insecure, dryRun bool) error {
-	ui.Section(os.Stdout, "openstack reconcile")
-	var reached int
-	for _, id := range ids {
-		hosts := farms[id]
-		sort.Strings(hosts)
-
-		creds, err := farmCredentials(ctx, a, id)
-		if err != nil {
-			// A farm with no credentials filed is the normal state until
-			// somebody files them, not a failure of the run. The other farms
-			// still get reconciled.
-			ui.Warnf(os.Stderr, "%s: %v", id, err)
-			continue
-		}
-		list, err := controlPlaneHosts(ctx, creds, insecure)
-		if err != nil {
-			ui.Errorf(os.Stderr, "%s: %v", id, err)
-			// Recorded so the listing can say this farm has not settled since,
-			// and why. Without it a farm failing every six hours is
-			// indistinguishable from one nobody has configured.
-			if !dryRun {
-				if e := st.RecordReconcileRun(ctx, id, store.ReconcileResult{}, time.Now(), err); e != nil {
-					ui.Warnf(os.Stderr, "%s: recording the failure: %v", id, e)
-				}
-			}
-			continue
-		}
-		reached++
-		if !list.Complete {
-			// Said before the result, because it changes what the result means:
-			// nothing below it was allowed to demote.
-			ui.Warnf(os.Stderr, "%s: the control plane answered partially — %s",
-				id, partialReason(list))
-		}
-		if dryRun {
-			res := previewReconcile(hosts, list.Hosts)
-			res.Complete = list.Complete
-			reportReconcile(id, res, true)
-			continue
-		}
-		if !dryRun {
-			collectInstances(ctx, st, id, creds, insecure)
-		}
-		got, err := st.ReconcileDeployment(ctx, store.ReconcileInput{
-			DeploymentID: id, KeystoneURL: id,
-			LocalHosts: hosts, ControlHosts: list.Hosts,
-			Complete:   list.Complete,
-			ObservedAt: time.Now(),
-		})
-		if err != nil {
-			return fmt.Errorf("%s: %w", id, err)
-		}
-		if e := st.RecordReconcileRun(ctx, id, got, time.Now(), nil); e != nil {
-			ui.Warnf(os.Stderr, "%s: recording the run: %v", id, e)
-		}
-		// The hosts nova named that no inventory entry matched. Printing them
-		// and moving on lost the most interesting rows the reconciler produces:
-		// a nova service on a machine nobody has registered is either a
-		// forgotten host, a name that drifted, or something that should not be
-		// running — and none of those survives being said once.
-		if e := st.RecordControlHosts(ctx, id, got.ControlOnly, time.Now()); e != nil {
-			ui.Warnf(os.Stderr, "%s: recording control-only hosts: %v", id, e)
-		}
-		reportReconcile(id, got, false)
-	}
-	if reached == 0 {
-		return fmt.Errorf("no deployment could be reached; nothing was confirmed")
-	}
-	return nil
-}
-
-// farmCredentials reads one deployment's admin credentials from Vault.
-func farmCredentials(ctx context.Context, a *app.App, id string) (openstackapi.Credentials, error) {
-	path := vaultFarmPrefix + "/" + vaultFarmKey(id)
-	secret, err := a.Vault.ReadKV(ctx, path)
-	if err != nil {
-		return openstackapi.Credentials{}, fmt.Errorf("no credentials at %s (%w)", path, err)
-	}
-	c := openstackapi.Credentials{
-		AuthURL:     secret["auth_url"],
-		Username:    secret["username"],
-		Password:    secret["password"],
-		ProjectName: secret["project_name"],
-		UserDomain:  secret["user_domain"],
-		ProjectDom:  secret["project_domain"],
-	}
-	if c.AuthURL == "" {
-		// The deployment id is the endpoint's host; the scheme is not part of
-		// it, so a stored auth_url is what says which one to use.
-		return c, fmt.Errorf("credentials at %s carry no auth_url", path)
-	}
-	return c, nil
-}
-
 // vaultFarmKey turns a deployment id into a path segment.
 //
 // The vctl- prefix is what keeps these apart from everything else the team
@@ -233,133 +152,6 @@ func farmCredentials(ctx context.Context, a *app.App, id string) (openstackapi.C
 // the separator changes.
 func vaultFarmKey(id string) string {
 	return "vctl-" + strings.ReplaceAll(id, ":", "_")
-}
-
-// collectInstances records the deployment's VMs alongside its membership.
-//
-// Same pass as the reconcile because it is the same conversation with the same
-// control plane, and a separate schedule would mean two credentials, two
-// timers, and two chances for one of them to be the stale one.
-//
-// A failure here does not fail the reconcile. Membership and the VM listing
-// answer different questions, and a deployment that cannot list servers can
-// still say which hosts are its own.
-func collectInstances(ctx context.Context, st *store.Store, id string, c openstackapi.Credentials, insecure bool) {
-	ctx, cancel := context.WithTimeout(ctx, instanceTimeout)
-	defer cancel()
-	client, err := openstackapi.New(ctx, c, insecure, instanceTimeout)
-	if err != nil {
-		ui.Warnf(os.Stderr, "%s: instances: %v", id, err)
-		return
-	}
-	list, err := client.Instances(ctx)
-	if err != nil {
-		// A partial page is still worth storing — a listing that stopped at the
-		// cap has told us about everything it did reach — but say so.
-		ui.Warnf(os.Stderr, "%s: instances: %v", id, err)
-		if len(list) == 0 {
-			return
-		}
-	}
-	// Best effort, and deliberately not fatal. Nova reports an owner as a bare
-	// uuid; Keystone is the only place the name exists, and a listing of uuids
-	// is much better than no listing. A run that cannot resolve them leaves the
-	// column alone rather than blanking what an earlier run found.
-	names, err := client.ProjectNames(ctx)
-	if err != nil {
-		ui.Warnf(os.Stderr, "%s: project names: %v", id, err)
-	}
-	rows := make([]store.Instance, 0, len(list))
-	for _, i := range list {
-		row := toStoreInstance(id, i)
-		row.ProjectName = names[row.ProjectID]
-		rows = append(rows, row)
-	}
-	n, err := st.ReplaceInstances(ctx, id, rows, time.Now())
-	if err != nil {
-		ui.Warnf(os.Stderr, "%s: instances: %v", id, err)
-		return
-	}
-	ui.Infof(os.Stdout, "%s: %d VMs", id, n)
-}
-
-func toStoreInstance(deployment string, i openstackapi.Instance) store.Instance {
-	out := store.Instance{
-		DeploymentID: deployment, InstanceID: i.ID, ProjectID: i.ProjectID, Name: i.Name,
-		Status: i.Status, PowerState: i.PowerState, TaskState: i.TaskState,
-		AvailabilityZone: i.AvailabilityZone, HypervisorHostname: i.HypervisorHostname,
-		FlavorID: i.FlavorID, ImageID: i.ImageID,
-	}
-	if !i.Created.IsZero() {
-		t := i.Created
-		out.CreatedAt = &t
-	}
-	if !i.Updated.IsZero() {
-		t := i.Updated
-		out.UpdatedAt = &t
-	}
-	for _, a := range i.Addresses {
-		out.Addresses = append(out.Addresses, store.InstanceAddress{
-			NetworkName: a.NetworkName, Address: a.Address, Type: a.Type, IPVersion: a.IPVersion,
-		})
-	}
-	return out
-}
-
-// partialReason names which half of the answer is missing, because the two have
-// different consequences: no os-services hides controllers, no os-hypervisors
-// hides compute nodes whose nova-compute is down.
-func partialReason(l openstackapi.HostList) string {
-	switch {
-	case l.HypervisorError != "" && l.ServiceError != "":
-		return "neither endpoint answered"
-	case l.ServiceError != "":
-		return "os-services: " + l.ServiceError + " (controllers are not listed)"
-	case l.HypervisorError != "":
-		return "os-hypervisors: " + l.HypervisorError + " (stopped compute nodes are not listed)"
-	default:
-		return "incomplete"
-	}
-}
-
-func controlPlaneHosts(ctx context.Context, c openstackapi.Credentials, insecure bool) (openstackapi.HostList, error) {
-	ctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
-	defer cancel()
-	client, err := openstackapi.New(ctx, c, insecure, reconcileTimeout)
-	if err != nil {
-		return openstackapi.HostList{}, err
-	}
-	// Hosts, not Hypervisors: a controller runs nova-api and nova-conductor,
-	// not a hypervisor, so asking only for hypervisors left every controller
-	// permanently local-only — the farm confirmed its compute nodes and
-	// disowned the machine running its own Keystone.
-	return client.Hosts(ctx)
-}
-
-// previewReconcile computes what a run would decide, without writing.
-//
-// It calls the same matcher the store does rather than restating the rule. The
-// first version restated it, and a dry run that decides differently from the
-// real one is worse than having none — it invites approving a change that then
-// does something else.
-func previewReconcile(local, control []string) store.ReconcileResult {
-	pairs, ambiguous := store.MatchHosts(local, control)
-	res := store.ReconcileResult{Ambiguous: ambiguous}
-	taken := map[string]bool{}
-	for _, h := range local {
-		if nova, ok := pairs[h]; ok {
-			res.Confirmed = append(res.Confirmed, h)
-			taken[nova] = true
-			continue
-		}
-		res.LocalOnly = append(res.LocalOnly, h)
-	}
-	for _, c := range control {
-		if !taken[c] {
-			res.ControlOnly = append(res.ControlOnly, c)
-		}
-	}
-	return res
 }
 
 func reportReconcile(id string, r store.ReconcileResult, dry bool) {
