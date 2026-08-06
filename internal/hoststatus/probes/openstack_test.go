@@ -576,3 +576,74 @@ func TestOpenStackTreatsAStoppedDockerDaemonAsNoContainers(t *testing.T) {
 		t.Errorf("roles = %v — the systemd answer was lost", res.Roles)
 	}
 }
+
+// Inside the agent's unit the container engine CLI is not an option: it is a
+// large Go program inheriting MemoryMax=48M and TasksMax=24, and on a real
+// controller both engines aborted with a core dump.
+//
+// The two ways of reaching that branch are different answers, and collapsing
+// them is how this goes wrong in either direction. Most of the fleet has no
+// engine at all, and calling that a failure moves a dozen healthy hosts into
+// "could not be probed" every hour. An engine installed with its socket not
+// exposed is the other case, and calling *that* an absence is what once filed a
+// full Kolla controller as running no OpenStack.
+func TestConfinedProbeNeitherForksNorInventsAnAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		installed []string
+		wantErr   bool
+	}{
+		{
+			// The common shape: no socket, no engine, nothing to look at.
+			name: "a host with no container engine is an absence",
+		},
+		{
+			// Somebody installed podman and did not enable podman.socket.
+			name:      "an engine with no socket is a failure to look",
+			installed: []string{"podman"},
+			wantErr:   true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &fakeHost{}
+			p := &OpenStack{
+				root: "/nonexistent", run: h.run, confined: true,
+				lookPath: func(name string) (string, error) {
+					if slices.Contains(tc.installed, name) {
+						return "/usr/bin/" + name, nil
+					}
+					return "", exec.ErrNotFound
+				},
+			}
+
+			_, err := p.containerIndex(context.Background())
+			if tc.wantErr && err == nil {
+				t.Error("an installed engine with no socket was reported as no containers")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("a host with no container engine reported a failure: %v", err)
+			}
+			for _, c := range h.calls {
+				if strings.HasPrefix(c, "podman ") || strings.HasPrefix(c, "docker ") {
+					t.Errorf("the engine CLI was forked (%q) inside the unit that cannot run it", c)
+				}
+			}
+		})
+	}
+}
+
+// The fallback still exists for the case it was written for: a probe run by
+// hand, outside the unit, where the CLI works fine. Gating on the cgroup must
+// not quietly delete that path.
+func TestAnUnconfinedProbeStillUsesTheCLI(t *testing.T) {
+	h := &fakeHost{containers: map[string]string{"nova_compute": "running"}}
+	p := &OpenStack{root: "/nonexistent", run: h.run}
+
+	index, err := p.containerIndex(context.Background())
+	if err != nil {
+		t.Fatalf("containerIndex: %v", err)
+	}
+	if _, ok := index["nova_compute"]; !ok {
+		t.Errorf("index = %v, want the container the CLI reported", index)
+	}
+}

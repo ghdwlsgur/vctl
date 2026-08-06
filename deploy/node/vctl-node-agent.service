@@ -67,6 +67,15 @@ MemoryMax=48M
 # was sizing itself for CPU this unit is never given, and left nothing to catch
 # the next thing that leaks threads.
 TasksMax=24
+# No core dumps out of this unit, ever.
+#
+# The probe no longer forks a container engine CLI inside these limits — that is
+# what produced "signal: aborted (core dumped)" from both podman and docker on a
+# real controller. The guard for that lives in the code and can be regressed;
+# this one cannot. A container engine's dump is tens of megabytes written to disk
+# on an already-constrained host, and the point of this agent is to be the thing
+# on the box that never costs anything.
+LimitCORE=0
 IOWeight=25
 Nice=10
 LogRateLimitIntervalSec=30s

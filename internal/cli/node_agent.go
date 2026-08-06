@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -44,10 +46,15 @@ database role for low-risk, low-resource status reporting.`,
 				return fmt.Errorf("hostname is required")
 			}
 
-			conn := &statusConn{open: func() (statusSink, error) {
+			conn := &statusConn{open: func(ctx context.Context) (statusSink, error) {
 				return a.OpenStore(ctx, app.PurposeStatus)
 			}}
 			defer conn.close()
+
+			// Spread the fleet. Every agent is installed and restarted in the
+			// same pass, so their clocks line up and stay lined up.
+			interval = jitterInterval(interval, hostname)
+			probeInterval = jitterInterval(probeInterval, hostname)
 
 			// Capability probes run on their own, slower clock.
 			//
@@ -86,6 +93,40 @@ database role for low-risk, low-resource status reporting.`,
 		"how often to run platform capability probes (OpenStack, ...); 0 disables them")
 	cmd.Flags().BoolVar(&once, "once", false, "report once and exit")
 	return cmd
+}
+
+// jitterFraction is how far an agent's clock may sit from the nominal interval.
+//
+// The whole fleet is installed in one pass and restarted in one pass, so every
+// agent's five-minute and one-hour ticks align and stay aligned: forty-odd hosts
+// asking Vault for a credential and Postgres for a connection in the same
+// second, twelve times an hour. Nothing here is heavy enough for that to hurt
+// yet — which is the reason to spread it while it is still cheap, rather than
+// after the fleet is large enough to notice.
+//
+// ±10% of five minutes is ±30s, enough that the pile-up dissolves within a
+// couple of hours and small enough that nobody reading a heartbeat age has to
+// think about it.
+const jitterFraction = 0.1
+
+// jitterInterval offsets a schedule deterministically by hostname.
+//
+// Not jitterWatchDelay, which is the other half of the same idea and draws
+// fresh each call. That one spreads *retries* after a fleet-wide outage, where
+// a new draw every attempt is exactly right. This one spreads a *standing*
+// schedule, so the offset has to survive: derived from the name, a host keeps
+// its slot across restarts instead of re-rolling into a fresh collision every
+// time the unit bounces, and "these two always land together" becomes something
+// reproducible rather than something to wait for.
+func jitterInterval(d time.Duration, hostname string) time.Duration {
+	if d <= 0 || hostname == "" {
+		return d
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(hostname))
+	// Evenly spread over [-1, +1].
+	frac := float64(int32(h.Sum32()%2001)-1000) / 1000
+	return d + time.Duration(float64(d)*jitterFraction*frac)
 }
 
 // capabilityProbes is what this agent knows how to look for. Adding a platform
@@ -159,9 +200,40 @@ type statusSink interface {
 	Close()
 }
 
+// statusAttempt bounds one trip to Vault and Postgres.
+//
+// Without it the only deadline is the daemon's, which never fires. A TCP
+// connection into a blackholed route does not fail, it hangs, and a heartbeat
+// stuck there is a live process that has silently stopped reporting. systemd
+// will not restart it because nothing crashed: the agent looks healthy and says
+// nothing, which is the single failure this loop exists to make visible.
+//
+// 15s covers an AppRole login, a dynamic database credential, a TLS handshake
+// and a ping with room to spare, and sits well inside the five-minute
+// heartbeat, so a stuck attempt is abandoned rather than left to overlap the
+// next one.
+const statusAttempt = 15 * time.Second
+
 type statusConn struct {
-	open func() (statusSink, error)
+	// mu guards st and healthy, and is held across the database call rather
+	// than around the handle.
+	//
+	// The heartbeat and the capability probe are separate goroutines on
+	// different clocks, and once an hour their ticks land together. They share
+	// one sink and a failure closes it, so a lock guarding only the pointer
+	// would still let the heartbeat's close land while the capability write was
+	// using what it closed. Without any lock, both could also open at the same
+	// moment, leaving a pool and a Vault credential lease with no owner to close
+	// them — a leak on the central side, once an hour, per host.
+	//
+	// Serialising costs a few milliseconds on a path that runs 288 times a day.
+	mu   sync.Mutex
+	open func(context.Context) (statusSink, error)
 	st   statusSink
+
+	// attempt bounds one trip; zero means statusAttempt. Set in tests, which
+	// cannot wait fifteen seconds to prove a hang is bounded.
+	attempt time.Duration
 
 	// healthy tracks whether the last attempt succeeded, so success is logged
 	// on the way back up rather than on every heartbeat. It starts false so the
@@ -170,69 +242,111 @@ type statusConn struct {
 	healthy bool
 }
 
+// What a failure says about the connection, which is not the same for every
+// caller. Named because `withSink(ctx, true, ...)` at a call site says nothing
+// about which behaviour "true" is.
+const (
+	// dropOnFailure: this failure is evidence the handle is finished. Reopening
+	// runs the full path again — AppRole login, then a fresh dynamic credential
+	// — and a handle kept across such a failure can be one whose lease has
+	// already lapsed, which no number of retries will fix.
+	dropOnFailure = true
+	// keepOnFailure: this failure is not evidence about the connection, so the
+	// handle the heartbeat shares stays up. A capability write is the case: the
+	// agent's job is to keep saying the host is alive, and "we could not tell
+	// what it runs" is not a reason to make the heartbeat pay for a fresh Vault
+	// login. If the database really is gone, the next heartbeat finds out and
+	// drops it then.
+	keepOnFailure = false
+)
+
+// withSink runs one operation against a live sink, opening one first if needed.
+//
+// Every path to the database goes through here, which is what makes the lock
+// and the deadline hold for all of them rather than for whichever caller
+// remembered.
+func (c *statusConn) withSink(ctx context.Context, drop bool, fn func(context.Context, statusSink) error) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	budget := c.attempt
+	if budget <= 0 {
+		budget = statusAttempt
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	if c.st == nil {
+		st, err := c.open(ctx)
+		if err != nil {
+			return err
+		}
+		c.st = st
+	}
+	if err := fn(ctx, c.st); err != nil {
+		if drop {
+			c.closeLocked()
+		}
+		return err
+	}
+	return nil
+}
+
 // reportCapability writes one probe's findings.
 //
 // A probe that errored records the error against whatever is already stored and
 // stops: overwriting the facts with an empty result would turn "the probe timed
 // out" into "this host runs nothing", which reads as a decommission.
 func (c *statusConn) reportCapability(ctx context.Context, hostname string, res hoststatus.ProbeResult) error {
-	if c.st == nil {
-		st, err := c.open()
-		if err != nil {
-			return err
+	return c.withSink(ctx, keepOnFailure, func(ctx context.Context, st statusSink) error {
+		if res.Err != nil {
+			return st.RecordCapabilityError(ctx, hostname, res.Kind, res.Err.Error())
 		}
-		c.st = st
-	}
-	if res.Err != nil {
-		return c.st.RecordCapabilityError(ctx, hostname, res.Kind, res.Err.Error())
-	}
-	// Nothing found is still an answer, and it needs a row so the listing can
-	// tell "probed, absent" from "never probed". It is filed under the role
-	// name "none".
-	roles := res.Roles
-	if len(roles) == 0 {
-		roles = []string{"none"}
-	}
-	active := make(map[string]bool, len(res.ActiveRoles))
-	for _, r := range res.ActiveRoles {
-		active[r] = true
-	}
-	for _, role := range roles {
-		cap := store.Capability{
-			Hostname: hostname, Kind: res.Kind, Role: role,
-			Detected: res.Detected, Active: active[role], Details: res.Details,
-			Components: make(map[string]store.CapabilityComponent, len(res.Components)),
-			ObservedAt: res.ObservedAt,
+		// Nothing found is still an answer, and it needs a row so the listing
+		// can tell "probed, absent" from "never probed". It is filed under the
+		// role name "none".
+		roles := res.Roles
+		if len(roles) == 0 {
+			roles = []string{"none"}
 		}
-		for name, comp := range res.Components {
-			cap.Components[name] = store.CapabilityComponent{
-				Version: comp.Version, Package: comp.Package,
-				Active: comp.Active, Service: comp.Service,
+		active := make(map[string]bool, len(res.ActiveRoles))
+		for _, r := range res.ActiveRoles {
+			active[r] = true
+		}
+		for _, role := range roles {
+			cap := store.Capability{
+				Hostname: hostname, Kind: res.Kind, Role: role,
+				Detected: res.Detected, Active: active[role], Details: res.Details,
+				Components: make(map[string]store.CapabilityComponent, len(res.Components)),
+				ObservedAt: res.ObservedAt,
+			}
+			for name, comp := range res.Components {
+				cap.Components[name] = store.CapabilityComponent{
+					Version: comp.Version, Package: comp.Package,
+					Active: comp.Active, Service: comp.Service,
+				}
+			}
+			if _, err := st.UpsertCapability(ctx, cap); err != nil {
+				return err
 			}
 		}
-		if _, err := c.st.UpsertCapability(ctx, cap); err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (c *statusConn) report(ctx context.Context, hostname string) error {
-	if c.st == nil {
-		st, err := c.open()
-		if err != nil {
-			return err
-		}
-		c.st = st
-	}
-	if err := reportStatus(ctx, c.st, hostname, &c.healthy); err != nil {
-		c.close()
-		return err
-	}
-	return nil
+	return c.withSink(ctx, dropOnFailure, func(ctx context.Context, st statusSink) error {
+		return reportStatus(ctx, st, hostname, &c.healthy)
+	})
 }
 
 func (c *statusConn) close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closeLocked()
+}
+
+func (c *statusConn) closeLocked() {
 	if c.st != nil {
 		c.st.Close()
 		c.st = nil
