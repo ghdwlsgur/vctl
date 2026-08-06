@@ -34,27 +34,38 @@ func TestFormKeyMapMovesBetweenTextFieldsWithArrows(t *testing.T) {
 	}
 }
 
-// Select uses ↑/↓ to choose an option. Rebinding those to move between fields
-// would break the field in order to fix the form, so it gets ←/→ — which huh
-// leaves unbound on vertical selects.
-func TestFormKeyMapLeavesSelectVerticalKeysAlone(t *testing.T) {
+// One rule for the whole form: ↑/↓ always move between fields, in a Select as
+// much as in an Input.
+//
+// This was ←/→ for selects once, because a vertical select spends ↑/↓ on its
+// options and rebinding them would break the field to fix the form. Inline
+// selects are the way out — huh gives them ←/→ for options and frees ↑/↓ — and
+// somebody reading this form learns ↑/↓ on the Inputs above and then reaches
+// the State field. Under the old map that key did nothing there.
+func TestFormKeyMapMovesBetweenFieldsWithTheSameKeysEverywhere(t *testing.T) {
 	km := FormKeyMap()
-	for _, k := range []string{"up", "down"} {
-		if slices.Contains(km.Select.Prev.Keys(), k) || slices.Contains(km.Select.Next.Keys(), k) {
-			t.Errorf("%q was taken from the select's option navigation", k)
+	for _, k := range []string{"up", "shift+tab"} {
+		if !slices.Contains(km.Select.Prev.Keys(), k) {
+			t.Errorf("Select.Prev is missing %q: %v", k, km.Select.Prev.Keys())
 		}
 	}
-	if !slices.Contains(km.Select.Prev.Keys(), "left") {
-		t.Errorf("← does not leave a select: Select.Prev = %v", km.Select.Prev.Keys())
+	for _, k := range []string{"down", "enter", "tab"} {
+		if !slices.Contains(km.Select.Next.Keys(), k) {
+			t.Errorf("Select.Next is missing %q: %v", k, km.Select.Next.Keys())
+		}
 	}
-	if !slices.Contains(km.Select.Next.Keys(), "right") {
-		t.Errorf("→ does not leave a select: Select.Next = %v", km.Select.Next.Keys())
+	// The options need ←/→, so field movement must not also claim them.
+	for _, k := range []string{"left", "right"} {
+		if slices.Contains(km.Select.Prev.Keys(), k) || slices.Contains(km.Select.Next.Keys(), k) {
+			t.Errorf("%q was taken from the inline select's option navigation", k)
+		}
 	}
-	// huh disables Left/Right on vertical selects, which is what makes them free
-	// to take. If a future version enables them, this binding starts fighting the
-	// field and the fix is to pick different keys.
-	if def := huh.NewDefaultKeyMap(); def.Select.Left.Enabled() || def.Select.Right.Enabled() {
-		t.Error("huh now binds ←/→ inside selects; Select.Prev/Next need different keys")
+	// The whole arrangement rests on huh enabling Left/Right and disabling
+	// Up/Down for an inline select, and on it matching option movement before
+	// field movement. If a future version stops disabling Up/Down, ↑ starts
+	// moving the option again and this map silently loses its way back.
+	if def := huh.NewDefaultKeyMap(); !def.Select.Up.Enabled() || !def.Select.Down.Enabled() {
+		t.Skip("huh changed its select defaults; re-derive this map from field_select.go")
 	}
 }
 

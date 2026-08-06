@@ -197,7 +197,10 @@ func dcField(dcs []string, target *string) huh.Field {
 		Title("Datacenter").
 		Description("labels already in the inventory").
 		Options(opts...).
-		Value(target)
+		Value(target).
+		// Inline for the same reason as the State fields: a list select would
+		// swallow ↑/↓ and leave no obvious way back to the previous field.
+		Inline(true)
 }
 
 func nonEmpty(what string) func(string) error {

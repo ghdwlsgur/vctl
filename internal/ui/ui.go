@@ -384,8 +384,20 @@ func FormKeyMap() *huh.KeyMap {
 	km.Input.Prev = key.NewBinding(key.WithKeys("shift+tab", "up"), key.WithHelp("↑", "back"))
 	km.Input.Next = key.NewBinding(key.WithKeys("enter", "tab", "down"), key.WithHelp("↓/enter", "next"))
 
-	km.Select.Prev = key.NewBinding(key.WithKeys("shift+tab", "left"), key.WithHelp("←", "back"))
-	km.Select.Next = key.NewBinding(key.WithKeys("enter", "tab", "right"), key.WithHelp("→/enter", "next"))
+	// Same keys as Input, which only works because every Select in this binary
+	// is inline. huh matches option movement before field movement
+	// (field_select.go: `case key.Matches(msg, s.keymap.Up, s.keymap.Left)`
+	// comes before the Prev case), and it enables Up/Down for a list select and
+	// Left/Right for an inline one. So on a list select ↑ can never leave the
+	// field — you learn ↑/↓ on four Inputs, reach the State field, press ↑ and
+	// nothing happens. Inline frees ↑/↓ for navigation and gives the options
+	// ←/→, which makes one rule hold for the whole form.
+	//
+	// A non-inline Select added later would silently lose its way back to the
+	// previous field under this map. Keep them inline, or restore "left"/"right"
+	// here for that field.
+	km.Select.Prev = key.NewBinding(key.WithKeys("shift+tab", "up"), key.WithHelp("↑", "back"))
+	km.Select.Next = key.NewBinding(key.WithKeys("enter", "tab", "down"), key.WithHelp("↓/enter", "next"))
 
 	// Confirm keeps ←/→ for toggling Yes/No. It is the last field in every form
 	// that has one, so shift+tab is enough of a way back.

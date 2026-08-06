@@ -87,6 +87,18 @@ type farmChoice struct {
 // The id alone is not enough to choose by. Somebody naming farms is looking at
 // a list of addresses they may never have seen, and the thing that identifies a
 // deployment to them is what is in it — seven hosts, three controllers.
+// farmStateMeanings says what each word claims about a deployment.
+//
+// Not the host wording: a farm is not a machine. "broken" here is a control
+// plane that will not answer, which is a different thing from a host that will
+// not boot, and the anomalies each state marks as expected differ with it.
+func farmStateMeanings() string {
+	return "active: expected to answer, a failing reconcile is news\n" +
+		"maintenance: somebody is working on it, failures are expected\n" +
+		"broken: a fault somebody diagnosed and has not fixed\n" +
+		"retired: not operated any more, and hidden from the listing"
+}
+
 func farmChoices(ctx context.Context, st *store.Store) ([]farmChoice, error) {
 	hosts, err := st.OpenStackHosts(ctx)
 	if err != nil {
@@ -299,10 +311,14 @@ func farmStateForm(f farmChoice, note string) (string, string, string, error) {
 		// A Select, not free text: the database constrains the column, and
 		// typing "down" into a field that takes only these four should fail at
 		// the form rather than after the note has been written.
+		//
+		// Inline, so ↑/↓ still move between fields here as they do everywhere
+		// else. See ui.FormKeyMap.
 		huh.NewSelect[string]().Title("State").
-			Description(desc).
+			Description(desc+"\n"+farmStateMeanings()).
 			Options(stateOptions()...).
-			Value(&state),
+			Value(&state).
+			Inline(true),
 		huh.NewInput().Title("Note").
 			Description("optional; what happened, for whoever reads this a week later").
 			Value(&note),

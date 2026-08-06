@@ -283,9 +283,10 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 		// "down" into a field that only takes these four should fail at the form
 		// rather than after the other edits have already been written.
 		huh.NewSelect[string]().Title("State").
-			Description("what you are declaring; liveness stays observed and is shown next to it").
+			Description("what you are declaring; liveness stays observed and is shown next to it\n"+stateMeanings()).
 			Options(stateOptions()...).
-			Value(&state),
+			Value(&state).
+			Inline(true),
 		huh.NewInput().Title("Hostname").
 			Description("renaming carries the agent heartbeat and jump chains; audit history keeps the old name").
 			Value(&name).
@@ -330,18 +331,29 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 // Nothing here marks the current value: the field is bound to a variable already
 // holding it, and huh selects the option matching that. Setting it twice would
 // be two mechanisms for one behaviour, and they can disagree.
+// stateOptions are the words the database accepts, and only the words.
+//
+// The meanings live in stateMeanings rather than in the labels because the
+// field is inline: it renders one value at a time, so a label carrying its own
+// explanation would show one state's meaning and hide the other three.
 func stateOptions() []huh.Option[string] {
-	desc := map[string]string{
-		store.StateActive:      "expected up — a down reading here is a problem",
-		store.StateMaintenance: "planned window — down is expected and temporary",
-		store.StateBroken:      "known faulty — somebody diagnosed it",
-		store.StateRetired:     "decommissioned, kept for its history",
-	}
 	opts := make([]huh.Option[string], 0, len(store.HostStates))
 	for _, s := range store.HostStates {
-		opts = append(opts, huh.NewOption(s+"  "+desc[s], s))
+		opts = append(opts, huh.NewOption(s, s))
 	}
 	return opts
+}
+
+// stateMeanings is the whole set at once, under the field.
+//
+// All four are shown whichever one is selected. Declaring a state is a claim
+// about what to expect, and choosing between them needs the alternatives in
+// view — "broken" only means something next to "maintenance".
+func stateMeanings() string {
+	return "active: expected up, a down reading is a problem\n" +
+		"maintenance: planned window, down is expected and temporary\n" +
+		"broken: known faulty, somebody diagnosed it\n" +
+		"retired: decommissioned, kept for its history"
 }
 
 func sameStrings(a, b []string) bool {
