@@ -261,9 +261,19 @@ func collectInstances(ctx context.Context, st *store.Store, id string, c opensta
 			return
 		}
 	}
+	// Best effort, and deliberately not fatal. Nova reports an owner as a bare
+	// uuid; Keystone is the only place the name exists, and a listing of uuids
+	// is much better than no listing. A run that cannot resolve them leaves the
+	// column alone rather than blanking what an earlier run found.
+	names, err := client.ProjectNames(ctx)
+	if err != nil {
+		ui.Warnf(os.Stderr, "%s: project names: %v", id, err)
+	}
 	rows := make([]store.Instance, 0, len(list))
 	for _, i := range list {
-		rows = append(rows, toStoreInstance(id, i))
+		row := toStoreInstance(id, i)
+		row.ProjectName = names[row.ProjectID]
+		rows = append(rows, row)
 	}
 	n, err := st.ReplaceInstances(ctx, id, rows, time.Now())
 	if err != nil {

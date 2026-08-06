@@ -12,7 +12,10 @@ type Instance struct {
 	DeploymentID string `json:"deployment_id"`
 	InstanceID   string `json:"instance_id"`
 	ProjectID    string `json:"project_id,omitempty"`
-	Name         string `json:"name,omitempty"`
+	// ProjectName is what the last collection saw the project called. Empty
+	// means the collector could not ask Keystone, not that the VM has no owner.
+	ProjectName string `json:"project_name,omitempty"`
+	Name        string `json:"name,omitempty"`
 
 	Status     string `json:"status,omitempty"`
 	PowerState string `json:"power_state,omitempty"`
@@ -69,12 +72,16 @@ func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []In
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO openstack_instances
-				(deployment_id, instance_id, project_id, name, status, power_state, task_state,
+				(deployment_id, instance_id, project_id, project_name, name, status, power_state, task_state,
 				 availability_zone, hypervisor_hostname, flavor_id, image_id,
 				 created_at, updated_at, observed_at, missing_since)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, NULL)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, NULL)
 			ON CONFLICT (deployment_id, instance_id) DO UPDATE SET
-				project_id=EXCLUDED.project_id, name=EXCLUDED.name,
+				project_id=EXCLUDED.project_id,
+				-- Only when the collection had an answer. A run that could not
+				-- reach Keystone must not blank a name an earlier one resolved.
+				project_name=COALESCE(NULLIF(EXCLUDED.project_name, ''), openstack_instances.project_name),
+				name=EXCLUDED.name,
 				status=EXCLUDED.status, power_state=EXCLUDED.power_state,
 				task_state=EXCLUDED.task_state,
 				availability_zone=EXCLUDED.availability_zone,
@@ -84,7 +91,7 @@ func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []In
 				observed_at=EXCLUDED.observed_at,
 				-- Coming back clears it, so the column always means "missing now".
 				missing_since=NULL`,
-			deployment, i.InstanceID, i.ProjectID, i.Name, i.Status, i.PowerState, i.TaskState,
+			deployment, i.InstanceID, i.ProjectID, i.ProjectName, i.Name, i.Status, i.PowerState, i.TaskState,
 			i.AvailabilityZone, i.HypervisorHostname, i.FlavorID, i.ImageID,
 			i.CreatedAt, i.UpdatedAt, at); err != nil {
 			return 0, err
@@ -146,7 +153,7 @@ type InstanceFilter struct {
 
 // Instances lists VMs, with their addresses.
 func (s *Store) Instances(ctx context.Context, f InstanceFilter) ([]Instance, error) {
-	q := `SELECT deployment_id, instance_id, project_id, name, status, power_state, task_state,
+	q := `SELECT deployment_id, instance_id, project_id, project_name, name, status, power_state, task_state,
 		 availability_zone, hypervisor_hostname, flavor_id, image_id,
 		 created_at, updated_at, observed_at, missing_since
 		FROM openstack_instances WHERE 1=1`
@@ -224,7 +231,7 @@ func (s *Store) attachAddresses(ctx context.Context, in []Instance) ([]Instance,
 
 func scanInstance(r pgx.Rows) (Instance, error) {
 	var i Instance
-	err := r.Scan(&i.DeploymentID, &i.InstanceID, &i.ProjectID, &i.Name,
+	err := r.Scan(&i.DeploymentID, &i.InstanceID, &i.ProjectID, &i.ProjectName, &i.Name,
 		&i.Status, &i.PowerState, &i.TaskState,
 		&i.AvailabilityZone, &i.HypervisorHostname, &i.FlavorID, &i.ImageID,
 		&i.CreatedAt, &i.UpdatedAt, &i.ObservedAt, &i.MissingSince)

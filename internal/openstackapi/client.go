@@ -36,6 +36,9 @@ type Client struct {
 	authURL  string
 	token    string
 	computes []endpoint
+	// identities are the Keystone endpoints from the catalog, used to turn
+	// project ids into the names people actually call them by.
+	identities []endpoint
 }
 
 type endpoint struct {
@@ -127,11 +130,14 @@ func (c *Client) authenticate(ctx context.Context, cr Credentials) error {
 		return err
 	}
 	for _, s := range out.Token.Catalog {
-		if s.Type != "compute" {
-			continue
-		}
 		for _, e := range s.Endpoints {
-			c.computes = append(c.computes, endpoint{iface: e.Interface, url: strings.TrimRight(e.URL, "/")})
+			ep := endpoint{iface: e.Interface, url: strings.TrimRight(e.URL, "/")}
+			switch s.Type {
+			case "compute":
+				c.computes = append(c.computes, ep)
+			case "identity":
+				c.identities = append(c.identities, ep)
+			}
 		}
 	}
 	if len(c.computes) == 0 {
