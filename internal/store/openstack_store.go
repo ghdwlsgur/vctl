@@ -192,7 +192,11 @@ type OpenStackCoverage struct {
 // OpenStackHosts returns every host a probe has filed an OpenStack capability
 // for, newest observation first within each host, sorted by hostname.
 func (s *Store) OpenStackHosts(ctx context.Context) ([]OpenStackHost, error) {
-	rows, err := queryAndCollect(ctx, s.pool, `
+	return openStackHostsOn(ctx, s.pool)
+}
+
+func openStackHostsOn(ctx context.Context, db rowQuerier) ([]OpenStackHost, error) {
+	rows, err := queryAndCollect(ctx, db, `
 		SELECT c.hostname, c.role, c.detected, c.active, c.components, c.details,
 		       c.last_error, c.observed_at,
 		       coalesce(s.dc,''), coalesce(s.state,'active')
@@ -204,7 +208,7 @@ func (s *Store) OpenStackHosts(ctx context.Context) ([]OpenStackHost, error) {
 	if err != nil {
 		return nil, err
 	}
-	members, err := s.openStackMemberships(ctx)
+	members, err := openStackMembershipsOn(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +278,11 @@ func scanCapabilityRow(r pgx.Rows) (capabilityRow, error) {
 }
 
 func (s *Store) openStackMemberships(ctx context.Context) (map[string][]OpenStackMembership, error) {
-	rows, err := queryAndCollect(ctx, s.pool, `
+	return openStackMembershipsOn(ctx, s.pool)
+}
+
+func openStackMembershipsOn(ctx context.Context, db rowQuerier) (map[string][]OpenStackMembership, error) {
+	rows, err := queryAndCollect(ctx, db, `
 		SELECT m.hostname, m.deployment_id, coalesce(d.display_name,''),
 		       coalesce(d.region,''), m.confidence, m.observed_at
 		FROM openstack_memberships m
@@ -523,4 +531,80 @@ func mergeDetails(dst *map[string]string, src map[string]string) {
 		*dst = map[string]string{}
 	}
 	maps.Copy(*dst, src)
+}
+
+// FarmSnapshot is everything one farm's screen is built from, read together.
+//
+// Assembled inside a single read transaction so the screen describes one moment.
+// It used to be five independent reads, and a reconcile finishing between the
+// second and the third put a host count from before it beside a run result from
+// after it — a picture of the deployment that was never true. Nothing on screen
+// says which reads came from where, so there is no way to notice from the
+// output.
+//
+// DeploymentKnown separates "this deployment was never named" from "the read
+// failed", which the caller used to conflate by ignoring the error.
+type FarmSnapshot struct {
+	Deployment      Deployment
+	DeploymentKnown bool
+	Hosts           []OpenStackHost
+	Instances       []Instance
+	Ghosts          []ControlHost
+	Run             *ReconcileRun
+}
+
+// FarmSnapshot reads one deployment's whole picture at one instant.
+//
+// REPEATABLE READ rather than the default: every statement in the transaction
+// then sees the same snapshot, which is the entire reason this exists. Read-only
+// so it cannot block a writer or be chosen as a deadlock victim.
+//
+// Missing VMs are included. The assessment counts them, so filtering them out
+// here would hide the number it exists to report.
+func (s *Store) FarmSnapshot(ctx context.Context, id string) (FarmSnapshot, error) {
+	var out FarmSnapshot
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return out, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	hosts, err := openStackHostsOn(ctx, tx)
+	if err != nil {
+		return out, err
+	}
+	for _, h := range hosts {
+		if h.Farm == id && h.Detected {
+			out.Hosts = append(out.Hosts, h)
+		}
+	}
+	if out.Instances, err = instancesOn(ctx, tx, InstanceFilter{
+		DeploymentID: id, IncludeMissing: true,
+	}); err != nil {
+		return out, err
+	}
+	if out.Ghosts, err = controlHostsOn(ctx, tx, id); err != nil {
+		return out, err
+	}
+	runs, err := reconcileRunsOn(ctx, tx)
+	if err != nil {
+		return out, err
+	}
+	if r, ok := runs[id]; ok {
+		out.Run = &r
+	}
+	ds, err := deploymentsOn(ctx, tx)
+	if err != nil {
+		return out, err
+	}
+	for _, d := range ds {
+		if d.ID == id {
+			out.Deployment, out.DeploymentKnown = d, true
+			break
+		}
+	}
+	return out, nil
 }

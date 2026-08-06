@@ -320,10 +320,19 @@ func collectRows[T any](rows pgx.Rows, scan func(pgx.Rows) (T, error)) ([]T, err
 
 func scanServerRow(r pgx.Rows) (Server, error) { return scanServer(r) }
 
+// rowQuerier is the read half of a pool or a transaction.
+//
+// Both *pgxpool.Pool and pgx.Tx satisfy it, which is the point: a read can run
+// on its own or as part of one consistent snapshot without a second copy of the
+// query existing to drift from the first.
+type rowQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // queryAndCollect runs a query and drains the rows through scan, closing them —
 // the one-shot Query+collectRows used across the store.
-func queryAndCollect[T any](ctx context.Context, pool *pgxpool.Pool, q string, args []any, scan func(pgx.Rows) (T, error)) ([]T, error) {
-	rows, err := pool.Query(ctx, q, args...)
+func queryAndCollect[T any](ctx context.Context, db rowQuerier, q string, args []any, scan func(pgx.Rows) (T, error)) ([]T, error) {
+	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

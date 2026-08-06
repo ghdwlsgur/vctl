@@ -157,6 +157,10 @@ type InstanceFilter struct {
 
 // Instances lists VMs, with their addresses.
 func (s *Store) Instances(ctx context.Context, f InstanceFilter) ([]Instance, error) {
+	return instancesOn(ctx, s.pool, f)
+}
+
+func instancesOn(ctx context.Context, db rowQuerier, f InstanceFilter) ([]Instance, error) {
 	q := `SELECT deployment_id, instance_id, project_id, project_name, name, status, power_state, task_state,
 		 availability_zone, hypervisor_hostname, flavor_id, image_id,
 		 created_at, updated_at, observed_at, missing_since
@@ -202,14 +206,14 @@ func (s *Store) Instances(ctx context.Context, f InstanceFilter) ([]Instance, er
 	}
 	q += ` ORDER BY deployment_id, name, instance_id`
 
-	rows, err := queryAndCollect(ctx, s.pool, q, args, scanInstance)
+	rows, err := queryAndCollect(ctx, db, q, args, scanInstance)
 	if err != nil {
 		return nil, err
 	}
-	return s.attachAddresses(ctx, rows)
+	return attachAddressesOn(ctx, db, rows)
 }
 
-func (s *Store) attachAddresses(ctx context.Context, in []Instance) ([]Instance, error) {
+func attachAddressesOn(ctx context.Context, db rowQuerier, in []Instance) ([]Instance, error) {
 	if len(in) == 0 {
 		return in, nil
 	}
@@ -223,7 +227,7 @@ func (s *Store) attachAddresses(ctx context.Context, in []Instance) ([]Instance,
 		InstanceID string
 		InstanceAddress
 	}
-	addrs, err := queryAndCollect(ctx, s.pool, `
+	addrs, err := queryAndCollect(ctx, db, `
 		SELECT instance_id, network_name, address, address_type, ip_version
 		FROM openstack_instance_addresses WHERE instance_id = ANY($1)
 		ORDER BY instance_id, address`, []any{ids},
