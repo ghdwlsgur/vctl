@@ -13,6 +13,7 @@ import (
 // Defaults returns compiled onboarding defaults for the SRE environment.
 func Defaults() *Config {
 	return &Config{
+		OperatorNetworks:     []string{"192.168."},
 		VaultAddr:            "https://vault.sre.local",
 		AuthMethod:           "oidc", // people: GitLab SSO by default; --method userpass for bootstrap
 		OIDCRole:             "vctl",

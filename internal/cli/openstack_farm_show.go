@@ -196,6 +196,15 @@ func renderFarmShow(w io.Writer, a openstack.Assessment, now time.Time) {
 		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("unsettled"), 20),
 			ui.Warn(strings.Join(a.Membership.Unsettled, ", ")))
 	}
+	if len(a.Dashboard) > 0 {
+		line := a.Dashboard[0]
+		if len(a.Dashboard) > 1 {
+			// The rest muted and in one line: they are the same dashboard from
+			// somewhere else, not other dashboards.
+			line += ui.Muted("  also " + strings.Join(a.Dashboard[1:], " "))
+		}
+		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("dashboard"), 20), line)
+	}
 	if line := caTrustLine(a.CATrust); line != "" {
 		fmt.Fprintf(w, "  %s %s\n", ui.PadRight(ui.Muted("ca-trust"), 20), line)
 	}

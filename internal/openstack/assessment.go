@@ -45,6 +45,10 @@ type Assessment struct {
 	Versions     Versions     `json:"versions"`
 	CATrust      CATrust      `json:"ca_trust"`
 
+	// Dashboard is where a person opens this farm, best address first. Folded
+	// from the hosts running haproxy, because that is where the address is.
+	Dashboard []string `json:"dashboard,omitempty"`
+
 	// Anomalies are the things worth a second look, in one place. Scattered
 	// across the other sections they are each a footnote; together they are the
 	// answer to "what is wrong with this farm".
@@ -250,6 +254,15 @@ func Assess(in Input) Assessment {
 			a.Health.HostsDown++
 		}
 		a.Versions.ByRelease[ReleaseOf(h)]++
+		if v := h.Details["horizon_url"]; v != "" && len(a.Dashboard) == 0 {
+			// One host's answer, not a merge. Every controller in a farm binds
+			// the same VIP, so collecting them all would repeat one address
+			// once per controller and call it choice.
+			a.Dashboard = append(a.Dashboard, v)
+			if alt := h.Details["horizon_alt"]; alt != "" {
+				a.Dashboard = append(a.Dashboard, strings.Fields(alt)...)
+			}
+		}
 		if v := h.Details["vendordata"]; v != "" {
 			if a.CATrust.Hosts == nil {
 				a.CATrust.Hosts = map[string]string{}
