@@ -437,7 +437,10 @@ func TestStartPhaseSpreadsTheFleetWithoutMovingTheInterval(t *testing.T) {
 	// every twelfth heartbeat, on every host, forever.
 	same := 0
 	for _, h := range hosts {
-		if startPhase(heartbeatPhase, h, "heartbeat") == startPhase(heartbeatPhase, h, "capability") {
+		// Each loop's own window, which is what the agent actually asks for.
+		// Comparing both against heartbeatPhase tested a schedule that does not
+		// exist and would have missed the two windows being wired the same.
+		if startPhase(heartbeatPhase, h, "heartbeat") == startPhase(capabilityPhase, h, "capability") {
 			same++
 		}
 	}

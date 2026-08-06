@@ -647,3 +647,54 @@ func TestAnUnconfinedProbeStillUsesTheCLI(t *testing.T) {
 		t.Errorf("index = %v, want the container the CLI reported", index)
 	}
 }
+
+// A container engine that will not answer costs the containers, not the pass.
+//
+// Refusing outright threw away evidence this probe had not looked for yet:
+// services deployed as systemd units are visible without asking any engine, and
+// a host that has them is not a host we failed to read. Reporting it as
+// unprobed says "we could not tell" about a machine we could — and that is the
+// column an operator scans for hosts needing attention.
+func TestAContainerFailureDoesNotDiscardSystemdEvidence(t *testing.T) {
+	h := &fakeHost{systemd: map[string]string{
+		"nova-compute":              "active",
+		"neutron-openvswitch-agent": "active",
+	}}
+	p := h.probeWithSocket(t, "/run/podman/podman.sock", func() (map[string]containerInfo, error) {
+		return nil, errors.New("connection refused")
+	})
+	res := p.Collect(context.Background())
+
+	if res.Err != nil {
+		t.Fatalf("a host whose services systemd can see was reported unprobed: %v", res.Err)
+	}
+	if !slices.Contains(res.Roles, "compute") {
+		t.Errorf("roles = %v, want what systemd could see", res.Roles)
+	}
+	// The engine's silence still has to be visible — it cost detail, and
+	// somebody has to be able to find out why.
+	if res.Details["container_probe_error"] == "" {
+		t.Error("the container failure vanished; nothing says why the answer is thinner")
+	}
+}
+
+// And the refusal stands exactly where it was written to stand.
+//
+// A Kolla host runs its services as containers, so systemd sees nothing there.
+// Nothing found plus no way to ask the engine is "we could not tell", and
+// calling it absent is what once filed a full controller as running no
+// OpenStack.
+func TestAContainerFailureWithNothingElseFoundStillRefuses(t *testing.T) {
+	h := &fakeHost{}
+	p := h.probeWithSocket(t, "/run/podman/podman.sock", func() (map[string]containerInfo, error) {
+		return nil, errors.New("connection refused")
+	})
+	res := p.Collect(context.Background())
+
+	if res.Err == nil {
+		t.Fatal("a host we could not read was reported as running no OpenStack")
+	}
+	if res.Detected {
+		t.Error("detected is set on a probe that could not tell")
+	}
+}
