@@ -14,6 +14,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/config"
+	"github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -324,40 +325,17 @@ func vmStateCell(v store.Instance) string {
 // by accident: half the rows showed a 10.x that nobody outside the farm can
 // open, and the address column is the column people copy out of.
 //
-// Order: a floating address, then one on an operator network, then anything.
-// Floating first because it exists for exactly this reason — somebody attached
-// it to make the VM reachable — and it outranks a guess based on a prefix.
+// Order: a floating address, then one on an operator network, then anything —
+// and that ranking is openstack.ReachableAddress, the same function the SSH
+// path resolves a VM with, so the address on screen is the address a connection
+// will use. It was inline here, decoration and all, which is why the two could
+// not share it.
 func primaryAddress(v store.Instance, operatorNets []string) string {
-	best, bestRank := "", 0
-	for _, a := range v.Addresses {
-		r := 1
-		switch {
-		case a.Type == "floating":
-			r = 3
-		case onOperatorNetwork(a.Address, operatorNets):
-			r = 2
-		}
-		if r > bestRank {
-			best, bestRank = a.Address, r
-		}
-	}
+	best := openstack.ReachableAddress(v.Addresses, operatorNets)
 	if extra := len(v.Addresses) - 1; extra > 0 && best != "" {
 		return best + ui.Muted(fmt.Sprintf(" (+%d)", extra))
 	}
 	return best
-}
-
-// onOperatorNetwork reports whether an address is on a network people reach
-// things from. Prefix matching rather than CIDR: the config says "192.168."
-// because that is how somebody describes it, and parsing it as a network would
-// turn a typo into a silent no-match instead of an obvious one.
-func onOperatorNetwork(addr string, nets []string) bool {
-	for _, n := range nets {
-		if n != "" && strings.HasPrefix(addr, n) {
-			return true
-		}
-	}
-	return false
 }
 
 func vmMissingCell(v store.Instance, now time.Time) string {
