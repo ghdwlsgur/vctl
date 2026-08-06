@@ -272,26 +272,26 @@ func TestFarmSnapshotReadsThePartsTogether(t *testing.T) {
 }
 
 // "Never named" and "the read failed" are different, and the caller used to
-// conflate them by discarding the error. A farm with no deployment row is the
-// first of those and must still produce a snapshot.
+// conflate them by discarding the error.
+//
+// The first of those is the ordinary state of a farm before anyone reconciles
+// it: the host points at a Keystone, that URL is the deployment id, and no
+// openstack_deployments row exists yet. A membership cannot stand in for it —
+// the foreign key means a membership only exists once the deployment row does,
+// which is what a first draft of this test got wrong.
 // Integration — needs VCTL_TEST_DSN.
 func TestFarmSnapshotSeparatesUnnamedFromUnread(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 	const host = "snap-host-02"
-	const farm = "snap-farm-b"
+	const farm = "10.90.0.9:5000" // a Keystone nobody has reconciled
 	seedOpenStackHost(t, st, host, StateActive)
-	cleanupDeployment(t, st, farm)
 
-	if _, err := st.ReplaceCapabilities(ctx, host, KindOpenStack,
-		[]Capability{{Role: "compute", Detected: true}}); err != nil {
+	if _, err := st.ReplaceCapabilities(ctx, host, KindOpenStack, []Capability{{
+		Role: "compute", Detected: true,
+		Details: map[string]string{"keystone_url": farm},
+	}}); err != nil {
 		t.Fatalf("ReplaceCapabilities: %v", err)
-	}
-	if _, err := st.pool.Exec(ctx,
-		`INSERT INTO openstack_memberships (hostname, deployment_id, confidence) VALUES ($1,$2,$3)
-		 ON CONFLICT (hostname, deployment_id) DO UPDATE SET confidence=EXCLUDED.confidence`,
-		host, farm, ConfidenceConfirmed); err != nil {
-		t.Fatalf("seed membership: %v", err)
 	}
 
 	snap, err := st.FarmSnapshot(ctx, farm)
@@ -301,7 +301,7 @@ func TestFarmSnapshotSeparatesUnnamedFromUnread(t *testing.T) {
 	if snap.DeploymentKnown {
 		t.Error("a deployment nobody named was reported as read")
 	}
-	if len(snap.Hosts) != 1 {
-		t.Errorf("hosts = %d, want the host to survive having no deployment row", len(snap.Hosts))
+	if len(snap.Hosts) != 1 || snap.Hosts[0].Hostname != host {
+		t.Errorf("hosts = %+v, want the host to survive having no deployment row", snap.Hosts)
 	}
 }
