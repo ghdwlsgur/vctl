@@ -370,7 +370,11 @@ func (s *Store) SetDeploymentName(ctx context.Context, id, name, region string) 
 
 // Deployments lists the farms the inventory knows by name.
 func (s *Store) Deployments(ctx context.Context) ([]Deployment, error) {
-	return queryAndCollect(ctx, s.pool, `
+	return deploymentsOn(ctx, s.pool)
+}
+
+func deploymentsOn(ctx context.Context, db rowQuerier) ([]Deployment, error) {
+	return queryAndCollect(ctx, db, `
 		SELECT id, display_name, region, keystone_url,
 		       coalesce(state,'active'), state_note, state_changed_at
 		FROM openstack_deployments ORDER BY id`, nil,
@@ -439,7 +443,11 @@ func (s *Store) RecordReconcileRun(ctx context.Context, deployment string, res R
 
 // ReconcileRuns returns the last run per deployment.
 func (s *Store) ReconcileRuns(ctx context.Context) (map[string]ReconcileRun, error) {
-	rows, err := queryAndCollect(ctx, s.pool, `
+	return reconcileRunsOn(ctx, s.pool)
+}
+
+func reconcileRunsOn(ctx context.Context, db rowQuerier) (map[string]ReconcileRun, error) {
+	rows, err := queryAndCollect(ctx, db, `
 		SELECT deployment_id, started_at, succeeded_at, complete, last_error,
 		       confirmed, local_only, control_only, held, ambiguous
 		FROM openstack_reconcile_runs`, nil,
@@ -508,6 +516,10 @@ func (s *Store) RecordControlHosts(ctx context.Context, deployment string, names
 
 // ControlHosts lists the machines nova knows that the inventory does not.
 func (s *Store) ControlHosts(ctx context.Context, deployment string) ([]ControlHost, error) {
+	return controlHostsOn(ctx, s.pool, deployment)
+}
+
+func controlHostsOn(ctx context.Context, db rowQuerier, deployment string) ([]ControlHost, error) {
 	q := `SELECT deployment_id, nova_hostname, first_seen_at, last_seen_at
 		FROM openstack_control_hosts`
 	var args []any
@@ -515,7 +527,7 @@ func (s *Store) ControlHosts(ctx context.Context, deployment string) ([]ControlH
 		q += ` WHERE deployment_id=$1`
 		args = append(args, deployment)
 	}
-	return queryAndCollect(ctx, s.pool, q+` ORDER BY deployment_id, nova_hostname`, args,
+	return queryAndCollect(ctx, db, q+` ORDER BY deployment_id, nova_hostname`, args,
 		func(r pgx.Rows) (ControlHost, error) {
 			var c ControlHost
 			err := r.Scan(&c.DeploymentID, &c.NovaHostname, &c.FirstSeenAt, &c.LastSeenAt)

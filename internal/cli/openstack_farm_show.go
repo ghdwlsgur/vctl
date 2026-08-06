@@ -87,47 +87,29 @@ const farmStaleWindow = 13 * time.Hour
 // down — and two implementations of that disagree eventually, with no way to
 // tell which one somebody is looking at.
 func collectAssessment(ctx context.Context, st *store.Store, pick farmChoice, now time.Time) (openstack.Assessment, error) {
-	hosts, err := st.OpenStackHosts(ctx)
-	if err != nil {
-		return openstack.Assessment{}, err
-	}
-	mine := make([]store.OpenStackHost, 0, len(hosts))
-	for _, h := range hosts {
-		if h.Farm == pick.ID && h.Detected {
-			mine = append(mine, h)
-		}
-	}
-	// Missing VMs included on purpose: the assessment counts them, so filtering
-	// them out here would hide the number it exists to report.
-	vms, err := st.Instances(ctx, store.InstanceFilter{DeploymentID: pick.ID, IncludeMissing: true})
-	if err != nil {
-		return openstack.Assessment{}, err
-	}
-	ghosts, err := st.ControlHosts(ctx, pick.ID)
-	if err != nil {
-		return openstack.Assessment{}, err
-	}
-	runs, err := st.ReconcileRuns(ctx)
+	// One read, one instant. This was five separate reads, and a reconcile
+	// landing between the second and the third put a host count from before it
+	// beside a run result from after it. Nothing on the screen says which number
+	// came from when, so it is not something a reader can catch.
+	snap, err := st.FarmSnapshot(ctx, pick.ID)
 	if err != nil {
 		return openstack.Assessment{}, err
 	}
 	in := openstack.Input{
 		ID: pick.ID, Name: pick.Name, Region: pick.Region, State: pick.State,
-		Hosts: mine, Instances: vms, Ghosts: ghosts,
+		Hosts: snap.Hosts, Instances: snap.Instances, Ghosts: snap.Ghosts,
+		Run:        snap.Run,
 		StaleAfter: farmStaleWindow, Now: now,
 	}
 	// The note and when it was declared come from the deployment row, which
 	// farmChoices does not carry — an age is most of what makes a declared
 	// fault readable a week later.
-	if ds, err := st.Deployments(ctx); err == nil {
-		for _, d := range ds {
-			if d.ID == pick.ID {
-				in.StateNote, in.StateSince = d.StateNote, d.StateChangedAt
-			}
-		}
-	}
-	if r, ok := runs[pick.ID]; ok {
-		in.Run = &r
+	//
+	// That read's error used to be discarded. A farm somebody had declared
+	// broken then rendered with no note and no date — which is exactly how an
+	// unnamed healthy farm renders. A failed read shown as an answer.
+	if snap.DeploymentKnown {
+		in.StateNote, in.StateSince = snap.Deployment.StateNote, snap.Deployment.StateChangedAt
 	}
 	return openstack.Assess(in), nil
 }
