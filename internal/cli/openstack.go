@@ -67,7 +67,23 @@ func openstackCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				hosts = filterOpenStack(hosts, farm, role, all)
+				// Resolved before filtering, through the same rules every other
+				// command uses. This filter matched ids and membership ids only,
+				// so `--farm seoul-b` — the name printed in this very listing —
+				// selected nothing and rendered that as an empty fleet.
+				selector := farm
+				if selector != "" && !strings.EqualFold(selector, unassignedFarm) {
+					farms, err := farmChoices(ctx, st)
+					if err != nil {
+						return err
+					}
+					f, err := resolveFarm(farms, selector)
+					if err != nil {
+						return err
+					}
+					selector = f.ID
+				}
+				hosts = filterOpenStack(hosts, selector, role, all)
 				if asJSON {
 					return writeJSON(openStackExport{Hosts: hosts, Coverage: cov})
 				}
