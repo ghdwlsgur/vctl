@@ -134,9 +134,10 @@ func TestHostEditsValidateRejectsAnUnknownState(t *testing.T) {
 // text — typing a word the CHECK constraint rejects should fail at the form, not
 // after the other edits have been written.
 //
-// Each option carries what the state means for the listing, because the words
-// alone do not say which of them silence a red row and which do not.
-func TestStateOptionsOfferEveryStateWithAnExplanation(t *testing.T) {
+// The labels are the bare words: the field is inline, so it shows one option at
+// a time and an explanation baked into the label would show one state's meaning
+// while hiding the other three.
+func TestStateOptionsOfferEveryStateAsItsOwnWord(t *testing.T) {
 	opts := stateOptions()
 	if len(opts) != len(store.HostStates) {
 		t.Fatalf("stateOptions gave %d choices, want %d", len(opts), len(store.HostStates))
@@ -145,11 +146,20 @@ func TestStateOptionsOfferEveryStateWithAnExplanation(t *testing.T) {
 		if opts[i].Value != want {
 			t.Errorf("option %d is %q, want %q — the order is the listing's", i, opts[i].Value, want)
 		}
-		if !strings.HasPrefix(opts[i].Key, want) {
-			t.Errorf("option %d label %q does not start with the state", i, opts[i].Key)
+		if opts[i].Key != want {
+			t.Errorf("option %d label is %q, want the bare word %q", i, opts[i].Key, want)
 		}
-		if len(opts[i].Key) <= len(want) {
-			t.Errorf("option %q carries no explanation", opts[i].Key)
+	}
+}
+
+// The explanations moved under the field, and all four are shown whichever one
+// is selected. Choosing between them needs the alternatives in view — "broken"
+// only means something next to "maintenance".
+func TestEveryStateIsExplainedUnderTheField(t *testing.T) {
+	text := stateMeanings()
+	for _, want := range store.HostStates {
+		if !strings.Contains(text, want+":") {
+			t.Errorf("stateMeanings does not explain %q:\n%s", want, text)
 		}
 	}
 }
