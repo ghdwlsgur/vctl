@@ -49,6 +49,12 @@ type OpenStack struct {
 	// operatorNets are the address prefixes people reach things on, used to
 	// pick which of Horizon's several binds to report.
 	operatorNets []string
+	// confined records that this process runs inside the agent's systemd unit,
+	// whose limits a container engine CLI cannot survive. See containerIndex.
+	confined bool
+	// lookPath reports whether a command exists, without running it; swapped in
+	// tests. Nil means the real PATH lookup.
+	lookPath func(string) (string, error)
 }
 
 // NewOpenStack returns a probe that reads the live host.
@@ -57,12 +63,22 @@ type OpenStack struct {
 // is one somebody can open. A config that will not load costs the preference
 // and nothing else — the probe still reports, it just cannot rank the binds.
 func NewOpenStack() *OpenStack {
-	p := &OpenStack{}
+	p := &OpenStack{confined: underSystemd()}
 	if cfg, err := config.Load(); err == nil {
 		p.operatorNets = cfg.OperatorNetworks
 	}
 	return p
 }
+
+// underSystemd reports whether systemd started this process.
+//
+// INVOCATION_ID is set by systemd for every unit it runs and by nothing else,
+// which makes it the direct signal for the condition that matters here: the
+// process is inside the agent's cgroup and inherits its limits. Sniffing this
+// rather than taking a flag keeps the answer true for anything that ends up
+// running the probe from inside the unit, including a future caller that
+// forgets to pass the flag.
+func underSystemd() bool { return os.Getenv("INVOCATION_ID") != "" }
 
 func (p *OpenStack) Kind() string { return "openstack" }
 
@@ -322,6 +338,26 @@ func (p *OpenStack) containerIndex(ctx context.Context) (map[string]containerInf
 			if engine.daemonSocket != "" && !p.exists(engine.daemonSocket) {
 				continue
 			}
+			// Inside the unit the CLI is not an option, and the two ways of
+			// being here are not the same answer.
+			//
+			// Most of this fleet has no container engine at all, and for those
+			// hosts "no socket, no binary" is a true absence — reporting a
+			// failure would move a dozen healthy machines into the "could not be
+			// probed" column every hour. An engine that is installed with its
+			// socket not exposed is the other case, and reporting *that* as an
+			// absence is what once filed a full Kolla controller as running no
+			// OpenStack. So: look for the binary, which costs a stat and no
+			// fork, and let the two cases part here.
+			if p.confined {
+				if !p.installed(engine.name) {
+					continue
+				}
+				failures = append(failures, engine.name+
+					": installed but its socket is not exposed, and its CLI cannot run inside this agent's unit"+
+					" (enable "+engine.name+".socket)")
+				continue
+			}
 			out, err := p.exec(ctx, engine.name, engine.args...)
 			if err != nil {
 				if !notInstalled(err) {
@@ -501,6 +537,19 @@ func (p *OpenStack) exec(ctx context.Context, name string, args ...string) ([]by
 
 func (p *OpenStack) exists(path string) bool {
 	_, err := os.Stat(p.path(path))
+	return err == nil
+}
+
+// installed reports whether a command is on this host, without running it.
+//
+// A lookup is a few stat calls. That is the whole point: it answers "is this
+// engine here" for a process that must not fork the engine to find out.
+func (p *OpenStack) installed(name string) bool {
+	look := p.lookPath
+	if look == nil {
+		look = exec.LookPath
+	}
+	_, err := look(name)
 	return err == nil
 }
 

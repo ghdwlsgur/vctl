@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -44,15 +46,22 @@ func (f *fakeStatusSink) RecordCapabilityError(_ context.Context, _, kind, msg s
 func (f *fakeStatusSink) Close() { f.closed = true }
 
 // opener hands out sinks in order and counts how many times it was asked.
+//
+// delay widens the window a second caller could slip through. Without it a
+// concurrency test passes on timing rather than on the lock.
 type opener struct {
 	sinks []*fakeStatusSink
 	errs  []error
 	calls int
+	delay time.Duration
 }
 
-func (o *opener) open() (statusSink, error) {
+func (o *opener) open(context.Context) (statusSink, error) {
 	i := o.calls
 	o.calls++
+	if o.delay > 0 {
+		time.Sleep(o.delay)
+	}
 	if i < len(o.errs) && o.errs[i] != nil {
 		return nil, o.errs[i]
 	}
@@ -143,7 +152,7 @@ func TestStatusConnReusesHandleWhileHealthy(t *testing.T) {
 func TestStatusConnKeepsHandleWhenHostUnregistered(t *testing.T) {
 	sink := &unregisteredSink{}
 	o := &opener{sinks: []*fakeStatusSink{nil}}
-	c := &statusConn{open: func() (statusSink, error) { o.calls++; return sink, nil }}
+	c := &statusConn{open: func(context.Context) (statusSink, error) { o.calls++; return sink, nil }}
 
 	if err := c.report(context.Background(), "not-in-inventory"); err != nil {
 		t.Fatalf("report: %v", err)
@@ -231,7 +240,7 @@ func TestFailureReArmsTheSuccessLog(t *testing.T) {
 // explaining why no status ever appears would print once and never again.
 func TestUnregisteredHostDoesNotCountAsHealthy(t *testing.T) {
 	sink := &unregisteredSink{}
-	c := &statusConn{open: func() (statusSink, error) { return sink, nil }}
+	c := &statusConn{open: func(context.Context) (statusSink, error) { return sink, nil }}
 
 	for i := 0; i < 2; i++ {
 		if err := c.report(context.Background(), "ghost"); err != nil {
@@ -275,5 +284,112 @@ func TestCapabilityProbeFailureLeavesTheHandleUsable(t *testing.T) {
 
 	if conn.st == nil {
 		t.Error("a failed capability write dropped the connection the heartbeat shares")
+	}
+}
+
+// The heartbeat and the capability probe are separate goroutines sharing one
+// handle, and once an hour their ticks land together. Nothing in the suite ran
+// them at the same time, which is why `-race` passed over an unsynchronised
+// struct for as long as it did.
+//
+// Run under -race this fails without the mutex: the heartbeat writes c.st and
+// c.healthy while the probe reads and writes c.st.
+func TestHeartbeatAndCapabilityShareTheHandleSafely(t *testing.T) {
+	sinks := make([]*fakeStatusSink, 64)
+	for i := range sinks {
+		sinks[i] = &fakeStatusSink{}
+	}
+	conn := &statusConn{open: (&opener{sinks: sinks}).open}
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = conn.report(ctx, "host-01") }()
+		go func() {
+			defer wg.Done()
+			_ = conn.reportCapability(ctx, "host-01", hoststatus.ProbeResult{
+				Kind: "openstack", Detected: true, Roles: []string{"compute"},
+			})
+		}()
+	}
+	wg.Wait()
+}
+
+// Two loops opening at the same moment left one pool and one Vault credential
+// lease with nothing holding them: the second assignment overwrote the first,
+// which was never closed. Once an hour, per host, against the central side.
+func TestConcurrentFirstUseOpensOneConnection(t *testing.T) {
+	o := &opener{sinks: []*fakeStatusSink{{}, {}}, delay: 20 * time.Millisecond}
+	conn := &statusConn{open: o.open}
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _ = conn.report(ctx, "host-01") }()
+	go func() {
+		defer wg.Done()
+		_ = conn.reportCapability(ctx, "host-01", hoststatus.ProbeResult{Kind: "openstack"})
+	}()
+	wg.Wait()
+
+	if o.calls != 1 {
+		t.Errorf("opened %d connections for one handle; the extra ones leak a pool and a Vault lease", o.calls)
+	}
+}
+
+// A blackholed route does not fail, it hangs. Without a deadline the heartbeat
+// stops forever while the process stays up, so systemd sees nothing wrong and
+// the host goes quiet with no one told.
+func TestAHangingDependencyDoesNotHangTheHeartbeat(t *testing.T) {
+	conn := &statusConn{
+		attempt: 50 * time.Millisecond,
+		open: func(ctx context.Context) (statusSink, error) {
+			<-ctx.Done() // never answers, like a connection into a blackhole
+			return nil, ctx.Err()
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- conn.report(context.Background(), "host-01") }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a dependency that never answered was reported as success")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the heartbeat is still waiting; there is no per-attempt deadline")
+	}
+}
+
+// The whole fleet is deployed in one pass, so without an offset every agent
+// asks Vault and Postgres in the same second forever.
+func TestJitterSpreadsTheFleetAndHoldsPerHost(t *testing.T) {
+	const base = 5 * time.Minute
+
+	// Same host, same answer: an offset redrawn on every restart just rolls
+	// into a fresh collision.
+	if a, b := jitterInterval(base, "sre-srv-0047"), jitterInterval(base, "sre-srv-0047"); a != b {
+		t.Errorf("jitterInterval is not stable for one host: %v then %v", a, b)
+	}
+	seen := map[time.Duration]bool{}
+	for _, h := range []string{"sre-srv-0047", "sre-srv-0048", "incheon-aio01", "incheon-gpu02"} {
+		got := jitterInterval(base, h)
+		if lo, hi := base-base/10, base+base/10; got < lo || got > hi {
+			t.Errorf("jitterInterval(%s) = %v, outside %v..%v", h, got, lo, hi)
+		}
+		seen[got] = true
+	}
+	if len(seen) < 3 {
+		t.Errorf("four hosts landed on %d distinct intervals; they are not being spread", len(seen))
+	}
+	// A host with no name has nothing to derive an offset from, and a probe
+	// interval of 0 means "disabled" — neither may be turned into a schedule.
+	if got := jitterInterval(base, ""); got != base {
+		t.Errorf("jitterInterval with no hostname = %v, want the interval unchanged", got)
+	}
+	if got := jitterInterval(0, "sre-srv-0047"); got != 0 {
+		t.Errorf("jitterInterval(0) = %v, want 0 to keep meaning disabled", got)
 	}
 }
