@@ -1,4 +1,4 @@
-package cli
+package wireguard
 
 import (
 	"testing"
@@ -30,7 +30,7 @@ func peer(host, name, peerKey string, allowed ...string) store.WGPeerRow {
 // worse than saying nothing. What the reader needs is that the endpoint answers
 // to two names.
 func TestEndpointIndexMergesOneMachineSeenUnderTwoNames(t *testing.T) {
-	idx := buildEndpointIndex([]store.WGInterfaceRow{
+	idx := BuildEndpointIndex([]store.WGInterfaceRow{
 		iface("sre-srv-0049", "wg1", "KEY1", 51821, "10.0.91.1"),
 		iface("sre-lb", "wg1", "KEY1", 51821, "10.0.91.1"),
 	})
@@ -38,7 +38,7 @@ func TestEndpointIndexMergesOneMachineSeenUnderTwoNames(t *testing.T) {
 	if idx.conflicts["KEY1"] {
 		t.Error("identical observations were reported as an identity conflict")
 	}
-	got := idx.observedThrough("KEY1")
+	got := idx.ObservedThrough("KEY1")
 	if len(got) != 2 || got[0] != "sre-lb" || got[1] != "sre-srv-0049" {
 		t.Errorf("observedThrough = %v, want both names sorted", got)
 	}
@@ -62,7 +62,7 @@ func TestEndpointIndexFlagsGenuinelyDifferentInterfaces(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if !buildEndpointIndex(rows).conflicts["KEY1"] {
+			if !BuildEndpointIndex(rows).conflicts["KEY1"] {
 				t.Error("disagreeing observations were not flagged as a conflict")
 			}
 		})
@@ -72,21 +72,21 @@ func TestEndpointIndexFlagsGenuinelyDifferentInterfaces(t *testing.T) {
 // Last-write-wins made the graph depend on scan order: the same rows in a
 // different order picked a different owner, and nothing on screen said so.
 func TestEndpointIndexPicksTheSameOwnerRegardlessOfRowOrder(t *testing.T) {
-	a := buildEndpointIndex([]store.WGInterfaceRow{
+	a := BuildEndpointIndex([]store.WGInterfaceRow{
 		iface("sre-srv-0049", "wg1", "KEY1", 51821, "10.0.91.1"),
 		iface("sre-lb", "wg1", "KEY1", 51821, "10.0.91.1"),
 	})
-	b := buildEndpointIndex([]store.WGInterfaceRow{
+	b := BuildEndpointIndex([]store.WGInterfaceRow{
 		iface("sre-lb", "wg1", "KEY1", 51821, "10.0.91.1"),
 		iface("sre-srv-0049", "wg1", "KEY1", 51821, "10.0.91.1"),
 	})
-	ra, _ := a.lookup("KEY1")
-	rb, _ := b.lookup("KEY1")
+	ra, _ := a.Lookup("KEY1")
+	rb, _ := b.Lookup("KEY1")
 	if ra != rb {
 		t.Errorf("owner depends on row order: %v vs %v", ra, rb)
 	}
-	if ra.host != "sre-lb" {
-		t.Errorf("canonical owner = %q, want the lexically smallest name", ra.host)
+	if ra.Host != "sre-lb" {
+		t.Errorf("canonical owner = %q, want the lexically smallest name", ra.Host)
 	}
 }
 
@@ -103,15 +103,15 @@ func TestOneTunnelIsOneEdgeWhenInterfaceNamesDiffer(t *testing.T) {
 		peer("wg-hub", "wg3", "GPUKEY", "10.0.3.2/32"),
 		peer("gpu-01", "wg0", "HUBKEY", "10.0.3.0/24"),
 	}
-	topo, edgeFor := buildWGTopology(ifaces, peers, nil, nil)
+	topo, edgeFor := Build(ifaces, peers, nil, nil)
 
 	if n := len(topo.Edges); n != 1 {
 		t.Fatalf("one tunnel produced %d edges: %+v", n, topo.Edges)
 	}
 	// Both ends must attribute their samples to that one edge, or their traffic
 	// lands on different rows.
-	hub := edgeFor[tunnelKey{"wg-hub", "wg3", "GPUKEY"}]
-	gpu := edgeFor[tunnelKey{"gpu-01", "wg0", "HUBKEY"}]
+	hub := edgeFor[TunnelKey{"wg-hub", "wg3", "GPUKEY"}]
+	gpu := edgeFor[TunnelKey{"gpu-01", "wg0", "HUBKEY"}]
 	if hub == "" || hub != gpu {
 		t.Errorf("ends map to different edges: %q vs %q", hub, gpu)
 	}
@@ -135,7 +135,7 @@ func TestOneTunnelIsOneEdgeWhenInterfaceNamesDiffer(t *testing.T) {
 
 // The edge id must not depend on which side is read first.
 func TestTunnelEdgeIDIsTheSameFromEitherEnd(t *testing.T) {
-	if a, b := tunnelEdgeID("AAA", "BBB"), tunnelEdgeID("BBB", "AAA"); a != b {
+	if a, b := TunnelEdgeID("AAA", "BBB"), TunnelEdgeID("BBB", "AAA"); a != b {
 		t.Errorf("edge id depends on the observing side: %q vs %q", a, b)
 	}
 }
@@ -145,19 +145,19 @@ func TestTunnelEdgeIDIsTheSameFromEitherEnd(t *testing.T) {
 // the other, so the drawn direction flipped with poll timing rather than with
 // traffic.
 func TestBothEndsOfATunnelKeepTheirOwnMeasurement(t *testing.T) {
-	st := newWGServeState()
-	edgeFor := map[tunnelKey]string{
+	st := NewState()
+	edgeFor := map[TunnelKey]string{
 		{"wg-hub", "wg3", "GPUKEY"}: "gw|A|B",
 		{"gpu-01", "wg0", "HUBKEY"}: "gw|A|B",
 	}
 	now := time.Now()
 
 	// Two polls per side so a rate can be computed at all.
-	st.record("wg-hub", []wgParsedPeer{{Iface: "wg3", PubKey: "GPUKEY", Rx: 0, Tx: 0, Handshake: now.Unix()}}, now, edgeFor)
-	st.record("gpu-01", []wgParsedPeer{{Iface: "wg0", PubKey: "HUBKEY", Rx: 0, Tx: 0, Handshake: now.Unix()}}, now, edgeFor)
+	st.Record("wg-hub", []PeerSample{{Iface: "wg3", PubKey: "GPUKEY", Rx: 0, Tx: 0, Handshake: now.Unix()}}, now, edgeFor)
+	st.Record("gpu-01", []PeerSample{{Iface: "wg0", PubKey: "HUBKEY", Rx: 0, Tx: 0, Handshake: now.Unix()}}, now, edgeFor)
 	later := now.Add(10 * time.Second)
-	st.record("wg-hub", []wgParsedPeer{{Iface: "wg3", PubKey: "GPUKEY", Rx: 1000, Tx: 20000, Handshake: later.Unix()}}, later, edgeFor)
-	st.record("gpu-01", []wgParsedPeer{{Iface: "wg0", PubKey: "HUBKEY", Rx: 20000, Tx: 1000, Handshake: later.Unix()}}, later, edgeFor)
+	st.Record("wg-hub", []PeerSample{{Iface: "wg3", PubKey: "GPUKEY", Rx: 1000, Tx: 20000, Handshake: later.Unix()}}, later, edgeFor)
+	st.Record("gpu-01", []PeerSample{{Iface: "wg0", PubKey: "HUBKEY", Rx: 20000, Tx: 1000, Handshake: later.Unix()}}, later, edgeFor)
 
 	st.mu.Lock()
 	got := st.stats["gw|A|B"]
@@ -183,7 +183,7 @@ func TestBothEndsOfATunnelKeepTheirOwnMeasurement(t *testing.T) {
 // A side that has not been polled yet reports zero. Taking that as the tunnel's
 // rate would draw a busy tunnel as dead.
 func TestFlattenSidesIgnoresAnUnpolledSide(t *testing.T) {
-	rx, tx, hs := flattenSides(map[string]edgeSideStat{
+	rx, tx, hs := flattenSides(map[string]EdgeSideStat{
 		"polled":   {RxPS: 100, TxPS: 200, HS: 30},
 		"unpolled": {HS: -1},
 	})
@@ -198,7 +198,7 @@ func TestFlattenSidesIgnoresAnUnpolledSide(t *testing.T) {
 }
 
 func TestFlattenSidesTakesTheMostRecentHandshake(t *testing.T) {
-	_, _, hs := flattenSides(map[string]edgeSideStat{
+	_, _, hs := flattenSides(map[string]EdgeSideStat{
 		"a": {HS: 300},
 		"b": {HS: 12},
 	})

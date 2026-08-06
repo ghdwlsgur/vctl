@@ -1,4 +1,4 @@
-package cli
+package wireguard
 
 import (
 	"strings"
@@ -90,7 +90,7 @@ func wgAccuracyFixture() (ifaces []store.WGInterfaceRow, peers []store.WGPeerRow
 // ends' interfaces and per-direction routes.
 func TestAccuracyFixtureOneEdgePerTunnel(t *testing.T) {
 	ifaces, peers, _ := wgAccuracyFixture()
-	topo, edgeFor := buildWGTopology(ifaces, peers, nil, nil)
+	topo, edgeFor := Build(ifaces, peers, nil, nil)
 
 	// 3 both-ends tunnels + 2 external = 5.
 	if got := len(topo.Edges); got != 5 {
@@ -102,7 +102,7 @@ func TestAccuracyFixtureOneEdgePerTunnel(t *testing.T) {
 	}
 
 	// Every both-ends tunnel: both sides attribute to the same edge.
-	for _, pair := range [][2]tunnelKey{
+	for _, pair := range [][2]TunnelKey{
 		{{"hub-gw", "wg3", "KNODEA"}, {"node-a", "wg0", "KHUB3"}},
 		{{"hub-gw", "wg3", "KNODEB"}, {"node-b", "wg0", "KHUB3"}},
 		{{"hub-gw", "wg1", "KPEER1"}, {"peer-gw", "wg1", "KHUB1"}},
@@ -114,7 +114,7 @@ func TestAccuracyFixtureOneEdgePerTunnel(t *testing.T) {
 	}
 
 	// The mismatched tunnel keeps wg3 on one end and wg0 on the other.
-	var mismatched *wgEdge
+	var mismatched *Edge
 	for i := range topo.Edges {
 		e := &topo.Edges[i]
 		if e.A != nil && e.B != nil && e.A.Iface != e.B.Iface {
@@ -135,17 +135,17 @@ func TestAccuracyFixtureOneEdgePerTunnel(t *testing.T) {
 // flagging it would report a normal VIP arrangement as a fault.
 func TestAccuracyFixtureMergesTheVIPWithoutWarning(t *testing.T) {
 	ifaces, _, _ := wgAccuracyFixture()
-	idx := buildEndpointIndex(ifaces)
+	idx := BuildEndpointIndex(ifaces)
 
 	if idx.conflicts["KSHARED"] {
 		t.Error("the VIP and its host were reported as an identity conflict")
 	}
-	seen := idx.observedThrough("KSHARED")
+	seen := idx.ObservedThrough("KSHARED")
 	if len(seen) != 2 {
 		t.Fatalf("observedThrough = %v, want both inventory names", seen)
 	}
 	// Deterministic, so the graph does not change between runs of the same data.
-	again := buildEndpointIndex(ifaces)
+	again := BuildEndpointIndex(ifaces)
 	if a, b := idx.canonical["KSHARED"], again.canonical["KSHARED"]; a != b {
 		t.Errorf("canonical owner is not stable: %v vs %v", a, b)
 	}
@@ -155,7 +155,7 @@ func TestAccuracyFixtureMergesTheVIPWithoutWarning(t *testing.T) {
 // two-second animation is what made the page read as current.
 func TestAccuracyFixtureCarriesItsAge(t *testing.T) {
 	ifaces, peers, at := wgAccuracyFixture()
-	topo, _ := buildWGTopology(ifaces, peers, nil, nil)
+	topo, _ := Build(ifaces, peers, nil, nil)
 	if !topo.CollectedAt.Equal(at) {
 		t.Errorf("CollectedAt = %v, want %v", topo.CollectedAt, at)
 	}
@@ -169,22 +169,22 @@ func TestAccuracyFixtureCarriesItsAge(t *testing.T) {
 // later poll erase the earlier one.
 func TestAccuracyFixtureKeepsBothEndsOfEveryTunnel(t *testing.T) {
 	ifaces, peers, _ := wgAccuracyFixture()
-	_, edgeFor := buildWGTopology(ifaces, peers, nil, nil)
-	st := newWGServeState()
+	_, edgeFor := Build(ifaces, peers, nil, nil)
+	st := NewState()
 	now := time.Now()
 
 	poll := func(at time.Time, rxHub, txHub int64) {
-		st.record("hub-gw", []wgParsedPeer{
+		st.Record("hub-gw", []PeerSample{
 			{Iface: "wg1", PubKey: "KPEER1", Rx: rxHub, Tx: txHub, Handshake: at.Unix()},
 		}, at, edgeFor)
-		st.record("peer-gw", []wgParsedPeer{
+		st.Record("peer-gw", []PeerSample{
 			{Iface: "wg1", PubKey: "KHUB1", Rx: txHub, Tx: rxHub, Handshake: at.Unix()},
 		}, at, edgeFor)
 	}
 	poll(now, 0, 0)
 	poll(now.Add(10*time.Second), 1_000, 50_000)
 
-	id := edgeFor[tunnelKey{"hub-gw", "wg1", "KPEER1"}]
+	id := edgeFor[TunnelKey{"hub-gw", "wg1", "KPEER1"}]
 	st.mu.Lock()
 	got := st.stats[id]
 	st.mu.Unlock()
@@ -203,12 +203,12 @@ func TestAccuracyFixtureKeepsBothEndsOfEveryTunnel(t *testing.T) {
 // all-clear.
 func TestAccuracyFixtureCountsUnpolledTunnels(t *testing.T) {
 	ifaces, peers, _ := wgAccuracyFixture()
-	topo, edgeFor := buildWGTopology(ifaces, peers, nil, nil)
-	st := newWGServeState()
+	topo, edgeFor := Build(ifaces, peers, nil, nil)
+	st := NewState()
 	now := time.Now()
 
 	// Poll exactly one gateway; everything else goes unobserved.
-	st.record("hub-gw", []wgParsedPeer{
+	st.Record("hub-gw", []PeerSample{
 		{Iface: "wg3", PubKey: "KNODEA", Handshake: now.Unix()},
 	}, now, edgeFor)
 

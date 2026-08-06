@@ -19,6 +19,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
+	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
 
 // wgDumpCmd is the lighter poll command for monitoring — just the runtime dump
@@ -180,14 +181,6 @@ func wgMonitorHosts(ctx context.Context, st *store.Store, args []string, all boo
 
 // --- polling ---
 
-type tunnelKey struct{ host, iface, peer string }
-
-type wgSample struct {
-	rx, tx int64
-	hs     *time.Time
-	at     time.Time
-}
-
 type pollResultMsg struct {
 	host  string
 	peers []wgParsedPeer
@@ -214,20 +207,6 @@ func pollHost(ctx context.Context, mon *access.Monitor, t monTarget, timeout tim
 
 // computeRate returns bytes/sec between two samples, guarding against counter
 // resets (restart) and zero/negative time deltas.
-func computeRate(prev, cur wgSample) (rxps, txps float64) {
-	dt := cur.at.Sub(prev.at).Seconds()
-	if dt <= 0 {
-		return 0, 0
-	}
-	drx, dtx := cur.rx-prev.rx, cur.tx-prev.tx
-	if drx < 0 {
-		drx = 0 // counter reset (iface/peer re-created)
-	}
-	if dtx < 0 {
-		dtx = 0
-	}
-	return float64(drx) / dt, float64(dtx) / dt
-}
 
 // humanBytes formats a byte count with binary units.
 func humanBytes(n int64) string {
@@ -261,9 +240,9 @@ type monitorModel struct {
 	interval time.Duration
 	timeout  time.Duration
 
-	prev   map[tunnelKey]wgSample
-	cur    map[tunnelKey]wgSample
-	rates  map[tunnelKey][2]float64 // rxps, txps
+	prev   map[wireguard.TunnelKey]wireguard.Sample
+	cur    map[wireguard.TunnelKey]wireguard.Sample
+	rates  map[wireguard.TunnelKey][2]float64 // rxps, txps
 	errs   map[string]string
 	paused bool
 	w, h   int
@@ -272,8 +251,8 @@ type monitorModel struct {
 func newMonitorModel(ctx context.Context, mon *access.Monitor, targets []monTarget, interval, timeout time.Duration) monitorModel {
 	return monitorModel{
 		ctx: ctx, mon: mon, targets: targets, interval: interval, timeout: timeout,
-		prev: map[tunnelKey]wgSample{}, cur: map[tunnelKey]wgSample{},
-		rates: map[tunnelKey][2]float64{}, errs: map[string]string{},
+		prev: map[wireguard.TunnelKey]wireguard.Sample{}, cur: map[wireguard.TunnelKey]wireguard.Sample{},
+		rates: map[wireguard.TunnelKey][2]float64{}, errs: map[string]string{},
 	}
 }
 
@@ -314,16 +293,16 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		delete(m.errs, msg.host)
 		for _, p := range msg.peers {
-			k := tunnelKey{msg.host, p.Iface, p.PubKey}
+			k := wireguard.TunnelKey{Host: msg.host, Iface: p.Iface, Peer: p.PubKey}
 			var hs *time.Time
 			if p.Handshake > 0 {
 				t := time.Unix(p.Handshake, 0)
 				hs = &t
 			}
-			s := wgSample{rx: p.Rx, tx: p.Tx, hs: hs, at: msg.at}
+			s := wireguard.Sample{Rx: p.Rx, Tx: p.Tx, HS: hs, At: msg.at}
 			if old, ok := m.cur[k]; ok {
 				m.prev[k] = old
-				rx, tx := computeRate(old, s)
+				rx, tx := wireguard.ComputeRate(old, s)
 				m.rates[k] = [2]float64{rx, tx}
 			}
 			m.cur[k] = s
@@ -340,8 +319,8 @@ func (m monitorModel) View() string {
 	head := title + " " + status + "\n\n"
 
 	type row struct {
-		key  tunnelKey
-		s    wgSample
+		key  wireguard.TunnelKey
+		s    wireguard.Sample
 		rxps float64
 		txps float64
 	}
@@ -359,10 +338,10 @@ func (m monitorModel) View() string {
 		if ti != tj {
 			return ti > tj
 		}
-		if rows[i].key.host != rows[j].key.host {
-			return rows[i].key.host < rows[j].key.host
+		if rows[i].key.Host != rows[j].key.Host {
+			return rows[i].key.Host < rows[j].key.Host
 		}
-		return rows[i].key.iface < rows[j].key.iface
+		return rows[i].key.Iface < rows[j].key.Iface
 	})
 
 	hdr := ui.Muted(fmt.Sprintf("  %-22s %-6s %-10s %10s %10s   %s",
@@ -371,8 +350,8 @@ func (m monitorModel) View() string {
 	sb = append(sb, head+hdr)
 	for _, r := range rows {
 		line := fmt.Sprintf("  %-22s %-6s %-10s %10s %10s   %s",
-			ui.Truncate(r.key.host, 22), r.key.iface, shortKey(r.key.peer),
-			humanRate(r.rxps), humanRate(r.txps), wgHandshakeCell(r.s.hs))
+			ui.Truncate(r.key.Host, 22), r.key.Iface, wireguard.ShortKey(r.key.Peer),
+			humanRate(r.rxps), humanRate(r.txps), wgHandshakeCell(r.s.HS))
 		sb = append(sb, line)
 	}
 	out := ""
@@ -410,7 +389,7 @@ func wgMonitorSnapshot(ctx context.Context, conn *access.Connector, targets []mo
 					tt := time.Unix(p.Handshake, 0)
 					hs = &tt
 				}
-				rows = append(rows, []string{t.name, p.Iface, shortKey(p.PubKey),
+				rows = append(rows, []string{t.name, p.Iface, wireguard.ShortKey(p.PubKey),
 					humanBytes(p.Rx), humanBytes(p.Tx), wgHandshakeCell(hs)})
 			}
 		}(t)

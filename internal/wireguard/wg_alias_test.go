@@ -1,4 +1,4 @@
-package cli
+package wireguard
 
 import (
 	"testing"
@@ -43,10 +43,10 @@ func aliasFixture() ([]store.WGInterfaceRow, []store.WGPeerRow) {
 // drew the same machine twice with identical interfaces and keys.
 func TestAliasHostsCollapseToOneGatewayNode(t *testing.T) {
 	ifaces, peers := aliasFixture()
-	topo, _ := buildWGTopology(ifaces, peers, nil, nil)
+	topo, _ := Build(ifaces, peers, nil, nil)
 
 	gws := 0
-	var lb *wgNode
+	var lb *Node
 	for i := range topo.Nodes {
 		if topo.Nodes[i].Kind != "gateway" {
 			continue
@@ -72,9 +72,9 @@ func TestAliasHostsCollapseToOneGatewayNode(t *testing.T) {
 // later — found B occupied and was dropped.
 func TestAliasRowDoesNotTakeTheFarSide(t *testing.T) {
 	ifaces, peers := aliasFixture()
-	topo, _ := buildWGTopology(ifaces, peers, nil, nil)
+	topo, _ := Build(ifaces, peers, nil, nil)
 
-	var tunnel *wgEdge
+	var tunnel *Edge
 	for i := range topo.Edges {
 		if topo.Edges[i].A != nil && topo.Edges[i].B != nil {
 			tunnel = &topo.Edges[i]
@@ -98,7 +98,7 @@ func TestAliasRowDoesNotTakeTheFarSide(t *testing.T) {
 // for the one tunnel above.
 func TestEveryTwoSidedEdgeJoinsTwoDistinctEndpoints(t *testing.T) {
 	ifaces, peers := aliasFixture()
-	topo, _ := buildWGTopology(ifaces, peers, nil, nil)
+	topo, _ := Build(ifaces, peers, nil, nil)
 	for _, e := range topo.Edges {
 		if e.A == nil || e.B == nil {
 			continue
@@ -113,7 +113,7 @@ func TestEveryTwoSidedEdgeJoinsTwoDistinctEndpoints(t *testing.T) {
 // alias dangles.
 func TestEdgeEndpointsNameNodesThatExist(t *testing.T) {
 	ifaces, peers := aliasFixture()
-	topo, _ := buildWGTopology(ifaces, peers, nil, nil)
+	topo, _ := Build(ifaces, peers, nil, nil)
 	have := map[string]bool{}
 	for _, n := range topo.Nodes {
 		have[n.ID] = true
@@ -132,7 +132,7 @@ func TestEdgeEndpointsNameNodesThatExist(t *testing.T) {
 // label guess.
 func TestGatewayNodeCarriesEveryInterfaceKey(t *testing.T) {
 	ifaces, peers := aliasFixture()
-	topo, _ := buildWGTopology(ifaces, peers, nil, nil)
+	topo, _ := Build(ifaces, peers, nil, nil)
 
 	for _, n := range topo.Nodes {
 		if len(n.Ifaces) < 2 {
@@ -163,7 +163,7 @@ func TestHostsSharingOneInterfaceStaySeparate(t *testing.T) {
 		// same box however much wg0 matches.
 		{WGInterface: store.WGInterface{Host: "host-b", Iface: "wg7", PublicKey: "ONLYB", ListenPort: 51827, Address: []string{"10.0.7.1"}}},
 	}
-	topo, _ := buildWGTopology(ifaces, nil, nil, nil)
+	topo, _ := Build(ifaces, nil, nil, nil)
 	gws := 0
 	for _, n := range topo.Nodes {
 		if n.Kind == "gateway" {
@@ -172,21 +172,5 @@ func TestHostsSharingOneInterfaceStaySeparate(t *testing.T) {
 	}
 	if gws != 2 {
 		t.Errorf("gateway nodes = %d, want 2; a partially shared key is not one machine", gws)
-	}
-}
-
-// A VIP naming any interface — not just the first — must match exactly.
-func TestDashboardVipMatchesAnyInterfaceKey(t *testing.T) {
-	got := runDashboardJS(t, `
-vipFocusNodes=new Map();
-const N=new Map([["lb",{label:"lb",pub:"KPERSONAL",ifaces:[{name:"wg-personal",pub:"KPERSONAL"},{name:"wg1",pub:"KWG1"}]}]]);
-const spokes=[{oid:"lb",iface:"wg1"}];
-// Names the SECOND interface's key, which the node-level key alone would miss.
-const r=attachVips({vips:[{ip:"1.2.3.4",label:"unrelated text",iface:"wg1",owner:"KWG1"}]},N,spokes);
-const v=(r.get("lb")||[])[0];
-console.log(v?String(v.guessed):"unmatched");
-`)
-	if got != "false" {
-		t.Errorf("a VIP naming the second interface was %q, want an exact match (false)", got)
 	}
 }

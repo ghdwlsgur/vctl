@@ -1,4 +1,4 @@
-package cli
+package wireguard
 
 import (
 	"strings"
@@ -111,13 +111,13 @@ func TestTheKindThePageBranchesOnIsEmitted(t *testing.T) {
 //
 // The fixture above never produces a physical-host node — that needs an
 // annotation naming an inventory parent — so a test that only walked it left
-// physicalHostNodeID uncovered. Removing its prefix passed. This is the part
+// PhysicalHostNodeID uncovered. Removing its prefix passed. This is the part
 // that would break the browser's host attribution most quietly, because a
 // physical host's id *is* a hostname and looks entirely reasonable.
 func TestEveryNonGatewayIDBuilderKeepsItOutOfHostnameSpace(t *testing.T) {
 	for _, tc := range []struct{ name, id string }{
-		{"physical host", physicalHostNodeID("sre-srv-0047")},
-		{"external peer", "ext|" + shortKey("SOMEKEY")},
+		{"physical host", PhysicalHostNodeID("sre-srv-0047")},
+		{"external peer", "ext|" + ShortKey("SOMEKEY")},
 		{"endpoint", "endpoint|" + "SOMEKEY"},
 	} {
 		if !strings.Contains(tc.id, "|") {

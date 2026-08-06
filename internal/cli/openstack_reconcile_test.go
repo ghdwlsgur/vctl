@@ -1,9 +1,10 @@
 package cli
 
 import (
-	"github.com/spf13/cobra"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // A farm with sixty confirmed hosts should not print sixty names to say it

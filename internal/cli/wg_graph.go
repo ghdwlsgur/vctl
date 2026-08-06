@@ -14,6 +14,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
+	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
 
 // wgHandshakeWindow is how recently a peer must have completed a handshake to
@@ -83,122 +84,6 @@ func filterWGByHost(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, host
 	return fi, fp
 }
 
-// nodeRef is the far end of a peer resolved to a known interface.
-type nodeRef struct{ host, iface string }
-
-// endpointIndex resolves a public key to the gateway that owns it, and keeps
-// every hostname the key was observed under.
-//
-// The public key is the identity; the hostname is where it was seen. Collection
-// walks the inventory host by host, so one machine reachable under two inventory
-// names gets polled twice and lands in two rows. That is not a duplicate key in
-// the usual sense — in the fleet this was written against, sre-lb is a VIP
-// living on sre-srv-0049, and both entries describe the same interfaces down to
-// the listen port and address.
-//
-// Conflict is the narrower case: one key observed with genuinely different
-// interface settings, meaning two machines really are presenting one identity.
-// Only that deserves a warning. Flagging the VIP case would report a normal
-// arrangement as a fault, which is worse than saying nothing at all.
-type endpointIndex struct {
-	canonical map[string]nodeRef   // public key → the gateway it is drawn as
-	aliases   map[string][]nodeRef // public key → every (host, iface) it was seen at
-	conflicts map[string]bool      // public key → the observations disagree
-}
-
-// lookup resolves a peer's public key to the gateway that owns it.
-func (e endpointIndex) lookup(key string) (nodeRef, bool) {
-	r, ok := e.canonical[key]
-	return r, ok
-}
-
-// observedThrough returns the hostnames a key was seen under, sorted, and only
-// when there is more than one. A single name is the ordinary case and says
-// nothing worth putting on screen.
-func (e endpointIndex) observedThrough(key string) []string {
-	var hosts []string
-	seen := map[string]bool{}
-	for _, r := range e.aliases[key] {
-		if !seen[r.host] {
-			seen[r.host] = true
-			hosts = append(hosts, r.host)
-		}
-	}
-	if len(hosts) < 2 {
-		return nil
-	}
-	sort.Strings(hosts)
-	return hosts
-}
-
-// buildEndpointIndex groups interfaces by public key and picks one canonical
-// owner per key.
-//
-// The pick is the lexically smallest hostname rather than whichever row arrived
-// last. Last-write-wins made the graph depend on scan order: the same database
-// could render different edges between runs, and nothing on screen said so.
-func buildEndpointIndex(ifaces []store.WGInterfaceRow) endpointIndex {
-	byKey := make(map[string][]store.WGInterfaceRow, len(ifaces))
-	for _, i := range ifaces {
-		byKey[i.PublicKey] = append(byKey[i.PublicKey], i)
-	}
-	idx := endpointIndex{
-		canonical: make(map[string]nodeRef, len(byKey)),
-		aliases:   make(map[string][]nodeRef, len(byKey)),
-		conflicts: map[string]bool{},
-	}
-	for key, rows := range byKey {
-		sort.Slice(rows, func(a, b int) bool {
-			if rows[a].Host != rows[b].Host {
-				return rows[a].Host < rows[b].Host
-			}
-			return rows[a].Iface < rows[b].Iface
-		})
-		for _, r := range rows {
-			idx.aliases[key] = append(idx.aliases[key], nodeRef{r.Host, r.Iface})
-		}
-		idx.canonical[key] = nodeRef{rows[0].Host, rows[0].Iface}
-		if !sameInterface(rows) {
-			idx.conflicts[key] = true
-		}
-	}
-	return idx
-}
-
-// sameInterface reports whether every observation describes one interface —
-// same name, same listen port, same addresses. Anything else means two machines
-// are presenting the same key, which is a real conflict rather than one machine
-// seen under two names.
-func sameInterface(rows []store.WGInterfaceRow) bool {
-	first := rows[0]
-	firstAddrs := append([]string{}, first.Address...)
-	sort.Strings(firstAddrs)
-	for _, r := range rows[1:] {
-		if r.Iface != first.Iface || r.ListenPort != first.ListenPort {
-			return false
-		}
-		addrs := append([]string{}, r.Address...)
-		sort.Strings(addrs)
-		if len(addrs) != len(firstAddrs) {
-			return false
-		}
-		for i := range addrs {
-			if addrs[i] != firstAddrs[i] {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func shortKey(k string) string {
-	if len(k) <= 8 {
-		return k
-	}
-	return k[:7] + "…"
-}
-
-// wgHandshakeCell renders a peer's tunnel liveness from its last handshake.
 func wgHandshakeCell(hs *time.Time) string {
 	if hs == nil || hs.IsZero() {
 		return ui.Muted("no-hs")
@@ -213,7 +98,7 @@ func wgHandshakeCell(hs *time.Time) string {
 // renderWGTerminal prints the topology grouped by gateway host, each interface
 // with its peers, far-end resolution, allowed-ips and tunnel liveness.
 func renderWGTerminal(w io.Writer, ifaces []store.WGInterfaceRow, peers []store.WGPeerRow) {
-	idx := buildEndpointIndex(ifaces)
+	idx := wireguard.BuildEndpointIndex(ifaces)
 	peersByIface := map[string][]store.WGPeerRow{}
 	for _, p := range peers {
 		k := p.Host + "\x00" + p.Iface
@@ -245,11 +130,11 @@ func renderWGTerminal(w io.Writer, ifaces []store.WGInterfaceRow, peers []store.
 				addr = strings.Join(i.Address, ",")
 			}
 			fmt.Fprintf(w, "  %s  %s  %s  %s\n",
-				ui.Value(i.Iface), port, addr, ui.Muted("pub "+shortKey(i.PublicKey)))
+				ui.Value(i.Iface), port, addr, ui.Muted("pub "+wireguard.ShortKey(i.PublicKey)))
 			for _, p := range peersByIface[i.Host+"\x00"+i.Iface] {
 				far := ui.Muted("external")
-				if r, ok := idx.lookup(p.PeerPubKey); ok {
-					far = r.host + "/" + r.iface
+				if r, ok := idx.Lookup(p.PeerPubKey); ok {
+					far = r.Host + "/" + r.Iface
 				} else if p.Endpoint != "" {
 					far = p.Endpoint
 				}
@@ -263,7 +148,7 @@ func renderWGTerminal(w io.Writer, ifaces []store.WGInterfaceRow, peers []store.
 				}
 				fmt.Fprintf(w, "      → %s  %s  %s  %s%s\n",
 					ui.PadRight(far, 28), ui.PadRight(allowed, 40),
-					shortKey(p.PeerPubKey), wgHandshakeCell(p.LatestHandshake), label)
+					wireguard.ShortKey(p.PeerPubKey), wgHandshakeCell(p.LatestHandshake), label)
 			}
 		}
 		fmt.Fprintln(w)
@@ -276,7 +161,7 @@ func renderWGTerminal(w io.Writer, ifaces []store.WGInterfaceRow, peers []store.
 // public key) or to an external node (endpoint/allowed-ips) when the far end was
 // not collected. Bidirectional peers collapse to a single edge.
 func wgMermaid(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow) string {
-	idx := buildEndpointIndex(ifaces)
+	idx := wireguard.BuildEndpointIndex(ifaces)
 
 	var b strings.Builder
 	b.WriteString("graph LR\n")
@@ -321,8 +206,8 @@ func wgMermaid(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow) string {
 	for _, p := range sorted {
 		from := ifaceNode(p.Host, p.Iface)
 		label := mermaidLabel(strings.Join(p.AllowedIPs, ", "))
-		if r, ok := idx.lookup(p.PeerPubKey); ok {
-			to := ifaceNode(r.host, r.iface)
+		if r, ok := idx.Lookup(p.PeerPubKey); ok {
+			to := ifaceNode(r.Host, r.Iface)
 			key := from + "|" + to
 			rev := to + "|" + from
 			if seen[key] || seen[rev] {
@@ -333,11 +218,11 @@ func wgMermaid(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow) string {
 			continue
 		}
 		// External far end: node keyed by short public key.
-		ext := "ext_" + mermaidID(shortKey(p.PeerPubKey))
+		ext := "ext_" + mermaidID(wireguard.ShortKey(p.PeerPubKey))
 		if !extDefined[ext] {
 			extLabel := p.Endpoint
 			if extLabel == "" {
-				extLabel = shortKey(p.PeerPubKey)
+				extLabel = wireguard.ShortKey(p.PeerPubKey)
 			}
 			fmt.Fprintf(&b, "  %s[\"%s\"]\n", ext, mermaidLabel(extLabel))
 			extDefined[ext] = true
