@@ -143,6 +143,11 @@
   hosts: openstack_control
   become: true
   gather_facts: false
+  # One control host at a time. A farm with three controllers runs three metadata
+  # services behind one VIP, and the default parallel run would restart all of
+  # them at once — taking the farm's metadata down entirely instead of rolling
+  # through it. Costs nothing on a single-host farm.
+  serial: 1
   vars:
     state: present
     vendordata_ca_pub_file: ""
