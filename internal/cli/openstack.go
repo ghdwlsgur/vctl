@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -162,6 +163,76 @@ func containsFold(list []string, want string) bool {
 	return false
 }
 
+// Column positions in a listing row. Named because the renderer now leaves some
+// of them out per farm, and index arithmetic on a bare 2 is how the wrong column
+// goes missing.
+const (
+	colHost = iota
+	colRoles
+	colRelease
+	colAge
+	colNote
+)
+
+// sharedCols carries the values every host in one farm reports, which the
+// heading states once instead of the rows repeating N times.
+//
+// A column reading the same on every row says nothing about any row — it
+// describes the farm. Seven hosts on 2025.1 print the release seven times and
+// push everything after it to the right; the farm is on 2025.1, said once. The
+// moment two hosts disagree the column comes back, because then the
+// disagreement is the thing worth seeing.
+type sharedCols struct {
+	release string
+	age     string
+}
+
+func (s sharedCols) hides(col int) bool {
+	return (col == colRelease && s.release != "") || (col == colAge && s.age != "")
+}
+
+// sharedColumns decides what a farm's heading can absorb from its rows.
+//
+// --wide absorbs nothing. It exists for the reader who wants every value on
+// every row, and folding rows away is the opposite of that.
+func sharedColumns(hosts []store.OpenStackHost, cells [][]string, now time.Time, wide bool) sharedCols {
+	var out sharedCols
+	if wide || len(hosts) == 0 {
+		return out
+	}
+	// Not the muted dash: "no version known" is nothing to hoist, and a heading
+	// ending in "· -" reads as a rendering fault.
+	if v := cells[0][colRelease]; v != ui.Muted("-") {
+		same := true
+		for _, c := range cells {
+			if c[colRelease] != v {
+				same = false
+				break
+			}
+		}
+		if same {
+			out.release = v
+		}
+	}
+	// Age folds only when there is no outlier to lose. This column earns its
+	// place by showing the one host that stopped reporting, so a farm holding a
+	// stale host keeps it on every row. The value hoisted is the oldest, so
+	// folding can never make a farm look fresher than its worst host.
+	var oldest time.Time
+	for _, h := range hosts {
+		if h.ObservedAt.IsZero() || now.Sub(h.ObservedAt) > capabilityFreshWindow {
+			return out
+		}
+		if oldest.IsZero() || h.ObservedAt.Before(oldest) {
+			oldest = h.ObservedAt
+		}
+	}
+	if !oldest.IsZero() {
+		out.age = ui.Muted(ui.CompactDuration(now.Sub(oldest)))
+	}
+	return out
+}
+
 // renderOpenStack prints hosts grouped by deployment, with widths computed
 // across every group so the columns line up between them.
 func renderOpenStack(w io.Writer, hosts []store.OpenStackHost, cov store.OpenStackCoverage, wide bool, now time.Time) {
@@ -175,14 +246,16 @@ func renderOpenStack(w io.Writer, hosts []store.OpenStackHost, cov store.OpenSta
 	}
 	hosts = groupByFarm(hosts)
 	cells := make([][]string, len(hosts))
+	standIn := false
 	for i, h := range hosts {
 		cells[i] = []string{
 			ui.Truncate(h.Hostname, 40),
-			rolesCell(h),
+			rolesCell(h, wide),
 			versionCell(h, wide),
 			ageCell(h, now),
 			openStackNoteCell(h, now),
 		}
+		standIn = standIn || strings.Contains(cells[i][colRelease], standInMark)
 	}
 	widths := ui.ColumnWidths(cells)
 
@@ -193,23 +266,33 @@ func renderOpenStack(w io.Writer, hosts []store.OpenStackHost, cov store.OpenSta
 		for end < len(hosts) && hosts[end].Farm == farm {
 			end++
 		}
+		shared := sharedColumns(hosts[i:end], cells[i:end], now, wide)
 		fmt.Fprintf(w, "%s %s\n", farmStyle.Render("▌ "+farmLabel(hosts[i])),
-			ui.Muted(farmSuffix(hosts[i], end-i)))
-		if shape := farmShape(hosts[i:end]); shape != "" {
+			ui.Muted(farmSuffix(hosts[i], end-i, shared)))
+		if shape := farmShape(hosts[i:end], wide); shape != "" {
 			fmt.Fprintf(w, "  %s\n", ui.Muted(shape))
 		}
+		fmt.Fprintln(w)
 		for ; i < end; i++ {
 			var line strings.Builder
 			line.WriteString("  ")
+			first := true
 			for j, c := range cells[i] {
-				if j > 0 {
+				if shared.hides(j) {
+					continue
+				}
+				if !first {
 					line.WriteString("  ")
 				}
+				first = false
 				line.WriteString(ui.PadRight(c, widths[j]))
 			}
 			fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
 		}
 		fmt.Fprintln(w)
+	}
+	if standIn {
+		fmt.Fprintln(w, ui.Muted(standInMark+" release read from a component other than nova; --wide names it"))
 	}
 	fmt.Fprintln(w, ui.Muted(coverageLine(cov)))
 }
@@ -255,8 +338,10 @@ func groupByFarm(hosts []store.OpenStackHost) []store.OpenStackHost {
 // comma-separated roles is not something a reader should have to do.
 //
 // Roles are ordered by how many hosts hold them, so the shape leads with what
-// the deployment is mostly made of.
-func farmShape(hosts []store.OpenStackHost) string {
+// the deployment is mostly made of, and cut off once it stops summarising: nine
+// roles listed with their counts is the wall of text this line exists to spare
+// the reader. --wide prints them all.
+func farmShape(hosts []store.OpenStackHost, wide bool) string {
 	count := map[string]int{}
 	for _, h := range hosts {
 		for _, r := range h.Roles {
@@ -281,8 +366,18 @@ func farmShape(hosts []store.OpenStackHost) string {
 	for _, r := range roles {
 		parts = append(parts, fmt.Sprintf("%s %d", r, count[r]))
 	}
+	if !wide && len(parts) > shapeRoles {
+		// Three-index slice: appending onto parts[:shapeRoles] would otherwise
+		// write over the fourth entry it is still reading from.
+		parts = append(parts[:shapeRoles:shapeRoles], fmt.Sprintf("+%d more", len(parts)-shapeRoles))
+	}
 	return strings.Join(parts, " · ")
 }
+
+// shapeRoles is how many roles the shape line names before it stops. Past a
+// handful the line is no longer a summary — it is the same list the rows carry,
+// transposed.
+const shapeRoles = 3
 
 func farmLabel(h store.OpenStackHost) string {
 	switch {
@@ -295,15 +390,26 @@ func farmLabel(h store.OpenStackHost) string {
 	}
 }
 
-// farmSuffix carries the count and, for anything weaker than a statement, what
-// the grouping rests on. A confirmed farm needs no annotation; a guess does.
-func farmSuffix(h store.OpenStackHost, n int) string {
-	s := fmt.Sprintf("· %d hosts", n)
+// farmSuffix carries the count, whatever every host in the farm agrees on, and
+// — for anything weaker than a statement — what the grouping rests on. A
+// confirmed farm needs no annotation; a guess does.
+func farmSuffix(h store.OpenStackHost, n int, shared sharedCols) string {
+	parts := make([]string, 0, 4)
+	if h.FarmRegion != "" {
+		parts = append(parts, h.FarmRegion)
+	}
+	parts = append(parts, pluralHosts(n))
+	// Only what the rows have given up. These read as facts about the farm
+	// because that is what they became the moment every host agreed.
+	if shared.release != "" {
+		parts = append(parts, shared.release)
+	}
+	if shared.age != "" {
+		parts = append(parts, shared.age)
+	}
+	s := "· " + strings.Join(parts, " · ")
 	if h.Farm == "" {
 		return s + " · nothing has claimed these"
-	}
-	if h.FarmRegion != "" {
-		s += " · " + h.FarmRegion
 	}
 	switch h.Confidence {
 	case store.ConfidenceConfirmed:
@@ -317,12 +423,66 @@ func farmSuffix(h store.OpenStackHost, n int) string {
 	}
 }
 
+// pluralHosts counts hosts without the "1 hosts" that a bare %d gives.
+func pluralHosts(n int) string {
+	if n == 1 {
+		return "1 host"
+	}
+	return fmt.Sprintf("%d hosts", n)
+}
+
+// rolesInlineMax and rolesInlineWidth bound what the roles column prints in
+// full.
+//
+// Past that it becomes the widest thing on the screen: a controller carries
+// nine roles — about ninety characters — repeated near-identically on every
+// controller in the farm. Because the widths are shared across groups, that one
+// string also pushed release and age to the right on every row of every other
+// farm.
+const (
+	rolesInlineMax   = 2
+	rolesInlineWidth = 24
+)
+
+// rolePrecedence orders roles by how much each one says about why the host
+// exists. A machine holding controller is a controller whatever else it runs.
+var rolePrecedence = []string{
+	"controller", "compute", "network", "block-storage",
+	"image", "identity", "orchestration", "dashboard", "load-balancer",
+}
+
+func primaryRole(roles []string) string {
+	for _, want := range rolePrecedence {
+		if slices.Contains(roles, want) {
+			return want
+		}
+	}
+	return roles[0]
+}
+
+// rolesSummary names what the host is for, and says how much it is leaving out.
+//
+// One or two roles are described by listing them. Past that the list stops being
+// a description: what a reader takes from nine comma-separated roles is "this is
+// a controller", which is one word. The count stays so the short form is not
+// mistaken for the whole answer, and --wide prints the list.
+func rolesSummary(roles []string, wide bool) string {
+	if len(roles) == 0 {
+		return ""
+	}
+	joined := strings.Join(roles, ",")
+	if wide || (len(roles) <= rolesInlineMax && len(joined) <= rolesInlineWidth) {
+		return joined
+	}
+	return fmt.Sprintf("%s (%d roles)", primaryRole(roles), len(roles))
+}
+
 // rolesCell lists what the host does now, and what it has stopped doing.
-func rolesCell(h store.OpenStackHost) string {
+func rolesCell(h store.OpenStackHost, wide bool) string {
 	if len(h.Roles) == 0 && len(h.Dropped) == 0 {
 		return ui.Muted("none")
 	}
-	s := strings.Join(h.Roles, ",")
+	s := rolesSummary(h.Roles, wide)
 	if len(h.Dropped) > 0 {
 		gone := make([]string, 0, len(h.Dropped))
 		for _, d := range h.Dropped {
@@ -345,13 +505,21 @@ func rolesCell(h store.OpenStackHost) string {
 // described by. --wide replaces it with everything found, which is what a
 // rolling upgrade needs: the components genuinely disagree for weeks and one
 // number cannot say which one lags.
+// standInMark flags a release that did not come from nova.
+//
+// The name of the component it did come from used to be printed inline, which
+// made the column ragged — "cinder-api=2025.1" beside "2025.1" — for a detail
+// almost nobody is reading the column for. The mark keeps the caveat, the
+// legend under the listing says what it means, and --wide names the component.
+const standInMark = "*"
+
 func versionCell(h store.OpenStackHost, wide bool) string {
 	if !wide {
 		if c, ok := h.Components["nova-compute"]; ok && c.Version != "" {
 			return c.Version
 		}
 		if v := firstVersion(h.Components); v != "" {
-			return ui.Muted(v)
+			return ui.Muted(v + standInMark)
 		}
 		return ui.Muted("-")
 	}
@@ -387,9 +555,9 @@ func versionCell(h store.OpenStackHost, wide bool) string {
 // storage or network node still has a version worth showing.
 //
 // A running service is preferred over a stopped one. Taking the first name
-// alphabetically put `glance-api=30.0.0(down)` in the summary column of a
-// healthy controller, so the one number on the row described the only component
-// that was not working.
+// alphabetically put glance-api's 30.0.0 in the summary column of a healthy
+// controller, so the one number on the row described the only component that was
+// not working.
 func firstVersion(comps map[string]store.CapabilityComponent) string {
 	names := make([]string, 0, len(comps))
 	for name := range comps {
@@ -403,10 +571,10 @@ func firstVersion(comps map[string]store.CapabilityComponent) string {
 			continue
 		}
 		if c.Active || !c.Service {
-			return name + "=" + c.Version
+			return c.Version
 		}
 		if fallback == "" {
-			fallback = name + "=" + c.Version
+			fallback = c.Version
 		}
 	}
 	return fallback
