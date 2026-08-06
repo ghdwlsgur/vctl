@@ -25,8 +25,13 @@ type Probe interface {
 	// it is a primary key column.
 	Kind() string
 
-	// Collect looks for the platform on this host. It must return promptly and
-	// must not modify the host.
+	// Collect looks for the platform on this host. It must not modify the host.
+	//
+	// It must also honour ctx, and that is a requirement rather than a courtesy.
+	// The runner's deadline is cooperative: it is passed in, not enforced, so a
+	// Collect that ignores cancellation holds its caller for as long as it
+	// likes and no timeout placed around it helps. Every external call inside a
+	// probe — exec, HTTP, unix socket — takes the context for this reason.
 	Collect(ctx context.Context) ProbeResult
 }
 
@@ -94,9 +99,19 @@ type Component struct {
 
 // RunProbes collects from every probe, isolating each one.
 //
-// A probe that panics or hangs must not take the others with it, and must not
-// take the heartbeat with it either — this returns whatever completed and lets
-// the caller report the rest.
+// A panic in one probe is contained here: it becomes that probe's error and the
+// others still run. A hang is not, and the difference matters. Each probe gets
+// a deadline, but the deadline is handed to it — a probe that ignores
+// cancellation runs as long as it wants and holds this loop with it. That is
+// the contract on Probe.Collect, and it is the reason every external call in
+// the OpenStack probe takes a context.
+//
+// Enforcing it here would mean running each Collect on its own goroutine and
+// abandoning the ones that overrun. That trades a stuck loop for a leaked
+// goroutine — and a leak parked in a syscall costs a thread, inside a unit
+// capped at TasksMax=24. The cooperative deadline is the cheaper half of that
+// trade as long as the contract holds, so the contract is written down and
+// tested rather than assumed.
 func RunProbes(ctx context.Context, probes []Probe, timeout time.Duration) []ProbeResult {
 	out := make([]ProbeResult, 0, len(probes))
 	for _, p := range probes {

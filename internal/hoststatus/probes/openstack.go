@@ -153,15 +153,21 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 	// One listing per engine for the whole pass, not one per service. Asking
 	// podman about each of two dozen services separately was ~50 forks a pass on
 	// a host whose agent runs under CPUQuota=2%.
-	containers, err := p.containerIndex(ctx)
-	if err != nil {
-		// An engine is installed and would not answer. That is not the same as a
-		// host with no containers on it, and the difference is the whole probe:
-		// reporting "none found" here told us a full Kolla controller runs no
-		// OpenStack. Refuse to answer instead.
-		res.Err = err
-		return res
-	}
+	// An engine that is installed and would not answer is not the same as a host
+	// with no containers on it, and the difference is the whole probe: reporting
+	// "none found" here once told us a full Kolla controller runs no OpenStack.
+	//
+	// But refusing outright threw away evidence this pass had not looked for
+	// yet. Services deployed as systemd units are visible without asking any
+	// container engine, and a host that has them is not a host we failed to
+	// read — it is a host we read another way. Returning here reported it as
+	// unprobed, which is the same sentence as "we could not tell" for a machine
+	// we could.
+	//
+	// So the failure is carried, not thrown: keep going, and decide at the end.
+	// On a Kolla host systemd finds nothing, so the refusal still stands exactly
+	// where it was written to stand.
+	containers, containerErr := p.containerIndex(ctx)
 
 	units := make([]string, 0, len(osServices))
 	for _, s := range osServices {
@@ -230,6 +236,22 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 	// a stopped nova-compute is a compute node that is down, not a host with no
 	// OpenStack on it.
 	res.Detected = len(res.Components) > 0
+
+	// Now the container failure can be judged, because there is something to
+	// judge it against.
+	//
+	// Nothing found and no way to ask the engine is "we could not tell" — a
+	// Kolla host looks exactly like this, and calling it absent is the mistake
+	// this refusal exists for. Something found is an answer: the engine's
+	// silence cost detail, not the conclusion, so it rides along as a note
+	// somebody can act on rather than erasing what was read.
+	if containerErr != nil {
+		if !res.Detected {
+			res.Err = containerErr
+			return res
+		}
+		res.Details["container_probe_error"] = containerErr.Error()
+	}
 
 	// Which Keystone this host authenticates against. It is evidence of
 	// membership, not proof: two deployments behind one proxy share an endpoint.

@@ -74,8 +74,10 @@ database role for low-risk, low-resource status reporting.`,
 			// in the same second. After this the interval is exact.
 			//
 			// Under --once there is no fleet and no next run, so a delay is
-			// nothing but a slow command. The capability goroutine is already
-			// running and waits out its own, longer offset.
+			// nothing but a slow command — and the capability probe does not
+			// reach here at all in that mode; it runs inline after the
+			// heartbeat, below. In daemon mode its goroutine started above and
+			// waits out its own, longer offset.
 			if !once && !waitForContext(ctx, startPhase(heartbeatPhase, hostname, "heartbeat")) {
 				return nil
 			}
