@@ -1,4 +1,4 @@
-package cli
+package nodeagent
 
 import (
 	"context"
@@ -62,7 +62,7 @@ type opener struct {
 	entered chan struct{}
 }
 
-func (o *opener) open(context.Context) (statusSink, error) {
+func (o *opener) open(context.Context) (Sink, error) {
 	i := o.calls
 	o.calls++
 	if i == 0 && o.hold != nil {
@@ -82,15 +82,15 @@ func (o *opener) open(context.Context) (statusSink, error) {
 func TestStatusConnRetriesOpenAfterStartupFailure(t *testing.T) {
 	sink := &fakeStatusSink{}
 	o := &opener{errs: []error{errors.New("vault unavailable")}, sinks: []*fakeStatusSink{nil, sink}}
-	c := &statusConn{open: o.open}
+	c := &conn{open: o.open}
 
-	if err := c.report(context.Background(), "sre-srv-0047"); err == nil {
+	if err := c.report(context.Background(), "sre-srv-0047", "test"); err == nil {
 		t.Fatal("first report succeeded, want the open error surfaced")
 	}
 	if c.st != nil {
 		t.Fatal("a failed open left a handle behind")
 	}
-	if err := c.report(context.Background(), "sre-srv-0047"); err != nil {
+	if err := c.report(context.Background(), "sre-srv-0047", "test"); err != nil {
 		t.Fatalf("second report: %v", err)
 	}
 	if o.calls != 2 {
@@ -108,9 +108,9 @@ func TestStatusConnReopensAfterReportFailure(t *testing.T) {
 	broken := &fakeStatusSink{err: errors.New("db creds expired")}
 	healthy := &fakeStatusSink{}
 	o := &opener{sinks: []*fakeStatusSink{broken, healthy}}
-	c := &statusConn{open: o.open}
+	c := &conn{open: o.open}
 
-	if err := c.report(context.Background(), "sre-srv-0047"); err == nil {
+	if err := c.report(context.Background(), "sre-srv-0047", "test"); err == nil {
 		t.Fatal("report succeeded, want the upsert error")
 	}
 	if !broken.closed {
@@ -119,7 +119,7 @@ func TestStatusConnReopensAfterReportFailure(t *testing.T) {
 	if c.st != nil {
 		t.Fatal("failed handle was retained")
 	}
-	if err := c.report(context.Background(), "sre-srv-0047"); err != nil {
+	if err := c.report(context.Background(), "sre-srv-0047", "test"); err != nil {
 		t.Fatalf("report after reconnect: %v", err)
 	}
 	if o.calls != 2 {
@@ -131,10 +131,10 @@ func TestStatusConnReopensAfterReportFailure(t *testing.T) {
 func TestStatusConnReusesHandleWhileHealthy(t *testing.T) {
 	sink := &fakeStatusSink{}
 	o := &opener{sinks: []*fakeStatusSink{sink}}
-	c := &statusConn{open: o.open}
+	c := &conn{open: o.open}
 
 	for i := 0; i < 3; i++ {
-		if err := c.report(context.Background(), "sre-srv-0047"); err != nil {
+		if err := c.report(context.Background(), "sre-srv-0047", "test"); err != nil {
 			t.Fatalf("report %d: %v", i, err)
 		}
 	}
@@ -159,9 +159,9 @@ func TestStatusConnReusesHandleWhileHealthy(t *testing.T) {
 func TestStatusConnKeepsHandleWhenHostUnregistered(t *testing.T) {
 	sink := &unregisteredSink{}
 	o := &opener{sinks: []*fakeStatusSink{nil}}
-	c := &statusConn{open: func(context.Context) (statusSink, error) { o.calls++; return sink, nil }}
+	c := &conn{open: func(context.Context) (Sink, error) { o.calls++; return sink, nil }}
 
-	if err := c.report(context.Background(), "not-in-inventory"); err != nil {
+	if err := c.report(context.Background(), "not-in-inventory", "test"); err != nil {
 		t.Fatalf("report: %v", err)
 	}
 	if c.st == nil {
@@ -201,14 +201,14 @@ func (u *unregisteredSink) Close() { u.closed = true }
 // log output.
 func TestHealthyStaysSetWhileReportsKeepSucceeding(t *testing.T) {
 	o := &opener{sinks: []*fakeStatusSink{{}}}
-	c := &statusConn{open: o.open}
+	c := &conn{open: o.open}
 	ctx := context.Background()
 
 	if c.healthy {
 		t.Fatal("healthy is set before the first report: startup would be silent")
 	}
 	for i := 0; i < 3; i++ {
-		if err := c.report(ctx, "host-a"); err != nil {
+		if err := c.report(ctx, "host-a", "test"); err != nil {
 			t.Fatalf("report %d: %v", i, err)
 		}
 		if !c.healthy {
@@ -225,16 +225,16 @@ func TestHealthyStaysSetWhileReportsKeepSucceeding(t *testing.T) {
 func TestFailureReArmsTheSuccessLog(t *testing.T) {
 	failing := &fakeStatusSink{err: errors.New("postgres is down")}
 	o := &opener{sinks: []*fakeStatusSink{failing, {}}}
-	c := &statusConn{open: o.open}
+	c := &conn{open: o.open}
 	ctx := context.Background()
 
-	if err := c.report(ctx, "host-a"); err == nil {
+	if err := c.report(ctx, "host-a", "test"); err == nil {
 		t.Fatal("report succeeded against a failing sink")
 	}
 	if c.healthy {
 		t.Error("healthy is still set after a failure: the recovery would not be logged")
 	}
-	if err := c.report(ctx, "host-a"); err != nil {
+	if err := c.report(ctx, "host-a", "test"); err != nil {
 		t.Fatalf("report after recovery: %v", err)
 	}
 	if !c.healthy {
@@ -247,10 +247,10 @@ func TestFailureReArmsTheSuccessLog(t *testing.T) {
 // explaining why no status ever appears would print once and never again.
 func TestUnregisteredHostDoesNotCountAsHealthy(t *testing.T) {
 	sink := &unregisteredSink{}
-	c := &statusConn{open: func(context.Context) (statusSink, error) { return sink, nil }}
+	c := &conn{open: func(context.Context) (Sink, error) { return sink, nil }}
 
 	for i := 0; i < 2; i++ {
-		if err := c.report(context.Background(), "ghost"); err != nil {
+		if err := c.report(context.Background(), "ghost", "test"); err != nil {
 			t.Fatalf("report %d returned an error, want a warning only: %v", i, err)
 		}
 	}
@@ -269,11 +269,18 @@ func TestUnregisteredHostDoesNotCountAsHealthy(t *testing.T) {
 //
 // This pins the contract the fix rests on: with once set, the call collects
 // before it returns.
+// runProbesForTest is the capability pass as the tests drive it: one pass, now,
+// against a conn they built. The daemon shape is exercised by the Run tests.
+func runProbesForTest(ctx context.Context, c *conn, hostname string, _ time.Duration, _ bool) {
+	a := &Agent{Hostname: hostname}
+	a.capabilityPass(ctx, c)
+}
+
 func TestCapabilityProbesCollectBeforeReturningWhenOnce(t *testing.T) {
 	sink := &fakeStatusSink{}
-	conn := &statusConn{open: (&opener{sinks: []*fakeStatusSink{sink}}).open}
+	conn := &conn{open: (&opener{sinks: []*fakeStatusSink{sink}}).open}
 
-	runCapabilityProbes(context.Background(), conn, "host-01", time.Hour, true)
+	runProbesForTest(context.Background(), conn, "host-01", time.Hour, true)
 
 	if len(sink.caps) == 0 && len(sink.capErrors) == 0 {
 		t.Fatal("nothing was reported by the time the call returned, so --once collects nothing")
@@ -285,9 +292,9 @@ func TestCapabilityProbesCollectBeforeReturningWhenOnce(t *testing.T) {
 // tell what it runs" is not a reason to stop.
 func TestCapabilityProbeFailureLeavesTheHandleUsable(t *testing.T) {
 	sink := &fakeStatusSink{err: errors.New("write failed")}
-	conn := &statusConn{open: (&opener{sinks: []*fakeStatusSink{sink}}).open}
+	conn := &conn{open: (&opener{sinks: []*fakeStatusSink{sink}}).open}
 
-	runCapabilityProbes(context.Background(), conn, "host-01", time.Hour, true)
+	runProbesForTest(context.Background(), conn, "host-01", time.Hour, true)
 
 	if conn.st == nil {
 		t.Error("a failed capability write dropped the connection the heartbeat shares")
@@ -306,13 +313,13 @@ func TestHeartbeatAndCapabilityShareTheHandleSafely(t *testing.T) {
 	for i := range sinks {
 		sinks[i] = &fakeStatusSink{}
 	}
-	conn := &statusConn{open: (&opener{sinks: sinks}).open}
+	conn := &conn{open: (&opener{sinks: sinks}).open}
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
 		wg.Add(2)
-		go func() { defer wg.Done(); _ = conn.report(ctx, "host-01") }()
+		go func() { defer wg.Done(); _ = conn.report(ctx, "host-01", "test") }()
 		go func() {
 			defer wg.Done()
 			_ = conn.reportCapability(ctx, "host-01", hoststatus.ProbeResult{
@@ -332,12 +339,12 @@ func TestConcurrentFirstUseOpensOneConnection(t *testing.T) {
 		hold:    make(chan struct{}),
 		entered: make(chan struct{}),
 	}
-	conn := &statusConn{open: o.open}
+	conn := &conn{open: o.open}
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); _ = conn.report(ctx, "host-01") }()
+	go func() { defer wg.Done(); _ = conn.report(ctx, "host-01", "test") }()
 	<-o.entered // the first caller is now inside open, and stays there
 
 	wg.Add(1)
@@ -360,16 +367,16 @@ func TestConcurrentFirstUseOpensOneConnection(t *testing.T) {
 // stops forever while the process stays up, so systemd sees nothing wrong and
 // the host goes quiet with no one told.
 func TestAHangingDependencyDoesNotHangTheHeartbeat(t *testing.T) {
-	conn := &statusConn{
+	conn := &conn{
 		attempt: 50 * time.Millisecond,
-		open: func(ctx context.Context) (statusSink, error) {
+		open: func(ctx context.Context) (Sink, error) {
 			<-ctx.Done() // never answers, like a connection into a blackhole
 			return nil, ctx.Err()
 		},
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- conn.report(context.Background(), "host-01") }()
+	go func() { done <- conn.report(context.Background(), "host-01", "test") }()
 
 	select {
 	case err := <-done:
@@ -494,31 +501,31 @@ func (h *hangingSink) Close() {}
 func TestEveryDatabasePathIsBounded(t *testing.T) {
 	for _, tc := range []struct {
 		name, on string
-		call     func(*statusConn) error
+		call     func(*conn) error
 	}{
 		{
 			name: "heartbeat upsert", on: "status",
-			call: func(c *statusConn) error { return c.report(context.Background(), "host-01") },
+			call: func(c *conn) error { return c.report(context.Background(), "host-01", "test") },
 		},
 		{
 			name: "capability upsert", on: "capability",
-			call: func(c *statusConn) error {
+			call: func(c *conn) error {
 				return c.reportCapability(context.Background(), "host-01",
 					hoststatus.ProbeResult{Kind: "openstack", Detected: true, Roles: []string{"compute"}})
 			},
 		},
 		{
 			name: "capability error record", on: "caperror",
-			call: func(c *statusConn) error {
+			call: func(c *conn) error {
 				return c.reportCapability(context.Background(), "host-01",
 					hoststatus.ProbeResult{Kind: "openstack", Err: errors.New("probe timed out")})
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &statusConn{
+			c := &conn{
 				attempt: 50 * time.Millisecond,
-				open:    func(context.Context) (statusSink, error) { return &hangingSink{on: tc.on}, nil },
+				open:    func(context.Context) (Sink, error) { return &hangingSink{on: tc.on}, nil },
 			}
 			done := make(chan error, 1)
 			go func() { done <- tc.call(c) }()
@@ -539,22 +546,22 @@ func TestEveryDatabasePathIsBounded(t *testing.T) {
 // loop down with it and turn one slow query into an agent that never reports
 // again — the exact silent stop the deadline exists to prevent.
 func TestATimedOutAttemptReleasesTheLock(t *testing.T) {
-	sinks := []statusSink{&hangingSink{on: "status"}, &fakeStatusSink{}}
+	sinks := []Sink{&hangingSink{on: "status"}, &fakeStatusSink{}}
 	var n int
-	c := &statusConn{
+	c := &conn{
 		attempt: 50 * time.Millisecond,
-		open: func(context.Context) (statusSink, error) {
+		open: func(context.Context) (Sink, error) {
 			s := sinks[n]
 			n++
 			return s, nil
 		},
 	}
 
-	if err := c.report(context.Background(), "host-01"); err == nil {
+	if err := c.report(context.Background(), "host-01", "test"); err == nil {
 		t.Fatal("the hanging write was reported as success")
 	}
 	done := make(chan error, 1)
-	go func() { done <- c.report(context.Background(), "host-01") }()
+	go func() { done <- c.report(context.Background(), "host-01", "test") }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -562,5 +569,150 @@ func TestATimedOutAttemptReleasesTheLock(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the next heartbeat never ran: the timed-out attempt still holds the lock")
+	}
+}
+
+// testLog swallows the two lines the agent prints. What they say is asserted
+// where it matters — the healthy-transition tests read the flag rather than the
+// output.
+type testLog struct{}
+
+func (testLog) warnf(string, ...any) {}
+func (testLog) infof(string, ...any) {}
+
+// runSink counts what a run wrote, so the ordering can be asserted from
+// outside.
+type runSink struct {
+	mu        sync.Mutex
+	beats     int
+	capsWrote int
+}
+
+func (s *runSink) UpsertServerStatus(context.Context, store.ServerStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.beats++
+	return true, nil
+}
+
+func (s *runSink) ReplaceCapabilities(_ context.Context, _, _ string, _ []store.Capability) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.capsWrote++
+	return true, nil
+}
+
+func (s *runSink) RecordCapabilityError(_ context.Context, _, _, _ string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.capsWrote++
+	return nil
+}
+
+func (s *runSink) Close() {}
+
+func (s *runSink) counts() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.beats, s.capsWrote
+}
+
+// --once means one of each, collected before the call returns.
+//
+// The probes run on their own goroutine in the long-running agent, and under
+// --once the process exits as soon as the heartbeat returns — a probe started
+// in the background loses that race every time, and the command reported
+// success having collected nothing. This is the ordering asserted from the
+// outside, which was not possible while it lived under a Cobra RunE.
+func TestOnceCollectsAHeartbeatAndAProbeBeforeReturning(t *testing.T) {
+	sink := &runSink{}
+	a := &Agent{
+		Hostname: "host-01", Version: "test", Once: true, ProbeInterval: time.Hour,
+		OpenSink: func(context.Context) (Sink, error) { return sink, nil },
+		Warnf:    func(string, ...any) {}, Infof: func(string, ...any) {},
+	}
+	if err := a.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	beats, caps := sink.counts()
+	if beats != 1 {
+		t.Errorf("heartbeats = %d, want exactly one", beats)
+	}
+	if caps == 0 {
+		t.Error("the run returned having collected no capabilities")
+	}
+}
+
+// A host that cannot report liveness can still say what it runs. The two answer
+// different questions, so the probe goes after the heartbeat and regardless of
+// whether it worked.
+func TestOnceStillProbesWhenTheHeartbeatFails(t *testing.T) {
+	sink := &runSink{}
+	failing := &fakeStatusSink{err: errors.New("upsert failed")}
+	var opened int
+	a := &Agent{
+		Hostname: "host-01", Version: "test", Once: true, ProbeInterval: time.Hour,
+		OpenSink: func(context.Context) (Sink, error) {
+			opened++
+			if opened == 1 {
+				return failing, nil
+			}
+			return sink, nil
+		},
+		Warnf: func(string, ...any) {}, Infof: func(string, ...any) {},
+	}
+	if err := a.Run(context.Background()); err == nil {
+		t.Error("a failed heartbeat was reported as success")
+	}
+	if _, caps := sink.counts(); caps == 0 {
+		t.Error("the probe was skipped because the heartbeat failed")
+	}
+}
+
+// Probing is off when the interval is zero, and the run is still a run.
+func TestProbeIntervalZeroDisablesCapabilityCollection(t *testing.T) {
+	sink := &runSink{}
+	a := &Agent{
+		Hostname: "host-01", Version: "test", Once: true,
+		OpenSink: func(context.Context) (Sink, error) { return sink, nil },
+		Warnf:    func(string, ...any) {}, Infof: func(string, ...any) {},
+	}
+	if err := a.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	beats, caps := sink.counts()
+	if beats != 1 || caps != 0 {
+		t.Errorf("beats=%d caps=%d, want one heartbeat and no probe", beats, caps)
+	}
+}
+
+// A daemon run ends when its context does, rather than on the first failure —
+// an outage must not take the reporting down with it, because then nothing is
+// left to notice the recovery.
+func TestTheDaemonKeepsGoingAfterAFailedHeartbeat(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sink := &fakeStatusSink{err: errors.New("write failed")}
+	var warned int
+	a := &Agent{
+		Hostname: "host-01", Version: "test", Interval: time.Millisecond,
+		OpenSink: func(context.Context) (Sink, error) { return sink, nil },
+		Warnf:    func(string, ...any) { warned++; cancel() },
+		Infof:    func(string, ...any) {},
+	}
+	if err := a.Run(ctx); err != nil {
+		t.Errorf("a failing heartbeat ended the run with %v, want it to keep trying", err)
+	}
+	if warned == 0 {
+		t.Error("the failure was not reported")
+	}
+}
+
+// The wiring is a precondition, not something to discover at the first tick.
+func TestRunRefusesWithoutAHostnameOrASink(t *testing.T) {
+	if err := (&Agent{OpenSink: func(context.Context) (Sink, error) { return nil, nil }}).Run(context.Background()); err == nil {
+		t.Error("ran without a hostname")
+	}
+	if err := (&Agent{Hostname: "h"}).Run(context.Background()); err == nil {
+		t.Error("ran with no way to reach the database")
 	}
 }
