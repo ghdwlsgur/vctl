@@ -34,6 +34,7 @@ func openstackFarmCmd(env CommandEnv) *cobra.Command {
 	// are mutations. Same grant name as before, so grants already issued still
 	// apply.
 	cmd.AddCommand(gate(openstackFarmNameCmd(env), "openstack-farm", classMutate))
+	cmd.AddCommand(openstackFarmDoctorCmd(env))
 	cmd.AddCommand(openstackFarmListCmd(env))
 	cmd.AddCommand(openstackFarmShowCmd(env))
 	cmd.AddCommand(gate(openstackFarmStateCmd(env), "openstack-farm", classMutate))
