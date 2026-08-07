@@ -20,7 +20,7 @@ import (
 )
 
 func sshCmd(env CommandEnv) *cobra.Command {
-	var server, vm, user string
+	var server, vm, user, vmFarm string
 	cmd := &cobra.Command{
 		Use:   "ssh [host|user@addr]",
 		Short: "Connect to an inventory host, or to an address directly",
@@ -57,7 +57,7 @@ the configured default.`,
 				return fmt.Errorf("pass a VM via --vm, or a host, not both")
 			}
 			if vm != "" {
-				return sshVM(ctx, env, vm, user)
+				return sshVM(ctx, env, vm, user, vmFarm)
 			}
 			query := server
 			if query == "" && len(args) > 0 {
@@ -109,6 +109,7 @@ the configured default.`,
 	cmd.Flags().StringVar(&server, "server", "", "exact inventory host, or user@addr, to connect to (non-interactive; for scripts/agents)")
 	cmd.Flags().StringVar(&vm, "vm", "", "a Nova instance id, or a Kubernetes providerID (openstack:///<uuid>)")
 	cmd.Flags().StringVar(&user, "user", "", "login user for --vm (Nova does not record one)")
+	cmd.Flags().StringVar(&vmFarm, "farm", "", "deployment holding the --vm instance, when its id is in more than one")
 	return cmd
 }
 
@@ -260,19 +261,39 @@ func withLiveStatus(ctx context.Context, st invcache.Reader, cands []store.Serve
 //
 // A physical host has both doors: the positional form prompts, --server does
 // not. Here the terminal is what says which one this is.
-func sshVM(ctx context.Context, env CommandEnv, selector, user string) error {
+func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string) error {
 	id, ok := access.NovaID(selector)
 	if !ok {
 		return fmt.Errorf("--vm takes a Nova instance id or openstack:///<id>, not %q; "+
 			"run 'vctl openstack vm' to find it", selector)
 	}
 	return env.withStore(ctx, false, func(a *app.App, st *store.Store) error {
-		vms, err := st.Instances(ctx, store.InstanceFilter{InstanceID: id, IncludeMissing: true})
+		f := store.InstanceFilter{InstanceID: id, IncludeMissing: true}
+		if farm != "" {
+			resolved, err := resolveFarmID(ctx, st, farm)
+			if err != nil {
+				return err
+			}
+			f.DeploymentID = resolved
+		}
+		vms, err := st.Instances(ctx, f)
 		if err != nil {
 			return err
 		}
 		if len(vms) == 0 {
 			return fmt.Errorf("no VM %s; run 'vctl openstack reconcile' if it is new", id)
+		}
+		// A uuid is the identity within a deployment, not across the fleet — the
+		// table is keyed (deployment, instance) and says so. Taking the first row
+		// would pick a farm by sort order, and the two farms' VMs are different
+		// machines.
+		if len(vms) > 1 {
+			farms := make([]string, 0, len(vms))
+			for _, c := range vms {
+				farms = append(farms, c.DeploymentID)
+			}
+			return fmt.Errorf("%s is in %d deployments (%s); add --farm to say which",
+				id, len(vms), strings.Join(farms, ", "))
 		}
 		v := vms[0]
 		if v.MissingSince != nil {

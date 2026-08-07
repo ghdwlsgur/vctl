@@ -34,20 +34,37 @@ type VMPolicy struct {
 // a guess about a network this data does not describe. Same reasoning as the
 // direct user@addr path.
 //
-// The address comes from openstack.ReachableAddress, the same ranking the VM
-// listing prints, so the address on screen is the address this connects to. Of
-// the VMs in this fleet most carry a tenant address that a workstation cannot
-// reach at all, which is why the choice is a ranking rather than "the first
-// one".
+// The address comes from openstack.ConnectableAddress, which is stricter than
+// what the listing prints. A listing showing a tenant address is showing what it
+// knows; connecting to one is a guess about which machine answers. Tenant
+// networks are per-deployment and reuse the same RFC1918 ranges — two farms both
+// holding 10.3.1.7 is normal — so the only addresses accepted here are the ones
+// that say something about reachability: a floating address, or one on a network
+// this fleet routes.
 func VMTarget(name string, addrs []store.InstanceAddress, p VMPolicy) (*sshc.Target, error) {
-	addr := openstack.ReachableAddress(addrs, p.OperatorNets)
-	if addr == "" {
-		// A real state — a VM that is building, or one whose port was detached —
-		// and the one case where connecting cannot be attempted at all.
-		return nil, fmt.Errorf("%s has no address to connect to", name)
-	}
+	// The caller's own mistake first. Reporting the VM's addresses to somebody
+	// who has not said who to log in as makes them fix two things in two runs.
 	if p.User == "" {
 		return nil, fmt.Errorf("no login user for %s: a VM does not carry one, so pass --user", name)
+	}
+	addr := openstack.ConnectableAddress(addrs, p.OperatorNets)
+	if addr == "" {
+		if len(addrs) == 0 {
+			// A real state: a VM that is building, or one whose port was
+			// detached.
+			return nil, fmt.Errorf("%s has no address at all", name)
+		}
+		// It has addresses; none of them is one this can vouch for. Say which
+		// they are and name the door that does not pretend to know.
+		known := make([]string, 0, len(addrs))
+		for _, a := range addrs {
+			known = append(known, a.Address)
+		}
+		return nil, fmt.Errorf(
+			"%s has no floating or operator-network address (only %s); "+
+				"tenant ranges repeat across farms, so connecting to one would be a guess. "+
+				"Use 'vctl ssh <user>@<addr>' if you know that address is this VM",
+			name, strings.Join(known, ", "))
 	}
 	port := p.Port
 	if port == 0 {

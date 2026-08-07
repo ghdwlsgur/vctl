@@ -230,32 +230,46 @@ func attachAddressesOn(ctx context.Context, db rowQuerier, in []Instance) ([]Ins
 	}
 	// One query for the whole listing rather than one per VM: a deployment with
 	// a thousand VMs would otherwise be a thousand round trips.
+	//
+	// Keyed by (deployment, instance) throughout, because that is what the table
+	// is keyed by. Looking addresses up by instance id alone contradicted the
+	// schema: the same Nova uuid in two deployments would have had both farms'
+	// addresses merged onto each row, and a connection made from that list could
+	// reach the other farm's machine. Nova uuids are unique in practice, which is
+	// exactly why nothing would have noticed until something did.
+	deps := make([]string, 0, len(in))
 	ids := make([]string, 0, len(in))
 	for _, i := range in {
+		deps = append(deps, i.DeploymentID)
 		ids = append(ids, i.InstanceID)
 	}
 	type addrRow struct {
-		InstanceID string
+		DeploymentID string
+		InstanceID   string
 		InstanceAddress
 	}
 	addrs, err := queryAndCollect(ctx, db, `
-		SELECT instance_id, network_name, address, address_type, ip_version
-		FROM openstack_instance_addresses WHERE instance_id = ANY($1)
-		ORDER BY instance_id, address`, []any{ids},
+		SELECT a.deployment_id, a.instance_id, a.network_name, a.address, a.address_type, a.ip_version
+		FROM openstack_instance_addresses a
+		JOIN unnest($1::text[], $2::text[]) AS want(deployment_id, instance_id)
+		  ON want.deployment_id = a.deployment_id AND want.instance_id = a.instance_id
+		ORDER BY a.deployment_id, a.instance_id, a.address`, []any{deps, ids},
 		func(r pgx.Rows) (addrRow, error) {
 			var a addrRow
-			err := r.Scan(&a.InstanceID, &a.NetworkName, &a.Address, &a.Type, &a.IPVersion)
+			err := r.Scan(&a.DeploymentID, &a.InstanceID, &a.NetworkName, &a.Address, &a.Type, &a.IPVersion)
 			return a, err
 		})
 	if err != nil {
 		return nil, err
 	}
-	byID := map[string][]InstanceAddress{}
+	type key struct{ deployment, instance string }
+	byID := map[key][]InstanceAddress{}
 	for _, a := range addrs {
-		byID[a.InstanceID] = append(byID[a.InstanceID], a.InstanceAddress)
+		k := key{a.DeploymentID, a.InstanceID}
+		byID[k] = append(byID[k], a.InstanceAddress)
 	}
 	for i := range in {
-		in[i].Addresses = byID[in[i].InstanceID]
+		in[i].Addresses = byID[key{in[i].DeploymentID, in[i].InstanceID}]
 	}
 	return in, nil
 }

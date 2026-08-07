@@ -331,7 +331,7 @@ func vmStateCell(v store.Instance) string {
 // will use. It was inline here, decoration and all, which is why the two could
 // not share it.
 func primaryAddress(v store.Instance, operatorNets []string) string {
-	best := openstack.ReachableAddress(v.Addresses, operatorNets)
+	best := openstack.PreferredAddress(v.Addresses, operatorNets)
 	if extra := len(v.Addresses) - 1; extra > 0 && best != "" {
 		return best + ui.Muted(fmt.Sprintf(" (+%d)", extra))
 	}
