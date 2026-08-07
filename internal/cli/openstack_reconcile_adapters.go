@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"github.com/ghdwlsgur/vctl/internal/openstack/reconcile"
 	"github.com/ghdwlsgur/vctl/internal/openstackapi"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -97,11 +98,11 @@ func (novaCloud) Instances(ctx context.Context, c openstackapi.Credentials, inse
 // storeRepo is the store, narrowed to what a reconcile writes.
 type storeRepo struct{ st *store.Store }
 
-func (r storeRepo) Reconcile(ctx context.Context, in store.ReconcileInput) (store.ReconcileResult, error) {
-	return r.st.ReconcileDeployment(ctx, in)
+func (r storeRepo) Apply(ctx context.Context, d membership.Decision) error {
+	return r.st.ApplyMembership(ctx, d)
 }
 
-func (r storeRepo) RecordRun(ctx context.Context, id string, res store.ReconcileResult, at time.Time, runErr error) error {
+func (r storeRepo) RecordRun(ctx context.Context, id string, res membership.Outcome, at time.Time, runErr error) error {
 	return r.st.RecordReconcileRun(ctx, id, res, at, runErr)
 }
 

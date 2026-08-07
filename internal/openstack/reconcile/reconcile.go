@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"github.com/ghdwlsgur/vctl/internal/openstackapi"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
@@ -69,7 +70,7 @@ type Outcome struct {
 	// nothing may be demoted on a partial answer.
 	Partial string
 
-	Result store.ReconcileResult
+	Result membership.Outcome
 
 	// Instances is how many VMs were recorded, and Warnings holds everything
 	// that went wrong without being worth failing over.
@@ -120,8 +121,11 @@ type Cloud interface {
 // business with the rest of the store, and an interface that mirrored the table
 // would grow every time something unrelated did.
 type Repository interface {
-	Reconcile(ctx context.Context, in store.ReconcileInput) (store.ReconcileResult, error)
-	RecordRun(ctx context.Context, id string, r store.ReconcileResult, at time.Time, runErr error) error
+	// Apply records a decision. It does not make one — see
+	// internal/openstack/membership, and Preview, which is the same decision
+	// with nothing written.
+	Apply(ctx context.Context, d membership.Decision) error
+	RecordRun(ctx context.Context, id string, r membership.Outcome, at time.Time, runErr error) error
 	RecordControlHosts(ctx context.Context, id string, hosts []string, at time.Time) error
 	ReplaceInstances(ctx context.Context, id string, rows []store.Instance, at time.Time, complete bool) (int, error)
 }
@@ -177,7 +181,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Report, error) {
 			// and why. Without it a farm failing every six hours is
 			// indistinguishable from one nobody has configured.
 			if !req.DryRun {
-				if e := s.Repo.RecordRun(ctx, f.ID, store.ReconcileResult{}, s.now(), err); e != nil {
+				if e := s.Repo.RecordRun(ctx, f.ID, membership.Outcome{}, s.now(), err); e != nil {
 					out.Warnings = append(out.Warnings, fmt.Errorf("recording the failure: %w", e))
 				}
 			}
@@ -198,17 +202,19 @@ func (s *Service) Run(ctx context.Context, req Request) (Report, error) {
 
 		out.Instances, out.Warnings = s.collectInstances(ctx, f.ID, creds, req.Insecure, out.Warnings)
 
-		got, err := s.Repo.Reconcile(ctx, store.ReconcileInput{
+		// Decided here, written below. The decision is the same function
+		// --dry-run calls, so what a preview showed is what a run does.
+		decision := membership.Decide(membership.Observation{
 			DeploymentID: f.ID, KeystoneURL: f.ID,
 			LocalHosts: f.LocalHosts, ControlHosts: list.Hosts,
-			Complete:   list.Complete,
-			ObservedAt: s.now(),
+			Complete: list.Complete,
+			At:       s.now(),
 		})
-		if err != nil {
+		if err := s.Repo.Apply(ctx, decision); err != nil {
 			return rep, fmt.Errorf("%s: %w", f.ID, err)
 		}
-		out.Result = got
-		if e := s.Repo.RecordRun(ctx, f.ID, got, s.now(), nil); e != nil {
+		out.Result = decision.Outcome
+		if e := s.Repo.RecordRun(ctx, f.ID, decision.Outcome, s.now(), nil); e != nil {
 			out.Warnings = append(out.Warnings, fmt.Errorf("recording the run: %w", e))
 		}
 		// The hosts nova named that no inventory entry matched. Printing them
@@ -216,7 +222,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Report, error) {
 		// a nova service on a machine nobody has registered is either a
 		// forgotten host, a name that drifted, or something that should not be
 		// running — and none of those survives being said once.
-		if e := s.Repo.RecordControlHosts(ctx, f.ID, got.ControlOnly, s.now()); e != nil {
+		if e := s.Repo.RecordControlHosts(ctx, f.ID, decision.Outcome.ControlOnly, s.now()); e != nil {
 			out.Warnings = append(out.Warnings, fmt.Errorf("recording control-only hosts: %w", e))
 		}
 		rep.Outcomes = append(rep.Outcomes, out)
@@ -277,28 +283,15 @@ func PartialReason(l openstackapi.HostList) string {
 
 // Preview computes what a run would decide, without writing.
 //
-// It calls the same matcher the store does rather than restating the rule. The
-// first version restated it, and a dry run that decides differently from the
-// real one is worse than having none — it invites approving a change that then
-// does something else.
-func Preview(local, control []string) store.ReconcileResult {
-	pairs, ambiguous := store.MatchHosts(local, control)
-	res := store.ReconcileResult{Ambiguous: ambiguous}
-	taken := map[string]bool{}
-	for _, h := range local {
-		if nova, ok := pairs[h]; ok {
-			res.Confirmed = append(res.Confirmed, h)
-			taken[nova] = true
-			continue
-		}
-		res.LocalOnly = append(res.LocalOnly, h)
-	}
-	for _, c := range control {
-		if !taken[c] {
-			res.ControlOnly = append(res.ControlOnly, c)
-		}
-	}
-	return res
+// The same function the run itself calls, so a dry run cannot decide
+// differently from the real one. It used to restate the rule — the matcher was
+// shared but the loop around it was written twice — and a preview that
+// disagrees with what follows is worse than having none: it invites approving a
+// change that then does something else.
+func Preview(local, control []string) membership.Outcome {
+	return membership.Decide(membership.Observation{
+		LocalHosts: local, ControlHosts: control, Complete: true,
+	}).Outcome
 }
 
 // ToStoreInstance converts one Nova server into the row that is stored.
