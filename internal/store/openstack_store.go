@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 )
 
 // OpenStackHost is one host as the openstack listing sees it: the roles the last
@@ -77,20 +79,18 @@ type OpenStackMembership struct {
 	ObservedAt   time.Time `json:"observed_at"`
 }
 
-// Membership confidence values, in the order automation should trust them. Only
-// the first two are statements; the rest are observations.
+// Membership confidence values, in the order automation should trust them.
+//
+// Defined where the decision that produces them is — internal/openstack/
+// membership — and re-exported here for the readers that compare against a
+// stored row. One definition, so a rename cannot leave half the codebase
+// writing a word the other half does not recognise.
 const (
-	// ConfidenceDeclared: an identifier somebody placed on the host on purpose.
-	ConfidenceDeclared = "declared"
-	// ConfidenceConfirmed: local evidence and the control plane agree.
-	ConfidenceConfirmed = "confirmed"
-	// ConfidenceLocalOnly: the host runs the services, nothing has confirmed
-	// which deployment they belong to.
-	ConfidenceLocalOnly = "local-only"
-	// ConfidenceControlOnly: registered centrally, nothing found on the host.
-	ConfidenceControlOnly = "control-only"
-	// ConfidenceConflict: the evidence disagrees.
-	ConfidenceConflict = "conflict"
+	ConfidenceDeclared    = membership.Declared
+	ConfidenceConfirmed   = membership.Confirmed
+	ConfidenceLocalOnly   = membership.LocalOnly
+	ConfidenceControlOnly = membership.ControlOnly
+	ConfidenceConflict    = membership.Conflict
 )
 
 // KindOpenStack is the capability kind this file reads.

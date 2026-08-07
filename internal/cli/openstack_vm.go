@@ -16,6 +16,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
+	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -265,12 +266,16 @@ func pickProjects(projects []store.Project, deployment, selector string) (ids []
 // re-derives the join with the same matcher the reconciler uses. Storing the
 // resolved name instead would bake today's matching rules into data that
 // outlives them, and the rules have already changed twice.
+//
+// The matcher is a naming rule, not a storage detail. It lived in the store,
+// which meant this had to reach into the persistence layer to answer a question
+// about what two machines are called.
 func novaNameFor(ctx context.Context, st *store.Store, inventoryHost, deployment string) (string, error) {
 	names, err := st.HypervisorNames(ctx, deployment)
 	if err != nil {
 		return "", err
 	}
-	pairs, ambiguous := store.MatchHosts([]string{inventoryHost}, names)
+	pairs, ambiguous := membership.MatchHosts([]string{inventoryHost}, names)
 	if nova, ok := pairs[inventoryHost]; ok {
 		return nova, nil
 	}

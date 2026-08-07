@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"testing"
 	"time"
 )
@@ -20,11 +21,11 @@ func TestFailedRunKeepsTheLastGoodCounts(t *testing.T) {
 		_, _ = st.pool.Exec(ctx, `DELETE FROM openstack_reconcile_runs WHERE deployment_id=$1`, farm)
 	})
 
-	good := ReconcileResult{Complete: true, Confirmed: []string{"a", "b"}, LocalOnly: []string{"c"}}
+	good := membership.Outcome{Complete: true, Confirmed: []string{"a", "b"}, LocalOnly: []string{"c"}}
 	if err := st.RecordReconcileRun(ctx, farm, good, time.Now().Add(-time.Hour), nil); err != nil {
 		t.Fatalf("good run: %v", err)
 	}
-	if err := st.RecordReconcileRun(ctx, farm, ReconcileResult{}, time.Now(), errors.New("keystone unreachable")); err != nil {
+	if err := st.RecordReconcileRun(ctx, farm, membership.Outcome{}, time.Now(), errors.New("keystone unreachable")); err != nil {
 		t.Fatalf("failed run: %v", err)
 	}
 
@@ -60,10 +61,10 @@ func TestSuccessClearsTheError(t *testing.T) {
 		_, _ = st.pool.Exec(ctx, `DELETE FROM openstack_reconcile_runs WHERE deployment_id=$1`, farm)
 	})
 
-	if err := st.RecordReconcileRun(ctx, farm, ReconcileResult{}, time.Now().Add(-time.Hour), errors.New("boom")); err != nil {
+	if err := st.RecordReconcileRun(ctx, farm, membership.Outcome{}, time.Now().Add(-time.Hour), errors.New("boom")); err != nil {
 		t.Fatalf("failed run: %v", err)
 	}
-	if err := st.RecordReconcileRun(ctx, farm, ReconcileResult{Complete: true}, time.Now(), nil); err != nil {
+	if err := st.RecordReconcileRun(ctx, farm, membership.Outcome{Complete: true}, time.Now(), nil); err != nil {
 		t.Fatalf("good run: %v", err)
 	}
 

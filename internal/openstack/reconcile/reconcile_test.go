@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"slices"
 	"testing"
 	"time"
@@ -63,9 +64,11 @@ type write struct {
 	complete bool
 }
 
+// fakeRepo records what was written. It no longer supplies the outcome: the
+// service decides that now — see membership.Decide — so what the tests assert
+// is derived from the hosts the fake cloud reports rather than injected here.
 type fakeRepo struct {
 	writes    []write
-	result    map[string]store.ReconcileResult
 	failOn    string // kind that returns an error
 	failOnID  string
 	instances int
@@ -78,15 +81,12 @@ func (r *fakeRepo) fail(kind, id string) error {
 	return nil
 }
 
-func (r *fakeRepo) Reconcile(_ context.Context, in store.ReconcileInput) (store.ReconcileResult, error) {
-	r.writes = append(r.writes, write{kind: "reconcile", id: in.DeploymentID, at: in.ObservedAt})
-	if err := r.fail("reconcile", in.DeploymentID); err != nil {
-		return store.ReconcileResult{}, err
-	}
-	return r.result[in.DeploymentID], nil
+func (r *fakeRepo) Apply(_ context.Context, d membership.Decision) error {
+	r.writes = append(r.writes, write{kind: "reconcile", id: d.DeploymentID, at: d.At})
+	return r.fail("reconcile", d.DeploymentID)
 }
 
-func (r *fakeRepo) RecordRun(_ context.Context, id string, _ store.ReconcileResult, at time.Time, runErr error) error {
+func (r *fakeRepo) RecordRun(_ context.Context, id string, _ membership.Outcome, at time.Time, runErr error) error {
 	r.writes = append(r.writes, write{kind: "run", id: id, at: at, err: runErr})
 	return r.fail("run", id)
 }
@@ -126,7 +126,7 @@ func complete(hosts ...string) openstackapi.HostList {
 func TestAFarmWithNoCredentialsDoesNotStopTheOthers(t *testing.T) {
 	creds := &fakeCreds{err: map[string]error{"a": errors.New("no credentials at kv/…")}}
 	cloud := &fakeCloud{hosts: map[string]openstackapi.HostList{"b": complete("h1")}}
-	repo := &fakeRepo{result: map[string]store.ReconcileResult{"b": {Confirmed: []string{"h1"}}}}
+	repo := &fakeRepo{}
 
 	rep, err := svc(creds, cloud, repo).Run(context.Background(), Request{
 		Farms: []Farm{{ID: "a", LocalHosts: []string{"h1"}}, {ID: "b", LocalHosts: []string{"h1"}}},
@@ -211,7 +211,7 @@ func TestAPartialAnswerIsNamed(t *testing.T) {
 	cloud := &fakeCloud{hosts: map[string]openstackapi.HostList{
 		"a": {Hosts: []string{"h1"}, Complete: false, ServiceError: "503"},
 	}}
-	repo := &fakeRepo{result: map[string]store.ReconcileResult{"a": {Confirmed: []string{"h1"}}}}
+	repo := &fakeRepo{}
 
 	rep, err := svc(creds, cloud, repo).Run(context.Background(), Request{
 		Farms: []Farm{{ID: "a", LocalHosts: []string{"h1"}}},
@@ -236,10 +236,7 @@ func TestABookkeepingFailureDoesNotFailTheRun(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			creds := &fakeCreds{}
 			cloud := &fakeCloud{hosts: map[string]openstackapi.HostList{"a": complete("h1")}}
-			repo := &fakeRepo{
-				failOn: kind,
-				result: map[string]store.ReconcileResult{"a": {Confirmed: []string{"h1"}}},
-			}
+			repo := &fakeRepo{failOn: kind}
 
 			rep, err := svc(creds, cloud, repo).Run(context.Background(), Request{
 				Farms: []Farm{{ID: "a", LocalHosts: []string{"h1"}}},
@@ -287,7 +284,7 @@ func TestAFailedInstanceListingKeepsTheMembership(t *testing.T) {
 		hosts:   map[string]openstackapi.HostList{"a": complete("h1")},
 		instErr: map[string]error{"a": errors.New("nova is down")},
 	}
-	repo := &fakeRepo{result: map[string]store.ReconcileResult{"a": {Confirmed: []string{"h1"}}}}
+	repo := &fakeRepo{}
 
 	rep, err := svc(creds, cloud, repo).Run(context.Background(), Request{
 		Farms: []Farm{{ID: "a", LocalHosts: []string{"h1"}}},
@@ -324,7 +321,7 @@ func TestARunThatReachedNothingFails(t *testing.T) {
 func TestOnePassRecordsOneInstant(t *testing.T) {
 	creds := &fakeCreds{}
 	cloud := &fakeCloud{hosts: map[string]openstackapi.HostList{"a": complete("h1")}}
-	repo := &fakeRepo{result: map[string]store.ReconcileResult{"a": {Confirmed: []string{"h1"}}}}
+	repo := &fakeRepo{}
 
 	if _, err := svc(creds, cloud, repo).Run(context.Background(), Request{
 		Farms: []Farm{{ID: "a", LocalHosts: []string{"h1"}}},
@@ -361,7 +358,7 @@ func TestAPartialInstanceListingIsWrittenAsIncomplete(t *testing.T) {
 					Complete:  tc.complete,
 				}},
 			}
-			repo := &fakeRepo{result: map[string]store.ReconcileResult{"a": {Confirmed: []string{"h1"}}}}
+			repo := &fakeRepo{}
 
 			if _, err := svc(creds, cloud, repo).Run(context.Background(), Request{
 				Farms: []Farm{{ID: "a", LocalHosts: []string{"h1"}}},
@@ -403,9 +400,7 @@ func TestAReportCountsWhatWentWrongWithoutDeciding(t *testing.T) {
 		},
 		hostErr: map[string]error{"d": errors.New("context deadline exceeded")},
 	}
-	repo := &fakeRepo{result: map[string]store.ReconcileResult{
-		"a": {Confirmed: []string{"h1"}}, "b": {Confirmed: []string{"h2"}},
-	}}
+	repo := &fakeRepo{}
 
 	rep, err := svc(creds, cloud, repo).Run(context.Background(), Request{
 		Farms: []Farm{

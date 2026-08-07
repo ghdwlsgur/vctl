@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"github.com/ghdwlsgur/vctl/internal/openstack/reconcile"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -225,7 +226,7 @@ func vaultFarmKey(id string) string {
 	return "vctl-" + strings.ReplaceAll(id, ":", "_")
 }
 
-func reportReconcile(id string, r store.ReconcileResult, dry bool) {
+func reportReconcile(id string, r membership.Outcome, dry bool) {
 	head := id
 	if dry {
 		head += " (dry run)"

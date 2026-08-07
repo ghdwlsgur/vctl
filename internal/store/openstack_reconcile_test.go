@@ -2,10 +2,26 @@ package store
 
 import (
 	"context"
+	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"slices"
 	"testing"
 	"time"
 )
+
+// reconcileNow decides and applies, which is what the service does — the store
+// no longer does both. Keeping the integration tests pointed at the pair means
+// they still exercise the SQL against the rules that produced it.
+func reconcileNow(t *testing.T, ctx context.Context, st *Store, obs membership.Observation) (membership.Outcome, error) {
+	t.Helper()
+	d := membership.Decide(obs)
+	if err := st.ApplyMembership(ctx, d); err != nil {
+		return membership.Outcome{}, err
+	}
+	return d.Outcome, nil
+}
 
 // seedFarmHosts registers hosts and files the probe result that would have put
 // them on the reconciler's work list.
@@ -47,11 +63,11 @@ func TestReconcileConfirmsWhenBothSidesAgree(t *testing.T) {
 	seedFarmHosts(t, st, "10.0.0.1:5000", "recon-host-01", "recon-host-02")
 	cleanupDeployment(t, st, farm)
 
-	got, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	got, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: "10.0.0.1:5000",
 		LocalHosts:   []string{"recon-host-01", "recon-host-02"},
 		ControlHosts: []string{"recon-host-01", "recon-host-02"},
-		ObservedAt:   time.Now(), Complete: true,
+		At:           time.Now(), Complete: true,
 	})
 	if err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
@@ -79,11 +95,11 @@ func TestReconcileLeavesAnUnconfirmedHostAlone(t *testing.T) {
 	seedFarmHosts(t, st, "10.0.0.2:5000", "recon-host-03")
 	cleanupDeployment(t, st, farm)
 
-	got, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	got, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: "10.0.0.2:5000",
 		LocalHosts:   []string{"recon-host-03"},
 		ControlHosts: []string{"some-other-host"},
-		ObservedAt:   time.Now(), Complete: true,
+		At:           time.Now(), Complete: true,
 	})
 	if err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
@@ -110,12 +126,12 @@ func TestReconcileMatchesShortAndQualifiedNames(t *testing.T) {
 	seedFarmHosts(t, st, "10.0.0.3:5000", "recon-host-04")
 	cleanupDeployment(t, st, farm)
 
-	got, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	got, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: "10.0.0.3:5000",
 		LocalHosts: []string{"recon-host-04"},
 		// nova reports it qualified; the inventory holds the short name.
 		ControlHosts: []string{"recon-host-04.internal.example"},
-		ObservedAt:   time.Now(), Complete: true,
+		At:           time.Now(), Complete: true,
 	})
 	if err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
@@ -135,11 +151,11 @@ func TestReconcileReportsControlOnlyHostsWithoutInventingThem(t *testing.T) {
 	seedFarmHosts(t, st, "10.0.0.4:5000", "recon-host-05")
 	cleanupDeployment(t, st, farm)
 
-	got, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	got, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: "10.0.0.4:5000",
 		LocalHosts:   []string{"recon-host-05"},
 		ControlHosts: []string{"recon-host-05", "ghost-node-99"},
-		ObservedAt:   time.Now(), Complete: true,
+		At:           time.Now(), Complete: true,
 	})
 	if err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
@@ -166,20 +182,20 @@ func TestReconcileDropsAHostThatLeftTheDeployment(t *testing.T) {
 	cleanupDeployment(t, st, farm)
 
 	first := time.Now().Add(-time.Hour)
-	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	if _, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: "10.0.0.5:5000",
 		LocalHosts:   []string{"recon-host-06", "recon-host-07"},
 		ControlHosts: []string{"recon-host-06", "recon-host-07"},
-		ObservedAt:   first, Complete: true,
+		At:           first, Complete: true,
 	}); err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
 	// 07 is gone from both sides on the next run.
-	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	if _, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: "10.0.0.5:5000",
 		LocalHosts:   []string{"recon-host-06"},
 		ControlHosts: []string{"recon-host-06"},
-		ObservedAt:   time.Now(), Complete: true,
+		At:           time.Now(), Complete: true,
 	}); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
@@ -211,11 +227,11 @@ func TestReconciledMembershipOutranksTheLocalInference(t *testing.T) {
 		t.Fatalf("precondition: confidence = %q, want local-only", got.Confidence)
 	}
 
-	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	if _, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, DisplayName: "Farm F", KeystoneURL: "10.0.0.6:5000",
 		LocalHosts:   []string{host},
 		ControlHosts: []string{host},
-		ObservedAt:   time.Now(), Complete: true,
+		At:           time.Now(), Complete: true,
 	}); err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
 	}
@@ -229,83 +245,6 @@ func TestReconciledMembershipOutranksTheLocalInference(t *testing.T) {
 	}
 }
 
-// nova names hosts its own way, and shorter than the inventory in more than one
-// way. The third case is why this exists: incheon names its hosts aio01/gpu01
-// while the inventory qualifies them by site, and matching only exact and short
-// names left all seven local-only — the deployment disowned every machine in it.
-func TestMatchHostsPairsAcrossAnInventoryPrefix(t *testing.T) {
-	local := []string{"incheon-aio01", "incheon-aio02", "incheon-gpu01"}
-	control := []string{"aio01", "aio02", "gpu01"}
-
-	pairs, ambiguous := MatchHosts(local, control)
-
-	for inv, nova := range map[string]string{
-		"incheon-aio01": "aio01", "incheon-aio02": "aio02", "incheon-gpu01": "gpu01",
-	} {
-		if pairs[inv] != nova {
-			t.Errorf("%s paired with %q, want %q", inv, pairs[inv], nova)
-		}
-	}
-	if len(ambiguous) != 0 {
-		t.Errorf("ambiguous = %v, want none", ambiguous)
-	}
-}
-
-// A name that fits several inventory hosts is refused, not guessed. Picking one
-// would be an inventory claiming a machine on the strength of a resemblance.
-func TestMatchHostsRefusesAnAmbiguousName(t *testing.T) {
-	local := []string{"incheon-aio01", "seoul-aio01"}
-	control := []string{"aio01"}
-
-	pairs, ambiguous := MatchHosts(local, control)
-
-	if len(pairs) != 0 {
-		t.Errorf("pairs = %v, want none — the name fits two hosts", pairs)
-	}
-	if !slices.Contains(ambiguous, "aio01") {
-		t.Errorf("ambiguous = %v, want the name reported", ambiguous)
-	}
-}
-
-// An exact match must win before any looser rule can take the host.
-func TestMatchHostsPrefersTheExactName(t *testing.T) {
-	local := []string{"aio01", "incheon-aio01"}
-	control := []string{"aio01"}
-
-	pairs, _ := MatchHosts(local, control)
-
-	if pairs["aio01"] != "aio01" {
-		t.Errorf("pairs = %v, want the exact name to win", pairs)
-	}
-	if _, taken := pairs["incheon-aio01"]; taken {
-		t.Errorf("pairs = %v — the suffix rule stole a host that had an exact match", pairs)
-	}
-}
-
-// The boundary is required. Without it "u01" would match "sre-gpu01", and a
-// name that merely ends in the same letters is not the same machine.
-func TestMatchHostsRequiresASeparatorBeforeTheSuffix(t *testing.T) {
-	pairs, _ := MatchHosts([]string{"sre-gpu01"}, []string{"u01"})
-
-	if len(pairs) != 0 {
-		t.Errorf("pairs = %v — matched on letters rather than on a name", pairs)
-	}
-}
-
-// The domain-suffix case still works.
-func TestMatchHostsStillPairsAcrossADomain(t *testing.T) {
-	pairs, _ := MatchHosts([]string{"sre-srv-0059"}, []string{"sre-srv-0059.internal.example"})
-
-	if pairs["sre-srv-0059"] != "sre-srv-0059.internal.example" {
-		t.Errorf("pairs = %v, want the qualified nova name paired", pairs)
-	}
-}
-
-// A farm's name and region are things a person set. The reconciler knows the
-// endpoint and nothing else, so writing EXCLUDED unconditionally overwrote them
-// with the empty strings it was not carrying — a farm named today was anonymous
-// again six hours later, and nothing said so.
-// Integration — needs VCTL_TEST_DSN.
 func TestReconcileDoesNotEraseTheFarmName(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
@@ -317,10 +256,10 @@ func TestReconcileDoesNotEraseTheFarmName(t *testing.T) {
 		t.Fatalf("SetDeploymentName: %v", err)
 	}
 	// The reconciler carries neither field, exactly as the CLI calls it.
-	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	if _, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: farm,
 		LocalHosts: []string{"recon-host-09"}, ControlHosts: []string{"recon-host-09"},
-		ObservedAt: time.Now(), Complete: true,
+		At: time.Now(), Complete: true,
 	}); err != nil {
 		t.Fatalf("ReconcileDeployment: %v", err)
 	}
@@ -380,10 +319,10 @@ func TestPartialAnswerDoesNotDemoteAConfirmedHost(t *testing.T) {
 	cleanupDeployment(t, st, farm)
 
 	// A complete run confirms it.
-	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	if _, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: farm,
 		LocalHosts: []string{"recon-host-10"}, ControlHosts: []string{"recon-host-10"},
-		ObservedAt: time.Now().Add(-time.Hour), Complete: true,
+		At: time.Now().Add(-time.Hour), Complete: true,
 	}); err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
@@ -392,10 +331,10 @@ func TestPartialAnswerDoesNotDemoteAConfirmedHost(t *testing.T) {
 	}
 
 	// The next run gets half an answer that happens not to name the host.
-	got, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	got, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: farm,
 		LocalHosts: []string{"recon-host-10"}, ControlHosts: nil,
-		ObservedAt: time.Now(), Complete: false,
+		At: time.Now(), Complete: false,
 	})
 	if err != nil {
 		t.Fatalf("partial reconcile: %v", err)
@@ -418,17 +357,17 @@ func TestCompleteAnswerStillDemotes(t *testing.T) {
 	seedFarmHosts(t, st, "10.0.0.11:5000", "recon-host-11")
 	cleanupDeployment(t, st, farm)
 
-	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	if _, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: farm,
 		LocalHosts: []string{"recon-host-11"}, ControlHosts: []string{"recon-host-11"},
-		ObservedAt: time.Now().Add(-time.Hour), Complete: true,
+		At: time.Now().Add(-time.Hour), Complete: true,
 	}); err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
-	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	if _, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: farm,
 		LocalHosts: []string{"recon-host-11"}, ControlHosts: nil,
-		ObservedAt: time.Now(), Complete: true,
+		At: time.Now(), Complete: true,
 	}); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
@@ -448,20 +387,20 @@ func TestPartialAnswerDoesNotSweepMemberships(t *testing.T) {
 	seedFarmHosts(t, st, "10.0.0.12:5000", "recon-host-12", "recon-host-13")
 	cleanupDeployment(t, st, farm)
 
-	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	if _, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: farm,
 		LocalHosts:   []string{"recon-host-12", "recon-host-13"},
 		ControlHosts: []string{"recon-host-12", "recon-host-13"},
-		ObservedAt:   time.Now().Add(-time.Hour), Complete: true,
+		At:           time.Now().Add(-time.Hour), Complete: true,
 	}); err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
 	// A partial run that only saw one of them.
-	if _, err := st.ReconcileDeployment(ctx, ReconcileInput{
+	if _, err := reconcileNow(t, ctx, st, membership.Observation{
 		DeploymentID: farm, KeystoneURL: farm,
 		LocalHosts:   []string{"recon-host-12", "recon-host-13"},
 		ControlHosts: []string{"recon-host-12"},
-		ObservedAt:   time.Now(), Complete: false,
+		At:           time.Now(), Complete: false,
 	}); err != nil {
 		t.Fatalf("partial reconcile: %v", err)
 	}
@@ -532,4 +471,38 @@ func deploymentByID(t *testing.T, st *Store, id string) Deployment {
 	}
 	t.Fatalf("no deployment %s", id)
 	return Deployment{}
+}
+
+// The store applies decisions and does not make them.
+//
+// The rules used to live inside the transaction that wrote them, which is why
+// `--dry-run` had to be a second implementation and why the host matching sat
+// in the persistence layer where the VM listing reached for it. A call to
+// Decide or MatchHosts from here would put a decision back where it cannot be
+// asked without a database.
+func TestTheStoreDoesNotDecideMembership(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "openstack_reconcile.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	banned := map[string]bool{"Decide": true, "MatchHosts": true}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		var name string
+		switch fn := call.Fun.(type) {
+		case *ast.Ident:
+			name = fn.Name
+		case *ast.SelectorExpr:
+			name = fn.Sel.Name
+		}
+		if banned[name] {
+			t.Errorf("the store calls %s at %s; deciding is internal/openstack/membership's job, "+
+				"and a decision made in here cannot be previewed", name, fset.Position(call.Pos()))
+		}
+		return true
+	})
 }
