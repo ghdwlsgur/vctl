@@ -2,9 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"strings"
 	"testing"
 
@@ -16,38 +13,10 @@ import (
 //
 // It is the command somebody reaches for when a deployment is already
 // misbehaving, and "diagnostic" is exactly the word people use for the tool
-// they run without thinking about what it writes. Read rather than trusted:
-// this walks the file and fails on any call that records anything.
+// they run without thinking about what it writes. Read rather than trusted: the
+// shared assertion walks the file and fails on any call that records anything.
 func TestFarmDoctorWritesNothing(t *testing.T) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "openstack_farm_doctor.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	// Every store and cloud call that changes something. A doctor that grew one
-	// of these would still look like a diagnostic from the outside.
-	banned := map[string]bool{
-		"ReconcileDeployment": true, "RecordReconcileRun": true,
-		"RecordControlHosts": true, "ReplaceInstances": true,
-		"SetDeploymentName": true, "SetDeploymentState": true,
-		"ReplaceCapabilities": true, "RecordCapabilityError": true,
-		"UpsertServerStatus": true,
-	}
-	ast.Inspect(f, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		if banned[sel.Sel.Name] {
-			t.Errorf("doctor calls %s at %s; it is meant to read and nothing else",
-				sel.Sel.Name, fset.Position(call.Pos()))
-		}
-		return true
-	})
+	assertReadsOnly(t, "openstack_farm_doctor.go", "doctor")
 }
 
 // A missing credential field is a different problem from a missing credential,
