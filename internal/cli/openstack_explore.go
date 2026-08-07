@@ -14,6 +14,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/timing"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -168,6 +169,7 @@ type exploreData struct {
 }
 
 func loadExploreData(ctx context.Context, st *store.Store) (exploreData, error) {
+	defer timing.Start("explore-load")()
 	out := exploreData{
 		Hosts: map[string][]store.OpenStackHost{},
 		VMs:   map[string][]store.Instance{},
@@ -622,6 +624,7 @@ func (m exploreModel) rowPaneWidth() int {
 }
 
 func (m exploreModel) View() string {
+	defer timing.Start("render")()
 	if len(m.detail) > 0 {
 		return m.detailView()
 	}
