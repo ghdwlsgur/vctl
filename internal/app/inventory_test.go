@@ -74,19 +74,19 @@ func TestDatabaseAcceptsDetectsListener(t *testing.T) {
 // does not authenticate at all.
 func TestWouldPromptForLoginOnlyWhenAPromptIsPossible(t *testing.T) {
 	t.Run("no credentials at all", func(t *testing.T) {
-		if !testApp(t, &config.Config{}).wouldPromptForLogin() {
+		if !testApp(t, &config.Config{}).WouldPromptForLogin() {
 			t.Error("expected a prompt with no token and no AppRole credentials")
 		}
 	})
 	t.Run("approle configured", func(t *testing.T) {
 		a := testApp(t, &config.Config{AppRoleID: "role", AppRoleSecretID: "secret"})
-		if a.wouldPromptForLogin() {
+		if a.WouldPromptForLogin() {
 			t.Error("AppRole credentials authenticate silently; no prompt is possible")
 		}
 	})
 	t.Run("local dsn bypasses vault", func(t *testing.T) {
 		a := testApp(t, &config.Config{LocalDBDSN: "postgres://u:p@127.0.0.1:5432/vctl"})
-		if a.wouldPromptForLogin() {
+		if a.WouldPromptForLogin() {
 			t.Error("the local-DSN path never consults Vault; no prompt is possible")
 		}
 	})

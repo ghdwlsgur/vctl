@@ -124,7 +124,7 @@ const dbProbeTimeout = 2 * time.Second
 // authenticate silently, there is no prompt to avoid and this costs nothing:
 // the probe never runs and the normal path is unchanged.
 func (a *App) snapshotToServeInstead(ctx context.Context) *invcache.Snapshot {
-	if !a.wouldPromptForLogin() {
+	if !a.WouldPromptForLogin() {
 		return nil
 	}
 	snap, err := a.readCache()
@@ -137,11 +137,16 @@ func (a *App) snapshotToServeInstead(ctx context.Context) *invcache.Snapshot {
 	return snap
 }
 
-// wouldPromptForLogin reports whether authenticating right now would put an
+// WouldPromptForLogin reports whether authenticating right now would put an
 // interactive prompt in front of the operator. A cached token or AppRole
 // credentials both authenticate without one, and the local-DSN escape hatch
 // skips Vault entirely.
-func (a *App) wouldPromptForLogin() bool {
+//
+// Exported for shell completion, which asks the same question for the opposite
+// reason. The snapshot path asks whether a prompt is coming so it can answer
+// from disk instead; a completion asks so it can decline, because a password
+// prompt attached to a Tab keypress has nowhere to appear.
+func (a *App) WouldPromptForLogin() bool {
 	if a.Cfg.LocalDBDSN != "" {
 		return false // OpenStore takes the static-credential path; Vault is not consulted
 	}

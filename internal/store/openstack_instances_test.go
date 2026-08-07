@@ -300,3 +300,81 @@ func TestAddressesDoNotCrossDeployments(t *testing.T) {
 		}
 	}
 }
+
+// Projects is what turns the name in the table into something --project
+// accepts, so the set it returns has to be the set the rows carry.
+// Integration — needs VCTL_TEST_DSN.
+func TestProjectsAndFilteringByMoreThanOneOfThem(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const farmA, farmB = "proj-farm-a", "proj-farm-b"
+	seedInstanceFarm(t, st, farmA)
+	seedInstanceFarm(t, st, farmB)
+
+	withProject := func(v Instance, id, name string) Instance {
+		v.ProjectID, v.ProjectName = id, name
+		return v
+	}
+	now := time.Now()
+	if _, err := st.ReplaceInstances(ctx, farmA, []Instance{
+		withProject(vm("p-1", "one", "h1"), "aaa", "admin"),
+		withProject(vm("p-2", "two", "h1"), "ccc", "platform"),
+	}, now, true); err != nil {
+		t.Fatalf("ReplaceInstances farmA: %v", err)
+	}
+	// The same *name* in another farm, on a different project id — the case
+	// that makes --project by name ambiguous in the first place.
+	if _, err := st.ReplaceInstances(ctx, farmB, []Instance{
+		withProject(vm("p-3", "three", "h2"), "bbb", "admin"),
+	}, now, true); err != nil {
+		t.Fatalf("ReplaceInstances farmB: %v", err)
+	}
+
+	seen := map[string]Project{}
+	all, err := st.Projects(ctx, "")
+	if err != nil {
+		t.Fatalf("Projects: %v", err)
+	}
+	for _, p := range all {
+		if p.DeploymentID == farmA || p.DeploymentID == farmB {
+			seen[p.ID] = p
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("got %d projects across the two farms, want 3: %v", len(seen), seen)
+	}
+	if p := seen["aaa"]; p.Name != "admin" || p.VMs != 1 {
+		t.Errorf("aaa = %+v, want admin with 1 VM", p)
+	}
+	if p := seen["bbb"]; p.DeploymentID != farmB {
+		t.Errorf("bbb is in %q, want %q — a name is per-deployment", p.DeploymentID, farmB)
+	}
+
+	only, err := st.Projects(ctx, farmB)
+	if err != nil {
+		t.Fatalf("Projects(farmB): %v", err)
+	}
+	if len(only) != 1 || only[0].ID != "bbb" {
+		t.Fatalf("Projects(farmB) = %+v, want just bbb", only)
+	}
+
+	// Both admins at once: what resolving the name "admin" without --farm
+	// produces.
+	vms, err := st.Instances(ctx, InstanceFilter{ProjectIDs: []string{"aaa", "bbb"}})
+	if err != nil {
+		t.Fatalf("Instances by project: %v", err)
+	}
+	if len(vms) != 2 {
+		t.Fatalf("got %d VMs, want the one in each farm", len(vms))
+	}
+	for _, v := range vms {
+		if v.ProjectName != "admin" {
+			t.Errorf("%s is in project %q", v.InstanceID, v.ProjectName)
+		}
+	}
+
+	one, err := st.Instances(ctx, InstanceFilter{ProjectIDs: []string{"ccc"}})
+	if err != nil || len(one) != 1 || one[0].InstanceID != "p-2" {
+		t.Fatalf("single project filter = %+v (%v)", one, err)
+	}
+}

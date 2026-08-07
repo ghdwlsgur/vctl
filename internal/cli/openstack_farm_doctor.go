@@ -35,9 +35,10 @@ import (
 func openstackFarmDoctorCmd(env CommandEnv) *cobra.Command {
 	var insecure bool
 	cmd := &cobra.Command{
-		Use:   "doctor [deployment]",
-		Short: "Check what a reconcile would need, without changing anything",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "doctor [deployment]",
+		Short:             "Check what a reconcile would need, without changing anything",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: byPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()

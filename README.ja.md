@@ -357,11 +357,14 @@ claude mcp add vctl -- vctl mcp
 | `vctl ssh [host\|user@addr] [--server <host>]` | 完全一致、あいまい一致、IP、対話的な選択で接続する(ピッカーは ←/→ で DC フィルタ)。`--server` は完全一致または IP で解決し、非対話的に接続する(スクリプト/エージェント向け). `user@addr` 形式はインベントリを経由せずアドレスへ直接接続する |
 | `vctl list [--dc <dc>]` | インベントリのホストを一覧表示する(プライマリ + 追加 IP、非標準 SSH ポート、観測された liveness、および `active` でない場合の運用状態) |
 | `vctl openstack [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | どのホストが OpenStack を動かし、どの役割で、どのファームに属するかを表示する。node-agent の capability probe の結果を読む。`vctl openstack host <name>` は 1 台の役割・コンポーネントのバージョン・所属を表示する |
-| `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure]` | 各デプロイのコントロールプレーンにどのホストが自分のものかを問い合わせ、両者が一致したホストを `confirmed` に昇格する。認証情報は Vault の `kv/teams/sre/vctl-<host_port>` から読む(フィールド: `auth_url`・`username`・`password`、任意で `project_name`・`user_domain`・`project_domain`) |
+| `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure] [--json] [--fail-on <problems>]` | 各デプロイのコントロールプレーンにどのホストが自分のものかを問い合わせ、両者が一致したホストを `confirmed` に昇格する。認証情報は Vault の `kv/teams/sre/vctl-<host_port>` から読む(フィールド: `auth_url`・`username`・`password`、任意で `project_name`・`user_domain`・`project_domain`) |
 | `vctl openstack farm name [deployment] [name]` | デプロイに人が読める名前を付ける。一覧が `172.16.0.10:5000` ではなく `incheon` と表示される。引数を省略すると一覧から選び、フォームで入力する |
 | `vctl openstack farm show [deployment]` | 1 つのファームのアーキテクチャを 1 画面に: ロール別セクション(コントロールプレーン先頭)・リリースドリフト・未確定メンバーシップ。引数を省略すると一覧から選ぶ |
 | `vctl openstack farm state [deployment] [state]` | デプロイについて運用者が知っていることを宣言する — `active`・`maintenance`・`broken`・`retired`、理由は `--note`。宣言後も異常は報告され続け、「新しい知らせ」ではなく「想定内」として表示される。引数を省略すると一覧から選び、フォームで入力する |
-| `vctl openstack vm [--farm <f>] [--host <h>] [--id <uuid>] [--address <ip>] [--missing]` | デプロイごとの VM と、それぞれが載る物理ホスト。`--host` はインベントリのホスト名、`--id` は Nova UUID または Kubernetes の `providerID`(`openstack:///<uuid>`)、`--address` はその IP を持つ VM を探す |
+| `vctl openstack vm [query] [--farm <f>] [--host <h>] [--project <p>] [--id <uuid>] [--address <ip>] [--missing] [--wide]` | デプロイごとの VM と、それぞれが載る物理ホスト。UUID でない引数は名前とアドレスから探す。`--host` はインベントリのホスト名、`--project` はプロジェクト id または表に出ている名前、`--id` は Nova UUID または Kubernetes の `providerID`(`openstack:///<uuid>`)、`--address` はその IP を持つ VM を探す |
+| `vctl openstack vm show <nova-uuid> [--farm <f>]` | VM 一台をすべて — 全アドレス、最後に確認できた時刻、そしてそこへ届く `vctl ssh` の一行 |
+| `vctl openstack farm list [--json]` | デプロイを一行ずつ。ホスト数・VM 数と、最後に reconcile が確認した時刻を並べる |
+| `vctl openstack farm doctor [deployment]` | reconcile が何を必要とするかを先に見る — 認証情報・Keystone・Nova・直近の実行。何も変更しない |
 | `vctl add [flags]` | `sync` が発見できないホストをインベントリに登録する。フラグなしで実行するとフォームで入力する |
 | `vctl edit [host] [flags]` | `sync` が上書きしないフィールドを変更する — dc・ssh user・踏み台・追加 IP・ホスト名、および `--state active\|maintenance\|broken\|retired`。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
 | `vctl delete [host] [--yes]` | 廃止したホストを削除する。監査履歴は残る。このホストを経由するホストがあれば削除を拒否する。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
@@ -376,6 +379,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl status` | ログイン、SSH CA、インベントリ DB の接続性を確認する |
 | `vctl sync [--prefix sre]` | `~/.ssh/config` とプローブからインベントリを同期する(`--migrate` は非推奨 — `vctl migrate` を使う) |
 | `vctl migrate [--status]` | 未適用のスキーママイグレーションを適用する。`schema_migrations` に名前と checksum で記録し、advisory lock で直列化する。`--status` は何も変更せず状況だけ表示する |
+| `vctl completion bash\|zsh\|fish\|powershell` | シェル補完スクリプトを出力する。ファーム・ホスト・ロール・プロジェクト・VM UUID をインベントリから直接補完し、VM は名前で読めて UUID で確定する |
 | `vctl logout` | キャッシュされた Vault トークンを削除する |
 
 ## Configuration

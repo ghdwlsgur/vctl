@@ -66,7 +66,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 					}
 				}
 				f := store.InstanceFilter{
-					ProjectID: project, Address: address, Search: search,
+					Address: address, Search: search,
 					InstanceID:     normalizeInstanceID(id),
 					IncludeMissing: showGone,
 				}
@@ -76,6 +76,18 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 						return err
 					}
 					f.DeploymentID = resolved
+				}
+				// After the farm, so --farm narrows what a name has to be
+				// unique within.
+				if project != "" {
+					ids, note, err := resolveProjects(ctx, st, f.DeploymentID, project)
+					if err != nil {
+						return err
+					}
+					f.ProjectIDs = ids
+					if note != "" {
+						ui.Infof(os.Stderr, "%s", note)
+					}
 				}
 				if host != "" {
 					nova, err := novaNameFor(ctx, st, host, f.DeploymentID)
@@ -102,13 +114,20 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&farm, "farm", "", "only this deployment, by name or Keystone endpoint")
 	cmd.Flags().StringVar(&host, "host", "", "only VMs on this physical host (inventory hostname)")
-	cmd.Flags().StringVar(&project, "project", "", "only this project id")
+	cmd.Flags().StringVar(&project, "project", "", "only this project, by id or by the name the table shows")
 	cmd.Flags().StringVar(&address, "address", "", "the VM answering on this IP")
 	cmd.Flags().StringVar(&id, "id", "", "a Nova UUID, or a Kubernetes providerID (openstack:///<uuid>)")
 	cmd.Flags().BoolVar(&showGone, "missing", false, "include VMs the control plane no longer lists")
 	cmd.AddCommand(openstackVMShowCmd(env))
 	cmd.Flags().BoolVar(&wide, "wide", false, "full UUIDs and the rest of what was collected")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
+	registerCompletion(cmd, "farm", completeFarm(env))
+	registerCompletion(cmd, "host", completeOpenStackHost(env, true))
+	registerCompletion(cmd, "project", completeProject(env))
+	registerCompletion(cmd, "id", completeVM(env))
+	// The positional is a search, so it completes to names rather than to the
+	// uuids --id takes. Somebody who has the uuid is not searching for it.
+	cmd.ValidArgsFunction = completeVMName(env)
 	return cmd
 }
 
@@ -157,6 +176,78 @@ func resolveFarmID(ctx context.Context, st *store.Store, v string) (string, erro
 		return "", err
 	}
 	return f.ID, nil
+}
+
+// resolveProjects turns what somebody typed into the project ids to filter on,
+// and a note when that took more than one.
+//
+// The table prints the project's name and --project took only its id, so the
+// value on screen was not a value this flag accepted. Copying what you can see
+// returned an empty listing, which reads as "this project has no VMs" — the one
+// answer that was certainly wrong.
+//
+// A name is not unique the way a farm id is. Each deployment runs its own
+// Keystone, so a name means one project per farm and eight farms hold eight
+// different projects called "admin". This does not refuse that: the listing
+// groups by farm and prints the name in every row, so showing all of them
+// answers the question that was asked and shows its own scope. It says how wide
+// it went, because a person who meant one farm should not have to count the
+// headers to notice.
+//
+// resolveFarm refuses its ambiguity for the opposite reason — the commands
+// behind it rename and change state, where guessing wrong is silent and
+// permanent.
+//
+// Matching nothing is an error rather than an empty table, for the same reason
+// it is one there: nothing found and nothing asked for look identical once
+// rendered.
+func resolveProjects(ctx context.Context, st *store.Store, deployment, selector string) (ids []string, note string, err error) {
+	projects, err := st.Projects(ctx, deployment)
+	if err != nil {
+		return nil, "", err
+	}
+	return pickProjects(projects, deployment, selector)
+}
+
+// pickProjects is the rule above, over a list rather than a database, so the
+// rule can be tested as a rule.
+func pickProjects(projects []store.Project, deployment, selector string) (ids []string, note string, err error) {
+	// An id wins outright. It is the identifier, and a project elsewhere that
+	// happens to be named like this one does not override it.
+	for _, p := range projects {
+		if strings.EqualFold(p.ID, selector) {
+			return []string{p.ID}, "", nil
+		}
+	}
+	var (
+		byName []store.Project
+		farms  = map[string]bool{}
+	)
+	for _, p := range projects {
+		if p.Name != "" && strings.EqualFold(p.Name, selector) {
+			byName = append(byName, p)
+			farms[p.DeploymentID] = true
+		}
+	}
+	switch {
+	case len(byName) == 0:
+		where := "the fleet"
+		if deployment != "" {
+			where = deployment
+		}
+		return nil, "", fmt.Errorf("no project in %s has the id or name %q; 'vctl openstack vm' shows the names in use", where, selector)
+	case len(farms) > 1:
+		ids = make([]string, 0, len(byName))
+		for _, p := range byName {
+			ids = append(ids, p.ID)
+		}
+		return ids, fmt.Sprintf("%q names a different project in each of %d farms — showing all of them; --farm picks one",
+			selector, len(farms)), nil
+	default:
+		// One farm. Two projects with one name inside a single Keystone is not
+		// possible, so this is a single project.
+		return []string{byName[0].ID}, "", nil
+	}
 }
 
 // novaNameFor maps an inventory hostname onto the name nova files VMs under.
@@ -418,9 +509,10 @@ const vmStaleWindow = 3 * time.Hour
 func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 	var farm string
 	cmd := &cobra.Command{
-		Use:   "show <nova-uuid>",
-		Short: "One VM in full, and how to reach it",
-		Args:  cobra.ExactArgs(1),
+		Use:               "show <nova-uuid>",
+		Short:             "One VM in full, and how to reach it",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeVM(env),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, ok := access.NovaID(args[0])
 			if !ok {
@@ -463,6 +555,7 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&farm, "farm", "", "deployment holding the VM, when its id is in more than one")
+	registerCompletion(cmd, "farm", completeFarm(env))
 	return cmd
 }
 

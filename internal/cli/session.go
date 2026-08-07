@@ -70,6 +70,7 @@ Two uses:
 	}
 	cmd.Flags().BoolVar(&list, "list", false, "list recent sessions instead of one timeline")
 	cmd.Flags().StringVar(&host, "host", "", "filter by hostname substring (with --list)")
+	registerCompletion(cmd, "host", completeInventoryHost(env))
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	cmd.Flags().BoolVar(&full, "full", false, "show full command details without truncating table cells")
 	cmd.Flags().IntVar(&detailWidth, "detail-width", 120, "max visible width for the detail column; use --full to disable")

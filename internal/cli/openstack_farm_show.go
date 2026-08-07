@@ -29,7 +29,8 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 			"and the hosts whose membership is not settled, in one screen.\n\n" +
 			"The deployment can be named by its display name or its Keystone endpoint. With no\n" +
 			"argument it is picked from a list.",
-		Args: cobra.MaximumNArgs(1),
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: byPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()

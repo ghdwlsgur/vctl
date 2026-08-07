@@ -102,6 +102,8 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	cmd.Flags().BoolVar(&all, "all", false, "include hosts a probe examined and found no OpenStack on")
 	cmd.Flags().BoolVar(&parked, "parked", false, "include hosts the inventory has in maintenance or retired, and the farms made only of them")
+	registerCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
+	registerCompletion(cmd, "role", completeRole(env))
 	cmd.AddCommand(openstackHostCmd(env))
 	// Deliberately not app-gated, for the same reason `vctl migrate` is not.
 	//
@@ -659,6 +661,9 @@ func openstackHostCmd(env CommandEnv) *cobra.Command {
 		Use:   "host [hostname]",
 		Short: "Show one host's OpenStack roles, components and farm",
 		Args:  cobra.MaximumNArgs(1),
+		// Every probed host, not only the ones running OpenStack: "probed,
+		// found nothing" is an answer this command exists to show.
+		ValidArgsFunction: completeOpenStackHost(env, false),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
