@@ -218,7 +218,7 @@ vctl ssh <host>
 
 여러 주소(primary NIC + 플로팅 VIP나 추가 NIC)를 가진 호스트는 그중 무엇으로도
 접속됩니다. `vctl ssh --server <ip>`는 primary `ip`, 운영자가 지정한 `extra_ips`
-(`dbedit -col ips`), node-agent의 `observed_ips` 중 하나와 매칭하며, `vctl list`가
+(`vctl edit --extra-ip`), node-agent의 `observed_ips` 중 하나와 매칭하며, `vctl list`가
 추가 IP를 함께 표시합니다. 인터랙티브 픽커는 ←/→로 데이터센터별 필터링도 됩니다.
 
 ## Access Audit
@@ -500,7 +500,6 @@ git push origin v0.1.7
 
 ```text
 cmd/vctl              entrypoint
-cmd/dbedit            maintenance tool for operator-managed inventory (-col dc|user|name|ips|del)
 internal/config       generic loader (config.go) + org-specific defaults (defaults_sre.go) + embedded CA
 internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
 internal/store        Postgres inventory, app-layer RBAC, access/session/kernel audit, host status (verify-full TLS)

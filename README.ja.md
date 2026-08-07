@@ -210,7 +210,7 @@ vctl ssh <host>
 
 複数のアドレス(プライマリ NIC に加えてフローティング VIP や追加 NIC)を持つホストは、
 そのいずれでも到達できます。`vctl ssh --server <ip>` はプライマリ `ip`、運用者が設定した
-`extra_ips`(`dbedit -col ips`)、node-agent の `observed_ips` のいずれかに一致し、
+`extra_ips`(`vctl edit --extra-ip`)、node-agent の `observed_ips` のいずれかに一致し、
 `vctl list` が追加 IP も表示します。対話ピッカーは ←/→ でデータセンター別に絞り込めます。
 
 ホストが Vault SSH CA を信頼して初めて、これらの証明書を受け入れます。新しいホストは `vctl trust-ca` で一度オンボーディングします(通常の SSH 接続を通じて CA 公開鍵を `TrustedUserCAKeys` としてインストールし、sshd を再読み込みします)。
@@ -529,7 +529,6 @@ git push origin v0.1.7
 
 ```text
 cmd/vctl              entrypoint
-cmd/dbedit            maintenance tool for operator-managed inventory (-col dc|user|name|ips|del)
 internal/config       generic loader (config.go) + org-specific defaults (defaults_sre.go) + embedded CA
 internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
 internal/store        Postgres inventory, app-layer RBAC, access/session/kernel audit, host status (verify-full TLS)

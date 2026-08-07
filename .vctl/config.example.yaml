@@ -27,7 +27,6 @@
 # db_role_audit_ro: vctl-audit-ro
 # db_role_audit_write: vctl-audit-writer
 # db_role_audit_ingest: vctl-audit-ingest
-# db_role_prune: vctl-pruner
 
 # Workstation auto-auth (skip repeated logins): point at approle credential
 # files. Usually `vctl login --method oidc` is simpler.
@@ -42,7 +41,7 @@
 # cache_disabled: true
 #
 # How stale the snapshot may get before an online command refreshes it.
-# cache_refresh: 5m
+# cache_refresh: 1h
 #
 # How long grants confirmed by Postgres may authorize `vctl ssh` during an
 # outage. Past this, offline mutate commands fail closed.
@@ -51,4 +50,4 @@
 # Oldest snapshot vctl will serve during an outage. Past this, host lookup fails
 # rather than routing by topology old enough to have been reassigned. "0" lifts
 # the limit.
-# cache_max_age: 720h
+# cache_max_age: 168h

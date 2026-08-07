@@ -21,7 +21,7 @@ import (
 // These are exactly the columns `vctl sync` refuses to touch — dc, ssh_user,
 // jump_via, extra_ips — because sync derives its view from ssh config and
 // probes, and would otherwise overwrite decisions a person made. That makes
-// them unreachable except through cmd/dbedit, a separate binary nobody has on
+// them unreachable except through a separate maintenance binary nobody had on
 // the machine where they notice the problem.
 //
 // Each flag is optional and only what is passed gets written. A command that

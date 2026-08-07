@@ -529,7 +529,7 @@ func nullIfEmpty(s string) any {
 //
 // An already-known host is matched by IP and its operator-managed identity and
 // topology — hostname, dc, ssh_user, jump_via — are PRESERVED; only the probe
-// fields refresh (last_seen_up, ssh_port, ca_role). So dbedit edits (DC moves,
+// fields refresh (last_seen_up, ssh_port, ca_role). So operator edits (DC moves,
 // renames, ssh-user overrides) stay sticky across syncs and a renamed host is
 // never re-inserted under its ssh-config alias. A genuinely new IP is inserted
 // with the sync-derived values (initial DC classification etc.).
