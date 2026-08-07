@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/audit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -173,12 +174,23 @@ func withStoreFrom(ctx context.Context, newApp func() (*app.App, error), p app.P
 	return fn(a, st)
 }
 
-func (e CommandEnv) withAuditStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
-	return e.withPurposeStore(ctx, app.PurposeAuditRead, fn)
-}
-
-func (e CommandEnv) withAuditIngestStore(ctx context.Context, fn func(*app.App, *store.Store) error) error {
-	return e.withPurposeStore(ctx, app.PurposeAuditIngest, fn)
+// audit is the audit database, scoped to what a caller may do with it.
+//
+// The commands that touch audit data used to receive the whole store and pick
+// their own methods out of it, which said nothing about the three separate
+// credentials behind them — see internal/audit.
+func (e CommandEnv) audit() (*app.App, *audit.Store, error) {
+	a, err := e.newApp()
+	if err != nil {
+		return nil, nil, err
+	}
+	return a, audit.New(func(ctx context.Context, p audit.Purpose) (audit.Conn, error) {
+		purpose := app.PurposeAuditRead
+		if p == audit.Ingest {
+			purpose = app.PurposeAuditIngest
+		}
+		return a.OpenStore(ctx, purpose)
+	}), nil
 }
 
 // CommandEnv is what a command needs from the place it was built.

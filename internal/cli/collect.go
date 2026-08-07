@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/audit"
 	"github.com/ghdwlsgur/vctl/internal/auditredact"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -83,7 +83,11 @@ storing it buys nothing and costs everything. A miss is held for
 before watch-sessions has written the session row. Pass --require-session=false
 for full host capture.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
+			_, adb, err := env.audit()
+			if err != nil {
+				return err
+			}
+			return adb.Ingesting(cmd.Context(), func(st audit.Ingestor) error {
 				ctx := cmd.Context()
 				var r io.Reader = os.Stdin
 				if from != "" {

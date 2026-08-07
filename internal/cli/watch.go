@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/audit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -57,7 +57,11 @@ name differs from its inventory name (aio01 vs incheon-aio01) gets its audit row
 to line up with the rest of the inventory. This mirrors node-agent --hostname.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
+			_, adb, err := env.audit()
+			if err != nil {
+				return err
+			}
+			return adb.Ingesting(cmd.Context(), func(st audit.Ingestor) error {
 				ctx := cmd.Context()
 				if len(args) == 1 {
 					dir = args[0]
@@ -101,7 +105,7 @@ to line up with the rest of the inventory. This mirrors node-agent --hostname.`,
 //
 // hostname must be the same name the sessions were recorded under, or the lookup
 // matches nothing and the stale rows stay "live" forever.
-func reconcileStaleSessions(ctx context.Context, st *store.Store, hostname string) {
+func reconcileStaleSessions(ctx context.Context, st audit.Ingestor, hostname string) {
 	hn, err := reportedHostname(hostname)
 	if err != nil {
 		return
