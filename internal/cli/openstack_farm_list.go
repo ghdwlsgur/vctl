@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -35,7 +35,7 @@ func openstackFarmListCmd(env CommandEnv) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				rows, err := farmSummaries(ctx, st, time.Now())
+				rows, err := farmSummaries(ctx, st)
 				if err != nil {
 					return err
 				}
@@ -70,65 +70,40 @@ type farmSummary struct {
 	Unsettled int `json:"unsettled"`
 }
 
-func farmSummaries(ctx context.Context, st *store.Store, now time.Time) ([]farmSummary, error) {
-	hosts, err := st.OpenStackHosts(ctx)
+// farmSummaries is the catalog rendered as one row per deployment.
+//
+// It used to open four reads of its own and re-derive which hosts count towards
+// a farm — the fourth copy of that rule. The rule now has one home and this is
+// a projection of it, so the row and every other screen cannot disagree about
+// what a deployment contains.
+func farmSummaries(ctx context.Context, st *store.Store) ([]farmSummary, error) {
+	// The full reading: this row carries the last reconcile and a VM count,
+	// and both come from it. It read the same four things separately before.
+	cat, err := loadCatalog(ctx, st)
 	if err != nil {
 		return nil, err
 	}
-	deps, err := st.Deployments(ctx)
-	if err != nil {
-		return nil, err
-	}
-	runs, err := st.ReconcileRuns(ctx)
-	if err != nil {
-		return nil, err
-	}
-	vms, err := st.Instances(ctx, store.InstanceFilter{})
-	if err != nil {
-		return nil, err
-	}
+	return summarize(cat), nil
+}
 
-	byID := map[string]*farmSummary{}
-	for _, d := range deps {
-		byID[d.ID] = &farmSummary{ID: d.ID, Name: d.DisplayName, Region: d.Region, State: d.State}
-	}
-	for _, h := range hosts {
-		if h.Farm == "" || !h.Detected {
-			continue
+func summarize(cat fleet.Catalog) []farmSummary {
+	out := make([]farmSummary, 0, len(cat.Farms()))
+	for _, f := range cat.Farms() {
+		row := farmSummary{
+			ID: f.ID, Name: f.Name, Region: f.Region, State: f.State,
+			Hosts: len(f.Hosts), VMs: cat.VMCount(f.ID), Unsettled: f.Unsettled,
 		}
-		f, ok := byID[h.Farm]
-		if !ok {
-			// A deployment nobody has named is still a deployment, and leaving
-			// it out would make the listing disagree with `vctl openstack`.
-			f = &farmSummary{ID: h.Farm, State: store.StateActive}
-			byID[h.Farm] = f
+		// A deployment nothing has declared reads as active, the same way a
+		// server row written before the column existed does.
+		if row.State == "" {
+			row.State = store.StateActive
 		}
-		f.Hosts++
-		if h.Confidence == store.ConfidenceLocalOnly {
-			f.Unsettled++
+		if run := cat.Run(f.ID); run != nil {
+			row.Reconciled, row.LastError = run.SucceededAt, run.LastError
 		}
+		out = append(out, row)
 	}
-	for _, v := range vms {
-		if f, ok := byID[v.DeploymentID]; ok {
-			f.VMs++
-		}
-	}
-	for id, r := range runs {
-		f, ok := byID[id]
-		if !ok {
-			continue
-		}
-		f.Reconciled = r.SucceededAt
-		f.LastError = r.LastError
-	}
-
-	out := make([]farmSummary, 0, len(byID))
-	for _, f := range byID {
-		out = append(out, *f)
-	}
-	// By what is printed, so the order on screen looks like an order.
-	sort.Slice(out, func(i, j int) bool { return farmSortKey(out[i]) < farmSortKey(out[j]) })
-	return out, nil
+	return out
 }
 
 func farmSortKey(f farmSummary) string {

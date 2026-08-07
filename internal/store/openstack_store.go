@@ -215,47 +215,6 @@ func openStackHostsOn(ctx context.Context, db rowQuerier) ([]OpenStackHost, erro
 	return foldCapabilityRows(rows, members), nil
 }
 
-// OpenStackCoverageOf counts the fleet against what has been probed, from the
-// same folded hosts the listing renders.
-//
-// The counts were SQL over server_capabilities at first, and that quietly
-// disagreed with the listing: the query judged every row on its own, while the
-// fold judges the newest pass. A controller whose earlier probes had failed and
-// whose latest one succeeded showed nine roles in the table and "1 could not be
-// probed" in the summary underneath it — the stale row was still there, and
-// only one of the two readers knew it was stale.
-//
-// Only the inventory total stays a query, because it is not in these rows.
-func (s *Store) OpenStackCoverageOf(ctx context.Context, hosts []OpenStackHost) (OpenStackCoverage, error) {
-	c := OpenStackCoverage{Probed: len(hosts)}
-	// Parked hosts are excluded: nothing is expected of them, so counting them
-	// would leave coverage permanently short of complete. Same set as
-	// OpenStackHost.Parked, so the denominator and the listing agree — they
-	// disagreed once already, and a summary that contradicts the table above it
-	// is worse than no summary.
-	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM servers WHERE coalesce(state,'active') <> ALL($1)`,
-		[]string{StateMaintenance, StateRetired}).Scan(&c.Hosts); err != nil {
-		return c, err
-	}
-	for _, h := range hosts {
-		switch {
-		case h.Detected:
-			c.Running++
-		case h.LastError != "":
-			c.Failed++
-		default:
-			c.Absent++
-		}
-	}
-	// Clamped because the two numbers come from different places: a capability
-	// row for a host since retired would otherwise make this negative.
-	if c.Unprobed = c.Hosts - c.Probed; c.Unprobed < 0 {
-		c.Unprobed = 0
-	}
-	return c, nil
-}
-
 // capabilityRow is one (host, role) row before the fold.
 type capabilityRow struct {
 	Capability
@@ -275,10 +234,6 @@ func scanCapabilityRow(r pgx.Rows) (capabilityRow, error) {
 	_ = json.Unmarshal(comps, &row.Components)
 	_ = json.Unmarshal(details, &row.Details)
 	return row, nil
-}
-
-func (s *Store) openStackMemberships(ctx context.Context) (map[string][]OpenStackMembership, error) {
-	return openStackMembershipsOn(ctx, s.pool)
 }
 
 func openStackMembershipsOn(ctx context.Context, db rowQuerier) (map[string][]OpenStackMembership, error) {

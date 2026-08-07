@@ -25,10 +25,12 @@ func values(candidates []string) []string {
 }
 
 func TestFarmCompletionLeadsWithTheNameAndFallsBackToTheEndpoint(t *testing.T) {
+	seoulB := farmOf("172.16.0.245:5000", "seoul-b", "compute", "compute", "compute")
+	seoulB.State = store.StateMaintenance
 	farms := []farmChoice{
-		{ID: "172.16.0.21:5000", Name: "seoul-a", Hosts: 7},
-		{ID: "172.16.0.245:5000", Name: "seoul-b", Hosts: 3, State: store.StateMaintenance},
-		{ID: "10.10.0.9:5000", Hosts: 2},
+		farmOf("172.16.0.21:5000", "seoul-a", "compute", "compute", "compute", "compute", "compute", "compute", "compute"),
+		seoulB,
+		farmOf("10.10.0.9:5000", "", "compute", "compute"),
 	}
 
 	t.Run("nothing typed offers the names", func(t *testing.T) {

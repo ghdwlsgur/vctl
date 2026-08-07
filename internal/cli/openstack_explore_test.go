@@ -118,8 +118,8 @@ func testExploreModel() exploreModel {
 	at := time.Now().Add(-20 * time.Minute)
 	d := exploreData{
 		Farms: []farmChoice{
-			{ID: "10.0.0.1:5000", Name: "seoul-a", Hosts: 2},
-			{ID: "10.0.0.2:5000", Name: "seoul-b", Hosts: 1},
+			farmOf("10.0.0.1:5000", "seoul-a", "compute", "controller"),
+			farmOf("10.0.0.2:5000", "seoul-b", "compute"),
 		},
 		Hosts: map[string][]store.OpenStackHost{
 			"10.0.0.1:5000": {
@@ -417,8 +417,8 @@ func TestExploreIsWiredUnderOpenstackAndUngated(t *testing.T) {
 // purpose is recognising a deployment presented a column of IP addresses.
 func TestFarmPickLabelsLeadWithTheName(t *testing.T) {
 	labels := farmPickLabels([]farmChoice{
-		{ID: "172.16.0.10:5000", Name: "incheon", Hosts: 7, Roles: "compute 7"},
-		{ID: "192.168.201.90:5000", Hosts: 1, Roles: "controller 1"},
+		farmOf("172.16.0.10:5000", "incheon", "compute", "compute"),
+		farmOf("192.168.201.90:5000", "", "controller"),
 	})
 	if !strings.HasPrefix(strings.TrimSpace(stripANSI(labels[0])), "incheon") {
 		t.Errorf("named farm does not lead with its name: %q", stripANSI(labels[0]))

@@ -151,7 +151,7 @@ func completeFarm(env CommandEnv, extra ...string) completer {
 func farmCompletions(farms []farmChoice, extra []string, toComplete string) []string {
 	out := make([]string, 0, len(farms)+len(extra))
 	for _, f := range farms {
-		desc := pluralHosts(f.Hosts)
+		desc := pluralHosts(len(f.Hosts))
 		if f.Region != "" {
 			desc = f.Region + " · " + desc
 		}
