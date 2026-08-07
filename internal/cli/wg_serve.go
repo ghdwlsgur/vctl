@@ -108,11 +108,11 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 			for _, t := range targets {
 				go func(t monTarget) {
 					for {
-						res, err := mon.Poll(pollCtx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wgDumpCmd, timeout)
+						res, err := mon.Poll(pollCtx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wireguard.DumpCmd, timeout)
 						if err != nil {
 							state.Fail(t.name, err)
 						} else {
-							_, ps := parseWGDump(res.Stdout)
+							_, ps := wireguard.ParseDump(res.Stdout)
 							state.Record(t.name, samples(ps), time.Now(), edgeFor)
 						}
 						select {
