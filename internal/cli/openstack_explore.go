@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
@@ -14,207 +17,895 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// openstackExploreCmd walks the fleet by choosing rather than by typing.
+// A two-pane browser over what the fleet has already reported: deployments on
+// the left, the chosen one's hosts or VMs on the right, a detail view over the
+// top of both.
 //
-// Everything here already existed as its own command, and that is the problem
-// it solves. Someone asking "what is in this farm" has to know that hosts are
-// `openstack --farm`, VMs are `openstack vm --farm`, the architecture is
-// `farm show`, and a VM's detail is `vm show <uuid>` — four commands, three of
-// which need an identifier they do not have yet. The chain is only obvious once
-// you already know the answer.
+// It exists because the data was only reachable by naming it. Hosts are
+// `openstack --farm`, VMs are `openstack vm --farm`, a VM's detail is
+// `vm show <uuid>` — three commands and an identifier nobody has memorised, in
+// an order that is only obvious once you already know the answer. Moving a
+// cursor asks the same questions without knowing any of it.
 //
-// So this is the same data with the identifiers removed from the user's side of
-// it: pick a farm, pick a host or a VM, and the thing you picked is the argument
-// the detail view wanted. Nothing new is computed and nothing is written — every
-// screen below is a call into the command that owns it, so the two can never
-// disagree about what a farm looks like.
+// Everything here reads the database and nothing else. No screen contacts a
+// farm's control plane: that is `farm doctor`, it authenticates, and it can
+// hang on a farm that is down — which is not a thing a browser may do. Two
+// tests hold this, one for writes and one for the control plane.
 //
-// It is deliberately not what `vctl openstack` does. That listing is piped, has
-// --json, and is read by other programs; a picker attached to it would be a
-// prompt in the middle of a script.
+// The detail screens are the individual commands' own renderers, so this and
+// `openstack host` / `vm show` cannot drift into showing different facts about
+// the same machine.
 func openstackExploreCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "explore [deployment]",
-		Aliases: []string{"browse"},
-		Short:   "Walk a farm and what is in it, by choosing instead of typing",
-		Long: "One way in to everything the other commands show:\n\n" +
-			"  deployment → its hosts → one host's roles and versions\n" +
-			"             → its VMs   → one VM's addresses and how to reach it\n\n" +
+		Aliases: []string{"browse", "ui"},
+		Short:   "Browse deployments, hosts and VMs in one screen",
+		Long: "Two panes: deployments on the left, the selected one's VMs or hosts on the right.\n\n" +
+			"  tab      move between the panes        v / h   VMs or hosts on the right\n" +
+			"  enter    open the row's detail         /       filter the focused pane\n" +
+			"  r        re-read from the database     q       quit\n\n" +
 			"Read-only, and it reads the database alone — nothing here contacts a farm's\n" +
-			"control plane. Every screen is the same renderer the individual command uses:\n" +
-			"`farm show`, `openstack host`, `vm show`.\n\n" +
-			"A farm that is misbehaving is a different question, and it is asked with\n" +
+			"control plane. Each detail screen is the same renderer the individual command\n" +
+			"uses: `openstack host` and `vm show`.\n\n" +
+			"A farm that is misbehaving is a different question, asked with\n" +
 			"`vctl openstack farm doctor <deployment>`.\n\n" +
-			"An argument starts inside that deployment instead of at the picker.",
+			"An argument selects that deployment at startup.",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: byPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Nothing here works without somebody to ask, and failing with the
-			// commands that do work is more useful than failing with "no
-			// terminal".
+			// A full-screen program needs a screen. Naming the commands that
+			// answer the same questions without one is more useful than
+			// reporting the absence of a terminal.
 			if !isTerminal() {
-				return fmt.Errorf("explore is interactive and there is no terminal to pick at; " +
+				return fmt.Errorf("explore is a full-screen browser and there is no terminal; " +
 					"use 'vctl openstack farm list', 'vctl openstack --farm <f>' and " +
 					"'vctl openstack vm --farm <f>' instead")
 			}
 			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
-				return exploreFarms(cmd.Context(), st, args)
+				return runExplore(cmd.Context(), st, args)
 			})
 		},
 	}
 	return cmd
 }
 
-// exploreFarms is the outer loop: choose a deployment, walk it, come back.
-func exploreFarms(ctx context.Context, st *store.Store, args []string) error {
-	farms, err := farmChoices(ctx, st)
-	if err != nil {
-		return err
-	}
-	if len(farms) == 0 {
-		ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
-		return nil
-	}
-	// An argument is a starting point, not a restriction: leaving that farm
-	// returns to the full list rather than ending the session.
-	if len(args) > 0 {
-		f, err := resolveFarm(farms, args[0])
-		if err != nil {
-			return err
-		}
-		if err := exploreFarm(ctx, st, f); err != nil {
-			return err
-		}
-	}
+// runExplore reads, runs the screen, and reads again when the screen asks.
+//
+// Reloading by leaving and re-entering the program rather than from inside
+// Update: a database call on the key path would stop the whole screen on a
+// database that is slow, with no way to say so while it is stopped. What the
+// reader had set up is carried across, so a reload shows as the numbers
+// changing and nothing else.
+func runExplore(ctx context.Context, st *store.Store, args []string) error {
+	var (
+		selected  string
+		carryOver *exploreModel
+	)
 	for {
-		i, back, err := pickOrBack(farmPickLabels(farms), "Deployments", "quit")
+		// Before the screen, not on it. The first read of a session pays for a
+		// Vault credential and four queries — measured at about ten seconds on
+		// a cold path here — and an alternate screen that opens empty for that
+		// long looks like a program that has hung. On stderr, so the alternate
+		// screen wipes it the moment there is something to show.
+		ui.Infof(os.Stderr, "reading the fleet…")
+		data, err := loadExploreData(ctx, st)
 		if err != nil {
 			return err
 		}
-		if back {
+		if len(data.Farms) == 0 {
+			ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
 			return nil
 		}
-		if err := exploreFarm(ctx, st, farms[i]); err != nil {
+		if len(args) > 0 && selected == "" {
+			// Resolved against the first reading, so a typo fails before the
+			// screen opens rather than after.
+			f, err := resolveFarm(data.Farms, args[0])
+			if err != nil {
+				return err
+			}
+			selected = f.ID
+		}
+		m := newExploreModel(data)
+		if selected != "" {
+			m.selectFarmID(selected)
+		}
+		if carryOver != nil {
+			m.adoptView(*carryOver)
+		}
+		// The alternate screen, so the terminal somebody was working in comes
+		// back exactly as they left it.
+		res, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+		if err != nil {
 			return err
 		}
+		final, ok := res.(exploreModel)
+		if !ok {
+			return nil
+		}
+		if final.err == errExploreReload {
+			if f, ok := final.currentFarm(); ok {
+				selected = f.ID
+			}
+			prev := final
+			carryOver = &prev
+			continue
+		}
+		// What was on screen at the end survives the screen. A VM's detail
+		// carries the ssh line that reaches it, and an alternate screen that
+		// restores on exit would take it back the moment somebody went to run
+		// it.
+		if len(final.carry) > 0 {
+			fmt.Fprintln(os.Stdout, strings.Join(final.carry, "\n"))
+		}
+		return final.err
 	}
 }
 
-// The farm menu's entries, by what they answer.
+// adoptView carries what the reader set up across a reload: which pane, which
+// kind of row, the filters, the size. The cursor is not carried — the rows
+// behind it may be different ones now, and a cursor left on row 12 of a list
+// that changed is a worse guess than the top.
+func (m *exploreModel) adoptView(prev exploreModel) {
+	m.focus, m.kind = prev.focus, prev.kind
+	m.farmFilter, m.rowFilter = prev.farmFilter, prev.rowFilter
+	m.width, m.height = prev.width, prev.height
+}
+
+// exploreData is the whole picture, read once.
+//
+// One read for the fleet rather than one per farm: moving a cursor must not
+// open a database connection, and a browser whose panes disagree because they
+// were read seconds apart is worse than one that is a minute old and says so.
+// `r` re-reads, which is the only way to be sure the screen is current.
+type exploreData struct {
+	Farms  []farmChoice
+	Hosts  map[string][]store.OpenStackHost
+	VMs    map[string][]store.Instance
+	Names  map[string]string
+	Runs   map[string]store.ReconcileRun
+	Nets   []string
+	ReadAt time.Time
+}
+
+func loadExploreData(ctx context.Context, st *store.Store) (exploreData, error) {
+	out := exploreData{
+		Hosts: map[string][]store.OpenStackHost{},
+		VMs:   map[string][]store.Instance{},
+		Nets:  operatorNetworks(),
+	}
+	var err error
+	if out.Farms, err = farmChoices(ctx, st); err != nil {
+		return out, err
+	}
+	hosts, err := st.OpenStackHosts(ctx)
+	if err != nil {
+		return out, err
+	}
+	for _, h := range hosts {
+		if h.Farm != "" && h.Detected {
+			out.Hosts[h.Farm] = append(out.Hosts[h.Farm], h)
+		}
+	}
+	vms, err := st.Instances(ctx, store.InstanceFilter{})
+	if err != nil {
+		return out, err
+	}
+	for _, v := range vms {
+		out.VMs[v.DeploymentID] = append(out.VMs[v.DeploymentID], v)
+	}
+	if out.Names, err = farmNames(ctx, st); err != nil {
+		return out, err
+	}
+	if out.Runs, err = st.ReconcileRuns(ctx); err != nil {
+		return out, err
+	}
+	out.ReadAt = time.Now()
+	return out, nil
+}
+
+// Which pane the keys go to.
+type explorePane int
+
 const (
-	menuHosts        = "Hosts"
-	menuVMs          = "VMs"
-	menuArchitecture = "Architecture"
+	paneFarms explorePane = iota
+	paneRows
 )
 
-// exploreFarm is one deployment, until the reader leaves it.
-//
-// The snapshot is taken once per visit rather than per screen, so the host count
-// on the menu and the hosts in the list are the same reading. Coming back out
-// and in again is how you refresh — which is also the only way to be sure you
-// did.
-func exploreFarm(ctx context.Context, st *store.Store, f farmChoice) error {
-	snap, err := st.FarmSnapshot(ctx, f.ID)
-	if err != nil {
-		return err
-	}
-	live := liveInstances(snap.Instances)
-	names, err := farmNames(ctx, st)
-	if err != nil {
-		return err
-	}
-	for {
-		fmt.Fprintln(os.Stdout)
-		fmt.Fprintln(os.Stdout, farmHeadline(f, snap, live, time.Now()))
+// What the right pane is showing.
+type exploreKind int
 
-		items := []string{
-			fmt.Sprintf("%s (%d)", menuHosts, len(snap.Hosts)),
-			fmt.Sprintf("%s (%d)", menuVMs, len(live)),
-			menuArchitecture + "  — roles, releases, unsettled membership",
-		}
-		i, back, err := pickOrBack(items, farmMenuTitle(f), "deployments")
-		if err != nil {
-			return err
-		}
-		if back {
-			return nil
-		}
-		switch strings.Fields(items[i])[0] {
-		case menuHosts:
-			err = exploreHosts(snap.Hosts)
-		case menuVMs:
-			err = exploreVMs(live, names)
-		case menuArchitecture:
-			err = showArchitecture(ctx, st, f.ID)
-		}
-		if err != nil {
-			return err
+const (
+	kindVMs exploreKind = iota
+	kindHosts
+)
+
+type exploreModel struct {
+	data exploreData
+
+	width, height int
+	focus         explorePane
+	kind          exploreKind
+
+	farmCur int
+	rowCur  int
+	rowTop  int
+
+	// filter narrows the focused pane. Held per pane, because a filter that
+	// followed the cursor between them would silently hide rows in the one
+	// nobody is looking at.
+	farmFilter, rowFilter string
+	typing                bool
+
+	// detail is the overlay: the individual command's own rendering, held as
+	// lines so it can scroll.
+	detail    []string
+	detailTop int
+	detailOf  string
+
+	// carry is printed after the screen is restored — see runExplore.
+	carry []string
+	err   error
+}
+
+func newExploreModel(d exploreData) exploreModel {
+	return exploreModel{data: d, width: 100, height: 30}
+}
+
+func (m *exploreModel) selectFarmID(id string) {
+	for i, f := range m.visibleFarms() {
+		if f.ID == id {
+			m.farmCur = i
+			m.focus = paneRows
+			return
 		}
 	}
 }
 
-// exploreHosts lists the machines and shows whichever one is chosen.
-func exploreHosts(hosts []store.OpenStackHost) error {
-	if len(hosts) == 0 {
-		ui.Infof(os.Stdout, "no host has filed a capability probe for this deployment yet.")
+func (m exploreModel) Init() tea.Cmd { return nil }
+
+// visibleFarms is the left pane's contents after its filter.
+func (m exploreModel) visibleFarms() []farmChoice {
+	if m.farmFilter == "" {
+		return m.data.Farms
+	}
+	out := make([]farmChoice, 0, len(m.data.Farms))
+	for _, f := range m.data.Farms {
+		if matchesFilter(m.farmFilter, f.ID, f.Name, f.Region, f.Roles) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func (m exploreModel) currentFarm() (farmChoice, bool) {
+	farms := m.visibleFarms()
+	if len(farms) == 0 {
+		return farmChoice{}, false
+	}
+	i := clampIndex(m.farmCur, len(farms))
+	return farms[i], true
+}
+
+// visibleHosts and visibleVMs are the right pane's contents after its filter.
+func (m exploreModel) visibleHosts() []store.OpenStackHost {
+	f, ok := m.currentFarm()
+	if !ok {
 		return nil
 	}
+	all := m.data.Hosts[f.ID]
+	if m.rowFilter == "" {
+		return all
+	}
+	out := make([]store.OpenStackHost, 0, len(all))
+	for _, h := range all {
+		if matchesFilter(m.rowFilter, h.Hostname, h.DC, strings.Join(h.Roles, " ")) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func (m exploreModel) visibleVMs() []store.Instance {
+	f, ok := m.currentFarm()
+	if !ok {
+		return nil
+	}
+	all := liveInstances(m.data.VMs[f.ID])
+	if m.rowFilter == "" {
+		return all
+	}
+	out := make([]store.Instance, 0, len(all))
+	for _, v := range all {
+		addrs := make([]string, 0, len(v.Addresses))
+		for _, a := range v.Addresses {
+			addrs = append(addrs, a.Address)
+		}
+		if matchesFilter(m.rowFilter, v.Name, v.InstanceID, vmProjectLabel(v),
+			v.HypervisorHostname, strings.Join(addrs, " ")) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (m exploreModel) rowCount() int {
+	if m.kind == kindHosts {
+		return len(m.visibleHosts())
+	}
+	return len(m.visibleVMs())
+}
+
+// matchesFilter is a case-insensitive substring over every field a row is
+// recognised by. Substring rather than prefix: somebody filtering VMs knows
+// "worker", not what the name starts with.
+func matchesFilter(q string, fields ...string) bool {
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q == "" {
+		return true
+	}
+	for _, f := range fields {
+		if strings.Contains(strings.ToLower(f), q) {
+			return true
+		}
+	}
+	return false
+}
+
+func clampIndex(i, n int) int {
+	if n == 0 {
+		return 0
+	}
+	if i < 0 {
+		return 0
+	}
+	if i >= n {
+		return n - 1
+	}
+	return i
+}
+
+func (m exploreModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		return m, nil
+	case tea.KeyMsg:
+		return m.onKey(msg)
+	}
+	return m, nil
+}
+
+func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Typing a filter comes first: every shortcut below is also a letter, and a
+	// browser that quits because somebody filtered for "quay" is a browser
+	// nobody types into twice.
+	if m.typing {
+		return m.onFilterKey(msg)
+	}
+	if len(m.detail) > 0 {
+		return m.onDetailKey(msg)
+	}
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		if m.activeFilter() != "" {
+			m.setFilter("")
+			return m, nil
+		}
+		return m, tea.Quit
+	case "tab", "shift+tab", "left", "right", "h", "l":
+		// h and l are the vim pair for the same move. The right pane's kind is
+		// on v and s instead, because a browser where "h" means both "left" and
+		// "hosts" has to guess which one was meant.
+		if msg.String() == "left" || msg.String() == "h" {
+			m.focus = paneFarms
+		} else if msg.String() == "right" || msg.String() == "l" {
+			m.focus = paneRows
+		} else if m.focus == paneFarms {
+			m.focus = paneRows
+		} else {
+			m.focus = paneFarms
+		}
+		return m, nil
+	case "up", "k":
+		m.move(-1)
+		return m, nil
+	case "down", "j":
+		m.move(1)
+		return m, nil
+	case "pgup":
+		m.move(-m.rowsHeight())
+		return m, nil
+	case "pgdown":
+		m.move(m.rowsHeight())
+		return m, nil
+	case "home", "g":
+		m.moveTo(0)
+		return m, nil
+	case "end", "G":
+		m.moveTo(1 << 30)
+		return m, nil
+	case "v":
+		m.kind, m.rowCur, m.rowTop = kindVMs, 0, 0
+		m.focus = paneRows
+		return m, nil
+	case "s":
+		m.kind, m.rowCur, m.rowTop = kindHosts, 0, 0
+		m.focus = paneRows
+		return m, nil
+	case "/":
+		m.typing = true
+		return m, nil
+	case "r":
+		// Deliberately not automatic. A screen that refreshes under the cursor
+		// moves the row somebody was about to open.
+		m.err = errExploreReload
+		return m, tea.Quit
+	case "enter":
+		if m.focus == paneFarms {
+			m.focus = paneRows
+			m.rowCur, m.rowTop = 0, 0
+			return m, nil
+		}
+		m.openDetail()
+		return m, nil
+	}
+	return m, nil
+}
+
+// errExploreReload is how the model asks the caller to read again. Reloading
+// inside Update would put a database call on the key path.
+var errExploreReload = fmt.Errorf("reload")
+
+func (m exploreModel) onFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter, tea.KeyEsc:
+		m.typing = false
+		if msg.Type == tea.KeyEsc {
+			m.setFilter("")
+		}
+		return m, nil
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyBackspace:
+		f := m.activeFilter()
+		if f != "" {
+			r := []rune(f)
+			m.setFilter(string(r[:len(r)-1]))
+		}
+		return m, nil
+	case tea.KeySpace:
+		m.setFilter(m.activeFilter() + " ")
+		return m, nil
+	case tea.KeyRunes:
+		m.setFilter(m.activeFilter() + string(msg.Runes))
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m exploreModel) onDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "enter", "q":
+		m.detail, m.detailTop, m.detailOf = nil, 0, ""
+		return m, nil
+	case "ctrl+c":
+		// Leaving from a detail keeps it: see runExplore.
+		m.carry = m.detail
+		return m, tea.Quit
+	case "up", "k":
+		m.detailTop = max(0, m.detailTop-1)
+		return m, nil
+	case "down", "j":
+		m.detailTop = min(m.detailTop+1, max(0, len(m.detail)-m.bodyHeight()))
+		return m, nil
+	case "pgup":
+		m.detailTop = max(0, m.detailTop-m.bodyHeight())
+		return m, nil
+	case "pgdown":
+		m.detailTop = min(m.detailTop+m.bodyHeight(), max(0, len(m.detail)-m.bodyHeight()))
+		return m, nil
+	case "p":
+		// Keep this one on the way out, so the ssh line survives the screen.
+		m.carry = m.detail
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m exploreModel) activeFilter() string {
+	if m.focus == paneFarms {
+		return m.farmFilter
+	}
+	return m.rowFilter
+}
+
+func (m *exploreModel) setFilter(v string) {
+	if m.focus == paneFarms {
+		m.farmFilter = v
+		m.farmCur = 0
+	} else {
+		m.rowFilter = v
+	}
+	m.rowCur, m.rowTop = 0, 0
+}
+
+func (m *exploreModel) move(delta int) {
+	if m.focus == paneFarms {
+		m.farmCur = clampIndex(m.farmCur+delta, len(m.visibleFarms()))
+		// The right pane belongs to the farm under the cursor, so it starts at
+		// the top rather than keeping a position that meant something else.
+		m.rowCur, m.rowTop = 0, 0
+		return
+	}
+	m.rowCur = clampIndex(m.rowCur+delta, m.rowCount())
+	m.scrollRows()
+}
+
+func (m *exploreModel) moveTo(i int) {
+	if m.focus == paneFarms {
+		m.farmCur = clampIndex(i, len(m.visibleFarms()))
+		m.rowCur, m.rowTop = 0, 0
+		return
+	}
+	m.rowCur = clampIndex(i, m.rowCount())
+	m.scrollRows()
+}
+
+// scrollRows keeps the cursor inside the visible window.
+func (m *exploreModel) scrollRows() {
+	h := m.rowsHeight()
+	if h <= 0 {
+		return
+	}
+	if m.rowCur < m.rowTop {
+		m.rowTop = m.rowCur
+	}
+	if m.rowCur >= m.rowTop+h {
+		m.rowTop = m.rowCur - h + 1
+	}
+	if m.rowTop < 0 {
+		m.rowTop = 0
+	}
+}
+
+// openDetail renders the selected row through the command that owns it.
+func (m *exploreModel) openDetail() {
+	var buf bytes.Buffer
 	now := time.Now()
-	labels := make([]string, 0, len(hosts))
-	for _, h := range hosts {
-		labels = append(labels, hostPickLabel(h, now))
-	}
-	for {
-		i, back, err := pickOrBack(labels, "Hosts", "back")
-		if err != nil || back {
-			return err
+	switch m.kind {
+	case kindHosts:
+		hosts := m.visibleHosts()
+		if len(hosts) == 0 {
+			return
 		}
-		fmt.Fprintln(os.Stdout)
-		renderOpenStackHost(os.Stdout, hosts[i], time.Now())
+		h := hosts[clampIndex(m.rowCur, len(hosts))]
+		renderOpenStackHost(&buf, h, now)
+		m.detailOf = h.Hostname
+	default:
+		vms := m.visibleVMs()
+		if len(vms) == 0 {
+			return
+		}
+		v := vms[clampIndex(m.rowCur, len(vms))]
+		renderVMShow(&buf, v, m.data.Names, m.data.Nets, now)
+		m.detailOf = nameOrID(v)
+	}
+	m.detail = strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	m.detailTop = 0
+}
+
+// Layout constants. The left pane is fixed because a deployment name is short
+// and predictable; every column that varies is on the right.
+const (
+	farmPaneWidth = 26
+	chromeLines   = 4 // title, pane heading, column heading, footer
+)
+
+var (
+	exploreTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	exploreHeadingStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("245"))
+	exploreCursorStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	exploreFocusStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	exploreDimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+)
+
+// bodyHeight is the number of lines the panes get.
+func (m exploreModel) bodyHeight() int {
+	h := m.height - chromeLines
+	if h < 3 {
+		return 3
+	}
+	return h
+}
+
+func (m exploreModel) rowsHeight() int { return m.bodyHeight() }
+
+func (m exploreModel) rowPaneWidth() int {
+	w := m.width - farmPaneWidth - 3
+	if w < 20 {
+		return 20
+	}
+	return w
+}
+
+func (m exploreModel) View() string {
+	if len(m.detail) > 0 {
+		return m.detailView()
+	}
+	var b strings.Builder
+	b.WriteString(m.clip(m.titleBar()) + "\n")
+
+	farmLines := m.farmPaneLines()
+	rowLines := m.rowPaneLines()
+	for i := 0; i < m.bodyHeight()+1; i++ {
+		left := ""
+		if i < len(farmLines) {
+			left = farmLines[i]
+		}
+		right := ""
+		if i < len(rowLines) {
+			right = rowLines[i]
+		}
+		b.WriteString(m.clip(ui.PadRight(left, farmPaneWidth)+exploreDimStyle.Render(" │ ")+right) + "\n")
+	}
+	b.WriteString(m.clip(m.footer()))
+	return b.String()
+}
+
+// clip is the last word on width.
+//
+// Every piece below budgets itself, and this is here anyway: one line a column
+// too wide wraps, a wrapped line pushes the rest of the frame down, and from
+// then on the screen is nonsense. Being wrong about a width is easy — being
+// wrong about it here is invisible until somebody with a narrow terminal opens
+// the thing.
+func (m exploreModel) clip(s string) string {
+	return ui.Truncate(s, m.width)
+}
+
+// titleBar says what is loaded and how old it is. A browser reading a snapshot
+// has to say so — the whole screen is as current as this line claims.
+func (m exploreModel) titleBar() string {
+	hosts, vms := 0, 0
+	for _, hs := range m.data.Hosts {
+		hosts += len(hs)
+	}
+	for _, vs := range m.data.VMs {
+		vms += len(liveInstances(vs))
+	}
+	head := exploreTitleStyle.Render("▌ vctl openstack")
+	detail := fmt.Sprintf("· %d deployments · %d hosts · %d VMs · read %s ago",
+		len(m.data.Farms), hosts, vms, ui.CompactDuration(time.Since(m.data.ReadAt)))
+	return head + " " + ui.Muted(detail)
+}
+
+func (m exploreModel) farmPaneLines() []string {
+	farms := m.visibleFarms()
+	title := "DEPLOYMENTS"
+	if m.farmFilter != "" {
+		title += " /" + m.farmFilter
+	}
+	out := []string{exploreHeadingStyle.Render(ui.Truncate(title, farmPaneWidth))}
+	for i, f := range farms {
+		name := f.Name
+		if name == "" {
+			name = f.ID
+		}
+		count := fmt.Sprintf("%d", len(m.data.Hosts[f.ID]))
+		text := ui.PadRight(ui.Truncate(name, farmPaneWidth-5), farmPaneWidth-5) + ui.Muted(count)
+		out = append(out, m.cursorLine(text, i == clampIndex(m.farmCur, len(farms)), m.focus == paneFarms))
+	}
+	if len(farms) == 0 {
+		out = append(out, ui.Muted("  no match"))
+	}
+	return out
+}
+
+// cursorLine marks the selected row, and marks it differently in the pane that
+// is not taking keys — otherwise two rows look equally selected and the arrow
+// keys appear to move the wrong one.
+func (m exploreModel) cursorLine(text string, selected, focused bool) string {
+	switch {
+	case selected && focused:
+		return exploreCursorStyle.Render("› ") + exploreFocusStyle.Render(text)
+	case selected:
+		return exploreDimStyle.Render("· ") + exploreFocusStyle.Render(text)
+	default:
+		return "  " + text
 	}
 }
 
-// exploreVMs lists the instances and shows whichever one is chosen.
-//
-// The detail view is the one that closes the loop the review opened: it carries
-// the whole uuid and the `vctl ssh` line that reaches it, so the identifier
-// nobody can memorise never has to be typed.
-func exploreVMs(vms []store.Instance, farms map[string]string) error {
-	if len(vms) == 0 {
-		ui.Infof(os.Stdout, "no VMs recorded here. 'vctl openstack reconcile --farm <f>' collects them.")
-		return nil
+// exploreColumns is one table's shape: fixed widths, and one column that takes
+// whatever is left.
+type exploreColumns struct {
+	titles []string
+	widths []int // 0 means "take the remaining space"
+}
+
+var (
+	vmColumns = exploreColumns{
+		titles: []string{"NAME", "PROJECT", "STATE", "ADDRESS", "HOST"},
+		widths: []int{0, 16, 12, 16, 14},
 	}
-	nets := operatorNetworks()
-	labels := make([]string, 0, len(vms))
+	hostColumns = exploreColumns{
+		titles: []string{"HOST", "ROLES", "RELEASE", "SEEN", ""},
+		widths: []int{0, 22, 9, 6, 18},
+	}
+)
+
+// layout resolves the flexible column against the space there is, and drops
+// columns from the right when even the minimum will not fit.
+//
+// Dropping rather than squeezing, because a column narrowed to four characters
+// is not a column — and the heading row still names what is left, so nothing
+// disappears without saying so.
+func (c exploreColumns) layout(total int) ([]string, []int) {
+	const gap, minFlex = 2, 12
+	titles, widths := append([]string(nil), c.titles...), append([]int(nil), c.widths...)
+	for {
+		fixed := 0
+		for _, w := range widths {
+			fixed += w
+		}
+		gaps := gap * (len(widths) - 1)
+		if flex := total - fixed - gaps; flex >= minFlex || len(widths) <= 2 {
+			for i, w := range widths {
+				if w == 0 {
+					widths[i] = max(minFlex, flex)
+				}
+			}
+			return titles, widths
+		}
+		titles, widths = titles[:len(titles)-1], widths[:len(widths)-1]
+	}
+}
+
+func (c exploreColumns) render(cells []string, total int) string {
+	titles, widths := c.layout(total)
+	parts := make([]string, 0, len(titles))
+	for i := range titles {
+		if i >= len(cells) {
+			break
+		}
+		parts = append(parts, ui.PadRight(ui.Truncate(cells[i], widths[i]), widths[i]))
+	}
+	return strings.TrimRight(strings.Join(parts, "  "), " ")
+}
+
+func (c exploreColumns) header(total int) string {
+	titles, widths := c.layout(total)
+	parts := make([]string, 0, len(titles))
+	for i, t := range titles {
+		parts = append(parts, ui.PadRight(t, widths[i]))
+	}
+	return exploreHeadingStyle.Render(strings.TrimRight(strings.Join(parts, "  "), " "))
+}
+
+func (m exploreModel) rowPaneLines() []string {
+	f, ok := m.currentFarm()
+	if !ok {
+		return []string{ui.Muted("nothing selected")}
+	}
+	cols, cells := m.rowCells()
+	width := m.rowPaneWidth()
+
+	kind := "VMS"
+	if m.kind == kindHosts {
+		kind = "HOSTS"
+	}
+	head := fmt.Sprintf("%s · %s", farmMenuTitle(f), kind)
+	if m.rowFilter != "" {
+		head += " /" + m.rowFilter
+	}
+	head += fmt.Sprintf(" (%d)", len(cells))
+	note := m.farmNote(f)
+	// The note is what makes every number on the rows worth trusting, so the
+	// heading gives way to it rather than the other way round.
+	head = ui.Truncate(head, max(8, width-lipgloss.Width(note)-2))
+	out := []string{
+		exploreHeadingStyle.Render(head) + "  " + ui.Muted(note),
+		"  " + cols.header(width-2),
+	}
+	if len(cells) == 0 {
+		out = append(out, ui.Muted("  nothing here"))
+		return out
+	}
+	end := min(m.rowTop+m.rowsHeight()-1, len(cells))
+	for i := m.rowTop; i < end; i++ {
+		out = append(out, m.cursorLine(cols.render(cells[i], width-2),
+			i == clampIndex(m.rowCur, len(cells)), m.focus == paneRows))
+	}
+	// The count is in the heading, so a partial window is visible there; this
+	// says which part.
+	if len(cells) > m.rowsHeight()-1 {
+		out = append(out, ui.Muted(fmt.Sprintf("  %d–%d of %d", m.rowTop+1, end, len(cells))))
+	}
+	return out
+}
+
+// farmNote is what the reconcile age says about everything else on the row.
+func (m exploreModel) farmNote(f farmChoice) string {
+	run, ok := m.data.Runs[f.ID]
+	if !ok || run.SucceededAt == nil {
+		return "never reconciled"
+	}
+	return "reconciled " + ui.CompactDuration(time.Since(*run.SucceededAt)) + " ago"
+}
+
+func (m exploreModel) rowCells() (exploreColumns, [][]string) {
+	now := time.Now()
+	if m.kind == kindHosts {
+		hosts := m.visibleHosts()
+		out := make([][]string, 0, len(hosts))
+		for _, h := range hosts {
+			out = append(out, []string{
+				h.Hostname,
+				rolesSummary(h.Roles, false),
+				versionCell(h, false),
+				ageCell(h, now),
+				openStackNoteCell(h, now),
+			})
+		}
+		return hostColumns, out
+	}
+	vms := m.visibleVMs()
+	out := make([][]string, 0, len(vms))
 	for _, v := range vms {
-		labels = append(labels, vmPickLabel(v, nets))
+		out = append(out, []string{
+			nameOrID(v),
+			ui.Muted(vmProjectLabel(v)),
+			vmStateCell(v),
+			primaryAddress(v, m.data.Nets),
+			ui.Muted(v.HypervisorHostname),
+		})
 	}
-	for {
-		i, back, err := pickOrBack(labels, "VMs", "back")
-		if err != nil || back {
-			return err
-		}
-		fmt.Fprintln(os.Stdout)
-		renderVMShow(os.Stdout, vms[i], farms, nets, time.Now())
-	}
+	return vmColumns, out
 }
 
-func showArchitecture(ctx context.Context, st *store.Store, id string) error {
-	now := time.Now()
-	assessment, err := collectAssessment(ctx, st, id, now)
-	if err != nil {
-		return err
+func (m exploreModel) detailView() string {
+	var b strings.Builder
+	b.WriteString(m.clip(exploreTitleStyle.Render("▌ "+ui.Truncate(m.detailOf, 60))) + "\n")
+	h := m.bodyHeight() + 1
+	end := min(m.detailTop+h, len(m.detail))
+	for i := m.detailTop; i < end; i++ {
+		b.WriteString(m.clip(m.detail[i]) + "\n")
 	}
-	fmt.Fprintln(os.Stdout)
-	renderFarmShow(os.Stdout, assessment, now)
-	return nil
+	for i := end - m.detailTop; i < h; i++ {
+		b.WriteString("\n")
+	}
+	hint := "esc back · ↑↓ scroll · p keep on exit · q close"
+	if len(m.detail) > h {
+		hint = fmt.Sprintf("%d–%d of %d · ", m.detailTop+1, end, len(m.detail)) + hint
+	}
+	b.WriteString(m.clip(ui.Muted(hint)))
+	return b.String()
+}
+
+func (m exploreModel) footer() string {
+	if m.typing {
+		return exploreCursorStyle.Render("/"+m.activeFilter()) +
+			ui.Muted("   enter keep · esc clear")
+	}
+	// Dropped from the middle out: the two ends are the ones somebody needs
+	// without being told, and a footer cut in half by the terminal edge tells
+	// them nothing at all.
+	keys := []string{
+		"tab pane", "↑↓ move", "enter detail", "v VMs", "s hosts",
+		"/ filter", "r reload", "q quit",
+	}
+	for len(keys) > 2 && lipgloss.Width(strings.Join(keys, " · ")) > m.width {
+		keys = append(keys[:len(keys)-2], keys[len(keys)-1])
+	}
+	return ui.Muted(strings.Join(keys, " · "))
 }
 
 // liveInstances drops the VMs nova no longer lists.
 //
-// FarmSnapshot keeps them because the assessment counts them, and a menu is not
-// a count: "VMs (34)" leading to a list where nine are gone reads as a fleet
-// that has more machines than it does.
+// The store keeps them so a farm's assessment can count what went missing, and
+// a browser is not a count: a list offering nine machines that are gone is a
+// list somebody will try to connect to.
 func liveInstances(in []store.Instance) []store.Instance {
 	out := make([]store.Instance, 0, len(in))
 	for _, v := range in {
@@ -225,92 +916,9 @@ func liveInstances(in []store.Instance) []store.Instance {
 	return out
 }
 
-// farmHeadline is the one line above the menu: which deployment this is, and
-// whether anything has confirmed it lately.
-func farmHeadline(f farmChoice, snap store.FarmSnapshot, live []store.Instance, now time.Time) string {
-	name := f.Name
-	if name == "" {
-		name = f.ID
-	}
-	parts := []string{}
-	if f.Name != "" {
-		parts = append(parts, f.ID)
-	}
-	if f.Region != "" {
-		parts = append(parts, f.Region)
-	}
-	parts = append(parts, pluralHosts(len(snap.Hosts)), fmt.Sprintf("%d VMs", len(live)))
-	if f.State != "" && f.State != store.StateActive {
-		parts = append(parts, f.State)
-	}
-	// The last successful reconcile is what makes every other number here worth
-	// trusting, so it is on the same line as them rather than a screen away.
-	switch {
-	case snap.Run == nil || snap.Run.SucceededAt == nil:
-		parts = append(parts, "never reconciled")
-	default:
-		parts = append(parts, "reconciled "+ui.CompactDuration(now.Sub(*snap.Run.SucceededAt))+" ago")
-	}
-	return farmHeading(name) + " " + ui.Muted("· "+strings.Join(parts, " · "))
-}
-
 func farmMenuTitle(f farmChoice) string {
 	if f.Name != "" {
 		return f.Name
 	}
 	return f.ID
-}
-
-// hostPickLabel says what the machine is for, in the order somebody scans:
-// which host, what it does, what it runs, how fresh that is.
-func hostPickLabel(h store.OpenStackHost, now time.Time) string {
-	label := ui.PadRight(h.Hostname, 24) + "  " + ui.PadRight(rolesSummary(h.Roles, false), 26)
-	label += "  " + ui.PadRight(versionCell(h, false), 10)
-	label += "  " + ageCell(h, now)
-	if h.LastError != "" {
-		label += "  " + ui.Fail("probe failed")
-	}
-	if s := stateCell(h.HostState); s != "" {
-		label += "  " + s
-	}
-	return label
-}
-
-// vmPickLabel leads with the name because that is what a person recognises, and
-// carries the address because it is the other thing they came for. The uuid is
-// not here: it is 36 characters that identify nothing to a reader, and the
-// detail view has it.
-//
-// The project sits second. A farm's VMs are a list of names until you know
-// whose they are — "whose VM is this" is what the listing's project column
-// exists for, and a chooser without it makes somebody open VMs one at a time to
-// find the one they meant. It goes before the state and the address because it
-// narrows the list, while those describe a row that has already been found.
-func vmPickLabel(v store.Instance, nets []string) string {
-	label := ui.PadRight(ui.Truncate(nameOrID(v), 30), 30)
-	label += "  " + ui.Muted(ui.PadRight(ui.Truncate(vmProjectLabel(v), 18), 18))
-	label += "  " + ui.PadRight(vmStateCell(v), 16)
-	label += "  " + ui.PadRight(ui.Truncate(primaryAddress(v, nets), 18), 18)
-	label += "  " + ui.Muted(ui.Truncate(v.HypervisorHostname, 16))
-	return label
-}
-
-// pickOrBack is pickIndex with cancelling treated as an answer.
-//
-// Esc means "up one level" in a walk, not failure. pickIndex reports a
-// cancellation as an error because its callers are one-shot commands where
-// there is nothing to go back to.
-//
-// The hint says which of the two it is here, because at the top of the walk
-// there is no level above and the same key ends the session — and a prompt that
-// offers "back" and then exits has told the reader the wrong thing.
-func pickOrBack(items []string, title, hint string) (int, bool, error) {
-	idxs, cancelled, err := runListPicker(items, nil, title+"   (esc: "+hint+")", false)
-	if err != nil {
-		return 0, false, err
-	}
-	if cancelled || len(idxs) == 0 {
-		return 0, true, nil
-	}
-	return idxs[0], false, nil
 }

@@ -327,7 +327,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |
 | `vctl ssh [host\|user@addr] [--server <host>]` | exact, fuzzy, IP, interactive 선택으로 접속합니다(픽커는 ←/→로 DC 필터). `--server`는 정확히 또는 IP로 해석해 비대화형으로 접속합니다(스크립트/에이전트용). `user@addr` 형태는 인벤토리를 거치지 않고 주소로 바로 접속합니다 |
 | `vctl list [--dc <dc>]` | 인벤토리 호스트를 나열합니다(primary + extra IP, 비표준 SSH 포트, 관측된 liveness, 그리고 `active` 가 아닐 때의 운영 상태) |
-| `vctl openstack explore [deployment]` | 배포 하나를 골라가며 훑습니다 — 팜 → 호스트 → VM, 각 단계의 상세 화면은 개별 명령이 쓰는 것과 같습니다. 읽기 전용 |
+| `vctl openstack explore [deployment]` | 전체 화면 브라우저. 왼쪽은 배포, 오른쪽은 그 배포의 VM 또는 호스트, `enter` 로 `openstack host`·`vm show` 와 같은 상세 화면. `tab` 으로 창 이동, `/` 필터, `r` 다시 읽기. 읽기 전용이며 DB 만 읽습니다 — 컨트롤 플레인에 접속하지 않습니다 |
 | `vctl openstack [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | 어떤 호스트가 OpenStack을 돌리는지, 무슨 역할인지, 어느 팜 소속인지 보여줍니다. node-agent의 capability probe 결과를 읽습니다. `vctl openstack host <name>`은 한 호스트의 역할·컴포넌트 버전·소속을 보여줍니다 |
 | `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure] [--json] [--fail-on <problems>]` | 각 배포의 컨트롤 플레인에 어느 호스트가 자기 것인지 묻고, 양쪽이 일치하는 호스트를 `confirmed`로 올립니다. 자격증명은 Vault `kv/teams/sre/vctl-<host_port>`에서 읽습니다(필드: `auth_url`·`username`·`password`, 선택 `project_name`·`user_domain`·`project_domain`) |
 | `vctl openstack farm name [deployment] [name]` | 배포에 사람이 읽을 이름을 붙입니다. 목록이 `172.16.0.10:5000` 대신 `incheon`으로 나옵니다. 인자를 생략하면 목록에서 고르고 폼으로 입력합니다 |

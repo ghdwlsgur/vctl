@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
@@ -283,15 +284,83 @@ func PadRight(s string, width int) string {
 // head and tail both stay visible. Long hostnames (e.g.
 // incheon-vm-[tenant-a]-…-worker-gpu-new) keep their common prefix and the
 // distinguishing suffix instead of overflowing the column and wrapping the row.
+//
+// Colour survives it. Cutting by runes was correct only for plain text: a
+// coloured cell carries escape sequences that occupy no columns, and slicing
+// through one leaves half of it on screen — measured, a project cell rendered
+// as "[38;5;24…team" where the name should be. Escapes are copied through and
+// the cut is made on what is actually visible, so a caller cannot make this
+// mistake by styling a cell before it is laid out.
 func Truncate(s string, max int) string {
 	if max <= 1 || lipgloss.Width(s) <= max {
 		return s
 	}
-	r := []rune(s)
 	keep := max - 1 // room for the ellipsis
 	head := (keep + 1) / 2
 	tail := keep - head
-	return string(r[:head]) + "…" + string(r[len(r)-tail:])
+	visible := lipgloss.Width(s)
+
+	var b strings.Builder
+	styled, seen := false, 0
+	for i := 0; i < len(s); {
+		if esc := escapeLen(s[i:]); esc > 0 {
+			// Zero width, and dropping it would change the colour of whatever
+			// follows — so it is copied wherever it falls, including inside the
+			// part being elided.
+			b.WriteString(s[i : i+esc])
+			styled = true
+			i += esc
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		w := lipgloss.Width(string(r))
+		switch {
+		case seen < head:
+			b.WriteRune(r)
+		case seen == head:
+			b.WriteRune('…')
+			fallthrough
+		case seen >= visible-tail:
+			if seen >= visible-tail {
+				b.WriteRune(r)
+			}
+		}
+		seen += w
+		i += size
+	}
+	if styled {
+		// The last escape copied may have opened a style that its own reset —
+		// elided with the middle — was going to close.
+		b.WriteString("\x1b[0m")
+	}
+	return b.String()
+}
+
+// escapeLen reports the byte length of the ANSI escape sequence at the start of
+// s, or 0. Only the two shapes lipgloss emits: CSI (colour, attributes) and OSC
+// (hyperlinks), both of which measure zero columns.
+func escapeLen(s string) int {
+	if len(s) < 2 || s[0] != 0x1b {
+		return 0
+	}
+	switch s[1] {
+	case '[':
+		for i := 2; i < len(s); i++ {
+			if s[i] >= 0x40 && s[i] <= 0x7e {
+				return i + 1
+			}
+		}
+	case ']':
+		for i := 2; i < len(s); i++ {
+			if s[i] == 0x07 {
+				return i + 1
+			}
+			if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
+				return i + 2
+			}
+		}
+	}
+	return 0
 }
 
 // ColumnWidths returns the display width of the widest cell in each column.
