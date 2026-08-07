@@ -356,7 +356,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl agent [--sink <path>]` | トークンを生かし続け、シンクファイルに書き出す |
 | `vctl ssh [host\|user@addr] [--server <host>]` | 完全一致、あいまい一致、IP、対話的な選択で接続する(ピッカーは ←/→ で DC フィルタ)。`--server` は完全一致または IP で解決し、非対話的に接続する(スクリプト/エージェント向け). `user@addr` 形式はインベントリを経由せずアドレスへ直接接続する |
 | `vctl list [--dc <dc>]` | インベントリのホストを一覧表示する(プライマリ + 追加 IP、非標準 SSH ポート、観測された liveness、および `active` でない場合の運用状態) |
-| `vctl openstack explore [deployment]` | デプロイを選びながら辿る — ファーム → ホスト → VM。各段の詳細画面は個別コマンドが使うものと同じ。読み取り専用 |
+| `vctl openstack explore [deployment]` | 全画面ブラウザ。左にデプロイ、右にその VM またはホスト、`enter` で `openstack host`・`vm show` と同じ詳細画面。`tab` でペイン移動、`/` 絞り込み、`r` 再読み込み。読み取り専用で DB のみを読む — コントロールプレーンには接続しない |
 | `vctl openstack [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | どのホストが OpenStack を動かし、どの役割で、どのファームに属するかを表示する。node-agent の capability probe の結果を読む。`vctl openstack host <name>` は 1 台の役割・コンポーネントのバージョン・所属を表示する |
 | `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure] [--json] [--fail-on <problems>]` | 各デプロイのコントロールプレーンにどのホストが自分のものかを問い合わせ、両者が一致したホストを `confirmed` に昇格する。認証情報は Vault の `kv/teams/sre/vctl-<host_port>` から読む(フィールド: `auth_url`・`username`・`password`、任意で `project_name`・`user_domain`・`project_domain`) |
 | `vctl openstack farm name [deployment] [name]` | デプロイに人が読める名前を付ける。一覧が `172.16.0.10:5000` ではなく `incheon` と表示される。引数を省略すると一覧から選び、フォームで入力する |
