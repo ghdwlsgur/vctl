@@ -56,7 +56,7 @@ type InstanceAddress struct {
 // incident.
 //
 // In a transaction because a half-written listing would mark live VMs missing.
-func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []Instance, at time.Time) (seen int, err error) {
+func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []Instance, at time.Time, complete bool) (seen int, err error) {
 	if at.IsZero() {
 		at = time.Now()
 	}
@@ -124,11 +124,22 @@ func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []In
 
 	// Anything this deployment had and did not list now. First absence stamps
 	// the time; later ones leave it, so the age is how long it has been gone.
-	if _, err := tx.Exec(ctx, `
-		UPDATE openstack_instances SET missing_since=$2
-		WHERE deployment_id=$1 AND observed_at < $2 AND missing_since IS NULL`,
-		deployment, at); err != nil {
-		return 0, err
+	//
+	// Only when the listing was whole. A pass that stopped early saw a prefix of
+	// the deployment, and marking everything past that prefix as gone would
+	// render an API that answered half a question as a deployment that lost half
+	// its VMs. Nothing distinguishes the two once it is written.
+	//
+	// The same rule the host membership already follows: a partial answer holds
+	// rather than demotes (see ReconcileInput.Complete). What a partial pass
+	// still does is refresh what it did see, because those rows are current.
+	if complete {
+		if _, err := tx.Exec(ctx, `
+			UPDATE openstack_instances SET missing_since=$2
+			WHERE deployment_id=$1 AND observed_at < $2 AND missing_since IS NULL`,
+			deployment, at); err != nil {
+			return 0, err
+		}
 	}
 	return seen, tx.Commit(ctx)
 }

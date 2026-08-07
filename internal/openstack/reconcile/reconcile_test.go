@@ -56,10 +56,11 @@ func (f *fakeCloud) Instances(_ context.Context, c openstackapi.Credentials, _ b
 }
 
 type write struct {
-	kind string
-	id   string
-	at   time.Time
-	err  error
+	kind     string
+	id       string
+	at       time.Time
+	err      error
+	complete bool
 }
 
 type fakeRepo struct {
@@ -95,8 +96,8 @@ func (r *fakeRepo) RecordControlHosts(_ context.Context, id string, _ []string, 
 	return r.fail("control", id)
 }
 
-func (r *fakeRepo) ReplaceInstances(_ context.Context, id string, rows []store.Instance, at time.Time) (int, error) {
-	r.writes = append(r.writes, write{kind: "instances", id: id, at: at})
+func (r *fakeRepo) ReplaceInstances(_ context.Context, id string, rows []store.Instance, at time.Time, complete bool) (int, error) {
+	r.writes = append(r.writes, write{kind: "instances", id: id, at: at, complete: complete})
 	if err := r.fail("instances", id); err != nil {
 		return 0, err
 	}
@@ -335,5 +336,53 @@ func TestOnePassRecordsOneInstant(t *testing.T) {
 			t.Errorf("%s recorded %v, want the same instant as %s (%v)",
 				w.kind, w.at, repo.writes[0].kind, repo.writes[0].at)
 		}
+	}
+}
+
+// Whether the listing was whole has to reach the store, because the store is
+// what decides between "these VMs are gone" and "we did not get that far".
+//
+// A truncated pass still stores what it reached — those rows are current — so
+// the write happening is not the question. The question is what it claims.
+func TestAPartialInstanceListingIsWrittenAsIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		complete bool
+	}{
+		{"whole listing", true},
+		{"stopped early", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			creds := &fakeCreds{}
+			cloud := &fakeCloud{
+				hosts: map[string]openstackapi.HostList{"a": complete("h1")},
+				instances: map[string]Listing{"a": {
+					Instances: []openstackapi.Instance{{ID: "vm-1"}},
+					Complete:  tc.complete,
+				}},
+			}
+			repo := &fakeRepo{result: map[string]store.ReconcileResult{"a": {Confirmed: []string{"h1"}}}}
+
+			if _, err := svc(creds, cloud, repo).Run(context.Background(), Request{
+				Farms: []Farm{{ID: "a", LocalHosts: []string{"h1"}}},
+			}); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			var found bool
+			for _, w := range repo.writes {
+				if w.kind != "instances" {
+					continue
+				}
+				found = true
+				if w.complete != tc.complete {
+					t.Errorf("stored complete=%v, want %v — the store would %s",
+						w.complete, tc.complete,
+						map[bool]string{true: "retire VMs it never reached", false: "keep VMs the deployment dropped"}[w.complete])
+				}
+			}
+			if !found {
+				t.Error("nothing was written; a truncated pass still stores what it reached")
+			}
+		})
 	}
 }

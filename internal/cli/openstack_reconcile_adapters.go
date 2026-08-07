@@ -72,9 +72,11 @@ func (novaCloud) Instances(ctx context.Context, c openstackapi.Credentials, inse
 		return out, err
 	}
 	list, err := client.Instances(ctx)
+	out.Complete = err == nil
 	if err != nil {
 		// A partial page is still worth storing — a listing that stopped at the
-		// cap has told us about everything it did reach — but say so.
+		// cap has told us about everything it did reach — but it is a prefix,
+		// and Complete=false is what stops the store reading the rest as gone.
 		if len(list) == 0 {
 			return out, err
 		}
@@ -106,8 +108,8 @@ func (r storeRepo) RecordControlHosts(ctx context.Context, id string, hosts []st
 	return r.st.RecordControlHosts(ctx, id, hosts, at)
 }
 
-func (r storeRepo) ReplaceInstances(ctx context.Context, id string, rows []store.Instance, at time.Time) (int, error) {
-	return r.st.ReplaceInstances(ctx, id, rows, at)
+func (r storeRepo) ReplaceInstances(ctx context.Context, id string, rows []store.Instance, at time.Time, complete bool) (int, error) {
+	return r.st.ReplaceInstances(ctx, id, rows, at, complete)
 }
 
 // renderReconcile prints one run's report.
