@@ -254,3 +254,49 @@ func TestACompleteListingStillMarksAbsentVMsMissing(t *testing.T) {
 		t.Errorf("%d VMs marked missing, want the one the deployment stopped listing", gone)
 	}
 }
+
+// A Nova uuid is the identity inside a deployment, not across the fleet — the
+// table is keyed (deployment_id, instance_id) and says so.
+//
+// The address lookup keyed on the uuid alone, which contradicted that: the same
+// uuid in two deployments had both farms' addresses merged onto each row. A
+// connection made from that list could reach the other farm's machine, and
+// nothing on screen would have distinguished the two.
+// Integration — needs VCTL_TEST_DSN.
+func TestAddressesDoNotCrossDeployments(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const a, b = "vm-farm-x", "vm-farm-y"
+	const shared = "uuid-shared"
+	seedInstanceFarm(t, st, a)
+	seedInstanceFarm(t, st, b)
+
+	withAddr := func(id, name, addr string) Instance {
+		v := vm(id, name, "gpu01")
+		v.Addresses = []InstanceAddress{{NetworkName: "tenant", Address: addr, Type: "fixed", IPVersion: 4}}
+		return v
+	}
+	if _, err := st.ReplaceInstances(ctx, a, []Instance{withAddr(shared, "in-a", "10.3.1.7")}, time.Now(), true); err != nil {
+		t.Fatalf("farm a: %v", err)
+	}
+	if _, err := st.ReplaceInstances(ctx, b, []Instance{withAddr(shared, "in-b", "10.9.9.9")}, time.Now(), true); err != nil {
+		t.Fatalf("farm b: %v", err)
+	}
+
+	for _, tc := range []struct{ farm, want string }{{a, "10.3.1.7"}, {b, "10.9.9.9"}} {
+		rows, err := st.Instances(ctx, InstanceFilter{DeploymentID: tc.farm, InstanceID: shared})
+		if err != nil {
+			t.Fatalf("Instances(%s): %v", tc.farm, err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("%s: got %d rows, want one", tc.farm, len(rows))
+		}
+		if n := len(rows[0].Addresses); n != 1 {
+			t.Errorf("%s: %d addresses, want only its own: %+v", tc.farm, n, rows[0].Addresses)
+			continue
+		}
+		if got := rows[0].Addresses[0].Address; got != tc.want {
+			t.Errorf("%s: address = %s, want %s", tc.farm, got, tc.want)
+		}
+	}
+}

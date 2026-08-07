@@ -78,3 +78,37 @@ func TestVMTargetRefusesWithNoAddress(t *testing.T) {
 		t.Fatal("a target was built for a VM with no addresses")
 	}
 }
+
+// A VM with only tenant addresses is not a target. Refusing has to name what it
+// found and point at the door that does not pretend to know which machine that
+// address belongs to.
+func TestVMTargetRefusesATenantOnlyAddress(t *testing.T) {
+	_, err := VMTarget("vm-1", vmAddrs([2]string{"10.3.1.7", "fixed"}),
+		VMPolicy{User: "rocky", OperatorNets: []string{"192.168."}})
+	if err == nil {
+		t.Fatal("a tenant address was accepted as a connection target")
+	}
+	for _, want := range []string{"10.3.1.7", "vctl ssh"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, missing %q", err, want)
+		}
+	}
+}
+
+// Having no addresses at all is a different sentence from having none worth
+// connecting to, and the message has to say which.
+func TestVMTargetSeparatesNoAddressFromNoUsableAddress(t *testing.T) {
+	none, _ := VMTarget("vm-1", nil, VMPolicy{User: "rocky"})
+	_ = none
+	errNone := func() error { _, e := VMTarget("vm-1", nil, VMPolicy{User: "rocky"}); return e }()
+	errTenant := func() error {
+		_, e := VMTarget("vm-1", vmAddrs([2]string{"10.3.1.7", "fixed"}), VMPolicy{User: "rocky"})
+		return e
+	}()
+	if errNone == nil || errTenant == nil {
+		t.Fatal("both cases must refuse")
+	}
+	if errNone.Error() == errTenant.Error() {
+		t.Errorf("both refusals read the same: %q", errNone)
+	}
+}
