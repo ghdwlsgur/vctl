@@ -278,7 +278,7 @@ rejected.
 
 A host answering on several addresses (a primary NIC plus floating VIPs or extra
 NICs) is reachable by any of them: `vctl ssh --server <ip>` matches the primary
-`ip`, an operator-set `extra_ips` (via `dbedit -col ips`), or a node-agent
+`ip`, an operator-set `extra_ips` (via `vctl edit --extra-ip`), or a node-agent
 `observed_ips`, and `vctl list` shows the extras. The interactive picker also
 filters by datacenter with ←/→.
 
@@ -612,7 +612,6 @@ The release workflow uses pinned GitHub Actions, runs tests and Trivy, scans the
 
 ```text
 cmd/vctl              entrypoint
-cmd/dbedit            maintenance tool for operator-managed inventory (-col dc|user|name|ips|del)
 internal/config       generic loader (config.go) + org-specific defaults (defaults_sre.go) + embedded CA
 internal/vaultc       Vault auth, token lifecycle, SSH signing, DB credentials, CA reads
 internal/store        Postgres inventory, app-layer RBAC, access/session/kernel audit, host status (verify-full TLS)

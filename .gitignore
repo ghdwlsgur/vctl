@@ -11,3 +11,4 @@ bin/
 /vctl-postgres
 /dbedit
 seed/
+.DS_Store

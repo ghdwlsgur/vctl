@@ -62,7 +62,7 @@ leaves ssh_user, dc and jump_via as entered here.`,
 				}
 				if !created {
 					if !force {
-						return fmt.Errorf("%s is already in the inventory; edit it with vctl ip / dbedit, or pass --force to overwrite probe fields", sv.Hostname)
+						return fmt.Errorf("%s is already in the inventory; change it with vctl edit, or pass --force to overwrite probe fields", sv.Hostname)
 					}
 					if err := st.Upsert(ctx, sv); err != nil {
 						return err

@@ -15,14 +15,14 @@ func (s *Store) Delete(ctx context.Context, hostname string) (bool, error) {
 
 // SetDC updates a server's datacenter label. DC is operator-managed and `vctl
 // sync` would overwrite it from IP heuristics, so this is the deliberate manual
-// edit path (used by cmd/dbedit). Returns whether a row matched.
+// edit path (vctl edit). Returns whether a row matched.
 func (s *Store) SetDC(ctx context.Context, hostname, dc string) (bool, error) {
 	return s.execMatched(ctx, `UPDATE servers SET dc=$2 WHERE hostname=$1`, hostname, dc)
 }
 
 // SetUser updates a server's SSH login user. Like dc, `vctl sync` derives it
 // from ssh config and would overwrite a manual value, so this is the deliberate
-// edit path (cmd/dbedit). Returns whether a row matched.
+// edit path (vctl edit). Returns whether a row matched.
 func (s *Store) SetUser(ctx context.Context, hostname, user string) (bool, error) {
 	return s.execMatched(ctx, `UPDATE servers SET ssh_user=$2 WHERE hostname=$1`, hostname, user)
 }
@@ -41,7 +41,7 @@ func (s *Store) SetJumpVia(ctx context.Context, hostname, jump string) (bool, er
 
 // SetExtraIPs replaces a server's operator-curated additional addresses (VIPs,
 // extra NICs). `vctl sync` preserves extra_ips, so this is the deliberate edit
-// path (cmd/dbedit) for hosts whose node-agent can't auto-report (e.g. probe-only
+// path (vctl edit) for hosts whose node-agent can't auto-report (e.g. probe-only
 // LBs). Pass bare IPs; an empty slice clears them. Returns whether a row matched.
 func (s *Store) SetExtraIPs(ctx context.Context, hostname string, ips []string) (bool, error) {
 	return s.execMatched(ctx, `UPDATE servers SET extra_ips=coalesce($2::inet[],'{}'), updated_at=now() WHERE hostname=$1`, hostname, ips)
