@@ -40,8 +40,11 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 		Long: "One way in to everything the other commands show:\n\n" +
 			"  deployment → its hosts → one host's roles and versions\n" +
 			"             → its VMs   → one VM's addresses and how to reach it\n\n" +
-			"Read-only. It changes nothing, and every screen is the same renderer the\n" +
-			"individual command uses — `farm show`, `openstack host`, `vm show`.\n\n" +
+			"Read-only, and it reads the database alone — nothing here contacts a farm's\n" +
+			"control plane. Every screen is the same renderer the individual command uses:\n" +
+			"`farm show`, `openstack host`, `vm show`.\n\n" +
+			"A farm that is misbehaving is a different question, and it is asked with\n" +
+			"`vctl openstack farm doctor <deployment>`.\n\n" +
 			"An argument starts inside that deployment instead of at the picker.",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: byPosition(completeFarm(env)),
@@ -54,8 +57,8 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 					"use 'vctl openstack farm list', 'vctl openstack --farm <f>' and " +
 					"'vctl openstack vm --farm <f>' instead")
 			}
-			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
-				return exploreFarms(cmd.Context(), a, st, args)
+			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+				return exploreFarms(cmd.Context(), st, args)
 			})
 		},
 	}
@@ -63,7 +66,7 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 }
 
 // exploreFarms is the outer loop: choose a deployment, walk it, come back.
-func exploreFarms(ctx context.Context, a *app.App, st *store.Store, args []string) error {
+func exploreFarms(ctx context.Context, st *store.Store, args []string) error {
 	farms, err := farmChoices(ctx, st)
 	if err != nil {
 		return err
@@ -79,7 +82,7 @@ func exploreFarms(ctx context.Context, a *app.App, st *store.Store, args []strin
 		if err != nil {
 			return err
 		}
-		if err := exploreFarm(ctx, a, st, f); err != nil {
+		if err := exploreFarm(ctx, st, f); err != nil {
 			return err
 		}
 	}
@@ -91,7 +94,7 @@ func exploreFarms(ctx context.Context, a *app.App, st *store.Store, args []strin
 		if back {
 			return nil
 		}
-		if err := exploreFarm(ctx, a, st, farms[i]); err != nil {
+		if err := exploreFarm(ctx, st, farms[i]); err != nil {
 			return err
 		}
 	}
@@ -102,7 +105,6 @@ const (
 	menuHosts        = "Hosts"
 	menuVMs          = "VMs"
 	menuArchitecture = "Architecture"
-	menuDiagnose     = "Diagnose"
 )
 
 // exploreFarm is one deployment, until the reader leaves it.
@@ -111,7 +113,7 @@ const (
 // on the menu and the hosts in the list are the same reading. Coming back out
 // and in again is how you refresh — which is also the only way to be sure you
 // did.
-func exploreFarm(ctx context.Context, a *app.App, st *store.Store, f farmChoice) error {
+func exploreFarm(ctx context.Context, st *store.Store, f farmChoice) error {
 	snap, err := st.FarmSnapshot(ctx, f.ID)
 	if err != nil {
 		return err
@@ -129,7 +131,6 @@ func exploreFarm(ctx context.Context, a *app.App, st *store.Store, f farmChoice)
 			fmt.Sprintf("%s (%d)", menuHosts, len(snap.Hosts)),
 			fmt.Sprintf("%s (%d)", menuVMs, len(live)),
 			menuArchitecture + "  — roles, releases, unsettled membership",
-			menuDiagnose + "     — what a reconcile would need, without changing anything",
 		}
 		i, back, err := pickOrBack(items, farmMenuTitle(f), "deployments")
 		if err != nil {
@@ -145,11 +146,6 @@ func exploreFarm(ctx context.Context, a *app.App, st *store.Store, f farmChoice)
 			err = exploreVMs(live, names)
 		case menuArchitecture:
 			err = showArchitecture(ctx, st, f.ID)
-		case menuDiagnose:
-			// Read-only, like everything else here — see openstack_farm_doctor.
-			// Verification is not passed on: a farm with a self-signed endpoint
-			// is a finding to report, not something to work around silently.
-			renderFarmDoctor(os.Stdout, f, diagnoseFarm(ctx, a, st, f.ID, false))
 		}
 		if err != nil {
 			return err
@@ -284,10 +280,18 @@ func hostPickLabel(h store.OpenStackHost, now time.Time) string {
 // carries the address because it is the other thing they came for. The uuid is
 // not here: it is 36 characters that identify nothing to a reader, and the
 // detail view has it.
+//
+// The project sits second. A farm's VMs are a list of names until you know
+// whose they are — "whose VM is this" is what the listing's project column
+// exists for, and a chooser without it makes somebody open VMs one at a time to
+// find the one they meant. It goes before the state and the address because it
+// narrows the list, while those describe a row that has already been found.
 func vmPickLabel(v store.Instance, nets []string) string {
-	label := ui.PadRight(ui.Truncate(nameOrID(v), 32), 32) + "  " + ui.PadRight(vmStateCell(v), 18)
-	label += "  " + ui.PadRight(ui.Truncate(primaryAddress(v, nets), 20), 20)
-	label += "  " + ui.Muted(ui.Truncate(v.HypervisorHostname, 18))
+	label := ui.PadRight(ui.Truncate(nameOrID(v), 30), 30)
+	label += "  " + ui.Muted(ui.PadRight(ui.Truncate(vmProjectLabel(v), 18), 18))
+	label += "  " + ui.PadRight(vmStateCell(v), 16)
+	label += "  " + ui.PadRight(ui.Truncate(primaryAddress(v, nets), 18), 18)
+	label += "  " + ui.Muted(ui.Truncate(v.HypervisorHostname, 16))
 	return label
 }
 
