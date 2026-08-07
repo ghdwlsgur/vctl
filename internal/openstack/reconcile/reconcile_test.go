@@ -386,3 +386,65 @@ func TestAPartialInstanceListingIsWrittenAsIncomplete(t *testing.T) {
 		})
 	}
 }
+
+// A run where one farm answered and seven did not is a success by the old
+// measure — Run only fails when nothing was reached at all. A timer cannot tell
+// that from a healthy run, which is how a broken credential or a closed route
+// stays invisible for as long as one farm keeps working.
+//
+// What counts as failure is the caller's to say, so this reports and does not
+// decide.
+func TestAReportCountsWhatWentWrongWithoutDeciding(t *testing.T) {
+	creds := &fakeCreds{err: map[string]error{"c": errors.New("no credentials")}}
+	cloud := &fakeCloud{
+		hosts: map[string]openstackapi.HostList{
+			"a": complete("h1"),
+			"b": {Hosts: []string{"h2"}, Complete: false, ServiceError: "503"},
+		},
+		hostErr: map[string]error{"d": errors.New("context deadline exceeded")},
+	}
+	repo := &fakeRepo{result: map[string]store.ReconcileResult{
+		"a": {Confirmed: []string{"h1"}}, "b": {Confirmed: []string{"h2"}},
+	}}
+
+	rep, err := svc(creds, cloud, repo).Run(context.Background(), Request{
+		Farms: []Farm{
+			{ID: "a", LocalHosts: []string{"h1"}},
+			{ID: "b", LocalHosts: []string{"h2"}},
+			{ID: "c", LocalHosts: []string{"h3"}},
+			{ID: "d", LocalHosts: []string{"h4"}},
+		},
+	})
+	// Two farms answered, so the run itself is not a failure.
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, tc := range []struct {
+		what string
+		got  int
+		want int
+	}{
+		{"reached", rep.Reached, 2},
+		{"unreachable", rep.Unreachable(), 1},
+		{"no credentials", rep.NoCredentials(), 1},
+		{"partial", rep.Partial(), 1},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %d, want %d", tc.what, tc.got, tc.want)
+		}
+	}
+
+	// And the caller picks which of those is worth exiting for.
+	if hit := rep.FailOn([]Problem{ProblemUnreachable}); len(hit) != 1 {
+		t.Errorf("FailOn(unreachable) = %v, want it to fire", hit)
+	}
+	if hit := rep.FailOn([]Problem{ProblemWarning}); len(hit) != 0 {
+		t.Errorf("FailOn(warning) = %v, want nothing — no farm warned", hit)
+	}
+	// Asking for nothing is the default and must stay silent, or a timer that
+	// upgrades starts reporting a new deployment's missing credentials as an
+	// incident.
+	if hit := rep.FailOn(nil); len(hit) != 0 {
+		t.Errorf("FailOn(nil) = %v, want nothing", hit)
+	}
+}

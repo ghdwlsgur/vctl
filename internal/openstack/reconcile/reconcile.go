@@ -324,3 +324,68 @@ func ToStoreInstance(deployment string, i openstackapi.Instance) store.Instance 
 	}
 	return out
 }
+
+// What a run went wrong at, counted. A caller decides which of these is worth
+// failing over; this package only says what happened.
+func (r Report) Unreachable() int {
+	return r.count(func(o Outcome) bool { return o.Unreachable != nil })
+}
+func (r Report) NoCredentials() int {
+	return r.count(func(o Outcome) bool { return o.NoCredentials != nil })
+}
+func (r Report) Partial() int { return r.count(func(o Outcome) bool { return o.Partial != "" }) }
+func (r Report) Warned() int  { return r.count(func(o Outcome) bool { return len(o.Warnings) > 0 }) }
+
+func (r Report) count(pred func(Outcome) bool) int {
+	var n int
+	for _, o := range r.Outcomes {
+		if pred(o) {
+			n++
+		}
+	}
+	return n
+}
+
+// Problem is something a run can be asked to fail over.
+type Problem string
+
+const (
+	// ProblemUnreachable — a control plane could not be asked at all.
+	ProblemUnreachable Problem = "unreachable"
+	// ProblemNoCredentials — a deployment has none filed. The normal state of a
+	// new farm, which is why it is not a failure by default.
+	ProblemNoCredentials Problem = "no-credentials"
+	// ProblemPartial — a control plane answered half a question, so nothing was
+	// demoted and the picture is incomplete.
+	ProblemPartial Problem = "partial"
+	// ProblemWarning — anything the run carried but did not stop for.
+	ProblemWarning Problem = "warning"
+)
+
+// FailOn reports whether any of the named problems occurred.
+//
+// Separate from Run because it is a policy question, and the answer differs by
+// caller: a person running this by hand wants to see the farms that failed and
+// carry on, while a timer wants a non-zero exit so somebody is told. Run's own
+// error covers only the case where nothing was reached at all — that one is not
+// a policy, because a run that established nothing has no result to report.
+func (r Report) FailOn(problems []Problem) []Problem {
+	var hit []Problem
+	for _, p := range problems {
+		var n int
+		switch p {
+		case ProblemUnreachable:
+			n = r.Unreachable()
+		case ProblemNoCredentials:
+			n = r.NoCredentials()
+		case ProblemPartial:
+			n = r.Partial()
+		case ProblemWarning:
+			n = r.Warned()
+		}
+		if n > 0 {
+			hit = append(hit, p)
+		}
+	}
+	return hit
+}
