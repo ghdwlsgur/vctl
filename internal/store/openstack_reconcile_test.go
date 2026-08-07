@@ -313,7 +313,7 @@ func TestReconcileDoesNotEraseTheFarmName(t *testing.T) {
 	seedFarmHosts(t, st, "10.0.0.7:5000", "recon-host-09")
 	cleanupDeployment(t, st, farm)
 
-	if err := st.SetDeploymentName(ctx, farm, "seoul-x", "kr-seoul-9"); err != nil {
+	if err := st.SetDeploymentName(ctx, farm, "seoul-x", ptr("kr-seoul-9")); err != nil {
 		t.Fatalf("SetDeploymentName: %v", err)
 	}
 	// The reconciler carries neither field, exactly as the CLI calls it.
@@ -353,10 +353,10 @@ func TestSetDeploymentNameCanStillClearIt(t *testing.T) {
 	const farm = "recon-farm-clear"
 	cleanupDeployment(t, st, farm)
 
-	if err := st.SetDeploymentName(ctx, farm, "temporary", "kr-x"); err != nil {
+	if err := st.SetDeploymentName(ctx, farm, "temporary", ptr("kr-x")); err != nil {
 		t.Fatalf("SetDeploymentName: %v", err)
 	}
-	if err := st.SetDeploymentName(ctx, farm, "", ""); err != nil {
+	if err := st.SetDeploymentName(ctx, farm, "", ptr("")); err != nil {
 		t.Fatalf("SetDeploymentName(clear): %v", err)
 	}
 	ds, _ := st.Deployments(ctx)
@@ -474,4 +474,62 @@ func TestPartialAnswerDoesNotSweepMemberships(t *testing.T) {
 	if n != 2 {
 		t.Errorf("%d memberships after a partial answer, want both kept", n)
 	}
+}
+
+// ptr is for the optional region: nil means "leave it", and a pointer to any
+// value — "" included — means "set it to this".
+func ptr(s string) *string { return &s }
+
+// Renaming a deployment must not drop its region.
+//
+// The write took a plain string, so an omitted --region arrived as "" and
+// overwrote whatever was recorded. The command reads as changing a name, and a
+// region disappearing from it is a change nobody asked for and nothing reports.
+//
+// nil is "leave it"; a pointer — "" included — is "set it to this", so clearing
+// stays possible and stays explicit.
+// Integration — needs VCTL_TEST_DSN.
+func TestRenamingADeploymentKeepsItsRegion(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const farm = "region-farm-a"
+	cleanupDeployment(t, st, farm)
+
+	if err := st.SetDeploymentName(ctx, farm, "first", ptr("kr-inc-1")); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	// A rename with nothing said about the region.
+	if err := st.SetDeploymentName(ctx, farm, "second", nil); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	got := deploymentByID(t, st, farm)
+	if got.Region != "kr-inc-1" {
+		t.Errorf("region = %q after a rename that never mentioned it, want it kept", got.Region)
+	}
+	if got.DisplayName != "second" {
+		t.Errorf("display name = %q, want the rename applied", got.DisplayName)
+	}
+
+	// Clearing is still possible, and still has to be asked for.
+	if err := st.SetDeploymentName(ctx, farm, "second", ptr("")); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if got := deploymentByID(t, st, farm); got.Region != "" {
+		t.Errorf("region = %q, want it cleared when asked for explicitly", got.Region)
+	}
+}
+
+func deploymentByID(t *testing.T, st *Store, id string) Deployment {
+	t.Helper()
+	ds, err := st.Deployments(context.Background())
+	if err != nil {
+		t.Fatalf("Deployments: %v", err)
+	}
+	for _, d := range ds {
+		if d.ID == id {
+			return d
+		}
+	}
+	t.Fatalf("no deployment %s", id)
+	return Deployment{}
 }

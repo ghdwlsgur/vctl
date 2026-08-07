@@ -41,6 +41,7 @@ func openstackFarmCmd(env CommandEnv) *cobra.Command {
 
 func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 	var region string
+	var clearRegion bool
 	cmd := &cobra.Command{
 		Use:   "name [deployment] [name]",
 		Short: "Give a deployment a name people can read",
@@ -72,7 +73,23 @@ func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if err := st.SetDeploymentName(ctx, id, name, region); err != nil {
+				// nil is "leave whatever is recorded". An omitted --region on a
+				// command that reads as a rename used to write an empty one and
+				// drop the region silently; removing one is its own flag.
+				//
+				// The interactive form asks for a region, so what it collected
+				// is an answer either way.
+				//
+				// Anything non-empty is an answer, whether it came from the flag
+				// or from the prompt the interactive form shows.
+				var write *string
+				if clearRegion {
+					empty := ""
+					write = &empty
+				} else if region != "" {
+					write = &region
+				}
+				if err := st.SetDeploymentName(ctx, id, name, write); err != nil {
 					return err
 				}
 				ui.Successf(os.Stdout, "%s is now %q", id, name)
@@ -81,6 +98,8 @@ func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&region, "region", "", "the deployment's region, if it has one worth recording")
+	cmd.Flags().BoolVar(&clearRegion, "clear-region", false, "remove the recorded region instead of keeping it")
+	cmd.MarkFlagsMutuallyExclusive("region", "clear-region")
 	return cmd
 }
 

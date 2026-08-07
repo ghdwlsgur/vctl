@@ -34,7 +34,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 		asJSON   bool
 	)
 	cmd := &cobra.Command{
-		Use:     "vm",
+		Use:     "vm [query]",
 		Aliases: []string{"vms", "instances"},
 		Short:   "VMs per deployment, and which physical host each one sits on",
 		Long: "The chain this walks:\n\n" +

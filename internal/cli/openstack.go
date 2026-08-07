@@ -38,7 +38,11 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "openstack",
 		Aliases: []string{"os"},
-		Short:   "Show which hosts run OpenStack, in what role, and for which farm",
+		// A stray argument was accepted and ignored, so `vctl openstack seoul`
+		// printed the whole fleet and read as a filtered listing. Narrowing is
+		// what --farm and --role are for.
+		Args:  cobra.NoArgs,
+		Short: "Show which hosts run OpenStack, in what role, and for which farm",
 		Long: "Read what the node agents' capability probes found: the deployment a host belongs to,\n" +
 			"the roles it holds, and the versions it runs.\n\n" +
 			"A host appears here only once a probe has filed a result for it. Membership in a farm\n" +

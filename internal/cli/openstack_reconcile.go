@@ -42,6 +42,10 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reconcile",
 		Short: "Ask each deployment's control plane which hosts it owns, and confirm membership",
+		// `vctl openstack reconcile seoul` used to reconcile every farm: the
+		// argument went nowhere and the run looked like the one that was asked
+		// for. The deployment goes in --farm.
+		Args: cobra.NoArgs,
 		Long: "The probe can only say a host points at a Keystone. Two deployments behind one proxy\n" +
 			"look identical from a host, so that inference is recorded as local-only.\n\n" +
 			"This asks nova which compute hosts each deployment actually owns and promotes the\n" +
@@ -112,6 +116,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname for --self; defaults to the os hostname")
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification against the control plane (self-signed endpoints)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what would change without writing")
+	cmd.MarkFlagsMutuallyExclusive("self", "farm")
 	return cmd
 }
 
