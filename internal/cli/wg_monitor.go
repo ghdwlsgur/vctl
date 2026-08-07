@@ -22,9 +22,8 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
 
-// wgDumpCmd is the lighter poll command for monitoring — just the runtime dump
+// wireguard.DumpCmd is the lighter poll command for monitoring — just the runtime dump
 // (public data), no `ip addr`. sudo first, plain fallback for root logins.
-const wgDumpCmd = `sudo -n wg show all dump 2>/dev/null || wg show all dump 2>/dev/null`
 
 // monTarget is a resolved gateway to poll.
 type monTarget struct {
@@ -119,23 +118,32 @@ func wgSyncBeforeMonitor(ctx context.Context, a *app.App, conn *access.Connector
 		return err
 	}
 	defer st.Close()
-	var withWG int
-	for _, t := range targets {
-		res, err := conn.Execute(ctx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wgCollectCmd, timeout)
-		if err != nil {
-			ui.Warnf(os.Stderr, "%s: %v", t.name, err)
-			continue
-		}
-		ifaces, peers, statuses := parseWGCollect(t.name, res.Stdout)
-		if len(ifaces) == 0 {
-			continue
-		}
-		if err := st.WGReplaceHost(ctx, t.name, ifaces, peers, statuses); err != nil {
-			ui.Warnf(os.Stderr, "%s: store: %v", t.name, err)
-			continue
-		}
-		withWG++
+
+	hosts := make([]wireguard.Host, 0, len(targets))
+	for i := range targets {
+		hosts = append(hosts, wireguard.Host{Name: targets[i].name, Target: targets[i].tgt})
 	}
+	// The same collection `wg sync` runs, one host at a time — this is a step
+	// inside an interactive command, not a fleet sweep.
+	c := &wireguard.Collector{
+		Save: st.WGReplaceHost,
+		Run: func(ctx context.Context, h wireguard.Host) (string, error) {
+			res, err := conn.Execute(ctx,
+				access.Request{Target: h.Target.(*sshc.Target), HostKey: access.HostKeyAcceptNew},
+				wireguard.CollectCmd, timeout)
+			if err != nil {
+				return "", err
+			}
+			return res.Stdout, nil
+		},
+		OnHost: func(r wireguard.HostResult) {
+			if r.Err != nil {
+				ui.Warnf(os.Stderr, "%s: %v", r.Host, r.Err)
+			}
+		},
+	}
+	rep := c.Collect(ctx, hosts)
+	withWG := rep.WithWG
 	ui.Successf(os.Stderr, "pre-sync: %d/%d gateways collected", withWG, len(targets))
 	return nil
 }
@@ -183,7 +191,7 @@ func wgMonitorHosts(ctx context.Context, st *store.Store, args []string, all boo
 
 type pollResultMsg struct {
 	host  string
-	peers []wgParsedPeer
+	peers []wireguard.ParsedPeer
 	err   error
 	at    time.Time
 }
@@ -194,11 +202,11 @@ type tickMsg time.Time
 // returns the parsed peers. It never blocks the UI: bubbletea runs it async.
 func pollHost(ctx context.Context, mon *access.Monitor, t monTarget, timeout time.Duration) tea.Cmd {
 	return func() tea.Msg {
-		res, err := mon.Poll(ctx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wgDumpCmd, timeout)
+		res, err := mon.Poll(ctx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wireguard.DumpCmd, timeout)
 		if err != nil {
 			return pollResultMsg{host: t.name, err: err, at: time.Now()}
 		}
-		_, peers := parseWGDump(res.Stdout)
+		_, peers := wireguard.ParseDump(res.Stdout)
 		return pollResultMsg{host: t.name, peers: peers, at: time.Now()}
 	}
 }
@@ -376,11 +384,11 @@ func wgMonitorSnapshot(ctx context.Context, conn *access.Connector, targets []mo
 		wg.Add(1)
 		go func(t monTarget) {
 			defer wg.Done()
-			res, err := conn.Execute(ctx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wgDumpCmd, timeout)
+			res, err := conn.Execute(ctx, access.Request{Target: t.tgt, HostKey: access.HostKeyAcceptNew}, wireguard.DumpCmd, timeout)
 			if err != nil {
 				return
 			}
-			_, peers := parseWGDump(res.Stdout)
+			_, peers := wireguard.ParseDump(res.Stdout)
 			mu.Lock()
 			defer mu.Unlock()
 			for _, p := range peers {
