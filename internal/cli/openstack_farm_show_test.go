@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -174,5 +175,21 @@ func TestFarmShowCountsVMsPerHost(t *testing.T) {
 	renderFarmShow(&buf, a, time.Now())
 	if !strings.Contains(buf.String(), "2 VMs") {
 		t.Errorf("VMs were not counted against the host:\n%s", buf.String())
+	}
+}
+
+// collectAssessment takes an id and nothing else about the deployment.
+//
+// It used to take the farmChoice the selector built and read the name, region
+// and state off it — values from before the snapshot — while the note came from
+// the snapshot itself. The signature is the guard: with only an id to work
+// from, there is nothing pre-snapshot left to read.
+func TestCollectAssessmentTakesOnlyAnID(t *testing.T) {
+	fn := reflect.TypeOf(collectAssessment)
+	if fn.NumIn() != 4 {
+		t.Fatalf("collectAssessment takes %d args, want (ctx, store, id, now)", fn.NumIn())
+	}
+	if got := fn.In(2).Kind(); got != reflect.String {
+		t.Errorf("the deployment argument is %s, want a bare id — anything richer is read before the snapshot", got)
 	}
 }
