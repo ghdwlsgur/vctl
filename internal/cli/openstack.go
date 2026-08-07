@@ -52,12 +52,12 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 			"To look around rather than to query: 'vctl openstack explore' walks the same data by\n" +
 			"picking — deployment → hosts → VMs — and needs no identifier to start from.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				// One reading for the whole command. The listing used to read
 				// hosts here and read them again inside the farm resolution
 				// below, so a --farm run compared a selector taken from one
 				// instant against rows taken from another.
-				cat, err := loadFarmCatalog(cmd.Context(), st)
+				cat, err := loadFarmCatalog(cmd.Context(), a, st)
 				if err != nil {
 					return err
 				}
@@ -699,7 +699,7 @@ func openstackHostCmd(env CommandEnv) *cobra.Command {
 		// found nothing" is an answer this command exists to show.
 		ValidArgsFunction: completeOpenStackHost(env, false),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				row, err := resolveHost(ctx, st, args, "OpenStack detail")
 				if err != nil {

@@ -140,7 +140,11 @@ func hasPrefixFold(s, prefix string) bool {
 // like the listing's "unassigned".
 func completeFarm(env CommandEnv, extra ...string) completer {
 	return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
-		farms, err := farmChoices(ctx, st)
+		// nil app: a completion does not keep what it reads. It runs on a
+		// keystroke with a two-second budget, and a write on that path is a
+		// disk touch nobody asked for — step 4 gives it the cache to read
+		// from instead.
+		farms, err := farmChoices(ctx, nil, st)
 		if err != nil {
 			return nil
 		}

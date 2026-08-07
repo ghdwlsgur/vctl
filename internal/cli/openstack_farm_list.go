@@ -33,9 +33,9 @@ func openstackFarmListCmd(env CommandEnv) *cobra.Command {
 		Short: "Every deployment, with how recently anything confirmed it",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				rows, err := farmSummaries(ctx, st)
+				rows, err := farmSummaries(ctx, a, st)
 				if err != nil {
 					return err
 				}
@@ -76,10 +76,10 @@ type farmSummary struct {
 // a farm — the fourth copy of that rule. The rule now has one home and this is
 // a projection of it, so the row and every other screen cannot disagree about
 // what a deployment contains.
-func farmSummaries(ctx context.Context, st *store.Store) ([]farmSummary, error) {
+func farmSummaries(ctx context.Context, a *app.App, st *store.Store) ([]farmSummary, error) {
 	// The full reading: this row carries the last reconcile and a VM count,
 	// and both come from it. It read the same four things separately before.
-	cat, err := loadCatalog(ctx, st)
+	cat, err := loadCatalog(ctx, a, st)
 	if err != nil {
 		return nil, err
 	}

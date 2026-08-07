@@ -10,6 +10,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/auditspool"
 	"github.com/ghdwlsgur/vctl/internal/invcache"
+	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -46,6 +47,19 @@ func (i *Inventory) Age(now time.Time) time.Duration {
 
 // CacheFile is where this app persists its inventory snapshot.
 func (a *App) CacheFile() *invcache.FileStore { return invcache.NewFileStore(a.Cfg.StateDir) }
+
+// FleetCache is where OpenStack readings are kept, or nil when caching is off.
+//
+// Nil rather than a disabled object, so a caller that forgets to check gets a
+// nil map's worth of nothing rather than a cache that silently ignores writes.
+// The same switch turns both caches off: somebody who does not want a local
+// copy of the inventory does not want a local copy of the fleet either.
+func (a *App) FleetCache() *fleet.Cache {
+	if a.Cfg.CacheDisabled {
+		return nil
+	}
+	return fleet.NewCache(a.Cfg.StateDir)
+}
 
 // ErrCacheDisabled reports that the local snapshot is switched off, so nothing
 // will be read from or written to it.

@@ -78,7 +78,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 				// takes one spelling in one command and another elsewhere is a
 				// flag somebody has to remember the shape of.
 				if only != "" {
-					id, err := resolveFarmID(ctx, st, only)
+					id, err := resolveFarmID(ctx, a, st, only)
 					if err != nil {
 						return err
 					}
@@ -141,6 +141,13 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 				}
 				rep, runErr := svc.Run(ctx, req)
 				took := time.Since(startedAt)
+				// A reconcile is the thing most likely to make a stored reading
+				// wrong: it settles membership and replaces the VM rows. Dropped
+				// even on a partial run, because "some of it changed" is not a
+				// picture worth keeping.
+				if !dryRun {
+					forgetReadings(a)
+				}
 				if asJSON {
 					if err := writeJSON(reconcileReportJSON(rep, startedAt, took, dryRun)); err != nil {
 						return err
