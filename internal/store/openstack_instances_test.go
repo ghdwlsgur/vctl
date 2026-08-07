@@ -38,7 +38,7 @@ func TestInstancesRoundTripWithAddresses(t *testing.T) {
 	in := vm("uuid-1", "k8s-worker-1", "gpu01",
 		InstanceAddress{NetworkName: "internal", Address: "10.0.0.5", Type: "fixed", IPVersion: 4},
 		InstanceAddress{NetworkName: "external", Address: "192.0.2.9", Type: "floating", IPVersion: 4})
-	if _, err := st.ReplaceInstances(ctx, farm, []Instance{in}, time.Now()); err != nil {
+	if _, err := st.ReplaceInstances(ctx, farm, []Instance{in}, time.Now(), true); err != nil {
 		t.Fatalf("ReplaceInstances: %v", err)
 	}
 
@@ -63,7 +63,7 @@ func TestInstancesFoundByUUIDAlone(t *testing.T) {
 	const farm = "vm-farm-b"
 	seedInstanceFarm(t, st, farm)
 
-	if _, err := st.ReplaceInstances(ctx, farm, []Instance{vm("uuid-k8s", "node-1", "gpu02")}, time.Now()); err != nil {
+	if _, err := st.ReplaceInstances(ctx, farm, []Instance{vm("uuid-k8s", "node-1", "gpu02")}, time.Now(), true); err != nil {
 		t.Fatalf("ReplaceInstances: %v", err)
 	}
 	got, err := st.Instances(ctx, InstanceFilter{InstanceID: "uuid-k8s"})
@@ -83,7 +83,7 @@ func TestInstancesFoundByAddress(t *testing.T) {
 
 	if _, err := st.ReplaceInstances(ctx, farm, []Instance{
 		vm("uuid-2", "db-1", "gpu03", InstanceAddress{Address: "10.9.9.9", Type: "fixed", IPVersion: 4}),
-	}, time.Now()); err != nil {
+	}, time.Now(), true); err != nil {
 		t.Fatalf("ReplaceInstances: %v", err)
 	}
 	got, err := st.Instances(ctx, InstanceFilter{Address: "10.9.9.9"})
@@ -104,10 +104,10 @@ func TestInstancesMarkAbsenceInsteadOfDeleting(t *testing.T) {
 
 	if _, err := st.ReplaceInstances(ctx, farm, []Instance{
 		vm("uuid-3", "keeps", "gpu04"), vm("uuid-4", "goes", "gpu04"),
-	}, time.Now().Add(-time.Hour)); err != nil {
+	}, time.Now().Add(-time.Hour), true); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if _, err := st.ReplaceInstances(ctx, farm, []Instance{vm("uuid-3", "keeps", "gpu04")}, time.Now()); err != nil {
+	if _, err := st.ReplaceInstances(ctx, farm, []Instance{vm("uuid-3", "keeps", "gpu04")}, time.Now(), true); err != nil {
 		t.Fatalf("second: %v", err)
 	}
 
@@ -136,13 +136,13 @@ func TestInstanceReturningClearsMissing(t *testing.T) {
 	seedInstanceFarm(t, st, farm)
 
 	one := []Instance{vm("uuid-5", "flaps", "gpu05")}
-	if _, err := st.ReplaceInstances(ctx, farm, one, time.Now().Add(-2*time.Hour)); err != nil {
+	if _, err := st.ReplaceInstances(ctx, farm, one, time.Now().Add(-2*time.Hour), true); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if _, err := st.ReplaceInstances(ctx, farm, nil, time.Now().Add(-time.Hour)); err != nil {
+	if _, err := st.ReplaceInstances(ctx, farm, nil, time.Now().Add(-time.Hour), true); err != nil {
 		t.Fatalf("absent pass: %v", err)
 	}
-	if _, err := st.ReplaceInstances(ctx, farm, one, time.Now()); err != nil {
+	if _, err := st.ReplaceInstances(ctx, farm, one, time.Now(), true); err != nil {
 		t.Fatalf("return pass: %v", err)
 	}
 
@@ -163,7 +163,7 @@ func TestHypervisorNamesAreListed(t *testing.T) {
 
 	if _, err := st.ReplaceInstances(ctx, farm, []Instance{
 		vm("uuid-6", "a", "aio01"), vm("uuid-7", "b", "aio01"), vm("uuid-8", "c", "gpu01"),
-	}, time.Now()); err != nil {
+	}, time.Now(), true); err != nil {
 		t.Fatalf("ReplaceInstances: %v", err)
 	}
 	names, err := st.HypervisorNames(ctx, farm)
@@ -172,5 +172,85 @@ func TestHypervisorNamesAreListed(t *testing.T) {
 	}
 	if len(names) != 2 {
 		t.Errorf("names = %v, want each host once", names)
+	}
+}
+
+// A listing that stopped early must not take the rest of the deployment with
+// it.
+//
+// The collector stores what a truncated pass did reach — those rows are current
+// and worth having. What it must not do is let the store read everything past
+// that prefix as gone: an API answering half a question would render as a
+// deployment that lost half its VMs, and once written the two are the same row.
+//
+// Same rule the host membership already follows on a partial control-plane
+// answer (ReconcileInput.Complete): hold, do not demote.
+// Integration — needs VCTL_TEST_DSN.
+func TestAPartialListingDoesNotMarkTheRestMissing(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const farm = "vm-farm-partial"
+	seedInstanceFarm(t, st, farm)
+
+	full := []Instance{
+		vm("uuid-p1", "one", "gpu01"),
+		vm("uuid-p2", "two", "gpu01"),
+		vm("uuid-p3", "three", "gpu01"),
+	}
+	if _, err := st.ReplaceInstances(ctx, farm, full, time.Now().Add(-time.Hour), true); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+
+	// The next pass reaches only the first VM and says so.
+	if _, err := st.ReplaceInstances(ctx, farm, full[:1], time.Now(), false); err != nil {
+		t.Fatalf("partial pass: %v", err)
+	}
+
+	rows, err := st.Instances(ctx, InstanceFilter{DeploymentID: farm, IncludeMissing: true})
+	if err != nil {
+		t.Fatalf("Instances: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d VMs, want all three still recorded", len(rows))
+	}
+	for _, r := range rows {
+		if r.MissingSince != nil {
+			t.Errorf("%s was marked missing by a pass that never claimed to be whole", r.InstanceID)
+		}
+	}
+}
+
+// A whole listing still retires what it did not name — that is the behaviour the
+// column exists for, and the partial case must not have disabled it.
+// Integration — needs VCTL_TEST_DSN.
+func TestACompleteListingStillMarksAbsentVMsMissing(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const farm = "vm-farm-complete"
+	seedInstanceFarm(t, st, farm)
+
+	full := []Instance{vm("uuid-c1", "stays", "gpu01"), vm("uuid-c2", "leaves", "gpu01")}
+	if _, err := st.ReplaceInstances(ctx, farm, full, time.Now().Add(-time.Hour), true); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if _, err := st.ReplaceInstances(ctx, farm, full[:1], time.Now(), true); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+
+	rows, err := st.Instances(ctx, InstanceFilter{DeploymentID: farm, IncludeMissing: true})
+	if err != nil {
+		t.Fatalf("Instances: %v", err)
+	}
+	var gone int
+	for _, r := range rows {
+		if r.MissingSince != nil {
+			gone++
+			if r.InstanceID != "uuid-c2" {
+				t.Errorf("%s was retired but the control plane still lists it", r.InstanceID)
+			}
+		}
+	}
+	if gone != 1 {
+		t.Errorf("%d VMs marked missing, want the one the deployment stopped listing", gone)
 	}
 }

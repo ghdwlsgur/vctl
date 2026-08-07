@@ -102,6 +102,12 @@ type Listing struct {
 	Instances    []openstackapi.Instance
 	ProjectNames map[string]string
 	Warnings     []error
+
+	// Complete says the listing is the whole deployment rather than a prefix of
+	// it. A pass that stopped early must not let the store mark everything it
+	// did not reach as gone — an API answering half a question would render as
+	// a deployment that lost half its VMs.
+	Complete bool
 }
 
 // Cloud is the control plane, reduced to the two questions asked of it.
@@ -117,7 +123,7 @@ type Repository interface {
 	Reconcile(ctx context.Context, in store.ReconcileInput) (store.ReconcileResult, error)
 	RecordRun(ctx context.Context, id string, r store.ReconcileResult, at time.Time, runErr error) error
 	RecordControlHosts(ctx context.Context, id string, hosts []string, at time.Time) error
-	ReplaceInstances(ctx context.Context, id string, rows []store.Instance, at time.Time) (int, error)
+	ReplaceInstances(ctx context.Context, id string, rows []store.Instance, at time.Time, complete bool) (int, error)
 }
 
 type Service struct {
@@ -246,7 +252,7 @@ func (s *Service) collectInstances(ctx context.Context, id string,
 		row.ProjectName = list.ProjectNames[row.ProjectID]
 		rows = append(rows, row)
 	}
-	n, err := s.Repo.ReplaceInstances(ctx, id, rows, s.now())
+	n, err := s.Repo.ReplaceInstances(ctx, id, rows, s.now(), list.Complete)
 	if err != nil {
 		return 0, append(warnings, fmt.Errorf("instances: %w", err))
 	}
