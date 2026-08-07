@@ -273,18 +273,26 @@ func indexOfFarm(farms []farmChoice, selector string) int {
 
 // farmPickLabels shows what each deployment contains, because the endpoint on
 // its own is not something a person recognises.
+//
+// The name leads. It used to be the second column behind a 24-wide endpoint, so
+// a chooser meant to be read by name presented a column of IP addresses with
+// the names trailing off to the right — the exact thing `farm name` exists to
+// stop the listing from doing. An unnamed deployment puts its endpoint in that
+// slot, which is the whole of what is known about it.
 func farmPickLabels(farms []farmChoice) []string {
 	out := make([]string, 0, len(farms))
 	for _, f := range farms {
-		label := ui.PadRight(f.ID, 24)
+		lead, rest := f.ID, ""
 		if f.Name != "" {
-			label += "  " + ui.Value(f.Name)
+			lead, rest = f.Name, f.ID
 		}
+		label := ui.Value(ui.PadRight(ui.Truncate(lead, 22), 22))
+		label += "  " + ui.Muted(ui.PadRight(rest, 22))
 		if f.State != "" && f.State != store.StateActive {
 			label += "  " + stateCell(f.State)
 		}
 		if f.Hosts > 0 {
-			label += "  " + ui.Muted(fmt.Sprintf("%d hosts · %s", f.Hosts, ui.Truncate(f.Roles, 48)))
+			label += "  " + ui.Muted(pluralHosts(f.Hosts)+" · "+ui.Truncate(f.Roles, 44))
 		}
 		out = append(out, label)
 	}

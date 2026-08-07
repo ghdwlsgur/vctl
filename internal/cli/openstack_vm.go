@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/access"
@@ -321,10 +320,9 @@ func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, opera
 	})
 
 	// The same header the host listing uses, so one farm reads the same in both.
-	farmStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	for _, id := range ids {
 		group := byFarm[id]
-		fmt.Fprintf(w, "\n%s %s\n", farmStyle.Render("▌ "+vmFarmLabel(id, farms)),
+		fmt.Fprintf(w, "\n%s %s\n", farmHeading(vmFarmLabel(id, farms)),
 			ui.Muted(fmt.Sprintf("· %d VMs", len(group))))
 		cells := make([][]string, 0, len(group)+1)
 		cells = append(cells, headerRow(wide))

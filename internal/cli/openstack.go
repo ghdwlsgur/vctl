@@ -47,7 +47,9 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 			"the roles it holds, and the versions it runs.\n\n" +
 			"A host appears here only once a probe has filed a result for it. Membership in a farm\n" +
 			"is shown when something declared or confirmed it — never inferred from what a host runs,\n" +
-			"because two unrelated deployments behind one endpoint look identical from a host.",
+			"because two unrelated deployments behind one endpoint look identical from a host.\n\n" +
+			"To look around rather than to query: 'vctl openstack explore' walks the same data by\n" +
+			"picking — deployment → hosts → VMs — and needs no identifier to start from.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
@@ -119,6 +121,9 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 	// before the command it guards could run at all.
 	cmd.AddCommand(openstackReconcileCmd(env))
 	cmd.AddCommand(openstackVMCmd(env))
+	// Read-only and interactive, so it is gated by neither RBAC nor a flag: it
+	// shows what the ungated listings already show, through a picker.
+	cmd.AddCommand(openstackExploreCmd(env))
 	// The farm subtree gates its own leaves — see openstackFarmCmd. Annotating
 	// the parent did nothing but require mutate permission to read its help.
 	cmd.AddCommand(openstackFarmCmd(env))
@@ -185,6 +190,14 @@ func containsFold(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// farmHeading is how a deployment's name is printed wherever one heads a
+// block. Three renderers drew it and two of them had their own copy of the
+// style; a farm that reads differently between two screens of the same tool
+// reads as two different farms.
+func farmHeading(label string) string {
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")).Render("▌ " + label)
 }
 
 // Column positions in a listing row. Named because the renderer now leaves some
@@ -283,7 +296,6 @@ func renderOpenStack(w io.Writer, hosts []store.OpenStackHost, cov store.OpenSta
 	}
 	widths := ui.ColumnWidths(cells)
 
-	farmStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	for i := 0; i < len(hosts); {
 		farm := hosts[i].Farm
 		end := i + 1
@@ -291,7 +303,7 @@ func renderOpenStack(w io.Writer, hosts []store.OpenStackHost, cov store.OpenSta
 			end++
 		}
 		shared := sharedColumns(hosts[i:end], cells[i:end], now, wide)
-		fmt.Fprintf(w, "%s %s\n", farmStyle.Render("▌ "+farmLabel(hosts[i])),
+		fmt.Fprintf(w, "%s %s\n", farmHeading(farmLabel(hosts[i])),
 			ui.Muted(farmSuffix(hosts[i], end-i, shared)))
 		if shape := farmShape(hosts[i:end], wide); shape != "" {
 			fmt.Fprintf(w, "  %s\n", ui.Muted(shape))
