@@ -43,11 +43,14 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 				}
 				var pick farmChoice
 				if len(args) > 0 {
-					i := indexOfFarm(farms, args[0])
-					if i < 0 {
-						return fmt.Errorf("no deployment %q; run 'vctl openstack' to see them", args[0])
+					// resolveFarm rather than a position lookup, so a name two
+					// deployments share is reported as such instead of as "no
+					// deployment %q" — which is what a -1 index reads as.
+					f, err := resolveFarm(farms, args[0])
+					if err != nil {
+						return err
 					}
-					pick = farms[i]
+					pick = f
 				} else {
 					if !isTerminal() {
 						return fmt.Errorf("a deployment is required when there is no terminal to pick at")
@@ -59,7 +62,7 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 					pick = farms[i]
 				}
 				now := time.Now()
-				a, err := collectAssessment(ctx, st, pick, now)
+				a, err := collectAssessment(ctx, st, pick.ID, now)
 				if err != nil {
 					return err
 				}
@@ -86,30 +89,34 @@ const farmStaleWindow = 13 * time.Hour
 // had to make the same calls — is this drifting, is this stale, is this host
 // down — and two implementations of that disagree eventually, with no way to
 // tell which one somebody is looking at.
-func collectAssessment(ctx context.Context, st *store.Store, pick farmChoice, now time.Time) (openstack.Assessment, error) {
+// The selector settles which deployment; everything shown about it comes from
+// the snapshot. It used to take a farmChoice and read the name, region and
+// state off that — values read *before* the snapshot — so a `farm state` landing
+// between the two put the old state on screen beside the new note. One read, one
+// instant, and that has to mean all of it.
+func collectAssessment(ctx context.Context, st *store.Store, id string, now time.Time) (openstack.Assessment, error) {
 	// One read, one instant. This was five separate reads, and a reconcile
 	// landing between the second and the third put a host count from before it
 	// beside a run result from after it. Nothing on the screen says which number
 	// came from when, so it is not something a reader can catch.
-	snap, err := st.FarmSnapshot(ctx, pick.ID)
+	snap, err := st.FarmSnapshot(ctx, id)
 	if err != nil {
 		return openstack.Assessment{}, err
 	}
 	in := openstack.Input{
-		ID: pick.ID, Name: pick.Name, Region: pick.Region, State: pick.State,
+		ID:    id,
 		Hosts: snap.Hosts, Instances: snap.Instances, Ghosts: snap.Ghosts,
 		Run:        snap.Run,
 		StaleAfter: farmStaleWindow, Now: now,
 	}
-	// The note and when it was declared come from the deployment row, which
-	// farmChoices does not carry — an age is most of what makes a declared
-	// fault readable a week later.
-	//
-	// That read's error used to be discarded. A farm somebody had declared
-	// broken then rendered with no note and no date — which is exactly how an
-	// unnamed healthy farm renders. A failed read shown as an answer.
+	// Name, region, state, note and its date all come from the same row read at
+	// the same instant. A deployment nobody has named has none of them, which is
+	// a different thing from a read that failed — DeploymentKnown says which,
+	// and the failure is an error now rather than a blank screen.
 	if snap.DeploymentKnown {
-		in.StateNote, in.StateSince = snap.Deployment.StateNote, snap.Deployment.StateChangedAt
+		d := snap.Deployment
+		in.Name, in.Region, in.State = d.DisplayName, d.Region, d.State
+		in.StateNote, in.StateSince = d.StateNote, d.StateChangedAt
 	}
 	return openstack.Assess(in), nil
 }

@@ -305,3 +305,59 @@ func TestFarmSnapshotSeparatesUnnamedFromUnread(t *testing.T) {
 		t.Errorf("hosts = %+v, want the host to survive having no deployment row", snap.Hosts)
 	}
 }
+
+// Everything the farm screen shows about a deployment comes from one row read
+// at one instant.
+//
+// name, region and state used to be read before the snapshot, off the list the
+// selector built, while the note and its date came from the snapshot. A
+// `farm state` landing between the two put the old state on screen beside the
+// new note — a screen describing a moment that never happened, with nothing on
+// it saying so.
+// Integration — needs VCTL_TEST_DSN.
+func TestFarmSnapshotCarriesEverythingTheScreenShows(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const host = "snap-host-03"
+	const farm = "snap-farm-c"
+	seedOpenStackHost(t, st, host, StateActive)
+	cleanupDeployment(t, st, farm)
+
+	if _, err := st.ReplaceCapabilities(ctx, host, KindOpenStack,
+		[]Capability{{Role: "compute", Detected: true}}); err != nil {
+		t.Fatalf("ReplaceCapabilities: %v", err)
+	}
+	if _, err := st.pool.Exec(ctx,
+		`INSERT INTO openstack_deployments (id, display_name, region) VALUES ($1,$2,$3)
+		 ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name, region=EXCLUDED.region`,
+		farm, "snap-c", "kr-test-1"); err != nil {
+		t.Fatalf("seed deployment: %v", err)
+	}
+	if err := st.SetDeploymentState(ctx, farm, StateBroken, "rabbit is down"); err != nil {
+		t.Fatalf("SetDeploymentState: %v", err)
+	}
+
+	snap, err := st.FarmSnapshot(ctx, farm)
+	if err != nil {
+		t.Fatalf("FarmSnapshot: %v", err)
+	}
+	if !snap.DeploymentKnown {
+		t.Fatal("the deployment row was not read")
+	}
+	d := snap.Deployment
+	// The four the screen used to source from elsewhere, plus the note that
+	// already came from here — all of them, from this read.
+	for _, tc := range []struct{ what, got, want string }{
+		{"display name", d.DisplayName, "snap-c"},
+		{"region", d.Region, "kr-test-1"},
+		{"state", d.State, StateBroken},
+		{"note", d.StateNote, "rabbit is down"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.what, tc.got, tc.want)
+		}
+	}
+	if d.StateChangedAt.IsZero() {
+		t.Error("the declaration has no date; a note without one is unreadable a week later")
+	}
+}
