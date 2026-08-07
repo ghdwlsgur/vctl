@@ -20,9 +20,22 @@ func openstackFarmCmd(env CommandEnv) *cobra.Command {
 		Use:   "farm",
 		Short: "Name the deployments so the listing reads as something other than endpoints",
 	}
-	cmd.AddCommand(openstackFarmNameCmd(env))
+	// Gated per leaf, because a gate on the parent is not a gate.
+	//
+	// Cobra runs the leaf, and enforceRBAC reads the annotation off whatever it
+	// is about to run. `farm` carried the annotation and `farm state` carried
+	// none, so the pre-run found an empty name and returned straight away:
+	// `vctl openstack farm state` changed a deployment's declared state with no
+	// authorization check at all. Measured — cobra resolves that argv to
+	// "state", whose rbac.command was "".
+	//
+	// show stays ungated, alongside `openstack` and `list`: reading what is
+	// deployed is allowed to any authenticated user, and only the two that write
+	// are mutations. Same grant name as before, so grants already issued still
+	// apply.
+	cmd.AddCommand(gate(openstackFarmNameCmd(env), "openstack-farm", classMutate))
 	cmd.AddCommand(openstackFarmShowCmd(env))
-	cmd.AddCommand(openstackFarmStateCmd(env))
+	cmd.AddCommand(gate(openstackFarmStateCmd(env), "openstack-farm", classMutate))
 	return cmd
 }
 

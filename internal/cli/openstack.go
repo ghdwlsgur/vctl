@@ -113,7 +113,9 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 	// before the command it guards could run at all.
 	cmd.AddCommand(openstackReconcileCmd(env))
 	cmd.AddCommand(openstackVMCmd(env))
-	cmd.AddCommand(gate(openstackFarmCmd(env), "openstack-farm", classMutate))
+	// The farm subtree gates its own leaves — see openstackFarmCmd. Annotating
+	// the parent did nothing but require mutate permission to read its help.
+	cmd.AddCommand(openstackFarmCmd(env))
 	return cmd
 }
 
