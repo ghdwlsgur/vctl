@@ -198,7 +198,7 @@ func (s *Store) OpenStackHosts(ctx context.Context) ([]OpenStackHost, error) {
 func openStackHostsOn(ctx context.Context, db rowQuerier) ([]OpenStackHost, error) {
 	rows, err := queryAndCollect(ctx, db, `
 		SELECT c.hostname, c.role, c.detected, c.active, c.components, c.details,
-		       c.last_error, c.observed_at,
+		       c.last_error, c.observed_at, c.pass_id,
 		       coalesce(s.dc,''), coalesce(s.state,'active')
 		FROM server_capabilities c
 		LEFT JOIN servers s ON s.hostname = c.hostname
@@ -267,7 +267,7 @@ func scanCapabilityRow(r pgx.Rows) (capabilityRow, error) {
 	var row capabilityRow
 	var comps, details []byte
 	if err := r.Scan(&row.Hostname, &row.Role, &row.Detected, &row.Active, &comps, &details,
-		&row.LastError, &row.ObservedAt, &row.DC, &row.HostState); err != nil {
+		&row.LastError, &row.ObservedAt, &row.PassID, &row.DC, &row.HostState); err != nil {
 		return row, err
 	}
 	// A row with malformed JSON still says which host holds which role, which is
@@ -311,19 +311,33 @@ type hostMembership struct {
 
 // foldCapabilityRows turns per-role rows into per-host records, splitting the
 // roles the latest probe found from the ones it no longer does.
+//
+// The split is by pass number, not by time. Both were the same column once, and
+// the cost of that was paid on the timestamp's side: it had to be forced upward
+// on every write to stay a reliable ordering, which let one host's fast clock
+// pin the whole listing's freshness into the future. A counter orders the passes
+// and leaves the clock alone — see the migration and ReplaceCapabilities.
 func foldCapabilityRows(rows []capabilityRow, members map[string][]OpenStackMembership) []OpenStackHost {
 	byHost := map[string]*OpenStackHost{}
 	order := []string{}
-	newest := map[string]time.Time{}
+	newest := map[string]int64{}
 	for _, r := range rows {
 		if _, ok := byHost[r.Hostname]; !ok {
 			byHost[r.Hostname] = &OpenStackHost{
 				Hostname: r.Hostname, DC: r.DC, HostState: StateOrActive(r.HostState),
 			}
 			order = append(order, r.Hostname)
+			// Seeded from the first row rather than left at the zero value. A
+			// map's missing entry is 0 and the migration numbers history
+			// downward from there, so a host whose rows are all backfilled has
+			// every pass below the default — and comparing against it read the
+			// whole host as dropped, roles and all. Measured on the fixture in
+			// TestTheBackfillNumbersExistingPassesInTheOrderTheyWereAlreadyIn.
+			newest[r.Hostname] = r.PassID
+			continue
 		}
-		if r.ObservedAt.After(newest[r.Hostname]) {
-			newest[r.Hostname] = r.ObservedAt
+		if r.PassID > newest[r.Hostname] {
+			newest[r.Hostname] = r.PassID
 		}
 	}
 	for _, r := range rows {
@@ -331,7 +345,7 @@ func foldCapabilityRows(rows []capabilityRow, members map[string][]OpenStackMemb
 		// Only the newest pass describes the host now. Components and details
 		// from a lagging row belong to a role it no longer holds, so taking them
 		// would resurrect versions of software that has been removed.
-		if !r.ObservedAt.Before(newest[r.Hostname]) {
+		if r.PassID >= newest[r.Hostname] {
 			h.ObservedAt = r.ObservedAt
 			h.Detected = h.Detected || r.Detected
 			if !isPlaceholderRole(r.Role) {

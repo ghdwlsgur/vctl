@@ -6,9 +6,17 @@ import (
 	"time"
 )
 
+// capRow is one row of a single pass — the shape of most fixtures here, where
+// the pass number is not what is being tested.
 func capRow(host, role string, at time.Time, detected bool) capabilityRow {
+	return capRowIn(1, host, role, at, detected)
+}
+
+// capRowIn states which pass wrote the row. The fold compares that number and
+// not the timestamp, so a fixture with more than one pass in it has to say so.
+func capRowIn(pass int64, host, role string, at time.Time, detected bool) capabilityRow {
 	r := capabilityRow{DC: "test-dc", HostState: StateActive}
-	r.Hostname, r.Role, r.Detected, r.ObservedAt = host, role, detected, at
+	r.Hostname, r.Role, r.Detected, r.ObservedAt, r.PassID = host, role, detected, at, pass
 	r.Components = map[string]CapabilityComponent{}
 	r.Details = map[string]string{}
 	return r
@@ -42,8 +50,8 @@ func TestFoldCollectsEveryRoleFromTheLatestPass(t *testing.T) {
 func TestFoldSeparatesRolesTheLatestPassNoLongerFinds(t *testing.T) {
 	now := time.Now()
 	rows := []capabilityRow{
-		capRow("h1", "compute", now, true),
-		capRow("h1", "network", now.Add(-72*time.Hour), true),
+		capRowIn(2, "h1", "compute", now, true),
+		capRowIn(1, "h1", "network", now.Add(-72*time.Hour), true),
 	}
 	got := foldCapabilityRows(rows, nil)
 
@@ -63,9 +71,9 @@ func TestFoldSeparatesRolesTheLatestPassNoLongerFinds(t *testing.T) {
 // the listing would report a release nothing on the machine is running.
 func TestFoldIgnoresComponentsFromADroppedRole(t *testing.T) {
 	now := time.Now()
-	fresh := capRow("h1", "compute", now, true)
+	fresh := capRowIn(2, "h1", "compute", now, true)
 	fresh.Components["nova-compute"] = CapabilityComponent{Version: "31.2.0", Active: true}
-	stale := capRow("h1", "network", now.Add(-30*24*time.Hour), true)
+	stale := capRowIn(1, "h1", "network", now.Add(-30*24*time.Hour), true)
 	stale.Components["neutron-l3-agent"] = CapabilityComponent{Version: "24.0.0", Active: true}
 
 	got := foldCapabilityRows([]capabilityRow{fresh, stale}, nil)
@@ -75,6 +83,59 @@ func TestFoldIgnoresComponentsFromADroppedRole(t *testing.T) {
 	}
 	if got[0].Components["nova-compute"].Version != "31.2.0" {
 		t.Errorf("components = %+v, want the latest pass's", got[0].Components)
+	}
+}
+
+// The pass number decides, even when the clock disagrees with it.
+//
+// This is the case the column split exists for. A host whose clock ran a day
+// fast stamped rows nothing could beat, so the write had to force each pass
+// past the last one — greatest(now(), max + 1 microsecond) — and freshness
+// inherited that future forever. Ordering by a counter lets the timestamp be
+// wrong without the fold being wrong, so the skew stays one host's problem
+// instead of pinning the listing.
+//
+// The newer pass here is stamped a day *earlier* than the one it replaces,
+// which is exactly what a corrected clock produces.
+func TestFoldFollowsThePassAndNotTheClock(t *testing.T) {
+	now := time.Now()
+	rows := []capabilityRow{
+		capRowIn(1, "h1", "network", now.Add(24*time.Hour), true), // written while the clock ran fast
+		capRowIn(2, "h1", "compute", now, true),                   // after somebody fixed it
+	}
+	got := foldCapabilityRows(rows, nil)
+
+	if !slices.Equal(got[0].Roles, []string{"compute"}) {
+		t.Errorf("roles = %v, want only the newest pass — the older row's clock is not evidence", got[0].Roles)
+	}
+	if len(got[0].Dropped) != 1 || got[0].Dropped[0].Role != "network" {
+		t.Errorf("dropped = %+v, want network", got[0].Dropped)
+	}
+	if !got[0].ObservedAt.Equal(now) {
+		t.Errorf("observed_at = %v, want the newest pass's own time (%v) — a listing that "+
+			"reports the future has no way to say it is wrong", got[0].ObservedAt, now)
+	}
+}
+
+// A host whose every pass predates the migration has only negative numbers, and
+// the fold has to order them like any others.
+//
+// The comparison started from a map's missing entry, which is 0 — above every
+// backfilled pass — so a host nothing had probed since the migration came out
+// with no roles at all and its entire history in the dropped list. The listing
+// would have shown the fleet as having abandoned OpenStack.
+func TestFoldHandlesAHostWhoseHistoryIsAllBackfilled(t *testing.T) {
+	now := time.Now()
+	got := foldCapabilityRows([]capabilityRow{
+		capRowIn(-1, "h1", "compute", now, true),
+		capRowIn(-2, "h1", "network", now.Add(-72*time.Hour), true),
+	}, nil)
+
+	if !slices.Equal(got[0].Roles, []string{"compute"}) {
+		t.Errorf("roles = %v, want the newest backfilled pass", got[0].Roles)
+	}
+	if len(got[0].Dropped) != 1 || got[0].Dropped[0].Role != "network" {
+		t.Errorf("dropped = %+v, want network", got[0].Dropped)
 	}
 }
 
@@ -96,8 +157,8 @@ func TestFoldDoesNotTreatTheAbsenceMarkerAsARole(t *testing.T) {
 func TestFoldDropsTheAbsenceMarkerWhenSomethingIsFound(t *testing.T) {
 	now := time.Now()
 	got := foldCapabilityRows([]capabilityRow{
-		capRow("h1", roleNone, now.Add(-24*time.Hour), false),
-		capRow("h1", "compute", now, true),
+		capRowIn(1, "h1", roleNone, now.Add(-24*time.Hour), false),
+		capRowIn(2, "h1", "compute", now, true),
 	}, nil)
 
 	if len(got[0].Dropped) != 0 {

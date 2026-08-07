@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 )
@@ -318,28 +319,39 @@ func TestOnePassStampsEveryRoleWithOneInstant(t *testing.T) {
 		t.Fatalf("ReplaceCapabilities: %v", err)
 	}
 
-	var n int
+	var times, passes int
 	if err := st.pool.QueryRow(ctx,
-		`SELECT count(DISTINCT observed_at) FROM server_capabilities WHERE hostname=$1 AND kind='openstack'`,
-		host).Scan(&n); err != nil {
+		`SELECT count(DISTINCT observed_at), count(DISTINCT pass_id)
+		FROM server_capabilities WHERE hostname=$1 AND kind='openstack'`,
+		host).Scan(&times, &passes); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("one pass wrote %d distinct observation times, want 1", n)
+	if times != 1 {
+		t.Errorf("one pass wrote %d distinct observation times, want 1", times)
+	}
+	// The pass number is what the reader now splits on, so it is the one that
+	// has to be identical across every role of one probe.
+	if passes != 1 {
+		t.Errorf("one pass wrote %d distinct pass ids, want 1", passes)
 	}
 }
 
-// The observation time is the database's, and it only ever moves forward for a
-// host.
+// A row from a fast clock can neither pin stale facts nor drag the freshness
+// forward with it.
 //
-// It used to be the host's clock, and a host is exactly the machine whose clock
-// nobody has checked. One running ahead stamps rows that every later pass looks
-// older than — so the reader keeps choosing the stale pass and reads every
-// fresh role as dropped, until somebody notices the clock. That state exists in
-// the fleet right now, written by older agents, so the guard has to hold over
-// rows this code did not write.
+// The first half is old: a host is exactly the machine whose clock nobody has
+// checked, and one running ahead used to stamp rows every later pass looked
+// older than — so the reader kept choosing the stale pass and read every fresh
+// role as dropped. Rows like that exist in the fleet, written by older agents,
+// so the guard has to hold over rows this code did not write.
+//
+// The second half is what the pass number bought. Beating the skew used to mean
+// out-stamping it, which made the skew permanent: from then on the newest pass
+// was always a day in the future and the listing reported an hour-old probe as
+// tomorrow's, with nothing on screen to say it was wrong. Ordering by a counter
+// leaves the clock alone, so the new pass wins *and* says when it actually ran.
 // Integration — needs VCTL_TEST_DSN.
-func TestAFutureTimestampCannotPinStaleFacts(t *testing.T) {
+func TestAFutureTimestampCannotPinStaleFactsOrInfectTheNextPass(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 	const host = "cap-host-08"
@@ -356,19 +368,39 @@ func TestAFutureTimestampCannotPinStaleFacts(t *testing.T) {
 		t.Fatalf("ReplaceCapabilities: %v", err)
 	}
 
-	var at time.Time
+	var (
+		at   time.Time
+		pass int64
+	)
 	if err := st.pool.QueryRow(ctx,
-		`SELECT observed_at FROM server_capabilities WHERE hostname=$1 AND role='controller'`,
-		host).Scan(&at); err != nil {
+		`SELECT observed_at, pass_id FROM server_capabilities WHERE hostname=$1 AND role='controller'`,
+		host).Scan(&at, &pass); err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	if !at.After(future) {
-		t.Errorf("new pass stamped %v, not after the skewed row at %v — the stale pass stays current", at, future)
+	if at.After(future) {
+		t.Errorf("new pass stamped %v, past the skewed row at %v — the skew has been inherited "+
+			"and every later pass will report the future too", at, future)
 	}
-	// And the reader agrees: the new role is what the host holds now.
+	// Loosely, and against the database's own clock rather than this test's:
+	// these are two machines and they disagree by milliseconds even on one
+	// laptop. A minute is far tighter than the day this is guarding against and
+	// far looser than any drift between them.
+	if off := at.Sub(time.Now()).Abs(); off > time.Minute {
+		t.Errorf("new pass stamped %v, %v away from now — it is carrying somebody else's clock", at, off)
+	}
+	if pass < 1 {
+		t.Errorf("pass_id = %d, want a real pass — 0 is where a failed probe's placeholder sits", pass)
+	}
+
+	// And the reader agrees: the new role is what the host holds now, and its
+	// age is the age of the pass rather than of the row it replaced.
 	got := findOpenStackHost(t, st, host)
 	if !containsRole(got.Roles, "controller") {
 		t.Errorf("roles = %v, want the newest pass to win", got.Roles)
+	}
+	if got.ObservedAt.After(future) {
+		t.Errorf("the listing reads this host as observed at %v, which is ahead of a clock "+
+			"that is already a day fast", got.ObservedAt)
 	}
 }
 
@@ -394,4 +426,124 @@ func containsRole(roles []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// The migration's backfill has to leave every host reading exactly as it did.
+//
+// It is the one part of this change that touches data nobody can re-derive: a
+// pass number wrong by one row flips which roles are current, so a host either
+// loses roles it holds or resurrects ones it dropped — and both look like the
+// fleet changed rather than like a migration ran.
+//
+// The migration file itself is executed rather than a copy of its SQL. A copy
+// tests the copy, and the statement that runs in production is the one worth
+// checking.
+// Integration — needs VCTL_TEST_DSN.
+func TestTheBackfillNumbersExistingPassesInTheOrderTheyWereAlreadyIn(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const host = "cap-host-09"
+	seedCapabilityHost(t, st, host)
+
+	// Rows in the shape the old writer left: passes told apart by time alone,
+	// with no pass number on them.
+	old := time.Now().Add(-72 * time.Hour)
+	seedCapability(t, st, Capability{
+		Hostname: host, Kind: "openstack", Role: "network", Detected: true,
+	}, old)
+	seedCapability(t, st, Capability{
+		Hostname: host, Kind: "openstack", Role: "compute", Detected: true,
+	}, time.Now())
+	if _, err := st.pool.Exec(ctx,
+		`UPDATE server_capabilities SET pass_id=0 WHERE hostname=$1`, host); err != nil {
+		t.Fatalf("clear pass ids: %v", err)
+	}
+
+	// Undistinguishable until the backfill runs: one number for both passes.
+	if got := findOpenStackHost(t, st, host); len(got.Dropped) != 0 {
+		t.Fatalf("dropped = %+v before the backfill, want nothing — the fixture is not the "+
+			"un-numbered state this is meant to migrate", got.Dropped)
+	}
+
+	sql, err := os.ReadFile("migrations/021_capability_pass.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := st.pool.Exec(ctx, string(sql)); err != nil {
+		t.Fatalf("run migration: %v", err)
+	}
+
+	got := findOpenStackHost(t, st, host)
+	if !containsRole(got.Roles, "compute") {
+		t.Errorf("roles = %v, want the newer pass's compute", got.Roles)
+	}
+	if containsRole(got.Roles, "network") {
+		t.Errorf("roles = %v — the older pass came back as current", got.Roles)
+	}
+	if len(got.Dropped) != 1 || got.Dropped[0].Role != "network" {
+		t.Errorf("dropped = %+v, want the role the older pass held", got.Dropped)
+	}
+
+	// A host still running the old agent during the rollout files a pass that
+	// names no pass_id, so it lands on the column default. That pass is newer
+	// than everything the backfill numbered and has to read that way — which is
+	// the whole reason the history is numbered downward from zero.
+	if _, err := st.pool.Exec(ctx, `
+		INSERT INTO server_capabilities
+			(hostname, kind, role, detected, components, details, last_error, observed_at, updated_at)
+		VALUES ($1,'openstack','block-storage',true,'{}','{}','', now(), now())`, host); err != nil {
+		t.Fatalf("write as an un-upgraded agent: %v", err)
+	}
+	if got := findOpenStackHost(t, st, host); !containsRole(got.Roles, "block-storage") {
+		t.Errorf("roles = %v — a pass from an agent that has not been upgraded reads as older "+
+			"than the rows already here, so every host inverts for the length of the rollout",
+			got.Roles)
+	}
+
+	// And the pass a later, upgraded probe writes beats both of them.
+	if _, err := st.ReplaceCapabilities(ctx, host, "openstack",
+		[]Capability{{Role: "controller", Detected: true}}); err != nil {
+		t.Fatalf("ReplaceCapabilities: %v", err)
+	}
+	if got := findOpenStackHost(t, st, host); !containsRole(got.Roles, "controller") ||
+		containsRole(got.Roles, "compute") || containsRole(got.Roles, "block-storage") {
+		t.Errorf("roles = %v, want only the pass written after the migration", got.Roles)
+	}
+}
+
+// A row already stamped ahead of the clock is brought back to when the database
+// wrote it, so the fleet does not carry the old skew forward under the new
+// scheme.
+// Integration — needs VCTL_TEST_DSN.
+func TestTheMigrationClampsATimestampFromTheFuture(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const host = "cap-host-10"
+	seedCapabilityHost(t, st, host)
+
+	future := time.Now().Add(48 * time.Hour)
+	seedCapability(t, st, Capability{
+		Hostname: host, Kind: "openstack", Role: "compute", Detected: true,
+	}, future)
+
+	sql, err := os.ReadFile("migrations/021_capability_pass.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := st.pool.Exec(ctx, string(sql)); err != nil {
+		t.Fatalf("run migration: %v", err)
+	}
+
+	var at, wrote time.Time
+	if err := st.pool.QueryRow(ctx,
+		`SELECT observed_at, updated_at FROM server_capabilities WHERE hostname=$1 AND role='compute'`,
+		host).Scan(&at, &wrote); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if at.After(wrote) {
+		t.Errorf("observed_at %v is still ahead of the write at %v", at, wrote)
+	}
+	if !at.Equal(wrote) {
+		t.Errorf("observed_at = %v, want the time the database wrote the row (%v)", at, wrote)
+	}
 }
