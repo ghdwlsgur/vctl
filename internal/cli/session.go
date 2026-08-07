@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/audit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -39,7 +39,11 @@ Two uses:
   vctl session <cert-serial> --json   machine-readable export`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withAuditStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
+			_, adb, err := env.audit()
+			if err != nil {
+				return err
+			}
+			return adb.Reading(cmd.Context(), func(st audit.Reader) error {
 				ctx := cmd.Context()
 				if list || len(args) == 0 {
 					sessions, err := st.ListSessions(ctx, host, limit)
@@ -87,7 +91,11 @@ func sessionStartCmd(env CommandEnv) *cobra.Command {
 		Short:  "Register an SSH session for kernel audit (host stamper use)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withAuditIngestStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
+			_, adb, err := env.audit()
+			if err != nil {
+				return err
+			}
+			return adb.Ingesting(cmd.Context(), func(st audit.Ingestor) error {
 				id, err := st.RecordSession(cmd.Context(), a)
 				if err != nil {
 					return err

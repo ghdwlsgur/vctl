@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/audit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -56,7 +56,11 @@ Horizons default to config (kernel_retention_days / session_retention_days).
   vctl retention --days 30          # report against a different event horizon`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withAuditStore(cmd.Context(), func(a *app.App, st *store.Store) error {
+			a, adb, err := env.audit()
+			if err != nil {
+				return err
+			}
+			return adb.Reading(cmd.Context(), func(st audit.Reader) error {
 				ctx := cmd.Context()
 				if !cmd.Flags().Changed("days") {
 					days = a.Cfg.KernelRetentionDays

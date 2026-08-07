@@ -5,8 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ghdwlsgur/vctl/internal/app"
-	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/audit"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -29,7 +28,11 @@ This is the inventory-level audit. The authoritative record of every signing
 request lives in the Vault file audit device on the Vault pod
 (/vault/audit/vault_audit.log) - use it for forensic / tamper-evident review.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withAuditStore(cmd.Context(), func(_ *app.App, st *store.Store) error {
+			_, adb, err := env.audit()
+			if err != nil {
+				return err
+			}
+			return adb.Reading(cmd.Context(), func(st audit.Reader) error {
 				entries, err := st.AccessLog(cmd.Context(), limit, host, user, sourceIP)
 				if err != nil {
 					return err
