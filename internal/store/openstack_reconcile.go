@@ -358,12 +358,22 @@ func (s *Store) SetDeploymentState(ctx context.Context, id, state, note string) 
 //
 // The row is created if the reconciler has not yet seen this deployment, so a
 // name can be given before the first reconcile rather than only after.
-func (s *Store) SetDeploymentName(ctx context.Context, id, name, region string) error {
+// region is nil for "leave whatever is there" and non-nil for "set it to this",
+// empty string included.
+//
+// A plain string could not tell the two apart, and the command that calls this
+// reads as renaming a deployment: `farm name <id> <new-name>` with no --region
+// wrote an empty one and dropped a region nobody mentioned. Deciding it in the
+// caller would mean reading the row first and writing it back, which is the
+// same read-then-write gap this file has been closing elsewhere.
+func (s *Store) SetDeploymentName(ctx context.Context, id, name string, region *string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO openstack_deployments (id, display_name, region, updated_at)
-		VALUES ($1,$2,$3, now())
+		VALUES ($1,$2, coalesce($3,''), now())
 		ON CONFLICT (id) DO UPDATE SET
-			display_name=EXCLUDED.display_name, region=EXCLUDED.region, updated_at=now()`,
+			display_name=EXCLUDED.display_name,
+			region=coalesce($3, openstack_deployments.region),
+			updated_at=now()`,
 		id, name, region)
 	return err
 }

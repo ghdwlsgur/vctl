@@ -38,8 +38,9 @@ VM:           vctl ssh --vm <nova-uuid> --user rocky
 
 A VM is addressed by its Nova id only — a name can fit several VMs across farms,
 and resolving that by position would connect to whichever sorted first. The
-address is the one the VM listing shows; --user is required because Nova does
-not record a login user and the answer depends on the image.
+address is the one the VM listing shows. --user says who to log in as: Nova does
+not record one, so it falls back to the configured default and the connection
+line names whoever that turned out to be.
 
 A direct target skips inventory entirely, so it reaches a host that was never
 registered — as long as the host already trusts the Vault SSH CA (see
@@ -55,6 +56,12 @@ the configured default.`,
 			}
 			if vm != "" && (server != "" || len(args) > 0) {
 				return fmt.Errorf("pass a VM via --vm, or a host, not both")
+			}
+			// --user is the VM path's flag. On a host the login comes from the
+			// inventory, and on user@addr it is already in the argument, so a
+			// --user there is silently doing nothing.
+			if vm == "" && cmd.Flags().Changed("user") {
+				return fmt.Errorf("--user goes with --vm; a host's login user comes from the inventory, and a direct target carries it in user@addr")
 			}
 			if vm != "" {
 				return sshVM(ctx, env, vm, user, vmFarm)
