@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/openstack"
@@ -32,6 +33,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 		id       string
 		showGone bool
 		asJSON   bool
+		wide     bool
 	)
 	cmd := &cobra.Command{
 		Use:     "vm [query]",
@@ -93,13 +95,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				// A config that will not load is not a reason to refuse a
-				// listing; it only costs the address preference.
-				var nets []string
-				if cfg, err := config.Load(); err == nil {
-					nets = cfg.OperatorNetworks
-				}
-				renderVMs(os.Stdout, vms, names, nets, time.Now())
+				renderVMs(os.Stdout, vms, names, operatorNetworks(), time.Now(), wide)
 				return nil
 			})
 		},
@@ -110,6 +106,8 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 	cmd.Flags().StringVar(&address, "address", "", "the VM answering on this IP")
 	cmd.Flags().StringVar(&id, "id", "", "a Nova UUID, or a Kubernetes providerID (openstack:///<uuid>)")
 	cmd.Flags().BoolVar(&showGone, "missing", false, "include VMs the control plane no longer lists")
+	cmd.AddCommand(openstackVMShowCmd(env))
+	cmd.Flags().BoolVar(&wide, "wide", false, "full UUIDs and the rest of what was collected")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	return cmd
 }
@@ -207,7 +205,12 @@ func farmNames(ctx context.Context, st *store.Store) (map[string]string, error) 
 //
 // The project is a column because it varies within a farm — it is the question
 // "whose VM is this", asked one row at a time.
-func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, operatorNets []string, now time.Time) {
+// vmHeaders names the columns. Without them the table is eight unlabelled
+// strings and the reader has to infer which is the project and which the
+// hypervisor from what happens to be in them.
+var vmHeaders = []string{"ID", "NAME", "STATE", "PROJECT", "HYPERVISOR", "ADDRESS", "AZ", "SEEN", ""}
+
+func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, operatorNets []string, now time.Time, wide bool) {
 	if len(vms) == 0 {
 		ui.Infof(w, "no VMs to show.")
 		return
@@ -232,20 +235,23 @@ func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, opera
 		group := byFarm[id]
 		fmt.Fprintf(w, "\n%s %s\n", farmStyle.Render("▌ "+vmFarmLabel(id, farms)),
 			ui.Muted(fmt.Sprintf("· %d VMs", len(group))))
-		cells := make([][]string, len(group))
-		for i, v := range group {
-			cells[i] = []string{
+		cells := make([][]string, 0, len(group)+1)
+		cells = append(cells, headerRow(wide))
+		for _, v := range group {
+			cells = append(cells, []string{
+				ui.Muted(vmIDCell(v, wide)),
 				ui.Truncate(nameOrID(v), 32),
 				vmStateCell(v),
 				ui.Muted(ui.Truncate(vmProjectLabel(v), 22)),
 				ui.Truncate(v.HypervisorHostname, 20),
 				ui.Truncate(primaryAddress(v, operatorNets), 24),
 				ui.Muted(ui.Truncate(v.AvailabilityZone, 12)),
+				vmSeenCell(v, now),
 				vmMissingCell(v, now),
-			}
+			})
 		}
 		widths := ui.ColumnWidths(cells)
-		for i := range group {
+		for i := range cells {
 			var line strings.Builder
 			line.WriteString("  ")
 			for j, c := range cells[i] {
@@ -343,4 +349,204 @@ func vmMissingCell(v store.Instance, now time.Time) string {
 		return ""
 	}
 	return ui.Fail("gone " + ui.CompactDuration(now.Sub(*v.MissingSince)))
+}
+
+// headerRow labels the columns, muted so the data stays the thing being read.
+func headerRow(wide bool) []string {
+	out := make([]string, len(vmHeaders))
+	for i, h := range vmHeaders {
+		if h == "" {
+			continue
+		}
+		out[i] = ui.Muted(h)
+	}
+	if wide {
+		out[0] = ui.Muted("UUID")
+	}
+	return out
+}
+
+// vmIDCell is how somebody gets from a listing to `vctl ssh --vm`.
+//
+// The id was in the data and on no screen: a VM with a name showed the name,
+// and finding the uuid meant piping --json through something. It is the only
+// selector SSH accepts, deliberately — a name fits several VMs across farms —
+// so hiding it left the two commands unable to be used together.
+//
+// Short by default because eight hex characters identify a VM in any fleet this
+// will see, and a full uuid on every row costs the columns after it. --wide
+// prints the whole thing, which is what a copy-paste wants.
+func vmIDCell(v store.Instance, wide bool) string {
+	if wide || len(v.InstanceID) < 8 {
+		return v.InstanceID
+	}
+	return v.InstanceID[:8]
+}
+
+// vmSeenCell is how long ago a collection last saw this VM.
+//
+// An address is only as current as the pass that recorded it. A reconcile that
+// has been failing for days leaves rows that look exactly like fresh ones, and
+// the address in them is where some VM used to be.
+func vmSeenCell(v store.Instance, now time.Time) string {
+	if v.ObservedAt.IsZero() {
+		return ui.Muted("-")
+	}
+	age := now.Sub(v.ObservedAt)
+	s := ui.CompactDuration(age)
+	if age > vmStaleWindow {
+		return ui.Warn(s)
+	}
+	return ui.Muted(s)
+}
+
+// vmStaleWindow is when a VM's recorded address stops being something to act
+// on.
+//
+// The reconciler runs hourly. Three missed passes is the point where the
+// silence is more likely to be the collector than the schedule — the same
+// reasoning, and the same number, as the capability probe's freshness window.
+const vmStaleWindow = 3 * time.Hour
+
+// openstackVMShowCmd is one VM, in full, with the command to reach it.
+//
+// The listing is a table and a table has to leave things out. What somebody
+// needs when they have found the VM is the other half — the whole uuid, the
+// addresses rather than the best one, when it was last seen, and whether SSH
+// will work — and, having found it, the line to run next. Printing that line
+// rather than describing it is the difference between one step and three.
+func openstackVMShowCmd(env CommandEnv) *cobra.Command {
+	var farm string
+	cmd := &cobra.Command{
+		Use:   "show <nova-uuid>",
+		Short: "One VM in full, and how to reach it",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, ok := access.NovaID(args[0])
+			if !ok {
+				return fmt.Errorf("show takes a Nova instance id or openstack:///<id>, not %q; "+
+					"run 'vctl openstack vm' to find it", args[0])
+			}
+			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+				ctx := cmd.Context()
+				f := store.InstanceFilter{InstanceID: id, IncludeMissing: true}
+				if farm != "" {
+					resolved, err := resolveFarmID(ctx, st, farm)
+					if err != nil {
+						return err
+					}
+					f.DeploymentID = resolved
+				}
+				vms, err := st.Instances(ctx, f)
+				if err != nil {
+					return err
+				}
+				if len(vms) == 0 {
+					return fmt.Errorf("no VM %s; run 'vctl openstack reconcile' if it is new", id)
+				}
+				if len(vms) > 1 {
+					farms := make([]string, 0, len(vms))
+					for _, c := range vms {
+						farms = append(farms, c.DeploymentID)
+					}
+					return fmt.Errorf("%s is in %d deployments (%s); add --farm to say which",
+						id, len(vms), strings.Join(farms, ", "))
+				}
+				names, err := farmNames(ctx, st)
+				if err != nil {
+					return err
+				}
+				nets := operatorNetworks()
+				renderVMShow(os.Stdout, vms[0], names, nets, time.Now())
+				return nil
+			})
+		},
+	}
+	cmd.Flags().StringVar(&farm, "farm", "", "deployment holding the VM, when its id is in more than one")
+	return cmd
+}
+
+func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets []string, now time.Time) {
+	ui.Section(w, nameOrID(v))
+	rows := []ui.KV{
+		{Key: "UUID", Value: v.InstanceID},
+		{Key: "Farm", Value: vmFarmLabel(v.DeploymentID, farms)},
+		{Key: "Project", Value: vmProjectLabel(v)},
+		{Key: "State", Value: vmStateCell(v)},
+		{Key: "Hypervisor", Value: v.HypervisorHostname},
+	}
+	if v.AvailabilityZone != "" {
+		rows = append(rows, ui.KV{Key: "AZ", Value: v.AvailabilityZone})
+	}
+	// Every address, not the ranked one. The listing picks; this is where a
+	// person decides, and the tenant addresses are part of what they are
+	// deciding between.
+	for i, a := range v.Addresses {
+		key := "Addresses"
+		if i > 0 {
+			key = ""
+		}
+		label := a.Address
+		if a.NetworkName != "" {
+			label += ui.Muted("  " + a.NetworkName)
+		}
+		if a.Type == "floating" {
+			label += ui.Muted("  floating")
+		}
+		rows = append(rows, ui.KV{Key: key, Value: label})
+	}
+	if v.FlavorID != "" {
+		rows = append(rows, ui.KV{Key: "Flavor", Value: v.FlavorID})
+	}
+	if v.ImageID != "" {
+		rows = append(rows, ui.KV{Key: "Image", Value: v.ImageID})
+	}
+	if v.CreatedAt != nil {
+		rows = append(rows, ui.KV{Key: "Created", Value: v.CreatedAt.Format(time.RFC3339)})
+	}
+	rows = append(rows, ui.KV{Key: "Seen", Value: vmSeenLine(v, now)})
+	if v.MissingSince != nil {
+		rows = append(rows, ui.KV{
+			Key:   "Missing",
+			Value: "since " + ui.CompactDuration(now.Sub(*v.MissingSince)) + " ago — the control plane stopped listing it",
+			State: ui.StateFail,
+		})
+	}
+	ui.KVs(w, rows)
+
+	// The next command, ready to run. Naming the flags and leaving somebody to
+	// assemble them is where the flow broke in the first place.
+	fmt.Fprintln(w)
+	if addr := openstack.ConnectableAddress(v.Addresses, nets); addr != "" {
+		fmt.Fprintf(w, "  %s\n", ui.Muted("vctl ssh --vm "+v.InstanceID+" --user <login>"))
+		return
+	}
+	fmt.Fprintf(w, "  %s\n", ui.Muted(
+		"no floating or operator-network address, so 'vctl ssh --vm' will refuse; "+
+			"use 'vctl ssh <user>@<addr>' if you know one of the above is this VM"))
+}
+
+func vmSeenLine(v store.Instance, now time.Time) string {
+	if v.ObservedAt.IsZero() {
+		return "never"
+	}
+	age := now.Sub(v.ObservedAt)
+	s := ui.CompactDuration(age) + " ago"
+	if age > vmStaleWindow {
+		return s + " — older than the collector's schedule, so the address may not be current"
+	}
+	return s
+}
+
+// operatorNetworks is the address prefixes this fleet routes.
+//
+// A config that will not load costs the address preference and nothing else —
+// the listing still prints, it just cannot rank the addresses. Refusing to show
+// VMs because a config file is malformed would be the worse trade.
+func operatorNetworks() []string {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	return cfg.OperatorNetworks
 }

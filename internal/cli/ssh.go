@@ -7,7 +7,9 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/access"
@@ -21,6 +23,7 @@ import (
 
 func sshCmd(env CommandEnv) *cobra.Command {
 	var server, vm, user, vmFarm string
+	var allowStale bool
 	cmd := &cobra.Command{
 		Use:   "ssh [host|user@addr]",
 		Short: "Connect to an inventory host, or to an address directly",
@@ -64,7 +67,7 @@ the configured default.`,
 				return fmt.Errorf("--user goes with --vm; a host's login user comes from the inventory, and a direct target carries it in user@addr")
 			}
 			if vm != "" {
-				return sshVM(ctx, env, vm, user, vmFarm)
+				return sshVM(ctx, env, vm, user, vmFarm, allowStale)
 			}
 			query := server
 			if query == "" && len(args) > 0 {
@@ -116,6 +119,7 @@ the configured default.`,
 	cmd.Flags().StringVar(&server, "server", "", "exact inventory host, or user@addr, to connect to (non-interactive; for scripts/agents)")
 	cmd.Flags().StringVar(&vm, "vm", "", "a Nova instance id, or a Kubernetes providerID (openstack:///<uuid>)")
 	cmd.Flags().StringVar(&user, "user", "", "login user for --vm (Nova does not record one)")
+	cmd.Flags().BoolVar(&allowStale, "allow-stale", false, "connect to a --vm whose record is older than the collector's schedule")
 	cmd.Flags().StringVar(&vmFarm, "farm", "", "deployment holding the --vm instance, when its id is in more than one")
 	return cmd
 }
@@ -268,7 +272,7 @@ func withLiveStatus(ctx context.Context, st invcache.Reader, cands []store.Serve
 //
 // A physical host has both doors: the positional form prompts, --server does
 // not. Here the terminal is what says which one this is.
-func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string) error {
+func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string, allowStale bool) error {
 	id, ok := access.NovaID(selector)
 	if !ok {
 		return fmt.Errorf("--vm takes a Nova instance id or openstack:///<id>, not %q; "+
@@ -307,6 +311,39 @@ func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string) err
 			// The control plane stopped listing it. Connecting anyway would be
 			// reaching for an address that belonged to something else by now.
 			return fmt.Errorf("%s (%s) is no longer listed by its control plane", v.Name, id)
+		}
+		// An address is only as current as the pass that recorded it.
+		//
+		// MissingSince alone was the whole check, and it only says the control
+		// plane answered and left this VM out. A reconcile that has been failing
+		// for days sets nothing: the rows keep their addresses, look exactly
+		// like fresh ones, and the address in them is where some VM used to be.
+		// On a tenant range that gets reused, that is somebody else's machine.
+		if age := time.Since(v.ObservedAt); age > vmStaleWindow && !allowStale {
+			when := "never collected"
+			if !v.ObservedAt.IsZero() {
+				when = ui.CompactDuration(age) + " ago"
+			}
+			if !isTerminal() {
+				return fmt.Errorf("%s was last collected %s, older than the collector's schedule; "+
+					"run 'vctl openstack reconcile' or pass --allow-stale", nameOrID(v), when)
+			}
+			ui.Warnf(os.Stderr, "%s in %s was last collected %s — its address may not be current",
+				nameOrID(v), v.DeploymentID, when)
+			var ok bool
+			if err := huh.NewForm(huh.NewGroup(
+				huh.NewConfirm().
+					Title("Connect to " + nameOrID(v) + " on a stale record?").
+					Description(fmt.Sprintf("%s in %s, last collected %s", id, v.DeploymentID, when)).
+					Affirmative("Connect").
+					Negative("Cancel").
+					Value(&ok),
+			)).WithTheme(ui.FormTheme()).WithKeyMap(ui.FormKeyMap()).Run(); err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("not connecting to a stale record")
+			}
 		}
 		if user == "" {
 			user = a.Cfg.SSHDefaultUser
