@@ -69,6 +69,7 @@ request lives in the Vault file audit device on the Vault pod
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "filter by hostname substring")
+	registerCompletion(cmd, "host", completeInventoryHost(env))
 	cmd.Flags().StringVar(&user, "user", "", "filter by vault user substring")
 	cmd.Flags().StringVar(&sourceIP, "source-ip", "", "filter by exact source IP")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 50, "max rows to show")

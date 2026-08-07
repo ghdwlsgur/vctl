@@ -101,6 +101,10 @@ func ipSetCmd(env CommandEnv) *cobra.Command {
 	f.StringVar(&a.Kind, "kind", "", "kind: "+joinKinds())
 	f.StringVar(&a.Label, "label", "", "target name (hostname / VM name / port / device)")
 	f.StringVar(&a.Hostname, "hostname", "", "linked servers.hostname (kind=server)")
+	// The one flag here that names an inventory host. --farm and --project on
+	// this command are labels on an address record, not the deployment and the
+	// Keystone project they sound like.
+	registerCompletion(cmd, "hostname", completeInventoryHost(env))
 	f.StringVar(&a.OS, "os", "", "OS for a personal device (Mac/Windows)")
 	f.StringVar(&a.Project, "project", "", "OpenStack project or purpose")
 	f.StringVar(&a.Farm, "farm", "", "OpenStack farm label (A/B/C/D)")

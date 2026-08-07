@@ -328,11 +328,14 @@ claude mcp add vctl -- vctl mcp
 | `vctl ssh [host\|user@addr] [--server <host>]` | exact, fuzzy, IP, interactive 선택으로 접속합니다(픽커는 ←/→로 DC 필터). `--server`는 정확히 또는 IP로 해석해 비대화형으로 접속합니다(스크립트/에이전트용). `user@addr` 형태는 인벤토리를 거치지 않고 주소로 바로 접속합니다 |
 | `vctl list [--dc <dc>]` | 인벤토리 호스트를 나열합니다(primary + extra IP, 비표준 SSH 포트, 관측된 liveness, 그리고 `active` 가 아닐 때의 운영 상태) |
 | `vctl openstack [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | 어떤 호스트가 OpenStack을 돌리는지, 무슨 역할인지, 어느 팜 소속인지 보여줍니다. node-agent의 capability probe 결과를 읽습니다. `vctl openstack host <name>`은 한 호스트의 역할·컴포넌트 버전·소속을 보여줍니다 |
-| `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure]` | 각 배포의 컨트롤 플레인에 어느 호스트가 자기 것인지 묻고, 양쪽이 일치하는 호스트를 `confirmed`로 올립니다. 자격증명은 Vault `kv/teams/sre/vctl-<host_port>`에서 읽습니다(필드: `auth_url`·`username`·`password`, 선택 `project_name`·`user_domain`·`project_domain`) |
+| `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure] [--json] [--fail-on <problems>]` | 각 배포의 컨트롤 플레인에 어느 호스트가 자기 것인지 묻고, 양쪽이 일치하는 호스트를 `confirmed`로 올립니다. 자격증명은 Vault `kv/teams/sre/vctl-<host_port>`에서 읽습니다(필드: `auth_url`·`username`·`password`, 선택 `project_name`·`user_domain`·`project_domain`) |
 | `vctl openstack farm name [deployment] [name]` | 배포에 사람이 읽을 이름을 붙입니다. 목록이 `172.16.0.10:5000` 대신 `incheon`으로 나옵니다. 인자를 생략하면 목록에서 고르고 폼으로 입력합니다 |
 | `vctl openstack farm show [deployment]` | 한 팜의 아키텍처를 한 화면에: 역할 섹션(컨트롤 플레인 먼저)·릴리스 드리프트·미확정 소속. 인자를 생략하면 목록에서 고릅니다 |
 | `vctl openstack farm state [deployment] [state]` | 배포에 대해 사람이 아는 것을 선언합니다 — `active`·`maintenance`·`broken`·`retired`, `--note` 로 이유. 선언 후에도 이상 징후는 계속 보고되며 '새 소식'이 아니라 '예상된 것'으로 표시됩니다. 인자를 생략하면 목록에서 고르고 폼으로 입력합니다 |
-| `vctl openstack vm [--farm <f>] [--host <h>] [--id <uuid>] [--address <ip>] [--missing]` | 배포별 VM과 각 VM이 올라간 물리 호스트. `--host`는 인벤토리 호스트명, `--id`는 Nova UUID 또는 쿠버네티스 `providerID`(`openstack:///<uuid>`), `--address`는 그 IP를 쓰는 VM을 찾습니다 |
+| `vctl openstack vm [query] [--farm <f>] [--host <h>] [--project <p>] [--id <uuid>] [--address <ip>] [--missing] [--wide]` | 배포별 VM과 각 VM이 올라간 물리 호스트. UUID가 아닌 인자는 이름과 주소에서 찾습니다. `--host`는 인벤토리 호스트명, `--project`는 프로젝트 id 또는 표에 보이는 이름, `--id`는 Nova UUID 또는 쿠버네티스 `providerID`(`openstack:///<uuid>`), `--address`는 그 IP를 쓰는 VM을 찾습니다 |
+| `vctl openstack vm show <nova-uuid> [--farm <f>]` | VM 하나를 전부 — 주소 전체, 마지막으로 확인된 시각, 그리고 그 VM에 닿는 `vctl ssh` 명령 |
+| `vctl openstack farm list [--json]` | 배포마다 한 줄. 호스트·VM 수와 마지막으로 reconcile이 확인한 시점을 함께 보여줍니다 |
+| `vctl openstack farm doctor [deployment]` | reconcile이 무엇을 필요로 하는지 미리 봅니다 — 자격증명·Keystone·Nova·마지막 실행. 아무것도 바꾸지 않습니다 |
 | `vctl add [flags]` | `sync`가 찾지 못하는 호스트를 인벤토리에 등록합니다. 플래그 없이 실행하면 폼으로 입력합니다 |
 | `vctl edit [host] [flags]` | `sync`가 덮어쓰지 않는 필드를 바꿉니다 — dc · ssh user · 점프 호스트 · extra IP · 호스트명, 그리고 `--state active\|maintenance\|broken\|retired`. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
 | `vctl delete [host] [--yes]` | 폐기한 호스트를 지웁니다. 감사 기록은 남습니다. 이 호스트를 경유하는 호스트가 있으면 삭제를 막습니다. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
@@ -344,6 +347,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl status` | 로그인, SSH CA, inventory DB 연결 상태를 확인합니다 |
 | `vctl sync [--prefix sre]` | `~/.ssh/config`와 probe 결과에서 인벤토리를 동기화합니다(`--migrate`는 deprecated — `vctl migrate`를 쓰세요) |
 | `vctl migrate [--status]` | 미적용 스키마 마이그레이션을 적용합니다. `schema_migrations`에 이름·checksum으로 기록하고 advisory lock으로 직렬화합니다. `--status`는 아무것도 바꾸지 않고 현황만 보여줍니다 |
+| `vctl completion bash\|zsh\|fish\|powershell` | 셸 자동완성 스크립트를 출력합니다. 팜·호스트·역할·프로젝트·VM UUID를 인벤토리에서 바로 채웁니다. VM은 이름으로 읽히고 UUID로 완성됩니다 |
 | `vctl logout` | 캐시된 Vault 토큰을 제거합니다 |
 
 ## Configuration

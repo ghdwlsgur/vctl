@@ -96,6 +96,7 @@ database role for low-risk, low-resource status reporting.`,
 		},
 	}
 	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname to report; defaults to os hostname")
+	registerCompletion(cmd, "hostname", completeInventoryHost(env))
 	cmd.Flags().DurationVar(&interval, "interval", 5*time.Minute, "heartbeat interval")
 	cmd.Flags().DurationVar(&probeInterval, "probe-interval", time.Hour,
 		"how often to run platform capability probes (OpenStack, ...); 0 disables them")

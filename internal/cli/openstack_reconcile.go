@@ -177,6 +177,12 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 	cmd.Flags().StringVar(&failOn, "fail-on", "",
 		"exit non-zero when any of these occurred: unreachable, no-credentials, partial, warning")
 	cmd.MarkFlagsMutuallyExclusive("self", "farm")
+	registerCompletion(cmd, "farm", completeFarm(env))
+	registerCompletion(cmd, "hostname", completeInventoryHost(env))
+	// A closed set, and the only completion here that needs nothing from the
+	// database: these four words are the contract.
+	registerCompletion(cmd, "fail-on", staticCompletions(
+		"unreachable", "no-credentials", "partial", "warning"))
 	return cmd
 }
 

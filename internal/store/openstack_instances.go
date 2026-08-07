@@ -150,7 +150,11 @@ type InstanceFilter struct {
 	// Hypervisor is nova's name for the host, which is what the instance rows
 	// carry — the caller resolves inventory names to it.
 	Hypervisor string
-	ProjectID  string
+	// ProjectIDs narrows to one or more tenants. Plural because a project *name*
+	// is not unique across the fleet — each farm has its own Keystone, so eight
+	// deployments hold eight different projects called "admin" — and the caller
+	// resolves a name to whichever ids carry it.
+	ProjectIDs []string
 	// Address finds the VM answering on an IP, the question asked while
 	// somebody is looking at a connection log.
 	Address string
@@ -187,8 +191,11 @@ func instancesOn(ctx context.Context, db rowQuerier, f InstanceFilter) ([]Instan
 	if f.Hypervisor != "" {
 		add(" AND hypervisor_hostname=", f.Hypervisor)
 	}
-	if f.ProjectID != "" {
-		add(" AND project_id=", f.ProjectID)
+	if len(f.ProjectIDs) > 0 {
+		// Not through add: ANY takes its parameter in parentheses, and add
+		// appends the placeholder at the end of what it is given.
+		args = append(args, f.ProjectIDs)
+		q += ` AND project_id = ANY($` + itoa(len(args)) + `)`
 	}
 	if f.InstanceID != "" {
 		add(" AND instance_id=", f.InstanceID)
@@ -288,6 +295,42 @@ func itoa(n int) string {
 		return string(rune('0' + n))
 	}
 	return itoa(n/10) + string(rune('0'+n%10))
+}
+
+// Project is one tenant, as far as the collected VMs know it.
+//
+// There is no projects table. Keystone holds the authority and vctl does not
+// read it — what is here is what the VM rows carry, which is the same thing the
+// listing prints and therefore the right set to resolve a typed name against.
+type Project struct {
+	DeploymentID string `json:"deployment_id"`
+	ID           string `json:"id"`
+	// Name is empty for a farm collected before names were resolved. Such a
+	// project is still selectable by id.
+	Name string `json:"name,omitempty"`
+	// VMs counts the ones nova still lists. A project whose VMs have all gone
+	// stays in the list at zero — it is still a legal filter, and dropping it
+	// would make `--project X --missing` fail to resolve the very rows it asks
+	// for.
+	VMs int `json:"vms"`
+}
+
+// Projects lists the tenants that own VMs, for one deployment or the fleet.
+func (s *Store) Projects(ctx context.Context, deployment string) ([]Project, error) {
+	q := `SELECT deployment_id, project_id, coalesce(project_name, ''),
+		 count(*) FILTER (WHERE missing_since IS NULL)
+		FROM openstack_instances WHERE project_id <> ''`
+	var args []any
+	if deployment != "" {
+		args = append(args, deployment)
+		q += ` AND deployment_id=$1`
+	}
+	q += ` GROUP BY 1, 2, 3 ORDER BY 3, 2, 1`
+	return queryAndCollect(ctx, s.pool, q, args, func(r pgx.Rows) (Project, error) {
+		var p Project
+		err := r.Scan(&p.DeploymentID, &p.ID, &p.Name, &p.VMs)
+		return p, err
+	})
 }
 
 // HypervisorNames lists the host names nova files VMs under, so a caller can

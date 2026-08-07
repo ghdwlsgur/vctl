@@ -89,6 +89,7 @@ to line up with the rest of the inventory. This mirrors node-agent --hostname.`,
 	}
 	cmd.Flags().StringVar(&dir, "dir", "/run/vctl/sessions", "marker directory")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname to record sessions under; defaults to the marker's os hostname")
+	registerCompletion(cmd, "hostname", completeInventoryHost(env))
 	cmd.Flags().DurationVar(&interval, "interval", 5*time.Second, "scan interval")
 	cmd.Flags().BoolVar(&once, "once", false, "process current markers once and exit")
 	return cmd

@@ -53,6 +53,9 @@ func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 			"or their datacenter, would rename the farm whenever its membership changed.\n\n" +
 			"With no arguments the deployment is picked from a list and the name asked for in a form.",
 		Args: cobra.MaximumNArgs(2),
+		// Only the first argument. The second is the new name — nothing knows
+		// it yet, which is the whole point of the command.
+		ValidArgsFunction: byPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()
@@ -331,7 +334,8 @@ func openstackFarmStateCmd(env CommandEnv) *cobra.Command {
 			"stop being a fault, and somebody has to see what it is — but they are marked as\n" +
 			"expected rather than as news.\n\n" +
 			"With no arguments the deployment is picked from a list and the state asked for in a form.",
-		Args: cobra.MaximumNArgs(2),
+		Args:              cobra.MaximumNArgs(2),
+		ValidArgsFunction: byPosition(completeFarm(env), staticCompletions(store.HostStates...)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				ctx := cmd.Context()

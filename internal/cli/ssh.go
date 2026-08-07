@@ -121,6 +121,13 @@ the configured default.`,
 	cmd.Flags().StringVar(&user, "user", "", "login user for --vm (Nova does not record one)")
 	cmd.Flags().BoolVar(&allowStale, "allow-stale", false, "connect to a --vm whose record is older than the collector's schedule")
 	cmd.Flags().StringVar(&vmFarm, "farm", "", "deployment holding the --vm instance, when its id is in more than one")
+	registerCompletion(cmd, "server", completeInventoryHost(env))
+	registerCompletion(cmd, "vm", completeVM(env))
+	registerCompletion(cmd, "farm", completeFarm(env))
+	// The positional takes an inventory name or user@addr, and only the first
+	// of those is something anything here knows. The direct form needs no
+	// inventory, which is the point of it.
+	cmd.ValidArgsFunction = completeInventoryHost(env)
 	return cmd
 }
 

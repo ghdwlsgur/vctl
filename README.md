@@ -431,11 +431,14 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl ssh [host\|user@addr] [--server <host>]` | Connect by exact, fuzzy, IP, or interactive selection (picker filters by DC with ←/→); `--server` resolves exactly or by IP and connects non-interactively (scripts/agents). `user@addr` connects to an address directly, skipping inventory |
 | `vctl list [--dc <dc>]` | List inventory hosts (primary + extra IPs, non-default SSH port, observed liveness, and the operator-declared state when it is not `active`) |
 | `vctl openstack [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | Show which hosts run OpenStack, in what role, and for which deployment, from the node agents' capability probes. `vctl openstack host <name>` shows one host's roles, component versions and membership |
-| `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure]` | Ask each deployment's control plane which hosts it owns and promote the ones both sides agree on to `confirmed`. Credentials are read from Vault at `kv/teams/sre/vctl-<host_port>` (fields: `auth_url`, `username`, `password`, optional `project_name`/`user_domain`/`project_domain`) |
+| `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure] [--json] [--fail-on <problems>]` | Ask each deployment's control plane which hosts it owns and promote the ones both sides agree on to `confirmed`. Credentials are read from Vault at `kv/teams/sre/vctl-<host_port>` (fields: `auth_url`, `username`, `password`, optional `project_name`/`user_domain`/`project_domain`) |
 | `vctl openstack farm name [deployment] [name]` | Give a deployment a name people can read, so the listing shows `incheon` rather than `172.16.0.10:5000`. With no arguments the deployment is picked from a list and the name asked for in a form |
 | `vctl openstack farm show [deployment]` | One farm's architecture in one screen: role sections (control plane first), release drift, unsettled membership. Picks from a list with no argument |
 | `vctl openstack farm state [deployment] [state]` | Declare what an operator knows about a deployment — `active`/`maintenance`/`broken`/`retired`, with `--note`. Anomalies are still reported once declared, marked expected rather than as news. With no arguments it is picked from a list and asked for in a form |
-| `vctl openstack vm [--farm <f>] [--host <h>] [--id <uuid>] [--address <ip>] [--missing]` | VMs per deployment and which physical host each sits on. `--host` takes an inventory hostname; `--id` takes a Nova UUID or a Kubernetes `providerID` (`openstack:///<uuid>`); `--address` finds the VM answering on an IP |
+| `vctl openstack vm [query] [--farm <f>] [--host <h>] [--project <p>] [--id <uuid>] [--address <ip>] [--missing] [--wide]` | VMs per deployment and which physical host each sits on. An argument that is not a UUID searches names and addresses. `--host` takes an inventory hostname; `--project` takes a project id or the name the table shows; `--id` takes a Nova UUID or a Kubernetes `providerID` (`openstack:///<uuid>`); `--address` finds the VM answering on an IP |
+| `vctl openstack vm show <nova-uuid> [--farm <f>]` | One VM in full — every address, when it was last seen, and the `vctl ssh` line that reaches it |
+| `vctl openstack farm list [--json]` | Every deployment on one line each, with host and VM counts and how recently a reconcile confirmed it |
+| `vctl openstack farm doctor [deployment]` | Check what a reconcile would need — credentials, Keystone, Nova, the last run — without changing anything |
 | `vctl add [flags]` | Register an inventory host `sync` cannot discover; with no flags the fields are asked for in a form |
 | `vctl edit [host] [flags]` | Change the fields `sync` will not overwrite — dc, ssh user, jump host, extra IPs, hostname, and `--state active\|maintenance\|broken\|retired`. With no host, pick one from a list (←/→ filters by DC) |
 | `vctl delete [host] [--yes]` | Remove a decommissioned host. Audit history is kept; hosts that jump through it block the delete. With no host, pick one from a list (←/→ filters by DC) |
@@ -452,6 +455,7 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl status` | Check login, SSH CA, and inventory DB connectivity |
 | `vctl sync [--prefix sre]` | Sync inventory from `~/.ssh/config` and probes (`--migrate` is deprecated — use `vctl migrate`) |
 | `vctl migrate [--status]` | Apply pending schema migrations, tracked in `schema_migrations` by name and checksum and serialised on an advisory lock; `--status` reports without changing anything |
+| `vctl completion bash\|zsh\|fish\|powershell` | Print the shell completion script. Farms, hosts, roles, projects and VM UUIDs complete from the live inventory; a VM completes to its UUID and reads as its name |
 | `vctl logout` | Remove the cached Vault token |
 
 ## Configuration

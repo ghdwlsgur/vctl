@@ -191,6 +191,7 @@ for full host capture.`,
 	}
 	cmd.Flags().StringVar(&from, "from", "", "read events from a file instead of stdin")
 	cmd.Flags().StringVar(&host, "host", "", "inventory hostname to record events under (default: event node_name); must match what watch-sessions records or nothing attributes")
+	registerCompletion(cmd, "host", completeInventoryHost(env))
 	cmd.Flags().StringVar(&serial, "serial", "", "attach events to a known cert serial")
 	cmd.Flags().IntVar(&batch, "batch", 200, "insert batch size")
 	cmd.Flags().DurationVar(&flushInterval, "flush-interval", 3*time.Second, "max time before flushing buffered events")
