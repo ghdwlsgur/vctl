@@ -55,6 +55,44 @@ func TestExploreWritesNothing(t *testing.T) {
 	assertReadsOnly(t, "openstack_explore.go", "explore")
 }
 
+// explore reads the database and nothing else.
+//
+// It offered a Diagnose entry at first, which reached out to the farm's
+// Keystone and Nova. That made a browser into something that authenticates
+// against a control plane — a different kind of act from reading what was
+// already collected, with different failure modes and a different reason to
+// refuse. `farm doctor` is that command, and keeping the two apart is what lets
+// this one promise it cannot make a farm's situation worse or slower.
+func TestExploreNeverContactsAControlPlane(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "openstack_explore.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// diagnoseFarm authenticates and calls Nova; the api package is the client
+	// itself. Either one reaching this file means the walk can now block on a
+	// farm that is down.
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fn := call.Fun.(type) {
+		case *ast.Ident:
+			if fn.Name == "diagnoseFarm" {
+				t.Errorf("explore calls diagnoseFarm at %s; that is 'farm doctor', and it "+
+					"talks to the farm's control plane", fset.Position(call.Pos()))
+			}
+		case *ast.SelectorExpr:
+			if pkg, ok := fn.X.(*ast.Ident); ok && pkg.Name == "openstackapi" {
+				t.Errorf("explore calls openstackapi.%s at %s; it is meant to read what was "+
+					"already collected", fn.Sel.Name, fset.Position(call.Pos()))
+			}
+		}
+		return true
+	})
+}
+
 // Without a terminal there is nobody to pick, and the useful thing to say is
 // which commands answer the same questions without one.
 //
@@ -131,6 +169,7 @@ func TestVMPickLabelLeadsWithTheNameAndLeavesOutTheUUID(t *testing.T) {
 	v := store.Instance{
 		InstanceID: "11111111-2222-3333-4444-555555555555",
 		Name:       "bastion-01", Status: "ACTIVE", HypervisorHostname: "compute-03",
+		ProjectID: "abc123", ProjectName: "platform",
 		Addresses: []store.InstanceAddress{{Address: "192.168.201.55", Type: "floating"}},
 	}
 	got := vmPickLabel(v, nil)
@@ -140,10 +179,24 @@ func TestVMPickLabelLeadsWithTheNameAndLeavesOutTheUUID(t *testing.T) {
 	if strings.Contains(got, v.InstanceID) {
 		t.Errorf("label carries the uuid, which identifies nothing to a reader: %q", got)
 	}
-	for _, want := range []string{"192.168.201.55", "compute-03"} {
+	// The project answers "whose VM is this", which is what turns a list of
+	// names into a list somebody can narrow.
+	for _, want := range []string{"platform", "192.168.201.55", "compute-03"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("label %q does not carry %q", got, want)
 		}
+	}
+	if i, j := strings.Index(stripANSI(got), "platform"), strings.Index(stripANSI(got), "ACTIVE"); i > j {
+		t.Errorf("the project comes after the state; it narrows the list and should lead: %q", stripANSI(got))
+	}
+}
+
+// A project nothing has named still has an id, and that is the only handle it
+// has. Collections predating the project_name column leave it empty.
+func TestVMPickLabelFallsBackToTheProjectID(t *testing.T) {
+	v := store.Instance{InstanceID: "abc", Name: "vm-1", ProjectID: "4b854e2819e44b53"}
+	if got := vmPickLabel(v, nil); !strings.Contains(got, "4b85") {
+		t.Errorf("an unnamed project left the row with nothing to say whose it is: %q", got)
 	}
 }
 
