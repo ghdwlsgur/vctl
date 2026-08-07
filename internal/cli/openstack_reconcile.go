@@ -33,11 +33,14 @@ const vaultFarmPrefix = "kv/teams/sre"
 
 func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 	var (
-		only     string
-		self     bool
-		hostname string
-		insecure bool
-		dryRun   bool
+		only           string
+		self           bool
+		hostname       string
+		insecure       bool
+		dryRun         bool
+		asJSON         bool
+		failOn         string
+		includeRetired bool
 	)
 	cmd := &cobra.Command{
 		Use:   "reconcile",
@@ -80,12 +83,37 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 					}
 					only = id
 				}
+				// A retired deployment is one somebody said is not operated any
+				// more. Asking its control plane every run spends a credential
+				// and a timeout on a farm nobody expects to answer, and files
+				// the failure as news. Naming it explicitly still works — that
+				// is somebody saying they mean this one.
+				retired := map[string]bool{}
+				if only == "" && !includeRetired {
+					deps, err := st.Deployments(ctx)
+					if err != nil {
+						return err
+					}
+					for _, d := range deps {
+						if d.State == store.StateRetired {
+							retired[d.ID] = true
+						}
+					}
+				}
 				ids := make([]string, 0, len(farms))
+				var skipped int
 				for id := range farms {
 					if only != "" && !strings.EqualFold(id, only) {
 						continue
 					}
+					if retired[id] {
+						skipped++
+						continue
+					}
 					ids = append(ids, id)
+				}
+				if skipped > 0 && !asJSON {
+					ui.Infof(os.Stderr, "skipping %d retired deployment(s); --include-retired to reconcile them", skipped)
 				}
 				sort.Strings(ids)
 				if len(ids) == 0 {
@@ -102,12 +130,40 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 					Cloud: novaCloud{},
 					Repo:  storeRepo{st: st},
 				}
-				ui.Section(os.Stdout, "openstack reconcile")
-				rep, err := svc.Run(ctx, req)
-				// Rendered before the error is returned: a run that reached
-				// nothing still has per-farm reasons worth reading.
-				renderReconcile(rep, dryRun)
-				return err
+				want, err := parseFailOn(failOn)
+				if err != nil {
+					return err
+				}
+				startedAt := time.Now()
+				if !asJSON {
+					ui.Section(os.Stdout, "openstack reconcile")
+				}
+				rep, runErr := svc.Run(ctx, req)
+				took := time.Since(startedAt)
+				if asJSON {
+					if err := writeJSON(reconcileReportJSON(rep, startedAt, took, dryRun)); err != nil {
+						return err
+					}
+				} else {
+					// Rendered before the error is returned: a run that reached
+					// nothing still has per-farm reasons worth reading.
+					renderReconcile(rep, dryRun)
+				}
+				if runErr != nil {
+					return runErr
+				}
+				// A run where one farm answered and seven did not is a success
+				// by the old measure, and a timer cannot tell it from a healthy
+				// one. What counts as failure is the caller's to say.
+				if hit := rep.FailOn(want); len(hit) > 0 {
+					names := make([]string, 0, len(hit))
+					for _, p := range hit {
+						names = append(names, string(p))
+					}
+					return fmt.Errorf("reconcile finished with %s; %d of %d deployments answered",
+						strings.Join(names, ", "), rep.Reached, len(rep.Outcomes))
+				}
+				return nil
 			})
 		},
 	}
@@ -116,6 +172,10 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname for --self; defaults to the os hostname")
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification against the control plane (self-signed endpoints)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what would change without writing")
+	cmd.Flags().BoolVar(&includeRetired, "include-retired", false, "also reconcile deployments declared retired")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable result, for timers and dashboards")
+	cmd.Flags().StringVar(&failOn, "fail-on", "",
+		"exit non-zero when any of these occurred: unreachable, no-credentials, partial, warning")
 	cmd.MarkFlagsMutuallyExclusive("self", "farm")
 	return cmd
 }
