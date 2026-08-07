@@ -57,27 +57,31 @@ func TestAFarmOfOnlyParkedHostsLeavesNothingToGroup(t *testing.T) {
 	}
 }
 
-// The summary under the table counts the same fleet the table shows. These two
-// disagreed once before, over stale capability rows, and a summary that
-// contradicts what is above it is worse than no summary.
+// Coverage is a fraction of the fleet something is expected of, and nothing is
+// expected of a parked machine — counting it would leave coverage permanently
+// short of complete with no way to finish it.
+//
+// The denominator is read here now, alongside everything it is compared with,
+// so the summary and the table cannot come from different moments.
 // Integration — needs VCTL_TEST_DSN.
-func TestOpenStackCoverageExcludesMaintenanceHosts(t *testing.T) {
+func TestFleetSnapshotDenominatorExcludesMaintenanceHosts(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 	seedOpenStackHost(t, st, "os-parked-01", StateActive)
 
-	before, err := st.coverageNow(ctx, t)
+	before, err := st.FleetSnapshot(ctx)
 	if err != nil {
-		t.Fatalf("coverage: %v", err)
+		t.Fatalf("FleetSnapshot: %v", err)
 	}
 	seedOpenStackHost(t, st, "os-parked-02", StateMaintenance)
-	after, err := st.coverageNow(ctx, t)
+	after, err := st.FleetSnapshot(ctx)
 	if err != nil {
-		t.Fatalf("coverage: %v", err)
+		t.Fatalf("FleetSnapshot: %v", err)
 	}
 
-	if after.Hosts != before.Hosts {
-		t.Errorf("adding a host in maintenance moved the denominator from %d to %d", before.Hosts, after.Hosts)
+	if after.InventoryHosts != before.InventoryHosts {
+		t.Errorf("adding a host in maintenance moved the denominator from %d to %d",
+			before.InventoryHosts, after.InventoryHosts)
 	}
 }
 

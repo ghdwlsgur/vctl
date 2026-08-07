@@ -1,17 +1,36 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
-func farmChoicesFixture() []farmChoice {
-	return []farmChoice{
-		{ID: "172.16.0.245:5000", Hosts: 7, Roles: "compute 5 · controller 3"},
-		{ID: "172.16.0.10:5000", Name: "incheon", Region: "kr-inc-1", Hosts: 7, Roles: "compute 7"},
+// farmOf builds a deployment holding the given hosts, one per role listed.
+//
+// The picker's label reads its counts and its role census off the hosts now,
+// the same way the listing does — so a fixture has to carry hosts rather than a
+// number and a pre-rendered string, and cannot claim a shape its hosts do not
+// have.
+func farmOf(id, name string, roles ...string) farmChoice {
+	f := farmChoice{ID: id, Name: name}
+	for i, r := range roles {
+		f.Hosts = append(f.Hosts, store.OpenStackHost{
+			Hostname: fmt.Sprintf("%s-h%d", id, i), Farm: id, Detected: true, Roles: []string{r},
+		})
 	}
+	return f
+}
+
+func farmChoicesFixture() []farmChoice {
+	unnamed := farmOf("172.16.0.245:5000", "",
+		"compute", "compute", "compute", "compute", "compute", "controller", "controller")
+	incheon := farmOf("172.16.0.10:5000", "incheon",
+		"compute", "compute", "compute", "compute", "compute", "compute", "compute")
+	incheon.Region = "kr-inc-1"
+	return []farmChoice{unnamed, incheon}
 }
 
 // An endpoint is not something a person recognises. Whoever is naming farms is
@@ -20,7 +39,7 @@ func farmChoicesFixture() []farmChoice {
 func TestFarmPickerShowsWhatEachDeploymentContains(t *testing.T) {
 	labels := farmPickLabels(farmChoicesFixture())
 
-	if !strings.Contains(labels[0], "7 hosts") || !strings.Contains(labels[0], "controller 3") {
+	if !strings.Contains(labels[0], "7 hosts") || !strings.Contains(labels[0], "controller 2") {
 		t.Errorf("label = %q, want the size and shape that identify it", labels[0])
 	}
 	if !strings.Contains(labels[1], "incheon") {

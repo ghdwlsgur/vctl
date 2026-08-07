@@ -173,33 +173,24 @@ func loadExploreData(ctx context.Context, st *store.Store) (exploreData, error) 
 		VMs:   map[string][]store.Instance{},
 		Nets:  operatorNetworks(),
 	}
-	var err error
-	if out.Farms, err = farmChoices(ctx, st); err != nil {
-		return out, err
-	}
-	hosts, err := st.OpenStackHosts(ctx)
+	// One transaction for the whole screen. This used to be four reads, two of
+	// which the picker's own assembly then repeated — so the left pane's host
+	// count and the right pane's VM list came from different instants.
+	cat, err := loadVMCatalog(ctx, st)
 	if err != nil {
 		return out, err
 	}
-	for _, h := range hosts {
-		if h.Farm != "" && h.Detected {
-			out.Hosts[h.Farm] = append(out.Hosts[h.Farm], h)
+	out.Farms = cat.Farms()
+	out.Names = cat.Names()
+	out.Runs = map[string]store.ReconcileRun{}
+	for _, f := range out.Farms {
+		out.Hosts[f.ID] = f.Hosts
+		out.VMs[f.ID] = cat.VMs(f.ID)
+		if run := cat.Run(f.ID); run != nil {
+			out.Runs[f.ID] = *run
 		}
 	}
-	vms, err := st.Instances(ctx, store.InstanceFilter{})
-	if err != nil {
-		return out, err
-	}
-	for _, v := range vms {
-		out.VMs[v.DeploymentID] = append(out.VMs[v.DeploymentID], v)
-	}
-	if out.Names, err = farmNames(ctx, st); err != nil {
-		return out, err
-	}
-	if out.Runs, err = st.ReconcileRuns(ctx); err != nil {
-		return out, err
-	}
-	out.ReadAt = time.Now()
+	out.ReadAt = cat.ReadAt()
 	return out, nil
 }
 
@@ -270,7 +261,7 @@ func (m exploreModel) visibleFarms() []farmChoice {
 	}
 	out := make([]farmChoice, 0, len(m.data.Farms))
 	for _, f := range m.data.Farms {
-		if matchesFilter(m.farmFilter, f.ID, f.Name, f.Region, f.Roles) {
+		if matchesFilter(m.farmFilter, f.ID, f.Name, f.Region, farmShape(f.Hosts, true)) {
 			out = append(out, f)
 		}
 	}

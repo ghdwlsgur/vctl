@@ -15,6 +15,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/openstack"
+	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -69,12 +70,24 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 					InstanceID:     normalizeInstanceID(id),
 					IncludeMissing: showGone,
 				}
-				if farm != "" {
-					resolved, err := resolveFarmID(ctx, st, farm)
+				// One reading of the deployments for both things this command
+				// asks about them: which one --farm means, and what to call
+				// each in the grouping header. Those were two reads, and the
+				// second was issued after the VMs had already been fetched.
+				var cat fleet.Catalog
+				if farm != "" || !asJSON {
+					c, err := loadFarmCatalog(ctx, st)
 					if err != nil {
 						return err
 					}
-					f.DeploymentID = resolved
+					cat = c
+				}
+				if farm != "" {
+					resolved, err := cat.Resolve(farm)
+					if err != nil {
+						return err
+					}
+					f.DeploymentID = resolved.ID
 				}
 				// After the farm, so --farm narrows what a name has to be
 				// unique within.
@@ -102,11 +115,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 				if asJSON {
 					return writeJSON(vms)
 				}
-				names, err := farmNames(ctx, st)
-				if err != nil {
-					return err
-				}
-				renderVMs(os.Stdout, vms, names, operatorNetworks(), time.Now(), wide)
+				renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), wide)
 				return nil
 			})
 		},
@@ -164,13 +173,14 @@ func isInstanceID(v string) bool {
 	return true
 }
 
-// resolveFarmID turns a name people use into the deployment id rows carry.
+// resolveFarmID turns a name people use into the deployment id rows carry, for
+// the callers that need nothing else from the reading.
 func resolveFarmID(ctx context.Context, st *store.Store, v string) (string, error) {
-	farms, err := farmChoices(ctx, st)
+	cat, err := loadFarmCatalog(ctx, st)
 	if err != nil {
 		return "", err
 	}
-	f, err := resolveFarm(farms, v)
+	f, err := cat.Resolve(v)
 	if err != nil {
 		return "", err
 	}
@@ -272,6 +282,10 @@ func novaNameFor(ctx context.Context, st *store.Store, inventoryHost, deployment
 }
 
 // farmNames maps deployment id to what people call it, for the grouping header.
+//
+// Still its own read, for the callers that want nothing but the labels — shell
+// completion describing a VM, for one. Commands that also resolve a --farm take
+// both off one catalog instead.
 func farmNames(ctx context.Context, st *store.Store) (map[string]string, error) {
 	deps, err := st.Deployments(ctx)
 	if err != nil {
@@ -520,12 +534,19 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				f := store.InstanceFilter{InstanceID: id, IncludeMissing: true}
+				// One reading answers both questions this command asks about
+				// deployments: which one --farm means, and what to call the one
+				// the VM turns out to be in.
+				cat, err := loadFarmCatalog(ctx, st)
+				if err != nil {
+					return err
+				}
 				if farm != "" {
-					resolved, err := resolveFarmID(ctx, st, farm)
+					resolved, err := cat.Resolve(farm)
 					if err != nil {
 						return err
 					}
-					f.DeploymentID = resolved
+					f.DeploymentID = resolved.ID
 				}
 				vms, err := st.Instances(ctx, f)
 				if err != nil {
@@ -542,12 +563,8 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 					return fmt.Errorf("%s is in %d deployments (%s); add --farm to say which",
 						id, len(vms), strings.Join(farms, ", "))
 				}
-				names, err := farmNames(ctx, st)
-				if err != nil {
-					return err
-				}
 				nets := operatorNetworks()
-				renderVMShow(os.Stdout, vms[0], names, nets, time.Now())
+				renderVMShow(os.Stdout, vms[0], cat.Names(), nets, time.Now())
 				return nil
 			})
 		},

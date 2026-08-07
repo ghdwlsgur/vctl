@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -52,38 +53,31 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 			"picking — deployment → hosts → VMs — and needs no identifier to start from.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
-				ctx := cmd.Context()
-				hosts, err := st.OpenStackHosts(ctx)
+				// One reading for the whole command. The listing used to read
+				// hosts here and read them again inside the farm resolution
+				// below, so a --farm run compared a selector taken from one
+				// instant against rows taken from another.
+				cat, err := loadFarmCatalog(cmd.Context(), st)
 				if err != nil {
 					return err
 				}
+				hosts := cat.Hosts()
 				// Parked hosts go first, before coverage, so the denominator and
 				// the table are counting the same fleet.
 				if !parked {
-					deps, err := st.Deployments(ctx)
-					if err != nil {
-						return err
-					}
-					hosts = store.InService(hosts, deps)
+					hosts = store.InService(hosts, cat.Deployments())
 				}
 				// Coverage is over the whole fleet, so it is taken before the
 				// filters — otherwise `--role compute` would report the fleet as
 				// having only compute nodes in it.
-				cov, err := st.OpenStackCoverageOf(ctx, hosts)
-				if err != nil {
-					return err
-				}
-				// Resolved before filtering, through the same rules every other
-				// command uses. This filter matched ids and membership ids only,
-				// so `--farm seoul-b` — the name printed in this very listing —
-				// selected nothing and rendered that as an empty fleet.
+				cov := coverageOf(cat, hosts)
+				// Resolved through the same rules every other command uses. This
+				// filter matched ids and membership ids only, so `--farm
+				// seoul-b` — the name printed in this very listing — selected
+				// nothing and rendered that as an empty fleet.
 				selector := farm
 				if selector != "" && !strings.EqualFold(selector, unassignedFarm) {
-					farms, err := farmChoices(ctx, st)
-					if err != nil {
-						return err
-					}
-					f, err := resolveFarm(farms, selector)
+					f, err := cat.Resolve(selector)
 					if err != nil {
 						return err
 					}
@@ -128,6 +122,34 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 	// the parent did nothing but require mutate permission to read its help.
 	cmd.AddCommand(openstackFarmCmd(env))
 	return cmd
+}
+
+// coverageOf puts the listing in proportion, from the same reading the table
+// came from.
+//
+// It was a query — and one that quietly disagreed with the table: the query
+// judged every capability row on its own while the fold judges the newest pass,
+// so a controller whose earlier probes failed showed nine roles in the table
+// and "1 could not be probed" in the summary underneath it. Counting the rows
+// that are on screen cannot drift from them.
+func coverageOf(cat fleet.Catalog, hosts []store.OpenStackHost) store.OpenStackCoverage {
+	c := store.OpenStackCoverage{Hosts: cat.InventoryHosts(), Probed: len(hosts)}
+	for _, h := range hosts {
+		switch {
+		case h.Detected:
+			c.Running++
+		case h.LastError != "":
+			c.Failed++
+		default:
+			c.Absent++
+		}
+	}
+	// Clamped because the two numbers come from different places: a capability
+	// row for a host since retired would otherwise make this negative.
+	if c.Unprobed = c.Hosts - c.Probed; c.Unprobed < 0 {
+		c.Unprobed = 0
+	}
+	return c
 }
 
 type openStackExport struct {

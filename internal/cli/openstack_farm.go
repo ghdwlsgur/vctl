@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -108,22 +108,14 @@ func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 	return cmd
 }
 
-// farmChoice is one deployment as the picker shows it.
-type farmChoice struct {
-	ID      string
-	Name    string
-	Region  string
-	State   string
-	Hosts   int
-	Roles   string
-	Unnamed bool
-}
-
-// farmChoices assembles what a person needs to tell one endpoint from another.
+// farmChoice is what the picker shows, which is now the domain's own farm.
 //
-// The id alone is not enough to choose by. Somebody naming farms is looking at
-// a list of addresses they may never have seen, and the thing that identifies a
-// deployment to them is what is in it — seven hosts, three controllers.
+// It used to be a CLI struct assembled here from two queries, alongside three
+// other assemblies of the same thing elsewhere. The rules for "which hosts
+// count towards a farm" agreed between them by inspection rather than by
+// construction — see internal/openstack/fleet.
+type farmChoice = fleet.Farm
+
 // farmStateMeanings says what each word claims about a deployment.
 //
 // Not the host wording: a farm is not a machine. "broken" here is a control
@@ -136,47 +128,56 @@ func farmStateMeanings() string {
 		"retired: not operated any more, and hidden from the listing"
 }
 
+// loadCatalog reads the fleet once and returns what every farm-taking command
+// resolves and renders against.
+//
+// One transaction, one instant. Before this each command opened its own reads
+// and two of them read the same tables twice in a single run — so a screen
+// could pair a host count from before a reconcile with a VM count from after.
+func loadCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) {
+	snap, err := st.FleetSnapshot(ctx)
+	if err != nil {
+		return fleet.Catalog{}, err
+	}
+	return fleet.From(snap), nil
+}
+
+// loadVMCatalog is the one reading that carries the instance rows, for the
+// screen that lists them.
+func loadVMCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) {
+	snap, err := st.FleetSnapshotWithVMs(ctx)
+	if err != nil {
+		return fleet.Catalog{}, err
+	}
+	return fleet.From(snap), nil
+}
+
+// loadFarmCatalog is the reading without the VM rows: everything about the
+// fleet except which instances there are.
+//
+// Most screens print how many VMs a deployment has and never which ones, and
+// carrying the rows to print a number is most of what those commands cost —
+// measured at 60–135ms per listing.
+func loadFarmCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) {
+	snap, err := st.FleetFarms(ctx)
+	if err != nil {
+		return fleet.Catalog{}, err
+	}
+	return fleet.From(snap), nil
+}
+
+// farmChoices is the light reading: which deployments there are and what is in
+// them, without the fleet's VMs.
+//
+// Resolving a typed word and labelling a picker do not need instances, and
+// shell completion pays for what it reads on every Tab — so this is two
+// statements where loadCatalog is eight.
 func farmChoices(ctx context.Context, st *store.Store) ([]farmChoice, error) {
-	hosts, err := st.OpenStackHosts(ctx)
+	cat, err := loadFarmCatalog(ctx, st)
 	if err != nil {
 		return nil, err
 	}
-	named := map[string]store.Deployment{}
-	ds, err := st.Deployments(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, d := range ds {
-		named[d.ID] = d
-	}
-
-	byFarm := map[string][]store.OpenStackHost{}
-	for _, h := range hosts {
-		if h.Farm != "" && h.Detected {
-			byFarm[h.Farm] = append(byFarm[h.Farm], h)
-		}
-	}
-	// A deployment somebody named before it was ever reconciled still belongs in
-	// the list, or renaming it would mean typing an id that is not offered.
-	for id := range named {
-		if _, ok := byFarm[id]; !ok {
-			byFarm[id] = nil
-		}
-	}
-
-	out := make([]farmChoice, 0, len(byFarm))
-	for id, hs := range byFarm {
-		// Capped: this is a one-line label in a chooser, where the full role
-		// census would push the farm's own name off the row.
-		c := farmChoice{ID: id, Hosts: len(hs), Roles: farmShape(hs, false)}
-		if d, ok := named[id]; ok {
-			c.Name, c.Region, c.State = d.DisplayName, d.Region, d.State
-		}
-		c.Unnamed = c.Name == ""
-		out = append(out, c)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
+	return cat.Farms(), nil
 }
 
 // resolveFarmName fills in whatever was not given on the command line.
@@ -206,69 +207,18 @@ func resolveFarmName(farms []farmChoice, id, name, region string) (string, strin
 
 // resolveFarm turns what somebody typed into exactly one deployment.
 //
-// Every command that takes a deployment goes through here, because the rules
-// only mean anything if they are the same everywhere. They were not: the
-// listing matched ids and membership ids and never the name on screen, so
-// `--farm seoul-b` — the name the listing itself prints — returned nothing and
-// called it an empty result. The picker matched names too, but took the first
-// one it found.
-//
-// The rules:
-//
-//   - An exact id wins outright. It is the identifier; nothing overrides it,
-//     including another deployment that happens to be *named* that.
-//   - A display name is accepted only when it belongs to one deployment.
-//   - Two deployments sharing a name is not something to resolve by position.
-//     `farm state` and `farm name` change things, and picking whichever sorted
-//     first would change the wrong one silently. Both ids are printed and the
-//     command stops.
-//   - A selector that matches nothing is an error. An empty listing looks like
-//     an answer, and "this farm has no hosts" is a very different sentence from
-//     "there is no such farm".
+// The rules live in internal/openstack/fleet, because they only mean anything
+// if they are the same everywhere and they were not: one copy matched ids and
+// membership ids and never the name on screen, so `--farm seoul-b` — the name
+// that listing itself prints — selected nothing and rendered as an empty fleet.
 func resolveFarm(farms []farmChoice, selector string) (farmChoice, error) {
-	if selector == "" {
-		return farmChoice{}, fmt.Errorf("a deployment is required")
-	}
-	for _, f := range farms {
-		if strings.EqualFold(f.ID, selector) {
-			return f, nil
-		}
-	}
-	var byName []farmChoice
-	for _, f := range farms {
-		if f.Name != "" && strings.EqualFold(f.Name, selector) {
-			byName = append(byName, f)
-		}
-	}
-	switch len(byName) {
-	case 1:
-		return byName[0], nil
-	case 0:
-		return farmChoice{}, fmt.Errorf("no deployment %q; run 'vctl openstack' to see them", selector)
-	default:
-		ids := make([]string, 0, len(byName))
-		for _, f := range byName {
-			ids = append(ids, f.ID)
-		}
-		return farmChoice{}, fmt.Errorf(
-			"%q names %d deployments (%s); use the id",
-			selector, len(byName), strings.Join(ids, ", "))
-	}
+	return fleet.Resolve(farms, selector)
 }
 
 // indexOfFarm is resolveFarm for the callers that need a position in the list
 // they were given, such as the interactive picker's starting cursor.
 func indexOfFarm(farms []farmChoice, selector string) int {
-	got, err := resolveFarm(farms, selector)
-	if err != nil {
-		return -1
-	}
-	for i, f := range farms {
-		if f.ID == got.ID {
-			return i
-		}
-	}
-	return -1
+	return fleet.IndexOf(farms, selector)
 }
 
 // farmPickLabels shows what each deployment contains, because the endpoint on
@@ -291,8 +241,8 @@ func farmPickLabels(farms []farmChoice) []string {
 		if f.State != "" && f.State != store.StateActive {
 			label += "  " + stateCell(f.State)
 		}
-		if f.Hosts > 0 {
-			label += "  " + ui.Muted(pluralHosts(f.Hosts)+" · "+ui.Truncate(f.Roles, 44))
+		if n := len(f.Hosts); n > 0 {
+			label += "  " + ui.Muted(pluralHosts(n)+" · "+ui.Truncate(farmShape(f.Hosts, false), 44))
 		}
 		out = append(out, label)
 	}
@@ -308,8 +258,8 @@ func farmNameForm(f farmChoice, region string) (string, string, string, error) {
 		region = f.Region
 	}
 	desc := f.ID
-	if f.Hosts > 0 {
-		desc = fmt.Sprintf("%s · %d hosts · %s", f.ID, f.Hosts, f.Roles)
+	if n := len(f.Hosts); n > 0 {
+		desc = fmt.Sprintf("%s · %d hosts · %s", f.ID, n, farmShape(f.Hosts, false))
 	}
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title("Name").
@@ -413,8 +363,8 @@ func farmStateForm(f farmChoice, note string) (string, string, string, error) {
 		state = store.StateActive
 	}
 	desc := f.ID
-	if f.Hosts > 0 {
-		desc = fmt.Sprintf("%s · %d hosts · %s", f.ID, f.Hosts, f.Roles)
+	if n := len(f.Hosts); n > 0 {
+		desc = fmt.Sprintf("%s · %d hosts · %s", f.ID, n, farmShape(f.Hosts, false))
 	}
 	form := huh.NewForm(huh.NewGroup(
 		// A Select, not free text: the database constrains the column, and

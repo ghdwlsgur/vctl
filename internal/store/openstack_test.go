@@ -99,56 +99,71 @@ func TestOpenStackHostsCarriesTheDeclaredHostState(t *testing.T) {
 // A retired host is one nothing is expected of. Counting it against probe
 // coverage would leave the fleet permanently short of complete.
 // Integration — needs VCTL_TEST_DSN.
-func TestOpenStackCoverageExcludesRetiredHosts(t *testing.T) {
+func TestFleetDenominatorExcludesRetiredHosts(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 	seedOpenStackHost(t, st, "os-host-03", StateActive)
 
-	before, err := st.coverageNow(ctx, t)
+	before, err := st.FleetSnapshot(ctx)
 	if err != nil {
-		t.Fatalf("coverage: %v", err)
+		t.Fatalf("FleetSnapshot: %v", err)
 	}
 	seedOpenStackHost(t, st, "os-host-04", StateRetired)
-	after, err := st.coverageNow(ctx, t)
+	after, err := st.FleetSnapshot(ctx)
 	if err != nil {
-		t.Fatalf("coverage: %v", err)
+		t.Fatalf("FleetSnapshot: %v", err)
 	}
 
-	if after.Hosts != before.Hosts {
-		t.Errorf("adding a retired host moved the denominator from %d to %d", before.Hosts, after.Hosts)
+	if after.InventoryHosts != before.InventoryHosts {
+		t.Errorf("adding a retired host moved the denominator from %d to %d",
+			before.InventoryHosts, after.InventoryHosts)
 	}
 }
 
-// Probed-and-absent must count as probed. Folding it into "never probed" would
-// send someone to redeploy an agent that is working correctly.
+// Probed-and-absent must reach the reader as a row, or it folds into "never
+// probed" and sends somebody to redeploy an agent that is working correctly.
+//
+// The counting is coverageOf's — it buckets a row with no OpenStack and no
+// error as absent, and is tested there. What has to be true here is that the
+// row exists at all and carries the shape that bucket is chosen by.
 // Integration — needs VCTL_TEST_DSN.
-func TestOpenStackCoverageSeparatesAbsentFromUnprobed(t *testing.T) {
+func TestAProbeThatFoundNothingStillReachesTheReader(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
 	const host = "os-host-05"
 	seedOpenStackHost(t, st, host, StateActive)
 
-	before, err := st.coverageNow(ctx, t)
+	before, err := st.FleetSnapshot(ctx)
 	if err != nil {
-		t.Fatalf("coverage: %v", err)
+		t.Fatalf("FleetSnapshot: %v", err)
 	}
 	if _, err := st.ReplaceCapabilities(ctx, host, KindOpenStack,
 		[]Capability{{Role: roleNone}}); err != nil {
 		t.Fatalf("ReplaceCapabilities: %v", err)
 	}
-	after, err := st.coverageNow(ctx, t)
+	after, err := st.FleetSnapshot(ctx)
 	if err != nil {
-		t.Fatalf("coverage: %v", err)
+		t.Fatalf("FleetSnapshot: %v", err)
 	}
 
-	if after.Probed != before.Probed+1 {
-		t.Errorf("probed went %d -> %d, want +1 — looking and finding nothing is still looking", before.Probed, after.Probed)
+	if len(after.Hosts) != len(before.Hosts)+1 {
+		t.Fatalf("probed hosts went %d -> %d, want +1 — looking and finding nothing is still looking",
+			len(before.Hosts), len(after.Hosts))
 	}
-	if after.Running != before.Running {
-		t.Errorf("running went %d -> %d, want unchanged", before.Running, after.Running)
+	var got *OpenStackHost
+	for i := range after.Hosts {
+		if after.Hosts[i].Hostname == host {
+			got = &after.Hosts[i]
+		}
 	}
-	if after.Absent != before.Absent+1 {
-		t.Errorf("absent went %d -> %d, want +1", before.Absent, after.Absent)
+	if got == nil {
+		t.Fatalf("%s is not in the reading", host)
+	}
+	if got.Detected {
+		t.Error("a probe that found nothing was recorded as having found OpenStack")
+	}
+	if got.LastError != "" {
+		t.Errorf("last_error = %q; that would count as a failed probe rather than an empty one", got.LastError)
 	}
 }
 
@@ -167,22 +182,14 @@ func findOpenStackHost(t *testing.T, st *Store, host string) OpenStackHost {
 	return OpenStackHost{}
 }
 
-// coverageNow reads the coverage the way the command does: over the folded
-// hosts, so the summary cannot disagree with the table above it.
-func (s *Store) coverageNow(ctx context.Context, t *testing.T) (OpenStackCoverage, error) {
-	t.Helper()
-	hosts, err := s.OpenStackHosts(ctx)
-	if err != nil {
-		return OpenStackCoverage{}, err
-	}
-	return s.OpenStackCoverageOf(ctx, hosts)
-}
-
-// The summary and the table read the same folded hosts. They were two queries
-// once, and they disagreed: a controller whose earlier probes failed and whose
-// latest one succeeded showed nine roles in the table and "1 could not be
-// probed" underneath it, because the stale row was still in the table the
-// summary counted.
+// A superseded failure must leave the listing entirely.
+//
+// The summary used to be its own query while the table was the fold, and they
+// disagreed: a controller whose earlier probes failed and whose latest one
+// succeeded showed nine roles in the table and "1 could not be probed"
+// underneath it. The summary is now counted from these same folded hosts — see
+// coverageOf — so what this has to establish is that the fold itself drops the
+// superseded error.
 // Integration — needs VCTL_TEST_DSN.
 func TestCoverageAgreesWithTheListingAfterAFailureIsSuperseded(t *testing.T) {
 	st := testStore(t)
@@ -202,16 +209,6 @@ func TestCoverageAgreesWithTheListingAfterAFailureIsSuperseded(t *testing.T) {
 	got := findOpenStackHost(t, st, host)
 	if !got.Detected || got.LastError != "" {
 		t.Fatalf("the listing still carries the superseded failure: detected=%v err=%q", got.Detected, got.LastError)
-	}
-	before, err := st.coverageNow(ctx, t)
-	if err != nil {
-		t.Fatalf("coverage: %v", err)
-	}
-	// The host counts as running, and its old error must not also count as a
-	// failure — the two together would report it twice, in contradiction.
-	if before.Running+before.Failed+before.Absent != before.Probed {
-		t.Errorf("counts do not add up: running=%d failed=%d absent=%d probed=%d",
-			before.Running, before.Failed, before.Absent, before.Probed)
 	}
 }
 

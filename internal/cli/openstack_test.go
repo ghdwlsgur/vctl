@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -532,5 +533,48 @@ func TestGroupByFarmOrdersByTheVisibleLabel(t *testing.T) {
 	}
 	if !sort.StringsAreSorted(labels) {
 		t.Errorf("group order = %v, want it sorted by what the reader sees", labels)
+	}
+}
+
+// Coverage is counted from the rows on screen, so it cannot contradict them.
+//
+// It used to be a query of its own, and the two disagreed: the query judged
+// every capability row on its own while the table judges the newest pass, so a
+// controller whose earlier probes had failed showed nine roles in the table and
+// "1 could not be probed" in the line underneath it.
+func TestCoverageIsCountedFromTheRowsItSummarises(t *testing.T) {
+	cat := fleet.From(store.Fleet{InventoryHosts: 10})
+	hosts := []store.OpenStackHost{
+		{Hostname: "a", Detected: true},
+		{Hostname: "b", Detected: true},
+		{Hostname: "c", LastError: "probe timed out"},
+		{Hostname: "d"}, // probed, found nothing
+	}
+	got := coverageOf(cat, hosts)
+
+	if got.Probed != 4 {
+		t.Errorf("probed = %d, want the rows it was given", got.Probed)
+	}
+	// Every probed host falls in exactly one bucket, or a host is reported
+	// twice in one line.
+	if got.Running+got.Failed+got.Absent != got.Probed {
+		t.Errorf("counts do not add up: running=%d failed=%d absent=%d probed=%d",
+			got.Running, got.Failed, got.Absent, got.Probed)
+	}
+	if got.Running != 2 || got.Failed != 1 || got.Absent != 1 {
+		t.Errorf("buckets = %+v", got)
+	}
+	if got.Unprobed != 6 {
+		t.Errorf("unprobed = %d, want the inventory minus what was probed", got.Unprobed)
+	}
+}
+
+// A capability row for a host since retired would make the remainder negative,
+// and "-3 never probed" is not a thing to print.
+func TestCoverageDoesNotGoNegativeWhenMoreWasProbedThanTheInventoryHolds(t *testing.T) {
+	cat := fleet.From(store.Fleet{InventoryHosts: 1})
+	got := coverageOf(cat, []store.OpenStackHost{{Hostname: "a"}, {Hostname: "b"}})
+	if got.Unprobed != 0 {
+		t.Errorf("unprobed = %d, want it clamped at zero", got.Unprobed)
 	}
 }
