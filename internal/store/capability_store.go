@@ -21,8 +21,14 @@ type Capability struct {
 	Components map[string]CapabilityComponent
 	Details    map[string]string
 	LastError  string
+	// ObservedAt is when this was recorded, and only that. It answers how old
+	// the answer is; PassID answers which rows are the current one.
 	ObservedAt time.Time
-	UpdatedAt  time.Time
+	// PassID groups the rows one probe pass wrote. Comparing it is how a reader
+	// separates what the host holds now from roles it has stopped holding —
+	// see foldCapabilityRows.
+	PassID    int64
+	UpdatedAt time.Time
 }
 
 // CapabilityComponent is one piece of software the probe found. Versions are
@@ -54,10 +60,20 @@ type CapabilityComponent struct {
 // The timestamp is the database's, not the caller's. It used to be the host's
 // clock — and a host is exactly the machine whose clock nobody has checked. One
 // running ahead stamps rows that later passes cannot beat, pinning stale facts
-// until somebody fixes the clock. greatest() over what is already stored keeps
-// the sequence monotonic per host whatever is in there, including rows an older
-// agent wrote from a skewed clock, which is the state part of the fleet is in
-// right now.
+// until somebody fixes the clock.
+//
+// The pass number is what the reader compares, and the timestamp is only how
+// old the answer is. Those were one column, and holding identity meant the
+// timestamp had to be forced upward — greatest(now(), max + 1 microsecond) —
+// so a single row from a fast clock made every later pass inherit its future
+// and the listing reported an hour-old probe as one from tomorrow. A counter
+// cannot be pushed forward by anything a host does, so now() is free to mean
+// now.
+//
+// nextval and not max(pass_id) + 1: two agents writing for one hostname at once
+// would read the same maximum inside their own transactions and write the same
+// number, and two passes sharing a number is exactly the torn pass this
+// function exists to prevent.
 //
 // Refuses to create inventory the way UpsertServerStatus does: a capability for
 // a host that is not in servers is dropped. A host able to write status for a
@@ -86,13 +102,13 @@ func (s *Store) ReplaceCapabilities(ctx context.Context, hostname, kind string, 
 		return false, nil
 	}
 
-	// One instant for the whole pass, ahead of anything already recorded for
-	// this host. greatest() ignores NULLs, so a host's first pass is just now().
-	var at time.Time
-	if err := tx.QueryRow(ctx, `
-		SELECT greatest(now(), max(observed_at) + interval '1 microsecond')
-		FROM server_capabilities WHERE hostname=$1 AND kind=$2`,
-		hostname, kind).Scan(&at); err != nil {
+	// One pass number and one instant for every row this writes.
+	var (
+		pass int64
+		at   time.Time
+	)
+	if err := tx.QueryRow(ctx,
+		`SELECT nextval('server_capability_pass_seq'), now()`).Scan(&pass, &at); err != nil {
 		return false, err
 	}
 
@@ -107,14 +123,14 @@ func (s *Store) ReplaceCapabilities(ctx context.Context, hostname, kind string, 
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO server_capabilities
-				(hostname, kind, role, detected, active, components, details, last_error, observed_at, updated_at)
-			VALUES ($1,$2,$3,$4,$9,$5::jsonb,$6::jsonb,$7,$8, now())
+				(hostname, kind, role, detected, active, components, details, last_error, observed_at, pass_id, updated_at)
+			VALUES ($1,$2,$3,$4,$9,$5::jsonb,$6::jsonb,$7,$8,$10, now())
 			ON CONFLICT (hostname, kind, role) DO UPDATE SET
 				detected=EXCLUDED.detected, active=EXCLUDED.active,
 				components=EXCLUDED.components,
 				details=EXCLUDED.details, last_error=EXCLUDED.last_error,
-				observed_at=EXCLUDED.observed_at, updated_at=now()`,
-			hostname, kind, c.Role, c.Detected, string(comps), string(details), c.LastError, at, c.Active); err != nil {
+				observed_at=EXCLUDED.observed_at, pass_id=EXCLUDED.pass_id, updated_at=now()`,
+			hostname, kind, c.Role, c.Detected, string(comps), string(details), c.LastError, at, c.Active, pass); err != nil {
 			return false, err
 		}
 	}
@@ -148,6 +164,11 @@ func (s *Store) RecordCapabilityError(ctx context.Context, hostname, kind, messa
 	// detected=false here means "we do not know", not "we looked and there is
 	// nothing" — last_error is what tells the two apart, and every reader has
 	// to check it before believing detected.
+	//
+	// pass_id is left at its default of 0, which is below every real pass. A
+	// failure is not a pass, and one that outranked the facts would take a
+	// host's roles off the listing on the strength of a probe that found
+	// nothing out.
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO server_capabilities
 			(hostname, kind, role, detected, last_error, observed_at, updated_at)
@@ -161,7 +182,7 @@ func (s *Store) RecordCapabilityError(ctx context.Context, hostname, kind, messa
 
 // Capabilities returns capability rows, optionally narrowed to one kind.
 func (s *Store) Capabilities(ctx context.Context, kind string) ([]Capability, error) {
-	q := `SELECT hostname, kind, role, detected, active, components, details, last_error, observed_at, updated_at
+	q := `SELECT hostname, kind, role, detected, active, components, details, last_error, observed_at, pass_id, updated_at
 		FROM server_capabilities`
 	var args []any
 	if kind != "" {
@@ -176,7 +197,7 @@ func scanCapability(r pgx.Rows) (Capability, error) {
 	var c Capability
 	var comps, details []byte
 	if err := r.Scan(&c.Hostname, &c.Kind, &c.Role, &c.Detected, &c.Active, &comps, &details,
-		&c.LastError, &c.ObservedAt, &c.UpdatedAt); err != nil {
+		&c.LastError, &c.ObservedAt, &c.PassID, &c.UpdatedAt); err != nil {
 		return c, err
 	}
 	// Malformed JSON in one row must not fail the whole listing: the row still
