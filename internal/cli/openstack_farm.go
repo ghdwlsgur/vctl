@@ -12,6 +12,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/timing"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -135,6 +136,7 @@ func farmStateMeanings() string {
 // and two of them read the same tables twice in a single run — so a screen
 // could pair a host count from before a reconcile with a VM count from after.
 func loadCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) {
+	defer timing.Start("fleet-query")()
 	snap, err := st.FleetSnapshot(ctx)
 	if err != nil {
 		return fleet.Catalog{}, err
@@ -145,6 +147,7 @@ func loadCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) {
 // loadVMCatalog is the one reading that carries the instance rows, for the
 // screen that lists them.
 func loadVMCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) {
+	defer timing.Start("fleet-query+vms")()
 	snap, err := st.FleetSnapshotWithVMs(ctx)
 	if err != nil {
 		return fleet.Catalog{}, err
@@ -159,6 +162,7 @@ func loadVMCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) 
 // carrying the rows to print a number is most of what those commands cost —
 // measured at 60–135ms per listing.
 func loadFarmCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) {
+	defer timing.Start("fleet-query-light")()
 	snap, err := st.FleetFarms(ctx)
 	if err != nil {
 		return fleet.Catalog{}, err

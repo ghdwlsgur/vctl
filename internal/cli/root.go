@@ -11,11 +11,15 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/audit"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/timing"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // Version is injected by main for --version output.
 var Version = "dev"
+
+// debugTiming is set by the persistent --debug-timing flag.
+var debugTiming bool
 
 // Dependencies are the externally-injectable collaborators of the command tree.
 // The zero value uses production defaults (app.New); tests supply a fake NewApp
@@ -33,8 +37,14 @@ func (d Dependencies) withDefaults() Dependencies {
 }
 
 // Execute builds the production command tree and runs it.
+//
+// The timing report is printed here rather than in a post-run hook because a
+// command that failed is exactly the one worth measuring, and PersistentPostRun
+// does not run for those.
 func Execute() error {
-	return NewRoot(Dependencies{}).Execute()
+	err := NewRoot(Dependencies{}).Execute()
+	timing.Report(os.Stderr)
+	return err
 }
 
 // NewRoot builds the vctl command tree with the given dependencies. Split out
@@ -69,9 +79,19 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		// App-layer RBAC (layer 2) gate. Runs before every command; ungated
 		// commands (no rbac annotation) pass through. vctl-admin bypasses.
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			if debugTiming {
+				timing.Enable()
+			}
 			return enforceRBAC(env, cmd)
 		},
 	}
+	// Where a command's wall clock goes. Not hidden: the answer is surprising
+	// often enough — the query is rarely the slow part — that somebody
+	// wondering why a listing takes half a second should be able to find out
+	// without a debugger.
+	root.PersistentFlags().BoolVar(&debugTiming, "debug-timing", false,
+		"print where the command's time went (auth, credential, connect, query, render)")
+
 	// Only mutate/connect commands are gated (default-deny without a grant).
 	// Read commands (list/status/audit/session) are ungated = allowed to any
 	// authenticated user. The `vctl rbac` mutations gate themselves (classAdmin).

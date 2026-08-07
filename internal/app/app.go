@@ -17,6 +17,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/securefile"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
+	"github.com/ghdwlsgur/vctl/internal/timing"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
 )
@@ -405,13 +406,31 @@ func (a *App) openRole(ctx context.Context, role string) (*store.Store, error) {
 	// than max_ttl allows is harmless because Vault clamps it.
 	minRemaining := store.MaxConnAge() + credentialSafetyMargin
 	cache := dbcreds.New(vaultIssuer{app: a, role: role}, minRemaining, renewalIncrement)
+	// Timed as three separate things because they cost and fail differently:
+	// a cached token skips the login entirely, the credential is a Postgres
+	// role Vault creates on demand, and the rest is TLS and a ping.
+	//
+	// getCreds runs *inside* store.Open, so its time is subtracted below rather
+	// than reported twice — percentages that sum past 100 are how a nested
+	// measurement misleads.
+	var credentialTime time.Duration
 	getCreds := func(ctx context.Context) (string, string, error) {
+		done := timing.Start("vault-login")
 		if err := a.EnsureLogin(ctx); err != nil {
+			done()
 			return "", "", err
 		}
-		return cache.Get(ctx)
+		done()
+		at := time.Now()
+		user, pass, err := cache.Get(ctx)
+		credentialTime += time.Since(at)
+		return user, pass, err
 	}
-	return store.Open(ctx, a.Cfg.DBHost, a.Cfg.DBPort, a.Cfg.DBName, getCreds, a.Cfg.DBServerName, config.SRERootCA)
+	openedAt := time.Now()
+	st, err := store.Open(ctx, a.Cfg.DBHost, a.Cfg.DBPort, a.Cfg.DBName, getCreds, a.Cfg.DBServerName, config.SRERootCA)
+	timing.Record("db-credential", credentialTime)
+	timing.Record("db-connect", time.Since(openedAt)-credentialTime)
+	return st, err
 }
 
 const (
