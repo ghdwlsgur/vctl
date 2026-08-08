@@ -741,3 +741,39 @@ func fmtInt(n int) string {
 	}
 	return digits
 }
+
+// The renderer draws the model and never edits it.
+//
+// This is what splitting openstack_explore.go into a model file and a view file
+// is for. Filing the functions apart is a filing decision and nothing enforces
+// it; a value receiver is enforced by the compiler at every call site, and it is
+// the difference between a renderer and a second place the selection can change.
+//
+// The view does call clampIndex, to find which row is the current one. Clamping
+// to read is not clamping to store — the trap a pointer receiver would open is
+// a layout pass that corrects an out-of-range cursor as a side effect of drawing
+// it, so a window resize would move the selection under the cursor.
+func TestTheRendererCannotMoveTheCursor(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "openstack_explore_view.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var checked int
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
+			continue
+		}
+		checked++
+		if _, isPtr := fn.Recv.List[0].Type.(*ast.StarExpr); isPtr {
+			t.Errorf("%s takes its model by pointer at %s; the renderer may read the model, not move it",
+				fn.Name.Name, fset.Position(fn.Pos()))
+		}
+	}
+	// A guard over nothing passes. If the methods move again this says so
+	// instead of going quietly green.
+	if checked < 10 {
+		t.Errorf("only %d methods found in the view; this test is not reading the file it names", checked)
+	}
+}
