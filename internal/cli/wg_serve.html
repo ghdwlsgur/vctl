@@ -213,6 +213,10 @@
   @keyframes fl{to{stroke-dashoffset:-42}}
   .grey{fill:none;stroke:var(--ring);stroke-width:1.4;opacity:.9}
   .nat{stroke:var(--ring);stroke-width:2;stroke-dasharray:3 6}
+  /* The glow lives here so that .dim can turn it off. As an inline style it
+     outranked the dim rule and a filtered-out bead kept burning. */
+  .pdot,.sdot{filter:drop-shadow(0 0 3px var(--glow,transparent))}
+  .dim .pdot,.dim .sdot,.pdot.dim,.sdot.dim{filter:none}
   .pdot{stroke:var(--panel);stroke-width:2}
   .sdot{stroke:var(--panel);stroke-width:1.6}
   .jdot{fill:var(--ring)}
@@ -1308,7 +1312,16 @@ function applyStats(){
     // it last looked like — which is the opposite of saying "we do not know".
     const c=cssv("--"+(STATE_CLS[stateOf.get(eid)||"unknown"]||"muted"));
     dot.setAttribute("stroke",c);
-    dot.style.filter=`drop-shadow(0 0 3px ${c})`;
+    // The colour as a variable, the glow as a class rule.
+    //
+    // This used to write the drop-shadow into style.filter, and an inline style
+    // beats a class — so .dim could take a bead's opacity to 6% and the glow
+    // went on burning through at full strength. Every two seconds this ran and
+    // relit them. Filtering read as "a few dots changed colour" because that is
+    // literally what was left on screen: measured, 16 of 50 beads glowing while
+    // dimmed, and the effect only existed live, which is why a replay harness
+    // with no stats never showed it.
+    dot.style.setProperty("--glow", c);
   }
   // Count over every tunnel in the topology, not over the samples that arrived.
   //
