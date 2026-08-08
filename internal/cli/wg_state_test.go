@@ -133,18 +133,96 @@ console.log(TUNNEL_STATES.filter(s=>!STATE_CLS[s]).join(",")||"OK");
 // The legend names each state, because the summary uses those words. A key that
 // still said only active/idle/down would leave three of them unexplained.
 func TestDashboardLegendNamesEveryState(t *testing.T) {
+	// The words used to be literal markup and this test read the file. They moved
+	// into the script when the key became automatic, so the test moved with them:
+	// checking the HTML now would pass on a page that renders nothing.
+	//
+	// The check is also stronger than it was. Naming the six states is half of it;
+	// the other half is that a state nobody is in stays out of the key, which is
+	// what makes its presence worth reading.
+	got := runDashboardJS(t, `
+const all={}; for(const s of TUNNEL_STATES)all[s]=1;
+const key=[]; document.getElementById=()=>({set innerHTML(v){key.push(v)}});
+buildStateKey(all);
+buildStateKey({active:3});
+console.log(JSON.stringify(key));
+`)
+	for _, want := range []string{">active ", ">idle ", ">never ", ">stale ", ">unobserved ", ">poll error "} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the status key does not name %q", want)
+		}
+	}
+	if strings.Contains(got, ">down") {
+		t.Error(`the key still says "down"; that word stood for three different states`)
+	}
+	// The second call is a fleet in one state, so it names that one and no other.
+	rows := strings.Split(got, `","`)
+	if len(rows) != 2 {
+		t.Fatalf("expected two rendered keys, got %q", got)
+	}
+	if !strings.Contains(rows[1], "active 3") {
+		t.Errorf("a fleet of active tunnels does not say so: %q", rows[1])
+	}
+	for _, absent := range []string{"idle", "never", "stale", "unobserved", "poll error"} {
+		if strings.Contains(rows[1], ">"+absent) {
+			t.Errorf("the key lists %q for a fleet that is not in it: %q", absent, rows[1])
+		}
+	}
+}
+
+// Component kinds are a legend too, and the same rule holds: it names the kinds
+// that were drawn, not the kinds the renderer knows how to draw.
+func TestDashboardKindKeyNamesOnlyWhatWasDrawn(t *testing.T) {
+	got := runDashboardJS(t, `
+const drawn=[{classList:["nbox","k-gateway"]},{classList:["nbox","k-vm"]}];
+svg.querySelectorAll=()=>drawn;
+let out=""; document.getElementById=()=>({set innerHTML(v){out=v}});
+buildKindKey();
+console.log(out);
+`)
+	for _, want := range []string{"gateway", "VM"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the kind key does not name %q: %q", want, got)
+		}
+	}
+	for _, absent := range []string{"physical host", "routed network", "unresolved endpoint"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("the kind key names %q, which nothing on the canvas is: %q", absent, got)
+		}
+	}
+}
+
+// Both themes define every token. A colour defined in one and missing from the
+// other inherits whatever the other theme left behind, which is the failure this
+// shape exists to prevent — and it shows up as one unreadable element rather
+// than as anything that looks like a bug.
+func TestDashboardDefinesEveryColourInBothThemes(t *testing.T) {
 	page, err := os.ReadFile("wg_serve.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(page)
-	for _, want := range []string{">active<", ">idle<", ">never<", ">stale<", ">unobserved<", ">poll error<"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("the status key does not name %q", want)
+	dark := s[strings.Index(s, `:root,[data-theme="dark"]`):strings.Index(s, `[data-theme="light"]`)]
+	light := s[strings.Index(s, `[data-theme="light"]`):strings.Index(s, "*{box-sizing")]
+	tokenRe := regexp.MustCompile(`(--[a-z0-9-]+)\s*:`)
+	seen := map[string]bool{}
+	for _, m := range tokenRe.FindAllStringSubmatch(dark, -1) {
+		seen[m[1]] = true
+	}
+	for name := range seen {
+		if !strings.Contains(light, name+":") {
+			t.Errorf("%s is defined for dark and not for light", name)
 		}
 	}
-	if strings.Contains(s, ">down<") {
-		t.Error(`the key still says "down"; that word stood for three different states`)
+	if len(seen) < 20 {
+		t.Errorf("only %d tokens found; the theme block moved and this test is not reading it", len(seen))
+	}
+	// And nothing paints outside them.
+	literal := regexp.MustCompile(`(?m)^[^-\n]*(?:fill|stroke|color|background(?:-color)?)\s*:\s*(#[0-9a-fA-F]{3,6}|rgba?\()`)
+	for _, line := range strings.Split(s[strings.Index(s, "*{box-sizing"):strings.Index(s, "</style>")], "\n") {
+		if literal.MatchString(line) {
+			t.Errorf("a literal colour outside the theme tokens: %s", strings.TrimSpace(line))
+		}
 	}
 }
 

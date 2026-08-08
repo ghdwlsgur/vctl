@@ -5,7 +5,14 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>vctl · WireGuard live</title>
 <style>
-  :root{
+  /* ==========================================================
+     THEME VARIABLES — switch by toggling [data-theme] on <html>
+     Structured after the Archify token contract: every colour is
+     defined once per theme, and nothing below this block names a
+     literal colour. A token missing from one theme is the bug this
+     shape exists to make obvious.
+     ========================================================== */
+  :root,[data-theme="dark"]{
     color-scheme:dark;
     --bg:#090d12; --chrome:#0e141b; --panel:#151c24; --panel2:#111820;
     --line:#202a35; --ring:#344252;
@@ -14,17 +21,64 @@
     --c6:#7bc2e8; --c7:#b8a1ff;
     --ok:#3fb950; --warn:#e3b341; --crit:#f85149;
     --shadow:0 18px 50px rgba(0,0,0,.28);
+    --grid-line:rgba(113,128,144,.045);
+    --glow:rgba(76,141,255,.055);
+    /* Opaque colour painted behind translucent node fills so the routes
+       drawn underneath are actually hidden rather than showing through. */
+    --mask:#0f172a;
+
+    /* Typed component kinds. A node's colour says what kind of thing it
+       is, not which drawing function made it — so gateway, host and VM
+       stay distinguishable in both themes without a second palette. */
+    --acc-wash:rgba(240,136,62,.08); --acc-line:rgba(240,136,62,.42); --acc-line-strong:rgba(240,136,62,.62);
+    --ok-wash:rgba(63,185,80,.09); --warn-wash:rgba(227,179,65,.09);
+    --chrome-shadow:0 8px 30px rgba(0,0,0,.16); --node-shadow:rgba(0,0,0,.18);
+    --canvas-tag-bg:rgba(9,13,18,.86);
+    --crit-ink:#ff9b96; --crit-bg:rgba(39,15,17,.96); --crit-line:rgba(248,81,73,.35);
+    --warn-ink:#f0d08a; --warn-bg:rgba(39,31,15,.96); --warn-line:rgba(227,179,65,.35);
+
+    --gateway-fill:rgba(120,53,15,.34);   --gateway-stroke:#f0883e;
+    --host-fill:rgba(6,78,59,.34);        --host-stroke:#35c07d;
+    --vm-fill:rgba(8,51,68,.36);          --vm-stroke:#7bc2e8;
+    --external-fill:rgba(30,41,59,.5);    --external-stroke:#8b97a6;
+    --netband-fill:rgba(76,29,149,.3);    --netband-stroke:#b8a1ff;
+  }
+  [data-theme="light"]{
+    color-scheme:light;
+    --bg:#f6f8fa; --chrome:#ffffff; --panel:#ffffff; --panel2:#f0f3f6;
+    --line:#d8dee6; --ring:#b6c0cc;
+    --ink:#111820; --ink2:#3d4b5a; --muted:#5f6d7c; --acc:#bd5b16;
+    --c0:#1f5fd0; --c1:#c0432b; --c2:#127a48; --c3:#8a6a00; --c4:#94408a; --c5:#5a6675;
+    --c6:#1d6f96; --c7:#6544c4;
+    --ok:#1a7f37; --warn:#8a6a00; --crit:#c1352b;
+    --shadow:0 14px 34px rgba(15,24,32,.1);
+    --grid-line:rgba(60,72,86,.05);
+    --glow:rgba(31,95,208,.05);
+    --mask:#ffffff;
+
+    --acc-wash:rgba(189,91,22,.09); --acc-line:rgba(189,91,22,.4); --acc-line-strong:rgba(189,91,22,.6);
+    --ok-wash:rgba(26,127,55,.11); --warn-wash:rgba(138,106,0,.12);
+    --chrome-shadow:0 6px 18px rgba(15,24,32,.07); --node-shadow:rgba(15,24,32,.09);
+    --canvas-tag-bg:rgba(255,255,255,.86);
+    --crit-ink:#8f2018; --crit-bg:rgba(253,236,234,.97); --crit-line:rgba(193,53,43,.35);
+    --warn-ink:#6b5200; --warn-bg:rgba(253,247,229,.97); --warn-line:rgba(138,106,0,.35);
+
+    --gateway-fill:rgba(240,136,62,.16);  --gateway-stroke:#bd5b16;
+    --host-fill:rgba(53,192,125,.17);     --host-stroke:#127a48;
+    --vm-fill:rgba(123,194,232,.2);       --vm-stroke:#1d6f96;
+    --external-fill:rgba(148,163,184,.18);--external-stroke:#5a6675;
+    --netband-fill:rgba(184,161,255,.2);  --netband-stroke:#6544c4;
   }
   *{box-sizing:border-box} html,body{height:100%}
   body{margin:0;background:var(--bg);color:var(--ink);
     font:13px/1.45 "SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
     display:flex;flex-direction:column;overflow:hidden}
   header{position:relative;z-index:5;display:flex;align-items:center;gap:24px;min-height:68px;
-    padding:10px 18px;background:rgba(14,20,27,.96);border-bottom:1px solid var(--line);
-    box-shadow:0 8px 30px rgba(0,0,0,.16)}
+    padding:10px 18px;background:var(--chrome);border-bottom:1px solid var(--line);
+    box-shadow:var(--chrome-shadow,0 8px 30px rgba(0,0,0,.16))}
   .brand{display:flex;align-items:center;gap:11px;min-width:250px}
-  .brandmark{display:grid;place-items:center;width:34px;height:34px;border:1px solid rgba(240,136,62,.42);
-    background:rgba(240,136,62,.08);color:var(--acc);font-size:14px;font-weight:800;letter-spacing:-.08em;
+  .brandmark{display:grid;place-items:center;width:34px;height:34px;border:1px solid var(--acc-line);
+    background:var(--acc-wash);color:var(--acc);font-size:14px;font-weight:800;letter-spacing:-.08em;
     clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
   .eyebrow{color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.16em;text-transform:uppercase}
   h1{margin:1px 0 0;font-size:15px;line-height:1.2;letter-spacing:-.02em}
@@ -36,41 +90,55 @@
   /* A stale snapshot is not an error — nothing is broken and no alert is due.
      It is a caveat on everything else on screen, so it is coloured like a
      warning rather than a failure, and it stays legible instead of shouting. */
-  .metric strong.stale{color:var(--warn,#d29922)}
+  .metric strong.stale{color:var(--warn)}
   .metric strong.stale::after{content:" ▲";font-size:9px;vertical-align:1px}
   .metric span{display:block;margin-top:2px;color:var(--muted);font-size:8.5px;letter-spacing:.1em;text-transform:uppercase}
   .live-summary{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--ink2);font-size:10.5px;white-space:nowrap}
   .live-summary .pulse{width:7px;height:7px;border-radius:50%;background:var(--muted)}
-  .live-summary.ok .pulse{background:var(--ok);box-shadow:0 0 0 4px rgba(63,185,80,.09)}
-  .live-summary.warn .pulse{background:var(--warn);box-shadow:0 0 0 4px rgba(227,179,65,.09)}
+  .live-summary.ok .pulse{background:var(--ok);box-shadow:0 0 0 4px var(--ok-wash)}
+  .live-summary.warn .pulse{background:var(--warn);box-shadow:0 0 0 4px var(--warn-wash)}
   .health{display:inline-flex;align-items:center;gap:7px;font-size:10.5px;padding:5px 10px;border-radius:4px;
     border:1px solid var(--line);background:var(--panel2);color:var(--muted);white-space:nowrap}
   .health::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 7px currentColor}
   .health.ok{color:var(--ok)} .health.fail{color:var(--crit)}
-  #toolbar{position:relative;z-index:4;display:flex;align-items:center;gap:12px;min-height:43px;padding:6px 18px;
-    background:var(--chrome);border-bottom:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.12)}
+  /* Wraps rather than overflows. The keys to the right grew when component
+     kinds got their own legend, and a single non-wrapping row pushed the theme
+     and zoom controls off the edge — clipped to "LIGH" at 1600px wide. */
+  #toolbar{position:relative;z-index:4;display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;min-height:43px;padding:6px 18px;
+    background:var(--chrome);border-bottom:1px solid var(--line);box-shadow:var(--chrome-shadow,0 8px 24px rgba(0,0,0,.12))}
   .tool-label{color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.14em;white-space:nowrap}
   #legend{display:flex;gap:5px;flex-wrap:wrap;color:var(--ink2);font-size:10.5px;align-items:center}
   #legend .i{appearance:none;display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:3px 8px;
     border:1px solid transparent;border-radius:4px;background:transparent;color:inherit;font:inherit;cursor:pointer}
   #legend .i:hover{border-color:var(--ring);background:var(--panel)}
   #legend .i:focus-visible,.view-controls button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
-  #legend .i.on{border-color:rgba(240,136,62,.62);background:rgba(240,136,62,.08);color:var(--ink)}
+  #legend .i.on{border-color:var(--acc-line-strong);background:var(--acc-wash);color:var(--ink)}
   #legend .dt{width:8px;height:8px;border-radius:50%;border:2px solid var(--panel);box-shadow:0 0 0 1px var(--line)}
   .tool-spacer{flex:1}
-  #selection{display:none;align-items:center;gap:7px;padding:4px 8px;background:rgba(240,136,62,.07);
-    border:1px solid rgba(240,136,62,.32);border-radius:4px;color:var(--ink2);font-size:10px}
+  #selection{display:none;align-items:center;gap:7px;padding:4px 8px;background:var(--acc-wash);
+    border:1px solid var(--acc-line);border-radius:4px;color:var(--ink2);font-size:10px}
   #selection.on{display:inline-flex}
   #selection b{color:var(--acc)}
   #selection button{appearance:none;border:0;background:transparent;color:var(--muted);font:inherit;cursor:pointer;padding:0 2px}
   .status-key{display:flex;align-items:center;gap:10px;padding:0 12px;border-left:1px solid var(--line);
     color:var(--muted);font-size:9.5px;white-space:nowrap}
+  .status-key:empty{display:none}
+  /* The controls stay together and stay last, whichever row they land on. */
+  .view-controls{flex:0 0 auto}
   .status-key span{display:inline-flex;align-items:center;gap:5px}
   .status-key i{width:6px;height:6px;border-radius:50%;background:currentColor}
   .status-key .up{color:var(--ok)} .status-key .idle{color:var(--warn)} .status-key .down{color:var(--crit)}
   /* Unobserved is grey on purpose: it is the absence of a reading, not a bad
      one, and colouring it like a fault would invent information. */
   .status-key .unk{color:var(--muted)}
+  .status-key .kind{color:var(--ink2)}
+  .status-key .kind i{width:8px;height:8px;border-radius:2px;border:1.4px solid currentColor;background:transparent}
+  .status-key .kind.k-gateway{color:var(--gateway-stroke)}
+  .status-key .kind.k-host{color:var(--host-stroke)}
+  .status-key .kind.k-vm{color:var(--vm-stroke)}
+  .status-key .kind.k-net{color:var(--netband-stroke)}
+  .status-key .kind.k-external{color:var(--external-stroke)}
+  .status-key .kind.k-external i{border-style:dashed}
   .status-key .conf{color:var(--ink2)}
   .status-key .conf i{width:8px;height:8px;border-radius:50%;background:var(--ink2)}
   .status-key .conf i.hollow{background:transparent;border:1.6px solid var(--ink2)}
@@ -81,23 +149,23 @@
   .view-controls button:hover{background:var(--panel);color:var(--ink)}
   main{position:relative;flex:1;overflow:auto;overscroll-behavior:contain;
     background-color:var(--bg);
-    background-image:linear-gradient(rgba(113,128,144,.045) 1px,transparent 1px),
-      linear-gradient(90deg,rgba(113,128,144,.045) 1px,transparent 1px),
-      radial-gradient(circle at 48% 0,rgba(76,141,255,.055),transparent 38%);
+    background-image:linear-gradient(var(--grid-line) 1px,transparent 1px),
+      linear-gradient(90deg,var(--grid-line) 1px,transparent 1px),
+      radial-gradient(circle at 48% 0,var(--glow),transparent 38%);
     background-size:24px 24px,24px 24px,100% 100%}
   main::before{content:"ARCHITECTURE CANVAS";position:sticky;left:16px;top:12px;z-index:2;display:inline-block;
-    padding:4px 7px;border:1px solid var(--line);background:rgba(9,13,18,.86);color:#526170;
+    padding:4px 7px;border:1px solid var(--line);background:var(--canvas-tag-bg);color:var(--muted);
     font-size:8px;font-weight:700;letter-spacing:.14em;pointer-events:none}
   svg#net{display:block;margin:-18px auto 0;transition:width .18s ease-out,height .18s ease-out}
   #errs{position:absolute;z-index:10;right:16px;bottom:12px;max-width:min(560px,calc(100% - 32px));margin:0;
-    color:#ff9b96;background:rgba(39,15,17,.96);border:1px solid rgba(248,81,73,.35);border-radius:5px;
+    color:var(--crit-ink);background:var(--crit-bg);border:1px solid var(--crit-line);border-radius:5px;
     font-size:10.5px;white-space:pre-wrap;padding:8px 10px;box-shadow:var(--shadow)}
   #errs:empty{display:none}
   /* Drift sits above the error panel and is amber, not red: a peer on the wire
      that the snapshot lacks is out-of-date data, not a failure. The action is a
      re-sync, so it reads as a notice with a next step. */
   #drift{position:absolute;z-index:10;right:16px;bottom:12px;max-width:min(560px,calc(100% - 32px));margin:0;
-    color:#f0d08a;background:rgba(39,31,15,.96);border:1px solid rgba(227,179,65,.35);border-radius:5px;
+    color:var(--warn-ink);background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:5px;
     font-size:10.5px;white-space:pre-wrap;padding:8px 10px;box-shadow:var(--shadow)}
   #drift:empty{display:none}
   #errs:not(:empty)~#drift{bottom:calc(12px + 4.6em)}
@@ -105,13 +173,27 @@
   .zone{fill:var(--panel);fill-opacity:.34;stroke:var(--ring);stroke-width:1.1;stroke-dasharray:6 5}
   .zlab{fill:var(--ink2);font-size:12px;font-weight:700;letter-spacing:.08em}
   .zsub{fill:var(--muted);font-size:10.5px}
-  .lanehead{fill:#586675;font-size:9px;font-weight:700;letter-spacing:.14em}
+  .lanehead{fill:var(--muted);font-size:9px;font-weight:700;letter-spacing:.14em}
   .lanerule{stroke:var(--line);stroke-width:1}
   .hbox{fill:var(--panel2);fill-opacity:.8;stroke:var(--ring);stroke-width:1.1}
+  /* A physical host is a container, so its kind tints the border and leaves the
+     fill neutral — the VMs nested inside it are what carry colour, and tinting
+     both would make the box compete with its own contents. */
+  .hbox.k-host{stroke:var(--host-stroke);stroke-opacity:.72}
   .htit{fill:var(--ink2);font-size:9.5px;font-weight:700;letter-spacing:.03em}
-  .nbox{fill:var(--panel);stroke:var(--ring);stroke-width:1.2;filter:drop-shadow(0 5px 10px rgba(0,0,0,.18))}
-  .nbox.hub{stroke:var(--acc);stroke-width:1.8}
-  .nbox.vmb{stroke:var(--acc);stroke-width:1.1}
+  .nbox{fill:var(--panel);stroke:var(--ring);stroke-width:1.2;filter:drop-shadow(0 5px 10px var(--node-shadow))}
+  /* A node's colour is its kind, not the drawing function that made it.
+     .hub/.vmb/.band/.ext used to be styling variants that happened to line up
+     with kinds most of the time; a gateway drawn by the mesh stack and one
+     drawn as a top chip came out different colours for no reason a reader
+     could name. These are the kinds the topology actually carries. */
+  .nbox.k-gateway{fill:var(--gateway-fill);stroke:var(--gateway-stroke)}
+  .nbox.k-host{fill:var(--host-fill);stroke:var(--host-stroke)}
+  .nbox.k-vm{fill:var(--vm-fill);stroke:var(--vm-stroke)}
+  .nbox.k-external{fill:var(--external-fill);stroke:var(--external-stroke);stroke-dasharray:5 4}
+  .nbox.k-net{fill:var(--netband-fill);stroke:var(--netband-stroke)}
+  .nbox.hub{stroke-width:1.8}
+  .nbox.vmb{stroke-width:1.1}
   .nbox.band{stroke-width:1}
   .nbox.ext{stroke-dasharray:5 4}
   .ntit{fill:var(--ink);font-size:12px;font-weight:700}
@@ -176,16 +258,18 @@
        inventory host guessed from an endpoint address — and a reader cannot tell
        them apart from the shapes alone. Filled means recorded; hollow means
        inferred, and the tooltip says from what. -->
+  <div class="status-key" id="kind-key" aria-label="component kind legend"></div>
   <div class="status-key" aria-label="confidence legend">
     <span class="conf"><i class="solid"></i>recorded</span><span class="conf"><i class="hollow"></i>inferred</span>
   </div>
-  <div class="status-key" aria-label="tunnel state legend">
-    <!-- The old key was active/idle/down, and "down" stood for three different
-         things: never handshook, nobody asked, or the gateway was unreachable.
-         Each needs a different response, so each gets its own word. -->
-    <span class="up"><i></i>active</span><span class="idle"><i></i>idle</span
-    ><span class="down"><i></i>never</span><span class="idle"><i></i>stale</span
-    ><span class="unk"><i></i>unobserved</span><span class="down"><i></i>poll error</span>
+  <!-- Only the states this fleet is actually in. The key used to list all six
+       whatever was on screen, so "poll error" and "never" sat in the legend of a
+       healthy fleet and read as categories somebody should go looking for. The
+       wording is the same; what changed is that its presence now means
+       something. -->
+  <div class="status-key" id="state-key" aria-label="tunnel state legend"></div>
+  <div class="view-controls" aria-label="theme">
+    <button type="button" id="theme-toggle" title="switch between dark and light">DARK</button>
   </div>
   <div class="view-controls" aria-label="zoom">
     <button type="button" id="zoom-fit" title="fit to screen">FIT</button>
@@ -295,8 +379,15 @@ function clickFocus(el,ifc){el.addEventListener("click",ev=>{ev.stopPropagation(
 // Every box on the canvas is the same card: kind eyebrow, title, address line.
 // The hub passes its own sub text because it shows only an underlay address.
 // Returns the rect so callers can attach tooltips and focus clicks.
+// kindClass maps a collected node kind onto the typed token that colours it.
+// Unknown kinds fall through to the external token rather than to a default
+// that looks like a known one — a shape nobody has classified should not be
+// dressed as a gateway.
+const kindClass=k=>({"gateway":"k-gateway","physical-host":"k-host","vm":"k-vm","network":"k-net"})[k]||"k-external";
+
 function nodeCard(p,{x,y,w,h,node,sub,cls=""}){
-  const box=mk("rect",{x,y,width:w,height:h,rx:cls.includes("hub")?9:8,class:("nbox "+cls).trim()},p);
+  const box=mk("rect",{x,y,width:w,height:h,rx:cls.includes("hub")?9:8,
+    class:("nbox "+kindClass(node.kind)+" "+cls).trim()},p);
   mk("text",{x:x+12,y:y+14,class:"nkind"},p).textContent=kindLabel(node.kind);
   mk("text",{x:x+12,y:y+30,class:"ntit"},p).textContent=node.label;
   mk("text",{x:x+12,y:y+46,class:"nsub"},p).textContent=
@@ -591,7 +682,7 @@ function drawLocalFabric({gg,gn,gd,gt,grp},{HUBX,HUBY},topo,N,hub,spokes){
   for(const a of laggs){
     const gb=grp(gn,null,{eids:[]});
     gb.dataset.cidr=a.cidr;
-    const r=mk("rect",{x:64,y:ly,width:180,height:42,rx:8,class:"nbox band"},gb);
+    const r=mk("rect",{x:64,y:ly,width:180,height:42,rx:8,class:"nbox band k-net"},gb);
     mk("text",{x:78,y:ly+18,class:"btit"},gb).textContent=a.cidr;
     mk("text",{x:78,y:ly+32,class:"bsub"},gb).textContent=`inventory ×${a.count}`;
     hot(r,()=>[a.cidr,`hub-site local range · ${a.count} hosts`]);
@@ -727,7 +818,7 @@ function drawZones({gz,gg,gn,gd,gt,gf,grp},geo,N,{vipsBy,meshGeo,hubPort}){
     if(parent){
       const gp=mk("g",{},gn); gp.dataset.ifs=cl.items.map(x=>x.iface||"").filter(Boolean).join("|");
       gp.dataset.nodes=JSON.stringify(cl.items.map(x=>x.oid));
-      mk("rect",{x:EPX-10,y:ry,width:EPW+20,height:clH(cl),rx:10,class:"hbox"},gp);
+      mk("rect",{x:EPX-10,y:ry,width:EPW+20,height:clH(cl),rx:10,class:"hbox k-host"},gp);
       mk("text",{x:EPX+2,y:ry+16,class:"htit"},gp).textContent="PHYSICAL HOST · "+parent.label+(parent.ip?" · "+parent.ip:"");
     }
     let inY=parent?ry+HOSTPAD-6:ry;
@@ -805,7 +896,7 @@ function drawZones({gz,gg,gn,gd,gt,gf,grp},geo,N,{vipsBy,meshGeo,hubPort}){
       const gb=mk("g",{},gn); gb.dataset.ifs=b.refs.map(r=>r.iface).join("|");
       gb.dataset.eids=JSON.stringify(b.refs.map(r=>r.eid));
       gb.dataset.cidr=b.cidr;
-      const r=mk("rect",{x:BANDX,y:byy,width:BANDW,height:hgt,rx:8,class:"nbox band"},gb);
+      const r=mk("rect",{x:BANDX,y:byy,width:BANDW,height:hgt,rx:8,class:"nbox band k-net"},gb);
       mk("text",{x:BANDX+14,y:byy+20,class:"btit"},gb).textContent=b.cidr;
       hot(r,()=>[b.cidr,"reachable via: "+b.refs.map(x=>x.iface).join(", ")]);
       if(!bandPos.has(b.cidr))bandPos.set(b.cidr,[]);
@@ -898,7 +989,7 @@ function drawHops({gn,gd,gt,gf,grp},geo,N,hub,{hops,startY,epPos,bandPos,topPos}
           clickFocus(rp,e.iface);
         }else{
           const byy=hy+64+below*48; below++;
-          const rb=mk("rect",{x:94,y:byy,width:bw2-30,height:40,rx:8,class:"nbox band"},g2);
+          const rb=mk("rect",{x:94,y:byy,width:bw2-30,height:40,rx:8,class:"nbox band k-net"},g2);
           mk("text",{x:106,y:byy+18,class:"btit"},g2).textContent=c;
           mk("text",{x:106,y:byy+32,class:"bsub"},g2).textContent=`reachable via ${e.iface}`;
           hot(rb,()=>[c,`ranges the ${e.iface} tunnel carries behind ${tn.label}`]);
@@ -968,7 +1059,7 @@ function render(topo){
   const {epPos,bandPos}=drawZones(L,geo,N,{vipsBy,meshGeo,hubPort});
   drawHops(L,geo,N,hub,{hops,startY:meshEndY,epPos,bandPos,topPos});
 
-  buildLegend(); applyStats(); setFocus(focusIf);
+  buildLegend(); buildKindKey(); applyStats(); setFocus(focusIf);
   try{const bb=svg.getBBox();const H2=Math.min(H,bb.y+bb.height+30);
     svg.setAttribute("viewBox",`0 0 ${W} ${H2}`);
     sizeCanvas(drawW,Math.round(drawW*H2/W));
@@ -1051,6 +1142,21 @@ function setFocus(f){
 }
 svg.addEventListener("click",e=>{if(e.target===svg||e.target.classList.contains("zone"))setFocus(null);});
 
+// buildKindKey names the typed colours, and only the ones on screen.
+//
+// It reads the drawn boxes rather than the topology, for the same reason the
+// interface chips do: a kind the layout never draws would be a legend entry
+// pointing at nothing.
+const KIND_KEY=[["k-gateway","gateway"],["k-host","physical host"],["k-vm","VM"],
+  ["k-net","routed network"],["k-external","unresolved endpoint"]];
+function buildKindKey(){
+  const on=new Set();
+  for(const el of svg.querySelectorAll("rect.nbox"))
+    for(const c of el.classList)if(c.startsWith("k-"))on.add(c);
+  document.getElementById("kind-key").innerHTML=KIND_KEY.filter(([c])=>on.has(c))
+    .map(([c,label])=>`<span class="kind ${c}"><i></i>${esc(label)}</span>`).join("");
+}
+
 function buildLegend(){
   // Build from the drawn canvas, not from every topology edge. The wiring layout
   // only draws hub-adjacent geometry, so an interface whose tunnels never reach
@@ -1067,6 +1173,18 @@ function buildLegend(){
   el.querySelector("[data-all]").addEventListener("click",()=>setFocus(null));
   el.querySelectorAll(".i[data-if]").forEach(ch=>ch.addEventListener("click",()=>setFocus(focusIf===ch.dataset.if?null:ch.dataset.if)));
 }
+// buildStateKey shows the states the fleet is in, with how many tunnels are in
+// each. A count beside the word turns the key from a list of words into a
+// reading of the fleet, and an absent state is absent rather than zero.
+const STATE_WORD={active:"active",idle:"idle",never:"never",stale:"stale",
+  unknown:"unobserved",error:"poll error"};
+const STATE_KEY_CLS={ok:"up",warn:"idle",crit:"down",muted:"unk"};
+function buildStateKey(counts){
+  document.getElementById("state-key").innerHTML=TUNNEL_STATES.filter(s=>counts[s]>0)
+    .map(s=>`<span class="${STATE_KEY_CLS[STATE_CLS[s]]||"unk"}"><i></i>${esc(STATE_WORD[s])} ${counts[s]}</span>`)
+    .join("");
+}
+
 function applyStats(){
   for(const t of tunnels){
     const st=stats[t.id];
@@ -1097,6 +1215,7 @@ function applyStats(){
   const edges=(curTopo&&curTopo.edges)||[];
   const n={}; for(const s of TUNNEL_STATES)n[s]=0;
   for(const e of edges)n[tunnelState(e)]++;
+  buildStateKey(n);
 
   const live=document.getElementById("live-summary");
   const observed=n.active+n.idle+n.never;
@@ -1175,6 +1294,38 @@ function updateMeta(topo,at){
   el.className=age>TOPOLOGY_STALE_SECONDS?"stale":"";
 }
 
+// ---------- theme ----------
+// The palette is resolved from CSS variables and then written onto SVG
+// attributes, so a theme switch is not a repaint — the interface colours are
+// already baked into the drawn elements. The cache is dropped and the diagram
+// redrawn from the topology that is already in hand, which is also why the
+// current focus and zoom are restored around it: a reader who switched themes
+// asked about the light, not about which interface they had selected.
+let lastTopo=null;
+function applyTheme(name){
+  document.documentElement.setAttribute("data-theme",name);
+  document.getElementById("theme-toggle").textContent=name.toUpperCase();
+  try{localStorage.setItem("vctl-wg-theme",name);}catch(e){}
+  if(!lastTopo)return;
+  const keepFocus=focusIf,keepZoom=zoom;
+  ifColMap.clear();
+  render(lastTopo);
+  setZoom(keepZoom);
+  if(keepFocus)setFocus(keepFocus);
+  applyStats();
+}
+(function initTheme(){
+  let saved=null;
+  try{saved=localStorage.getItem("vctl-wg-theme");}catch(e){}
+  // No stored answer means follow the desktop, the way the rest of the tooling
+  // does. An explicit choice outranks it and survives a reload.
+  const want=saved||(window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches?"light":"dark");
+  document.documentElement.setAttribute("data-theme",want);
+  document.getElementById("theme-toggle").textContent=want.toUpperCase();
+})();
+document.getElementById("theme-toggle").addEventListener("click",()=>
+  applyTheme(document.documentElement.getAttribute("data-theme")==="light"?"dark":"light"));
+
 document.getElementById("zoom-in").addEventListener("click",()=>setZoom(zoom+.15));
 document.getElementById("zoom-out").addEventListener("click",()=>setZoom(zoom-.15));
 document.getElementById("zoom-fit").addEventListener("click",fitCanvas);
@@ -1188,6 +1339,7 @@ document.addEventListener("keydown",ev=>{
 
 // ---------- wiring: injected BOOT replay (demo) or live fetch + SSE ----------
 if(BOOT){
+  lastTopo=BOOT.topology;
   render(BOOT.topology);
   const frames=BOOT.frames||[]; let fi=0;
   const ap=()=>{stats=frames.length?frames[fi%frames.length]:{};pollErrors={};frameAt=Date.now()/1000;
@@ -1196,6 +1348,7 @@ if(BOOT){
   document.getElementById("health").textContent="demo replay";
 }else{
   fetch("topology").then(r=>r.json()).then(topo=>{
+    lastTopo=topo;
     render(topo);
     const es=new EventSource("events");
     es.onmessage=ev=>{
