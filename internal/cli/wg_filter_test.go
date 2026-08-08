@@ -40,10 +40,12 @@ const topo={
   // says otherwise.
   vips:[{ip:"192.0.2.231",label:"lb DNAT (wg3)",iface:"wg3",owner:"KLB1"}]
 };
-curTopo=topo; vipFocusNodes=new Map();
 const {N,E,hub}=prep(topo);
 const spokes=[{oid:"lb",iface:"wg1"},{oid:"staging",iface:"wg3"},{oid:"srv32",iface:"wg0"}];
-const vipsBy=attachVips(topo,N,spokes);
+const {vipsBy,vipFocusNodes}=attachVips(topo,N,spokes);
+// The topology and the VIP map are arguments now rather than page globals, so
+// this reads the same way the view does when it calls setFocus.
+const closure=seed=>focusClosure(seed,topo,vipFocusNodes);
 `
 
 // A VIP is focused by the interface that carries it, not by whatever the ledger's
@@ -54,7 +56,7 @@ const vipsBy=attachVips(topo,N,spokes);
 // wg1. Keying on it meant selecting the hub's wg3 lit up sre-lb — a host with no
 // wg3 — and selecting the interface that really carries them lit no VIP at all.
 func TestFilterVipFollowsItsOwningInterface(t *testing.T) {
-	got := runDashboardJS(t, filterFixtureJS+`
+	got := runModelJS(t, filterFixtureJS+`
 const entries=[...vipFocusNodes].map(([k,v])=>k+"="+[...v].join(","));
 console.log(entries.sort().join(" "));
 `)
@@ -64,8 +66,8 @@ console.log(entries.sort().join(" "));
 }
 
 func TestFilterHubInterfaceDoesNotLightAHostWithoutIt(t *testing.T) {
-	got := runDashboardJS(t, filterFixtureJS+`
-console.log([...focusClosure("wg3").nodes].sort().join(","));
+	got := runModelJS(t, filterFixtureJS+`
+console.log([...closure("wg3").nodes].sort().join(","));
 `)
 	if strings.Contains(got, "lb") {
 		t.Errorf("focusing the hub's wg3 selected %q; lb has no wg3", got)
@@ -76,10 +78,10 @@ console.log([...focusClosure("wg3").nodes].sort().join(","));
 // between two remote hosts is dropped by the hub guard and selected by nothing —
 // clicking it dimmed the whole diagram and lit nothing.
 func TestFilterScopedKeyReachesATunnelThatAvoidsTheHub(t *testing.T) {
-	got := runDashboardJS(t, filterFixtureJS+`
+	got := runModelJS(t, filterFixtureJS+`
 console.log(JSON.stringify({
-  bare:[...focusClosure("wg3").edges].sort(),
-  scoped:[...focusClosure("staging/wg3").edges].sort(),
+  bare:[...closure("wg3").edges].sort(),
+  scoped:[...closure("staging/wg3").edges].sort(),
 }));
 `)
 	var out struct{ Bare, Scoped []string }
@@ -99,7 +101,7 @@ console.log(JSON.stringify({
 // Scoping is only for names that collide. A unique name stays plain, so the
 // common case reads unchanged.
 func TestFilterScopesOnlyCollidingNames(t *testing.T) {
-	got := runDashboardJS(t, filterFixtureJS+`
+	got := runModelJS(t, filterFixtureJS+`
 const keys=topo.edges.map(e=>hopKey(e,hub)).sort();
 console.log(JSON.stringify(keys));
 `)
@@ -117,10 +119,10 @@ console.log(JSON.stringify(keys));
 // Every drawn tunnel must be selectable by some key, or the diagram offers a
 // control that does nothing for it.
 func TestFilterEveryEdgeIsReachable(t *testing.T) {
-	got := runDashboardJS(t, filterFixtureJS+`
+	got := runModelJS(t, filterFixtureJS+`
 const keys=new Set(topo.edges.map(e=>hopKey(e,hub)));
 const reach=new Set();
-for(const k of keys)for(const id of focusClosure(k).edges)reach.add(id);
+for(const k of keys)for(const id of closure(k).edges)reach.add(id);
 console.log(topo.edges.filter(e=>!reach.has(e.id)).map(e=>e.id).join(",")||"OK");
 `)
 	if got != "OK" {

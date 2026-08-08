@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,54 +10,37 @@ import (
 	"testing"
 )
 
-// scriptRe pulls the dashboard's script body out of the page so it can be run.
-var scriptRe = regexp.MustCompile(`(?s)<script>(.*)</script>`)
-
-// runDashboardJS evaluates the dashboard's own script under node with a stub DOM,
-// then runs the caller's assertions against it.
+// runModelJS evaluates the caller's assertions with wg_model.js in scope.
 //
 // The state machine this checks lives in the page, not in Go, and a Go
 // reimplementation of it would only prove that the copy agrees with itself. The
 // interesting failure — "down" meaning three different things — is in the
 // browser, so that is where it has to be exercised.
 //
+// This used to cut the <script> block out of wg_serve.html with a regular
+// expression and evaluate it against a hand-built stub DOM. The stub had to grow
+// a new method every time the page reached for something new, and it could only
+// reach the functions that happened to touch no document at all — which is why
+// the focus rules, the ones that kept being got wrong, had no unit test. The
+// model is a file now, so this is require().
+//
 // Skips when node is unavailable rather than failing: this asserts on the shipped
 // asset, and a machine without node can still build and test everything else.
-func runDashboardJS(t *testing.T, body string) string {
+func runModelJS(t *testing.T, body string) string {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("node not installed; skipping dashboard script test")
+		t.Skip("node not installed; skipping dashboard model test")
 	}
-	page, err := os.ReadFile("wg_serve.html")
+	model, err := filepath.Abs("wg_model.js")
 	if err != nil {
-		t.Fatalf("read dashboard: %v", err)
+		t.Fatalf("locate wg_model.js: %v", err)
 	}
-	m := scriptRe.FindStringSubmatch(string(page))
-	if m == nil {
-		t.Fatal("no <script> block in the dashboard")
-	}
-	// The script touches the DOM at load. Stub only what it reaches before the
-	// functions under test — enough to evaluate, not a DOM implementation.
-	const stub = `
-globalThis.window=globalThis;
-const el=()=>({textContent:"",className:"",title:"",style:{},dataset:{},innerHTML:"",
-  setAttribute(){},getAttribute(){return null},appendChild(){},addEventListener(){},
-  classList:{add(){},remove(){},contains(){return false}},
-  querySelector(){return el()},querySelectorAll(){return []},getBoundingClientRect(){return{width:800,height:600}}});
-globalThis.document={getElementById:el,querySelector:()=>el(),querySelectorAll:()=>[],
-  addEventListener(){},createElementNS:el,createElement:el,documentElement:el(),body:el()};
-globalThis.getComputedStyle=()=>({getPropertyValue:()=>"#fff"});
-globalThis.EventSource=function(){this.onmessage=null};
-// A promise that never settles: the page's live path must not run here, but its
-// chain has to type-check all the way through .then().then().catch().
-const pending={then(){return pending},catch(){return pending}};
-globalThis.fetch=()=>pending;
-globalThis.WG_BOOT=null;
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "check.mjs")
-	if err := os.WriteFile(path, []byte(stub+m[1]+"\n"+body), 0o600); err != nil {
+	// Spread onto the global scope so a test body reads the way the page does:
+	// hopKey(...), not M.hopKey(...).
+	script := fmt.Sprintf("Object.assign(globalThis, require(%q));\n%s", model, body)
+	path := filepath.Join(t.TempDir(), "check.js")
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
 	out, err := exec.Command(node, path).CombinedOutput()
@@ -66,12 +50,35 @@ globalThis.WG_BOOT=null;
 	return strings.TrimSpace(string(out))
 }
 
+// The page is served as one document, so the two script files have to end up
+// inside it. A missing tag would leave the browser asking for wg_model.js on a
+// route the server does not have, and the dashboard would come up blank with
+// nothing in the Go tests to say why.
+func TestDashboardPageInlinesItsScripts(t *testing.T) {
+	page := string(wgServeHTML)
+	if strings.Contains(page, "<script src=") {
+		t.Error("the served page still points at a script file; the inlining did not happen")
+	}
+	// A function from each file, so a silently-empty embed is caught too.
+	for _, want := range []string{"function focusVerdict", "function drawZones"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the served page is missing %q", want)
+		}
+	}
+	// Inlining is a text splice, so a "</script>" inside the JS would end the
+	// block early and drop the rest of the file into the document as markup.
+	for name, body := range map[string]string{"wg_model.js": wgModelJS, "wg_view.js": wgViewJS} {
+		if strings.Contains(body, "</script") {
+			t.Errorf("%s contains a closing script tag; inlining it would truncate the page", name)
+		}
+	}
+}
+
 // A failed poll must outrank the last sample. Whatever that sample said, the
 // current state is unknown — rendering the stale value as fact is how a dead
 // gateway reads as healthy.
 func TestDashboardStateSeparatesTheSixCases(t *testing.T) {
-	got := runDashboardJS(t, `
-frameAt=1000;
+	got := runModelJS(t, `
 const cases={
   active:  {edge:{id:"e",a:{host:"h"}}, stats:{e:{hs:30,sides:{h:{at:995}}}}, errs:{}},
   idle:    {edge:{id:"e",a:{host:"h"}}, stats:{e:{hs:900,sides:{h:{at:995}}}}, errs:{}},
@@ -83,8 +90,8 @@ const cases={
 const out=[];
 for(const want in cases){
   const c=cases[want];
-  stats=c.stats; pollErrors=c.errs;
-  const got=tunnelState(c.edge);
+  // The frame is an argument now, so no case can leak into the next one.
+  const got=tunnelState(c.edge,{stats:c.stats,pollErrors:c.errs,at:1000});
   out.push(got===want?"":want+"→"+got);
 }
 console.log(out.filter(Boolean).join(",")||"OK");
@@ -99,17 +106,13 @@ console.log(out.filter(Boolean).join(",")||"OK");
 // the other 18 missing from both the numerator and the denominator. Absence was
 // the one thing the screen could not say.
 func TestDashboardSummaryCountsUnobservedTunnels(t *testing.T) {
-	got := runDashboardJS(t, `
-frameAt=1000;
+	got := runModelJS(t, `
 const edges=[];
 for(let i=0;i<30;i++)edges.push({id:"e"+i,a:{host:"h"+i}});
-curTopo={edges};
-stats={}; pollErrors={};
+const stats={};
 for(let i=0;i<12;i++)stats["e"+i]={hs:30,sides:{["h"+i]:{at:995}}};
-let text="";
-document.getElementById=()=>({className:"",title:"",querySelector:()=>({set textContent(v){text=v}})});
-applyStats();
-console.log(text);
+const n=countStates(edges,{stats,pollErrors:{},at:1000});
+console.log(liveSummary(n,edges.length).text);
 `)
 	if !strings.Contains(got, "12/30") {
 		t.Errorf("summary does not report coverage: %q", got)
@@ -122,7 +125,7 @@ console.log(text);
 // Every state must have a colour class, or a state added later silently renders
 // as whatever the map's default happens to be.
 func TestDashboardStatesAllHaveAColour(t *testing.T) {
-	got := runDashboardJS(t, `
+	got := runModelJS(t, `
 console.log(TUNNEL_STATES.filter(s=>!STATE_CLS[s]).join(",")||"OK");
 `)
 	if got != "OK" {
@@ -132,20 +135,13 @@ console.log(TUNNEL_STATES.filter(s=>!STATE_CLS[s]).join(",")||"OK");
 
 // The legend names each state, because the summary uses those words. A key that
 // still said only active/idle/down would leave three of them unexplained.
+//
+// The check is also stronger than naming the six: a state nobody is in stays out
+// of the key, which is what makes its presence worth reading.
 func TestDashboardLegendNamesEveryState(t *testing.T) {
-	// The words used to be literal markup and this test read the file. They moved
-	// into the script when the key became automatic, so the test moved with them:
-	// checking the HTML now would pass on a page that renders nothing.
-	//
-	// The check is also stronger than it was. Naming the six states is half of it;
-	// the other half is that a state nobody is in stays out of the key, which is
-	// what makes its presence worth reading.
-	got := runDashboardJS(t, `
+	got := runModelJS(t, `
 const all={}; for(const s of TUNNEL_STATES)all[s]=1;
-const key=[]; document.getElementById=()=>({set innerHTML(v){key.push(v)}});
-buildStateKey(all);
-buildStateKey({active:3});
-console.log(JSON.stringify(key));
+console.log(JSON.stringify([stateKeyHTML(all),stateKeyHTML({active:3})]));
 `)
 	for _, want := range []string{">active ", ">idle ", ">never ", ">stale ", ">unobserved ", ">poll error "} {
 		if !strings.Contains(got, want) {
@@ -172,13 +168,13 @@ console.log(JSON.stringify(key));
 
 // Component kinds are a legend too, and the same rule holds: it names the kinds
 // that were drawn, not the kinds the renderer knows how to draw.
+//
+// This half — given a set of kinds, name those and no others — is the filter.
+// That the set really comes off the canvas is a property of the drawn SVG, and
+// scripts/wg-dashboard-check.mjs asserts it there.
 func TestDashboardKindKeyNamesOnlyWhatWasDrawn(t *testing.T) {
-	got := runDashboardJS(t, `
-const drawn=[{classList:["nbox","k-gateway"]},{classList:["nbox","k-vm"]}];
-svg.querySelectorAll=()=>drawn;
-let out=""; document.getElementById=()=>({set innerHTML(v){out=v}});
-buildKindKey();
-console.log(out);
+	got := runModelJS(t, `
+console.log(kindKeyHTML(new Set(["k-gateway","k-vm"])));
 `)
 	for _, want := range []string{"gateway", "VM"} {
 		if !strings.Contains(got, want) {
@@ -228,13 +224,12 @@ func TestDashboardDefinesEveryColourInBothThemes(t *testing.T) {
 
 // A VIP naming any interface — not just the first — must match exactly.
 func TestDashboardVipMatchesAnyInterfaceKey(t *testing.T) {
-	got := runDashboardJS(t, `
-vipFocusNodes=new Map();
+	got := runModelJS(t, `
 const N=new Map([["lb",{label:"lb",pub:"KPERSONAL",ifaces:[{name:"wg-personal",pub:"KPERSONAL"},{name:"wg1",pub:"KWG1"}]}]]);
 const spokes=[{oid:"lb",iface:"wg1"}];
 // Names the SECOND interface's key, which the node-level key alone would miss.
-const r=attachVips({vips:[{ip:"1.2.3.4",label:"unrelated text",iface:"wg1",owner:"KWG1"}]},N,spokes);
-const v=(r.get("lb")||[])[0];
+const {vipsBy}=attachVips({vips:[{ip:"1.2.3.4",label:"unrelated text",iface:"wg1",owner:"KWG1"}]},N,spokes);
+const v=(vipsBy.get("lb")||[])[0];
 console.log(v?String(v.guessed):"unmatched");
 `)
 	if got != "false" {
@@ -242,7 +237,9 @@ console.log(v?String(v.guessed):"unmatched");
 	}
 }
 
-// what made a stale graph read as current.
+// Two clocks, deliberately. Structure comes from the last `vctl wg sync`; only
+// traffic and handshake come from live polling. One "Updated" made a six-day-old
+// graph look current, because the page kept animating.
 func TestDashboardSeparatesTopologyAndTelemetryClocks(t *testing.T) {
 	page := string(wgServeHTML)
 	for _, want := range []string{
@@ -250,8 +247,6 @@ func TestDashboardSeparatesTopologyAndTelemetryClocks(t *testing.T) {
 		`id="updated-at"`,  // live poll time
 		">Topology<",
 		">Telemetry<",
-		"collectedAt",
-		"TOPOLOGY_STALE_SECONDS",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("dashboard does not carry %q", want)
@@ -261,15 +256,27 @@ func TestDashboardSeparatesTopologyAndTelemetryClocks(t *testing.T) {
 	if strings.Contains(page, ">Updated<") {
 		t.Error(`the dashboard still labels a clock "Updated"; that is the ambiguity this removes`)
 	}
+	// And the structural clock actually ages. This used to be a grep for
+	// "collectedAt" and "TOPOLOGY_STALE_SECONDS" in the page source, which would
+	// have passed on a page that computed the age and never showed it.
+	got := runModelJS(t, `
+const day=86400e3, now=Date.parse("2026-08-08T00:00:00Z");
+console.log(JSON.stringify([
+  topologyClock("2026-08-07T23:40:00Z",now).stale,
+  topologyClock("2026-08-02T00:00:00Z",now).stale,
+  topologyClock("",now).text,
+]));
+`)
+	if want := `[false,true,"never"]`; got != want {
+		t.Errorf("topology clock = %s, want %s", got, want)
+	}
 }
 
+// The page has to name the peers and say what to run. A count with no next step
 // leaves the reader with a number and no action.
 func TestDashboardDriftPanelSaysWhatToRun(t *testing.T) {
-	got := runDashboardJS(t, `
-let text="";
-document.getElementById=()=>({set textContent(v){text=v}});
-renderDrift([{host:"gw-a",iface:"wg0",pub:"ABCDEFGHIJKLMNOP",endpoint:"203.0.113.9:51820",allowed:["10.9.0.0/24"]}]);
-console.log(text);
+	got := runModelJS(t, `
+console.log(driftText([{host:"gw-a",iface:"wg0",pub:"ABCDEFGHIJKLMNOP",endpoint:"203.0.113.9:51820",allowed:["10.9.0.0/24"]}]));
 `)
 	for _, want := range []string{"not in this snapshot", "gw-a/wg0", "203.0.113.9:51820", "10.9.0.0/24", "vctl wg sync"} {
 		if !strings.Contains(got, want) {
@@ -278,32 +285,11 @@ console.log(text);
 	}
 }
 
-// The page has to name the peers and say what to run. A count with no next step
 // Nothing to report means nothing on screen.
 func TestDashboardDriftPanelIsEmptyWithNoDrift(t *testing.T) {
-	got := runDashboardJS(t, `
-let text="unset";
-document.getElementById=()=>({set textContent(v){text=v}});
-renderDrift([]);
-console.log(JSON.stringify(text));
-`)
+	got := runModelJS(t, `console.log(JSON.stringify(driftText([])));`)
 	if got != `""` {
 		t.Errorf("drift panel rendered %s with nothing to report", got)
-	}
-}
-
-// The VIP's owner has to survive to the browser under a name the page reads.
-func TestVipCarriesTheRecordedOwner(t *testing.T) {
-	page := string(wgServeHTML)
-	// The page prefers the stated owner and only then falls back.
-	for _, want := range []string{"v.owner", "byKey", "guessed"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("the page does not use %q", want)
-		}
-	}
-	// And it must still be able to fall back, or every un-annotated VIP vanishes.
-	if !strings.Contains(page, "v.label.includes(tok)") {
-		t.Error("the label fallback is gone; VIPs with no recorded owner would disappear")
 	}
 }
 
@@ -312,8 +298,7 @@ func TestVipCarriesTheRecordedOwner(t *testing.T) {
 // wrong endpoint when one label contains another's prefix, and the screen could
 // not say which had happened.
 func TestDashboardVipPrefersTheRecordedOwner(t *testing.T) {
-	got := runDashboardJS(t, `
-vipFocusNodes=new Map();
+	got := runModelJS(t, `
 const N=new Map([
   ["sre-lb",{label:"sre-lb",pub:"LBKEY"}],
   ["sre-lb-standby",{label:"sre-lb-standby",pub:"SBKEY"}],
@@ -321,11 +306,12 @@ const N=new Map([
 const spokes=[{oid:"sre-lb",iface:"wg1"},{oid:"sre-lb-standby",iface:"wg1"}];
 // The label contains "sre-lb", which is also a prefix of "sre-lb-standby" —
 // exactly the ambiguity substring matching cannot resolve.
-const stated=attachVips({vips:[{ip:"1.2.3.4",label:"sre-lb DNAT",iface:"wg1",owner:"SBKEY"}]},N,spokes);
+const stated=attachVips({vips:[{ip:"1.2.3.4",label:"sre-lb DNAT",iface:"wg1",owner:"SBKEY"}]},N,spokes).vipsBy;
 const out=[];
 out.push([...stated.keys()].join(",")+":"+(stated.get("sre-lb-standby")||[{}])[0].guessed);
-vipFocusNodes=new Map();
-const guessed=attachVips({vips:[{ip:"1.2.3.4",label:"sre-lb DNAT",iface:"wg1"}]},N,spokes);
+// A second call must not inherit the first one's focus entries. attachVips used
+// to write vipFocusNodes into the enclosing scope, so it did.
+const guessed=attachVips({vips:[{ip:"1.2.3.4",label:"sre-lb DNAT",iface:"wg1"}]},N,spokes).vipsBy;
 const g=[...guessed.keys()][0];
 out.push(g+":"+guessed.get(g)[0].guessed);
 console.log(out.join(" | "));
@@ -362,7 +348,7 @@ func TestDashboardLegendSeparatesRecordedFromInferred(t *testing.T) {
 // whether a hop was qualified at all depend on how somebody had named an
 // interface on a different node.
 func TestAHopInterfaceIsIdentifiedByItsHostNotOnlyItsName(t *testing.T) {
-	got := runDashboardJS(t, `
+	got := runModelJS(t, `
 const hub={id:"hub",ifaces:[{name:"wg0"},{name:"wg3"}]};
 const out=[
   // hub-adjacent: one hub, so the bare name cannot be ambiguous
@@ -386,7 +372,7 @@ console.log(JSON.stringify(out));
 // grows the host back the moment two chips would read the same. A legend that
 // prints two different interfaces under one word is worse than a long word.
 func TestAFilterChipGrowsItsHostOnlyWhenItWouldBeAmbiguous(t *testing.T) {
-	got := runDashboardJS(t, `
+	got := runModelJS(t, `
 const keys=["wg0","wg3","gw-a/wg3","gw-a/wg-seoul","gw-b/wg-personal"];
 console.log(JSON.stringify(keys.map(k=>ifLabel(k,keys))));
 `)
@@ -405,7 +391,7 @@ console.log(JSON.stringify(keys.map(k=>ifLabel(k,keys))));
 // would mark the hub's own fabric as remote and empty the lane; only edges
 // leaving the hub say what the hub reaches through a peer.
 func TestARangeReachedOverATunnelIsNotTheHubsOwnFabric(t *testing.T) {
-	got := runDashboardJS(t, `
+	got := runModelJS(t, `
 const hub={id:"hub",dc:"incheon"};
 const topo={edges:[
   // what the hub reaches through its peers — remote, whatever a label says
@@ -421,8 +407,5 @@ console.log(JSON.stringify([...reachedOverATunnel(topo,hub)].sort()));
 	want := `["192.168.110.0/24","192.168.130.0/24","192.168.201.0/24"]`
 	if got != want {
 		t.Errorf("reached over a tunnel = %s, want %s", got, want)
-	}
-	if strings.Contains(got, "192.168.10.0/24") {
-		t.Error("the hub's own range was read as remote; the lane would come out empty")
 	}
 }

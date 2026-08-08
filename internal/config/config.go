@@ -31,6 +31,11 @@ type Config struct {
 	// network rather than about OpenStack.
 	OperatorNetworks []string `yaml:"operator_networks"`
 
+	// DNSServer sends this process's name lookups straight to one nameserver,
+	// skipping the operating system's. See UseDNSServer for why the fleet needs
+	// it. Empty leaves resolution exactly as it was.
+	DNSServer string `yaml:"dns_server"`
+
 	VaultAddr  string `yaml:"vault_addr"`
 	AuthMethod string `yaml:"auth_method"` // userpass | oidc | approle | kubernetes
 	OIDCRole   string `yaml:"oidc_role"`   // Vault OIDC role (phase 2)
@@ -169,6 +174,7 @@ func envIntPair(dst *int, suffix string) {
 }
 
 func (c *Config) applyEnv() {
+	envStr(&c.DNSServer, "VCTL_DNS_SERVER")
 	envStr(&c.VaultAddr, "VAULT_ADDR") // standard Vault var (no prefix)
 	envStrPair(&c.VaultAddr, "VAULT_ADDR")
 	envStrPair(&c.AuthMethod, "AUTH_METHOD")

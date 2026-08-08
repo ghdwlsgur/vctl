@@ -19,7 +19,40 @@ import (
 )
 
 //go:embed wg_serve.html
-var wgServeHTML []byte
+var wgServePage string
+
+//go:embed wg_model.js
+var wgModelJS string
+
+//go:embed wg_view.js
+var wgViewJS string
+
+// wgServeHTML is the dashboard as served: one document, with both script files
+// inlined where their <script src> tags sit in the page.
+//
+// They are separate files on disk because that is what makes them testable —
+// wg_model.js is required directly by Node, which is only possible while it is
+// a file rather than a run of text inside a <script> block. The page is still a
+// single document because the handler below serves exactly one thing, and
+// because the same HTML is opened off disk with a topology spliced in, where a
+// second HTTP round trip is not available to it.
+var wgServeHTML = inlineDashboardScripts()
+
+// inlineDashboardScripts splices the embedded JS into the embedded page.
+//
+// A missing tag leaves the page pointing at a file the server does not route,
+// so TestDashboardPageInlinesItsScripts asserts the substitution happened rather
+// than trusting it.
+func inlineDashboardScripts() []byte {
+	page := wgServePage
+	for _, s := range []struct{ tag, body string }{
+		{`<script src="wg_model.js"></script>`, wgModelJS},
+		{`<script src="wg_view.js"></script>`, wgViewJS},
+	} {
+		page = strings.Replace(page, s.tag, "<script>\n"+s.body+"</script>", 1)
+	}
+	return []byte(page)
+}
 
 // --- command ---
 
