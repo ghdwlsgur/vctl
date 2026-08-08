@@ -413,7 +413,17 @@ func (a *App) openRole(ctx context.Context, role string) (*store.Store, error) {
 	// getCreds runs *inside* store.Open, so its time is subtracted below rather
 	// than reported twice — percentages that sum past 100 are how a nested
 	// measurement misleads.
-	var credentialTime time.Duration
+	// Guarded, because the pool decides when this runs and how many at once.
+	//
+	// getCreds is the pool's credential callback, not a step in this function.
+	// pgxpool opens connections concurrently and reopens them long after Open
+	// has returned, so an unguarded += here is a data race on both counts: two
+	// connects racing the same add, and later connects mutating a variable
+	// nothing reads any more.
+	var (
+		credentialMu   sync.Mutex
+		credentialTime time.Duration
+	)
 	getCreds := func(ctx context.Context) (string, string, error) {
 		done := timing.Start("vault-login")
 		if err := a.EnsureLogin(ctx); err != nil {
@@ -423,13 +433,18 @@ func (a *App) openRole(ctx context.Context, role string) (*store.Store, error) {
 		done()
 		at := time.Now()
 		user, pass, err := cache.Get(ctx)
+		credentialMu.Lock()
 		credentialTime += time.Since(at)
+		credentialMu.Unlock()
 		return user, pass, err
 	}
 	openedAt := time.Now()
 	st, err := store.Open(ctx, a.Cfg.DBHost, a.Cfg.DBPort, a.Cfg.DBName, getCreds, a.Cfg.DBServerName, config.SRERootCA)
-	timing.Record("db-credential", credentialTime)
-	timing.Record("db-connect", time.Since(openedAt)-credentialTime)
+	credentialMu.Lock()
+	spent := credentialTime
+	credentialMu.Unlock()
+	timing.Record("db-credential", spent)
+	timing.Record("db-connect", time.Since(openedAt)-spent)
 	return st, err
 }
 
