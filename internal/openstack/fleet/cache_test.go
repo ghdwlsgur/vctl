@@ -342,3 +342,28 @@ func TestLoadAtLeastWithNothingStored(t *testing.T) {
 		}
 	}
 }
+
+// A reading from the future is not fresh, it is unreadable.
+//
+// The capture time comes from the database's clock and the age is measured
+// against this machine's. When the database is ahead, Age goes negative and
+// every window comparison passes — so a reading stamped an hour from now was
+// served as fresh for an hour past its real expiry. That is the one direction a
+// staleness check must not fail in.
+func TestAReadingStampedInTheFutureIsRefused(t *testing.T) {
+	c := NewCache(t.TempDir())
+	if err := c.Save(ShapeFarms, snapshotAt(time.Now().Add(time.Hour))); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := c.Load(ShapeFarms, time.Now()); !errors.Is(err, ErrNoCache) {
+		t.Errorf("an hour-ahead reading was served: %v", err)
+	}
+	// A few seconds between two synchronised clocks is normal and must not
+	// throw a good reading away.
+	if err := c.Save(ShapeFarms, snapshotAt(time.Now().Add(5*time.Second))); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := c.Load(ShapeFarms, time.Now()); err != nil {
+		t.Errorf("ordinary clock skew discarded the reading: %v", err)
+	}
+}

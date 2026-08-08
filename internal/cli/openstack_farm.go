@@ -294,11 +294,11 @@ func loadVMCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Cata
 	if err != nil {
 		return fleet.Catalog{}, err
 	}
-	// Stored under both shapes: a full reading answers everything a light one
-	// would have, and a browser leaving a fresh reading behind should speed up
-	// the listing that follows it.
+	// Stored once. A full reading answers everything a light one would have, and
+	// LoadAtLeast already reaches up: a caller asking for farms considers both
+	// files and takes whichever is newer. Writing it twice bought nothing and
+	// cost a second copy of the same 200KB on every browse.
 	keepReading(a, fleet.ShapeVMs, snap)
-	keepReading(a, fleet.ShapeFarms, snap)
 	return fleet.From(snap), nil
 }
 

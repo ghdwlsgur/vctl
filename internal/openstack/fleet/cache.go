@@ -60,6 +60,10 @@ const FreshFor = 5 * time.Minute
 // working day to change.
 const UsableFor = 24 * time.Hour
 
+// clockSkewAllowance is how far ahead of this machine the database's clock may
+// be before a reading is treated as unusable rather than as fresh.
+const clockSkewAllowance = 30 * time.Second
+
 // Shape says which reading a file holds.
 //
 // Two files rather than one with a flag, because the difference is what was
@@ -152,6 +156,20 @@ func (c *Cache) Load(s Shape, now time.Time) (Cached, error) {
 	}
 	if out.CapturedAt.IsZero() {
 		return out, fmt.Errorf("%w: no capture time", ErrNoCache)
+	}
+	// A reading from the future is not fresh, it is unreadable.
+	//
+	// The capture time comes from the database's clock and the age is measured
+	// against this machine's. When the database is ahead, Age goes negative and
+	// every window comparison below silently passes — a reading stamped an hour
+	// from now would be served as fresh for an hour past its real expiry, which
+	// is the one direction a staleness check must never fail in.
+	//
+	// A few seconds of disagreement between two synchronised clocks is normal
+	// and is not worth discarding a reading over.
+	if out.Age(now) < -clockSkewAllowance {
+		return out, fmt.Errorf("%w: captured %s in the future — check the clocks",
+			ErrNoCache, (-out.Age(now)).Round(time.Second))
 	}
 	if out.Age(now) > UsableFor {
 		return out, fmt.Errorf("%w: captured %s ago", ErrNoCache, out.Age(now).Round(time.Minute))
