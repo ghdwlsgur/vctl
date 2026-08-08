@@ -104,7 +104,9 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 	m.refresh = func() (exploreData, error) { return loadExploreData(ctx, a, st) }
 	// A stored reading is a starting point, not an answer: the screen is up
 	// immediately and the refresh that corrects it is already running.
-	m.refreshing = data.Cached
+	// Not when a login is due: the prompt would open behind the alternate
+	// screen, where nobody can see or answer it.
+	m.refreshing = data.Cached && !data.NeedsLogin
 	if len(args) > 0 {
 		// Resolved against the first reading, so a typo fails before the screen
 		// opens rather than after.
@@ -144,7 +146,7 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 // SSO prompt behind a full-screen program, where it cannot be seen or answered;
 // that login happens here, in front of the screen, as it did before.
 func firstExploreScreen(ctx context.Context, a *app.App, st *openLater, live bool) (exploreData, error) {
-	if !live && !a.WouldPromptForLogin() {
+	if !live {
 		if cached, err := a.FleetCache().Load(fleet.ShapeVMs, time.Now()); err == nil {
 			out := exploreDataFrom(fleet.From(cached.Fleet))
 			// A stored reading with nothing in it is not worth a screen. The
@@ -153,6 +155,19 @@ func firstExploreScreen(ctx context.Context, a *app.App, st *openLater, live boo
 			// nobody has looked at since.
 			if len(out.Farms) > 0 {
 				out.Cached = true
+				// A lapsed token no longer costs the screen.
+				//
+				// This used to go to the database first whenever a login was
+				// due, because the login prompt would otherwise open behind a
+				// full-screen program where it cannot be seen or answered. That
+				// was right about the prompt and wrong about the screen: the
+				// reader was made to wait for an authentication they had not
+				// asked for yet, to see rows that were already on disk.
+				//
+				// So the rows go up, and the one thing that would need the
+				// prompt — refreshing — is what does not happen. The title bar
+				// says why, and `vctl login` in another terminal is the fix.
+				out.NeedsLogin = a.WouldPromptForLogin()
 				return out, nil
 			}
 		}
@@ -177,6 +192,10 @@ type exploreData struct {
 	Runs   map[string]store.ReconcileRun
 	Nets   []string
 	ReadAt time.Time
+
+	// NeedsLogin says a refresh cannot run without an interactive login, so the
+	// screen is showing what it has and will not correct itself.
+	NeedsLogin bool
 
 	// Cached says this came off disk rather than out of the database. The title
 	// bar says so too: a browser showing a stored reading as though it had just
@@ -571,6 +590,9 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.typing = true
 		return m, nil
 	case "r":
+		if m.data.NeedsLogin {
+			return m, nil
+		}
 		// Deliberately not on a timer. A screen that re-reads on its own moves
 		// the row somebody was about to open, and a browser nobody is looking at
 		// would keep a database busy for no one.
@@ -835,6 +857,9 @@ func (m exploreModel) freshness() string {
 	}
 	if m.refreshing {
 		what += " · reading…"
+	}
+	if m.data.NeedsLogin {
+		what += " · run `vctl login` to refresh"
 	}
 	return what
 }

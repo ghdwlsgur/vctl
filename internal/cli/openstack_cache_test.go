@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
@@ -442,5 +444,42 @@ func TestAFreshReadingDoesNotMakeAStaleVMLookCurrent(t *testing.T) {
 		if got := stripANSI(strings.Join(m.detail, "\n")); !strings.Contains(got, "may not be current") {
 			t.Errorf("cached=%v: the browser's detail does not warn:\n%s", cached, got)
 		}
+	}
+}
+
+// A lapsed token no longer costs the screen.
+//
+// explore used to go to the database first whenever a login was due, because
+// the prompt would otherwise open behind a full-screen program where nobody can
+// see or answer it. That was right about the prompt and wrong about the screen:
+// the reader waited for an authentication they had not asked for, to see rows
+// already on disk.
+//
+// Now the rows go up and the refresh — the one thing needing the prompt — is
+// what does not happen. This pins the half that is observable without a Vault
+// fixture: what the screen says, and that r does not start a read.
+func TestAScreenThatNeedsALoginSaysSoAndDoesNotRefresh(t *testing.T) {
+	m := testExploreModel()
+	m.data.Cached = true
+	m.data.NeedsLogin = true
+	m.data.ReadAt = time.Now().Add(-3 * time.Minute)
+	m.refresh = func() (exploreData, error) {
+		t.Error("a refresh ran; its login prompt would open behind the screen")
+		return exploreData{}, nil
+	}
+
+	if got := stripANSI(m.titleBar()); !strings.Contains(got, "vctl login") {
+		t.Errorf("title does not say why it will not refresh: %q", got)
+	}
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd != nil {
+		t.Error("r produced a command that would prompt behind the screen")
+	}
+	if out.(exploreModel).refreshing {
+		t.Error("the screen claims to be reading when nothing can read")
+	}
+	// Init must not start one either — that is the automatic path.
+	if m.refreshing {
+		t.Error("the screen was set up to refresh automatically")
 	}
 }
