@@ -128,6 +128,29 @@ func hasPrefixFold(s, prefix string) bool {
 	return strings.HasPrefix(strings.ToLower(s), strings.ToLower(prefix))
 }
 
+// fromStoredFleet answers a completion out of the last stored reading.
+//
+// Nothing new is stored for this. The snapshot a listing already writes holds
+// the probed hosts, their roles, the deployments and the instance rows — which
+// is every completion here except projects, whose table is not in it.
+//
+// The same window as the farm chips, and for the same reason: a Tab is not a
+// decision. The worst a day-old list does is fail to offer something added this
+// morning, and typing it still works.
+func fromStoredFleet(env CommandEnv, shape fleet.Shape, fn func(fleet.Catalog, string) []string) func(string) ([]string, bool) {
+	return func(toComplete string) ([]string, bool) {
+		a, err := env.newApp()
+		if err != nil {
+			return nil, false
+		}
+		cat, _, ok := storedCatalog(a, shape, fleet.UsableFor)
+		if !ok {
+			return nil, false
+		}
+		return fn(cat, toComplete), true
+	}
+}
+
 // completeFarm offers the deployments, by whichever of their two names is being
 // typed.
 //
@@ -211,13 +234,24 @@ func farmCompletions(farms []farmChoice, extra []string, toComplete string) []st
 // set, because "probed, found nothing" is exactly what that command is for
 // showing.
 func completeOpenStackHost(env CommandEnv, detectedOnly bool) completer {
-	return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
-		hosts, err := st.OpenStackHosts(ctx)
-		if err != nil {
-			return nil
-		}
-		return openStackHostCompletions(hosts, detectedOnly, toComplete)
+	stored := fromStoredFleet(env, fleet.ShapeFarms, func(cat fleet.Catalog, tc string) []string {
+		return openStackHostCompletions(cat.Hosts(), detectedOnly, tc)
 	})
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		restore := silenceStderr()
+		if out, ok := stored(toComplete); ok {
+			restore()
+			return out, cobra.ShellCompDirectiveNoFileComp
+		}
+		restore()
+		return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
+			hosts, err := st.OpenStackHosts(ctx)
+			if err != nil {
+				return nil
+			}
+			return openStackHostCompletions(hosts, detectedOnly, toComplete)
+		})(cmd, args, toComplete)
+	}
 }
 
 func openStackHostCompletions(hosts []store.OpenStackHost, detectedOnly bool, toComplete string) []string {
@@ -249,13 +283,24 @@ func openStackHostCompletions(hosts []store.OpenStackHost, detectedOnly bool, to
 // the filter ignores them: --role compute has to mean a machine running nova
 // now.
 func completeRole(env CommandEnv) completer {
-	return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
-		hosts, err := st.OpenStackHosts(ctx)
-		if err != nil {
-			return nil
-		}
-		return roleCompletions(hosts, toComplete)
+	stored := fromStoredFleet(env, fleet.ShapeFarms, func(cat fleet.Catalog, tc string) []string {
+		return roleCompletions(cat.Hosts(), tc)
 	})
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		restore := silenceStderr()
+		if out, ok := stored(toComplete); ok {
+			restore()
+			return out, cobra.ShellCompDirectiveNoFileComp
+		}
+		restore()
+		return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
+			hosts, err := st.OpenStackHosts(ctx)
+			if err != nil {
+				return nil
+			}
+			return roleCompletions(hosts, toComplete)
+		})(cmd, args, toComplete)
+	}
 }
 
 func roleCompletions(hosts []store.OpenStackHost, toComplete string) []string {
@@ -366,17 +411,28 @@ func farmLabelOf(id string, farms map[string]string) string {
 // Missing VMs are left out: nova no longer lists them, and nothing good comes
 // of completing a connection to one.
 func completeVM(env CommandEnv) completer {
-	return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
-		vms, err := st.Instances(ctx, store.InstanceFilter{})
-		if err != nil {
-			return nil
-		}
-		names, err := farmNames(ctx, st)
-		if err != nil {
-			return nil
-		}
-		return vmCompletions(vms, names, toComplete)
+	stored := fromStoredFleet(env, fleet.ShapeVMs, func(cat fleet.Catalog, tc string) []string {
+		return vmCompletions(cat.AllVMs(), cat.Names(), tc)
 	})
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		restore := silenceStderr()
+		if out, ok := stored(toComplete); ok {
+			restore()
+			return out, cobra.ShellCompDirectiveNoFileComp
+		}
+		restore()
+		return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
+			vms, err := st.Instances(ctx, store.InstanceFilter{})
+			if err != nil {
+				return nil
+			}
+			names, err := farmNames(ctx, st)
+			if err != nil {
+				return nil
+			}
+			return vmCompletions(vms, names, toComplete)
+		})(cmd, args, toComplete)
+	}
 }
 
 func vmCompletions(vms []store.Instance, farms map[string]string, toComplete string) []string {
@@ -408,17 +464,28 @@ func vmCompletions(vms []store.Instance, farms map[string]string, toComplete str
 // there would be the wrong shape of help — and a name that fits several VMs is
 // a legitimate answer to it, unlike on the paths that connect.
 func completeVMName(env CommandEnv) completer {
-	return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
-		vms, err := st.Instances(ctx, store.InstanceFilter{})
-		if err != nil {
-			return nil
-		}
-		names, err := farmNames(ctx, st)
-		if err != nil {
-			return nil
-		}
-		return vmNameCompletions(vms, names, toComplete)
+	stored := fromStoredFleet(env, fleet.ShapeVMs, func(cat fleet.Catalog, tc string) []string {
+		return vmNameCompletions(cat.AllVMs(), cat.Names(), tc)
 	})
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		restore := silenceStderr()
+		if out, ok := stored(toComplete); ok {
+			restore()
+			return out, cobra.ShellCompDirectiveNoFileComp
+		}
+		restore()
+		return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
+			vms, err := st.Instances(ctx, store.InstanceFilter{})
+			if err != nil {
+				return nil
+			}
+			names, err := farmNames(ctx, st)
+			if err != nil {
+				return nil
+			}
+			return vmNameCompletions(vms, names, toComplete)
+		})(cmd, args, toComplete)
+	}
 }
 
 func vmNameCompletions(vms []store.Instance, farms map[string]string, toComplete string) []string {
