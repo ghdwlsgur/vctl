@@ -185,8 +185,11 @@ type exploreData struct {
 	Cached bool
 }
 
+// No span of its own. What this costs is the store opening and the query, and
+// both are already measured — db-credential, db-connect, fleet-query+vms. An
+// outer span around them counted the same milliseconds twice and pushed the
+// report past 100%, which is the one thing a breakdown must not do.
 func loadExploreData(ctx context.Context, a *app.App, st *openLater) (exploreData, error) {
-	defer timing.Start("explore-load")()
 	var out exploreData
 	err := st.use(ctx, func(st *store.Store) error {
 		// One transaction for the whole screen. This used to be four reads, two

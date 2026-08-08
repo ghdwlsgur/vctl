@@ -27,6 +27,17 @@ type openLater struct {
 	mu     sync.Mutex
 	st     *store.Store
 	closed bool
+
+	// cancel stops the read currently in flight, if any.
+	//
+	// Close holds mu until that read finishes, which is correct — it must not
+	// pull the pool out from under it — but waiting is not the same as waiting
+	// forever. The browser's refresh can be blocked on a database that is not
+	// answering, and that is exactly the moment somebody presses q. Cancelling
+	// first turns a wait of unknown length into the round trip it takes for the
+	// read to notice.
+	cancelMu sync.Mutex
+	cancel   context.CancelFunc
 }
 
 // errStoreClosed is what a read still in flight gets when the command it
@@ -41,6 +52,17 @@ var errStoreClosed = errors.New("the store has closed")
 // browser's refresh runs in its own goroutine and the program can return while
 // one is in flight.
 func (l *openLater) use(ctx context.Context, fn func(*store.Store) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	l.cancelMu.Lock()
+	l.cancel = cancel
+	l.cancelMu.Unlock()
+	defer func() {
+		l.cancelMu.Lock()
+		l.cancel = nil
+		l.cancelMu.Unlock()
+	}()
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
@@ -58,6 +80,13 @@ func (l *openLater) use(ctx context.Context, fn func(*store.Store) error) error 
 
 // Close releases the connection, waiting for any read still using it.
 func (l *openLater) Close() {
+	// Cancel before waiting. See the cancel field.
+	l.cancelMu.Lock()
+	if l.cancel != nil {
+		l.cancel()
+	}
+	l.cancelMu.Unlock()
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.closed = true
