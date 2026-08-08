@@ -471,7 +471,7 @@ you change. No secrets go in it — Vault issues tokens and DB credentials at ru
 ```bash
 mkdir -p .vctl
 mkdir -p .vctl
-cp docs/config.example.yaml .vctl/config.yaml   # then trim to what you override
+cp config.example.yaml .vctl/config.yaml   # then trim to what you override
 ```
 
 Every key, with endpoints shown as placeholders. The values compiled into your

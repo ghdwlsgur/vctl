@@ -392,7 +392,7 @@ claude mcp add vctl -- vctl mcp
 ```bash
 mkdir -p .vctl
 mkdir -p .vctl
-cp docs/config.example.yaml .vctl/config.yaml   # then trim to what you override
+cp config.example.yaml .vctl/config.yaml   # then trim to what you override
 ```
 
 全キーの一覧です。エンドポイントはプレースホルダーで示しています。ビルドに実際に
