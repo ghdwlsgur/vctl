@@ -406,6 +406,11 @@ function nodeCard(p,{x,y,w,h,node,sub,cls=""}){
 function tunnelRun(gt,gf,{d,col,edge,iface,title}){
   const base=mk("path",{d,class:"tun",stroke:col},gt);
   const fl=mk("path",{d,class:"flow",stroke:col},gf);
+  // The run carries its interface as data, not only in a click handler. Focus
+  // asks "does this belong to the selected interface", and a listener cannot
+  // answer that — so the tunnels were invisible to the dim pass and stayed
+  // bright under every filter.
+  if(iface){base.dataset.ifc=iface;fl.dataset.ifc=iface;}
   tunnels.push({id:edge.id,base,fl});
   hot(base,()=>{const st=stats[edge.id]||{};
     return[title,`allowed ${edge.allowed} · ${hsLabel(st.hs)} · rx ${fmtRate(st.rx)} · tx ${fmtRate(st.tx)} · click to focus`]});
@@ -1134,34 +1139,60 @@ function focusClosure(seed){
   for(const id of (vipFocusNodes.get(seed)||[]))result.nodes.add(id);
   return result;
 }
+// Chrome is the drawing's frame rather than anything on it: lane headings, the
+// zone boxes, the NAT divider. It belongs to no interface and never dims — a
+// filter that hides where "EDGE / NAT" was does not isolate anything.
+const CHROME_CLASSES=new Set(["lanerule","lanehead","zone","zlab","zsub","nat","natlab"]);
+const isChrome=el=>{for(const c of el.classList)if(CHROME_CLASSES.has(c))return true;return false;};
+
+// applyFocus walks down and lets a verdict reach the children.
+//
+// A tag is an answer; no tag means "ask my parent". The pass used to be a flat
+// querySelectorAll where each element judged itself alone and anything untagged
+// was skipped outright, so untagged geometry never dimmed at all. Selecting wg1
+// dimmed the few tagged things and left the wg3 mesh lit beside it — ten beads
+// with nothing to do with wg1 — which reads as "a few dots changed colour"
+// instead of isolating an interface.
+//
+// Three rules make it isolate without emptying the screen.
+//
+// An explicit tag beats an inherited verdict in both directions, so a wg3 glyph
+// on a node wg0 also reaches goes dark during a wg0 focus.
+//
+// keep means "always part of the picture", and it has to reach the children or
+// it means nothing: the hub is one group whose box, title and address are
+// untagged children of it, so a keep that stopped at the group left the hub
+// drawn as an empty outline during a focus on its own interface.
+//
+// An element with children never dims itself. Dimming a container takes its
+// matched descendants down with it, which blacked out the entire diagram the
+// first time this was attempted.
+function applyFocus(el,f,inherited){
+  const data=el.dataset||{},own=data.ifc,ifs=data.ifs,keep=data.keep;
+  const precise=data.eids!==undefined||data.nodes!==undefined||data.hubif!==undefined||data.cidr!==undefined;
+  let matched=inherited;
+  if(keep!=null)matched=true;
+  else if(own!==undefined)matched=focusIfaces.has(own);
+  // A routed-network band is semantic, not owned by the first interface that
+  // happened to create it. The same CIDR can later receive wg-seoul/wg1 routes,
+  // so CIDR focus must beat the band's initial data-ifs value.
+  else if(data.cidr!==undefined)matched=focusCIDRs.has(data.cidr);
+  else if(ifs!==undefined)matched=inherited||ifs.split("|").some(i=>focusIfaces.has(i));
+  else if(precise){
+    if(data.eids!==undefined)matched=matched||JSON.parse(data.eids).some(id=>focusEdges.has(id));
+    if(data.nodes!==undefined)matched=matched||JSON.parse(data.nodes).some(id=>focusNodes.has(id));
+    if(data.hubif!==undefined)matched=matched||focusHubIfaces.has(data.hubif);
+  }
+  el.classList.toggle("dim",!!f&&!matched&&!isChrome(el)&&el.children.length===0);
+  for(const c of el.children)applyFocus(c,f,matched);
+}
+
 function setFocus(f){
   focusIf=f;
   const closure=focusClosure(f);
   focusIfaces=closure.ifaces;focusNodes=closure.nodes;focusEdges=closure.edges;focusHubIfaces=closure.hubIfaces;
   focusCIDRs=closure.cidrs;
-  for(const el of svg.querySelectorAll("g,path,rect,circle,text,line")){
-    if(el.tagName==="g"&&!el.dataset)continue;
-    const data=el.dataset||{},own=data.ifc,ifs=data.ifs,keep=data.keep;
-    const precise=data.eids!==undefined||data.nodes!==undefined||data.hubif!==undefined||data.cidr!==undefined;
-    if(own===undefined&&ifs===undefined&&keep===undefined&&!precise)continue;
-    let matched=false;
-    // Explicit interface ownership wins over shared node metadata. Otherwise a
-    // wg3 glyph on a node also reached by wg0 remains bright during exact wg0
-    // focus even though wg3 is not part of the selected route.
-    if(own!==undefined)matched=focusIfaces.has(own);
-    // A routed-network band is semantic, not owned by the first interface that
-    // happened to create it. The same CIDR can later receive wg-seoul/wg1
-    // routes, so CIDR focus must beat the band's initial data-ifs value.
-    else if(data.cidr!==undefined)matched=focusCIDRs.has(data.cidr);
-    else if(ifs!==undefined)matched=ifs.split("|").some(i=>focusIfaces.has(i));
-    else{
-      if(data.eids!==undefined)matched=matched||JSON.parse(data.eids).some(id=>focusEdges.has(id));
-      if(data.nodes!==undefined)matched=matched||JSON.parse(data.nodes).some(id=>focusNodes.has(id));
-      if(data.hubif!==undefined)matched=matched||focusHubIfaces.has(data.hubif);
-    }
-    const onIt=!f||keep!=null||matched;
-    el.classList.toggle("dim",!!f&&!onIt);
-  }
+  for(const c of svg.children)applyFocus(c,f,false);
   document.querySelectorAll("#legend .i[data-if]").forEach(ch=>{
     ch.classList.toggle("on",ch.dataset.if===f);
   });
