@@ -57,6 +57,78 @@ trivy: ## Scan dependencies, config, and secrets with Trivy
 tidy: ## go mod tidy
 	go mod tidy
 
+# --- WireGuard dashboard (vctl wg serve) --------------------------------------
+# Start it, get a link, stop it. The point of the pair is the second half: the
+# dashboard holds an SSH session open to every gateway and polls them every two
+# seconds, so one left running is load on production hardware nobody is looking
+# at. wg-down is what makes wg-up safe to run casually.
+#
+#   make wg-up                 # prints http://127.0.0.1:8420
+#   make wg-up WG_PORT=9000    # when 8420 is taken
+#   make wg-down
+#
+# Loopback only, and deliberately not a variable. The topology names every
+# gateway, subnet and VM in the fleet, and a bind address is one careless flag
+# away from putting that on a coffee-shop network. Anyone who genuinely wants it
+# on a LAN can say so themselves and own the choice:
+#
+#   ./bin/vctl wg serve --addr 0.0.0.0:8420
+#
+# The drawing comes from Postgres and is only as current as the last
+# `vctl wg sync` — the title bar says how old. The traffic on it is live.
+WG_PORT ?= 8420
+WG_URL  := http://127.0.0.1:$(WG_PORT)
+WG_PID  := $(BIN_DIR)/wg-serve.pid
+WG_LOG  := $(BIN_DIR)/wg-serve.log
+
+.PHONY: wg-up
+# One shell for the whole recipe, not one per line.
+#
+# Make gives each recipe line its own shell, so the `exit 0` in the
+# already-running guard ended that line and make cheerfully ran the next one —
+# a second dashboard, and the pid file overwritten with the second pid. The
+# first was then unkillable by wg-down and kept polling every gateway with
+# nothing on disk pointing at it. Measured: two `make wg-up` in a row left an
+# orphan holding SSH sessions open to twelve production gateways.
+wg-up: build ## Start the WireGuard dashboard on 127.0.0.1 and print the link
+	@set -e; \
+	if [ -f $(WG_PID) ] && kill -0 "$$(cat $(WG_PID))" 2>/dev/null; then \
+		echo "already running (pid $$(cat $(WG_PID))) — $(WG_URL)"; exit 0; \
+	fi; \
+	rm -f $(WG_PID); \
+	echo "starting — the first contact with Vault and Postgres takes a moment"; \
+	nohup $(BIN) wg serve --addr 127.0.0.1:$(WG_PORT) > $(WG_LOG) 2>&1 & \
+	pid=$$!; echo $$pid > $(WG_PID); \
+	i=0; while [ $$i -lt 90 ]; do \
+		if ! kill -0 "$$pid" 2>/dev/null; then \
+			echo "it exited before it was listening:"; \
+			sed 's/^/    /' $(WG_LOG); rm -f $(WG_PID); exit 1; \
+		fi; \
+		if curl -sf -o /dev/null --max-time 2 $(WG_URL); then \
+			printf '\n    %s\n\n' "$(WG_URL)"; \
+			echo "    log:  $(WG_LOG)"; \
+			echo "    stop: make wg-down    # leaves the gateways alone again"; \
+			exit 0; \
+		fi; \
+		i=$$((i+1)); sleep 1; \
+	done; \
+	echo "no answer after 90s; last output:"; sed 's/^/    /' $(WG_LOG); exit 1
+
+.PHONY: wg-down
+wg-down: ## Stop the dashboard and its gateway polling
+	@set -e; \
+	if [ ! -f $(WG_PID) ]; then echo "not running (no $(WG_PID))"; exit 0; fi; \
+	pid=$$(cat $(WG_PID)); \
+	if [ -z "$$pid" ] || ! kill -0 "$$pid" 2>/dev/null; then \
+		echo "stale pid file ($${pid:-empty}) — removing"; rm -f $(WG_PID); exit 0; \
+	fi; \
+	kill "$$pid" 2>/dev/null || true; \
+	i=0; while kill -0 "$$pid" 2>/dev/null && [ $$i -lt 10 ]; do i=$$((i+1)); sleep 1; done; \
+	if kill -0 "$$pid" 2>/dev/null; then \
+		echo "pid $$pid ignored SIGTERM; sending SIGKILL"; kill -9 "$$pid" 2>/dev/null || true; \
+	fi; \
+	rm -f $(WG_PID); echo "stopped (pid $$pid) — gateway polling has ended"
+
 .PHONY: smoke
 smoke: build ## Run Vault-backed smoke tests
 	@VCTL_BIN=$(BIN) ./scripts/smoke.sh
@@ -93,5 +165,8 @@ onboard-rollback: ## Remove the host stack: make onboard-rollback LIMIT=<host>
 	$(_ANSIBLE) site.yml -e vctl_host_state=absent
 
 .PHONY: clean
-clean: ## Remove build artifacts
+# Stops the dashboard first. bin/ holds its pid file, so removing the directory
+# under a running one orphans a process that keeps polling every gateway with
+# nothing left on disk to say it exists.
+clean: wg-down ## Remove build artifacts
 	rm -rf $(BIN_DIR)
