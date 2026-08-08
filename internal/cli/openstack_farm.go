@@ -99,6 +99,11 @@ func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 				if err := st.SetDeploymentName(ctx, id, name, write); err != nil {
 					return err
 				}
+				// The name is what every listing leads with and what shell
+				// completion offers, so a stored reading kept past this one
+				// would go on offering the old name — to the person who just
+				// changed it.
+				forgetReadings(a)
 				ui.Successf(os.Stdout, "%s is now %q", id, name)
 				return nil
 			})
@@ -180,6 +185,30 @@ func keepReading(a *app.App, shape fleet.Shape, snap store.Fleet) {
 		_ = c.Save(shape, snap)
 	}
 }
+
+// Which commands may be answered from disk, and which may not.
+//
+// The line is not how old the reading is. It is what the answer is used for.
+//
+//	listings, pickers, completions   may read the stored reading
+//	connecting to a machine          may not
+//	changing one                     may not
+//	asking a control plane about one may not
+//
+// A listing is somebody looking. Being a few minutes behind costs them a second
+// look, and the age is printed beside it either way. Connecting is somebody
+// acting on an address, and an address that stale may belong to a different
+// machine on a tenant range that gets reused — so `vctl ssh --vm` reads the
+// database every time, and its own staleness check is against the collector's
+// pass rather than against anything here. Changing a deployment and then
+// diagnosing one have the same shape: both compare what is recorded against
+// what is true now, and a stored reading is neither.
+//
+// The three helpers below are the only way into the stored reading from a
+// command, and TestNothingThatConnectsOrChangesReadsTheStoredReading holds the
+// files on the other side of the line away from them. A guard rather than a
+// convention, because the mistake it prevents — a listing helper reused on a
+// connecting path because it was there — is one nobody would notice making.
 
 // storedCatalog serves the last reading when it is young enough for what is
 // being asked.
@@ -447,6 +476,11 @@ func openstackFarmStateCmd(env CommandEnv) *cobra.Command {
 				if err := st.SetDeploymentState(ctx, id, state, note); err != nil {
 					return err
 				}
+				// A declared state changes what the listings mark as expected
+				// and hides a retired deployment altogether. Keeping the old
+				// reading would mean the farm somebody just retired stays in the
+				// list they retired it out of.
+				forgetReadings(a)
 				ui.Successf(os.Stdout, "%s is now %s", id, state)
 				return nil
 			})

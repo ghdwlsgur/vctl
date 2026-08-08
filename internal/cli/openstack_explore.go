@@ -1021,7 +1021,12 @@ func (m exploreModel) rowCells() (exploreColumns, [][]string) {
 
 func (m exploreModel) detailView() string {
 	var b strings.Builder
-	b.WriteString(m.clip(exploreTitleStyle.Render("▌ "+ui.Truncate(m.detailOf, 60))) + "\n")
+	// The freshness comes with it. The title bar that carried it is not on
+	// screen here, and this is the view that shows a VM's addresses and offers
+	// the line for reaching one — where somebody stops reading and starts
+	// acting on what is in front of them.
+	head := exploreTitleStyle.Render("▌ " + ui.Truncate(m.detailOf, 60))
+	b.WriteString(m.clip(head+"  "+ui.Muted(m.freshness())) + "\n")
 	h := m.bodyHeight() + 1
 	end := min(m.detailTop+h, len(m.detail))
 	for i := m.detailTop; i < end; i++ {
