@@ -74,6 +74,27 @@ func TestDashboardPageInlinesItsScripts(t *testing.T) {
 	}
 }
 
+// TestDashboardPageDump writes the page exactly as `vctl wg serve` sends it,
+// where scripts/wg-dashboard-check.mjs can drive it under a real browser.
+// Skipped unless asked for, so normal runs and CI stay unaffected.
+//
+//	WG_PAGE_OUT=/tmp/dashboard.html go test ./internal/cli/ -run TestDashboardPageDump
+//
+// The check script used to splice the three files together itself, which meant
+// it measured a page resembling the served one rather than the served one. This
+// hands it the real bytes, the way TestWGDashboardFixtureDump hands it a real
+// topology.
+func TestDashboardPageDump(t *testing.T) {
+	out := os.Getenv("WG_PAGE_OUT")
+	if out == "" {
+		t.Skip("WG_PAGE_OUT not set")
+	}
+	if err := os.WriteFile(out, wgServeHTML, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Logf("wrote %d bytes", len(wgServeHTML))
+}
+
 // A failed poll must outrank the last sample. Whatever that sample said, the
 // current state is unknown — rendering the stale value as fact is how a dead
 // gateway reads as healthy.

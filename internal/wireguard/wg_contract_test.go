@@ -6,7 +6,7 @@ import (
 )
 
 // The browser reads the topology this serves, and parts of it are a contract
-// rather than a payload. These pin the parts wg_serve.html depends on.
+// rather than a payload. These pin the parts wg_model.js depends on.
 //
 // The dashboard is not a passive renderer: it merges gateways that share an IP,
 // elects a hub, splits mesh from spokes, and groups by zone. Doing that means
@@ -15,7 +15,7 @@ import (
 // something else, and there was no way to tell a rendering fault from a data
 // one, which is exactly the complaint that started this.
 
-// A node id says whether it is a hostname, and edgeHosts in wg_serve.html reads
+// A node id says whether it is a hostname, and edgeHosts in wg_model.js reads
 // it that way:
 //
 //	if(!hs.length){for(const id of [e.source,e.target])if(id&&!id.includes("|"))hs.push(id);}

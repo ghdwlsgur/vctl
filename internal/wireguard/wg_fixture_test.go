@@ -14,7 +14,7 @@ import (
 // matches what the served /topology endpoint produces, and it is deliberately
 // wide enough to reach every branch the wiring renderer can take.
 //
-// Branch preconditions, read off render() in wg_serve.html:
+// Branch preconditions, read off render() in wg_view.js:
 //   - mesh stack    — one interface with >=4 peers whose allowed lists hold no
 //     CIDR wider than /32 (wg5 below).
 //   - two zones     — zoneKey is dc.split("-")[0], so the hub's dc prefix must
@@ -112,8 +112,10 @@ func wgDashboardFixture() Topology {
 //
 //	WG_FIXTURE_OUT=/tmp/topology.json go test ./internal/wireguard/ -run TestWGDashboardFixtureDump
 //
-// Then splice a <script>window.WG_BOOT={topology:<that json>,frames:[]}</script>
-// ahead of wg_serve.html's own <script> and open the result.
+// Splicing that into the page and measuring what comes out is what
+// scripts/wg-dashboard-check.mjs does — run `make wg-check` rather than staging
+// it by hand. It calls this test for its topology, so a fixture written here is
+// the one the browser gets.
 func TestWGDashboardFixtureDump(t *testing.T) {
 	out := os.Getenv("WG_FIXTURE_OUT")
 	if out == "" {
