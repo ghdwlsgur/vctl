@@ -1,7 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -235,4 +240,191 @@ func vmNames(vms []store.Instance) []string {
 		out = append(out, v.Name)
 	}
 	return out
+}
+
+// The line the stored reading may not cross.
+//
+// Listings, pickers and completions may be answered from disk. Connecting to a
+// machine, changing one, or asking a control plane about one may not — see the
+// block above storedCatalog for why each of those is different from looking.
+//
+// A guard rather than a convention, because the mistake it prevents is one
+// nobody would notice making: listingCatalog is right there, it returns exactly
+// the catalog a connecting path also wants, and reusing it would work perfectly
+// until the day somebody was routed to an address that had been reassigned.
+//
+// By function where a file has both sides of the line in it — openstack_farm.go
+// defines the helpers as well as the two commands that must not call them.
+func TestNothingThatConnectsOrChangesReadsTheStoredReading(t *testing.T) {
+	readsCache := map[string]bool{
+		"storedCatalog":  true,
+		"listingCatalog": true,
+		"vmCatalog":      true,
+		"LoadAtLeast":    true,
+		"FleetCache":     true,
+	}
+	for _, tc := range []struct {
+		file, what string
+		only       []string
+	}{
+		{file: "ssh.go", what: "ssh connects to the machine it resolved"},
+		{file: "openstack_reconcile.go", what: "reconcile compares what is recorded against a control plane"},
+		{file: "openstack_farm_doctor.go", what: "doctor asks a farm's control plane about itself"},
+		{
+			file: "openstack_farm.go",
+			what: "naming and declaring the state of a deployment are writes",
+			only: []string{"openstackFarmNameCmd", "openstackFarmStateCmd"},
+		},
+	} {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, tc.file, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", tc.file, err)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || (len(tc.only) > 0 && !slices.Contains(tc.only, fn.Name.Name)) {
+				continue
+			}
+			ast.Inspect(fn, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				name := ""
+				switch c := call.Fun.(type) {
+				case *ast.Ident:
+					name = c.Name
+				case *ast.SelectorExpr:
+					name = c.Sel.Name
+				}
+				if readsCache[name] {
+					t.Errorf("%s calls %s at %s; %s, and the stored reading is not what it is comparing against",
+						tc.file, name, fset.Position(call.Pos()), tc.what)
+				}
+				return true
+			})
+		}
+	}
+}
+
+// Changing a deployment drops the stored reading rather than editing it.
+//
+// The command that changed one field has not read the rest, so writing a
+// partly-known picture back is how a cache starts inventing. Dropping it also
+// means the next listing cannot go on showing somebody the name they just
+// changed away from.
+func TestChangingADeploymentDropsTheStoredReading(t *testing.T) {
+	a := appWithStoredReading(t, fleet.ShapeVMs, time.Now())
+	// Both shapes, since a full reading answers a farms question too.
+	if err := a.FleetCache().Save(fleet.ShapeFarms, store.Fleet{ReadAt: time.Now()}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.FreshFor); !ok {
+		t.Fatal("nothing stored to begin with")
+	}
+
+	forgetReadings(a)
+
+	for _, s := range []fleet.Shape{fleet.ShapeFarms, fleet.ShapeVMs} {
+		if _, _, ok := storedCatalog(a, s, fleet.UsableFor); ok {
+			t.Errorf("%s survived a change to the fleet", s)
+		}
+	}
+	// And again on a cache that is already empty, since a rename may be the
+	// first thing anybody runs.
+	forgetReadings(a)
+}
+
+// Every command that changes a deployment drops the reading. Naming and
+// declaring state were added after reconcile and did not — a rename went on
+// completing to the old name for a day.
+func TestEveryCommandThatChangesADeploymentForgetsTheReading(t *testing.T) {
+	for _, tc := range []struct{ file, fn string }{
+		{"openstack_farm.go", "openstackFarmNameCmd"},
+		{"openstack_farm.go", "openstackFarmStateCmd"},
+		{"openstack_reconcile.go", "openstackReconcileCmd"},
+	} {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, tc.file, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", tc.file, err)
+		}
+		var found bool
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != tc.fn {
+				continue
+			}
+			ast.Inspect(fn, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "forgetReadings" {
+					found = true
+				}
+				return true
+			})
+		}
+		if !found {
+			t.Errorf("%s changes a deployment and never calls forgetReadings", tc.fn)
+		}
+	}
+}
+
+// The detail view carries the freshness with it. The title bar that says it is
+// not on screen there, and the detail is where a VM's addresses are — and where
+// the line for reaching one is offered.
+func TestTheDetailSaysHowOldTheRowsBehindItAre(t *testing.T) {
+	m := testExploreModel()
+	m.data.Cached = true
+	m.data.ReadAt = time.Now().Add(-7 * time.Minute)
+	m.focus = paneRows
+	m.openDetail()
+
+	got := stripANSI(m.detailView())
+	first := strings.SplitN(got, "\n", 2)[0]
+	for _, want := range []string{"cached", "7m old"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("detail header %q does not carry %q", first, want)
+		}
+	}
+}
+
+// Two ages, and they are not the same age.
+//
+// How old the reading is says when the database was last asked. How old a VM's
+// record is says when the collector last saw that machine — and that is the one
+// an address is only as good as. A reading taken a second ago can carry a VM
+// nobody has collected for a week, so a fresh screen is not a claim that
+// anything on it is current.
+//
+// Which is why `vctl ssh --vm` checks the second and not the first, and why a
+// stored reading cannot quiet the warning.
+func TestAFreshReadingDoesNotMakeAStaleVMLookCurrent(t *testing.T) {
+	stale := time.Now().Add(-vmStaleWindow - time.Hour)
+	v := store.Instance{
+		DeploymentID: "10.0.0.1:5000", InstanceID: "u-1", Name: "bastion",
+		Status: "ACTIVE", ObservedAt: stale,
+		Addresses: []store.InstanceAddress{{Address: "10.10.0.5"}},
+	}
+	var buf bytes.Buffer
+	renderVMShow(&buf, v, map[string]string{"10.0.0.1:5000": "seoul-a"}, nil, time.Now())
+	if got := stripANSI(buf.String()); !strings.Contains(got, "may not be current") {
+		t.Errorf("a VM nobody has collected in over a window reads as current:\n%s", got)
+	}
+
+	// And the browser shows the same words, whichever side its rows came from.
+	for _, cached := range []bool{false, true} {
+		m := testExploreModel()
+		m.data.Cached = cached
+		m.data.ReadAt = time.Now()
+		m.data.VMs["10.0.0.1:5000"] = []store.Instance{v}
+		m.focus = paneRows
+		m.openDetail()
+		if got := stripANSI(strings.Join(m.detail, "\n")); !strings.Contains(got, "may not be current") {
+			t.Errorf("cached=%v: the browser's detail does not warn:\n%s", cached, got)
+		}
+	}
 }
