@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
@@ -178,6 +179,82 @@ func keepReading(a *app.App, shape fleet.Shape, snap store.Fleet) {
 	if c := a.FleetCache(); c != nil {
 		_ = c.Save(shape, snap)
 	}
+}
+
+// storedCatalog serves the last reading when it is young enough for what is
+// being asked.
+//
+// maxAge belongs to the caller, not to the cache. A browser that refreshes
+// behind itself can open on anything inside fleet.UsableFor because it corrects
+// itself a second later; a command that prints once and exits has no such
+// correction, so it takes fleet.FreshFor — one heartbeat, past which nothing
+// should be presented as current.
+func storedCatalog(a *app.App, shape fleet.Shape, maxAge time.Duration) (fleet.Catalog, time.Duration, bool) {
+	if a == nil {
+		return fleet.Catalog{}, 0, false
+	}
+	now := time.Now()
+	got, err := a.FleetCache().LoadAtLeast(shape, now)
+	if err != nil {
+		return fleet.Catalog{}, 0, false
+	}
+	if age := got.Age(now); age <= maxAge {
+		return fleet.From(got.Fleet), age, true
+	}
+	return fleet.Catalog{}, 0, false
+}
+
+// listingCatalog is what a printed listing reads: the stored reading when it is
+// fresh, the database otherwise.
+//
+// The age is said out loud on stderr. A listing that quietly answers from disk
+// is a listing somebody will eventually act on without knowing how old it was —
+// and stderr rather than stdout, so a piped listing still pipes the listing.
+//
+// live forces the database. Two things set it: --fresh, and --json — a program
+// reading the output cannot see the note that says how old the answer is, so it
+// is given the real thing rather than a claim it has no way to check.
+func listingCatalog(ctx context.Context, a *app.App, st *openLater, live bool,
+	read func(context.Context, *app.App, *store.Store) (fleet.Catalog, error),
+) (fleet.Catalog, error) {
+	if !live {
+		if cat, age, ok := storedCatalog(a, fleet.ShapeFarms, fleet.FreshFor); ok {
+			ui.Infof(os.Stderr, "cached · read %s ago · --fresh to re-read", ui.CompactDuration(age))
+			return cat, nil
+		}
+	}
+	var out fleet.Catalog
+	err := st.use(ctx, func(s *store.Store) error {
+		cat, err := read(ctx, a, s)
+		out = cat
+		return err
+	})
+	return out, err
+}
+
+// wantsFresh reports whether the operator asked for the database specifically.
+//
+// Read off the command rather than passed down, because --fresh is one
+// persistent flag on `openstack` shared by every listing under it: the answer
+// to "is what I am looking at current" should not depend on which of them they
+// happened to type.
+func wantsFresh(cmd *cobra.Command) bool {
+	v, err := cmd.Flags().GetBool("fresh")
+	return err == nil && v
+}
+
+// mustBeLive reports whether this run may not be answered from disk.
+//
+// Two things say so. --fresh is somebody asking. --json is the other one, and
+// it is not a preference: the note saying how old an answer is goes to stderr
+// for a person to read, and a program parsing stdout has no way to see it — so
+// it is never handed a reading it cannot check the age of.
+//
+// One function rather than the same two-term condition written out at each
+// listing, because a listing that forgot the second term would keep working and
+// quietly feed a stored reading to whatever consumes its JSON.
+func mustBeLive(cmd *cobra.Command, asJSON bool) bool {
+	return asJSON || wantsFresh(cmd)
 }
 
 // loadVMCatalog is the one reading that carries the instance rows, for the

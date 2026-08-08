@@ -3,11 +3,9 @@ package cli
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -71,7 +69,7 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 			// withApp, not withStore: opening the store is the expensive part
 			// and the screen may not need it at all. See openLater.
 			return env.withApp(func(a *app.App) error {
-				return runExplore(cmd.Context(), a, args)
+				return runExplore(cmd.Context(), a, args, wantsFresh(cmd))
 			})
 		},
 	}
@@ -90,11 +88,11 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 // keeps the panes, the filters and the size because they were never taken
 // away, and the cursor stays on the row it was on by name rather than by
 // position.
-func runExplore(ctx context.Context, a *app.App, args []string) error {
+func runExplore(ctx context.Context, a *app.App, args []string, live bool) error {
 	st := &openLater{app: a}
 	defer st.Close()
 
-	data, err := firstExploreScreen(ctx, a, st)
+	data, err := firstExploreScreen(ctx, a, st, live)
 	if err != nil {
 		return err
 	}
@@ -145,8 +143,8 @@ func runExplore(ctx context.Context, a *app.App, args []string) error {
 // Only when authenticating is silent. With a lapsed token the read would put an
 // SSO prompt behind a full-screen program, where it cannot be seen or answered;
 // that login happens here, in front of the screen, as it did before.
-func firstExploreScreen(ctx context.Context, a *app.App, st *openLater) (exploreData, error) {
-	if !a.WouldPromptForLogin() {
+func firstExploreScreen(ctx context.Context, a *app.App, st *openLater, live bool) (exploreData, error) {
+	if !live && !a.WouldPromptForLogin() {
 		if cached, err := a.FleetCache().Load(fleet.ShapeVMs, time.Now()); err == nil {
 			out := exploreDataFrom(fleet.From(cached.Fleet))
 			// A stored reading with nothing in it is not worth a screen. The
@@ -163,63 +161,6 @@ func firstExploreScreen(ctx context.Context, a *app.App, st *openLater) (explore
 	// to show.
 	ui.Infof(os.Stderr, "reading the fleet…")
 	return loadExploreData(ctx, a, st)
-}
-
-// openLater is the inventory store, opened the first time something actually
-// needs it and kept for the rest of the session.
-//
-// The browser exists to be opened often and closed quickly, and most of what it
-// shows can come off disk. Opening the store up front — which is what wrapping
-// the command in withStore did — paid for a Vault credential and a TLS
-// handshake before deciding whether either was needed.
-//
-// One connection for the session rather than one per refresh: the setup is the
-// expensive part, and re-minting a database credential every time somebody
-// presses r would make the refresh cost what the first read cost.
-type openLater struct {
-	app *app.App
-
-	mu     sync.Mutex
-	st     *store.Store
-	closed bool
-}
-
-// errBrowserClosed is what a refresh still in flight gets when the screen has
-// already gone. Nothing is left to show it, and that is the point: it is not a
-// failure, it is a read nobody is waiting for any more.
-var errBrowserClosed = errors.New("the browser has closed")
-
-// use runs fn with the store.
-//
-// The lock is held for the whole call rather than only the open, so Close
-// cannot take the pool out from under a read that is still running — the
-// refresh runs in its own goroutine and the program can return while one is in
-// flight.
-func (l *openLater) use(ctx context.Context, fn func(*store.Store) error) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.closed {
-		return errBrowserClosed
-	}
-	if l.st == nil {
-		st, err := l.app.OpenStore(ctx, app.PurposeInventoryRead)
-		if err != nil {
-			return err
-		}
-		l.st = st
-	}
-	return fn(l.st)
-}
-
-// Close releases the connection, waiting for any read still using it.
-func (l *openLater) Close() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.closed = true
-	if l.st != nil {
-		l.st.Close()
-		l.st = nil
-	}
 }
 
 // exploreData is the whole picture, read once.

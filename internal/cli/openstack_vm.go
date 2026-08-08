@@ -50,8 +50,10 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 			"  vctl openstack vm 10.3.1         every VM answering on an address that starts there",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+			return env.withApp(func(a *app.App) error {
 				ctx := cmd.Context()
+				lazy := &openLater{app: a}
+				defer lazy.Close()
 				// One argument, read by its shape. A UUID is an identity and a
 				// word is a search, and asking somebody to say which is which
 				// with a flag would be asking them to describe what they can
@@ -71,53 +73,88 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 					InstanceID:     normalizeInstanceID(id),
 					IncludeMissing: showGone,
 				}
-				// One reading of the deployments for both things this command
-				// asks about them: which one --farm means, and what to call
-				// each in the grouping header. Those were two reads, and the
-				// second was issued after the VMs had already been fetched.
-				var cat fleet.Catalog
-				if farm != "" || !asJSON {
-					c, err := loadFarmCatalog(ctx, a, st)
+				// A request nothing narrows is the whole reading, and the whole
+				// reading is the thing that gets stored. So it is answered from
+				// one catalog — off disk when there is a fresh one, out of the
+				// database otherwise — and projected by the same function
+				// either way, which is what stops the two from drifting.
+				//
+				// Everything narrowing is a SQL predicate: ILIKE over names, an
+				// address join, a project resolved through its own table.
+				// Re-implementing those over stored rows is how a cache starts
+				// giving different answers than the command it stands in for, so
+				// those go to the database and stay there. --farm and --missing
+				// are the exceptions, because they are the two predicates the
+				// reading was stored under.
+				narrowed := search != "" || address != "" || id != "" || project != "" || host != ""
+				if !narrowed {
+					cat, cached, err := vmCatalog(ctx, a, lazy, mustBeLive(cmd, asJSON))
 					if err != nil {
 						return err
 					}
-					cat = c
-				}
-				if farm != "" {
-					resolved, err := cat.Resolve(farm)
+					vms, err := vmsFrom(cat, farm, showGone)
 					if err != nil {
 						return err
 					}
-					f.DeploymentID = resolved.ID
+					if asJSON {
+						return writeJSON(vms)
+					}
+					if cached > 0 {
+						ui.Infof(os.Stderr, "cached · read %s ago · --fresh to re-read", ui.CompactDuration(cached))
+					}
+					renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), wide)
+					return nil
 				}
-				// After the farm, so --farm narrows what a name has to be
-				// unique within.
-				if project != "" {
-					ids, note, err := resolveProjects(ctx, st, f.DeploymentID, project)
+				return lazy.use(ctx, func(st *store.Store) error {
+					// One reading of the deployments for both things this
+					// command asks about them: which one --farm means, and what
+					// to call each in the grouping header. Those were two reads,
+					// and the second was issued after the VMs had already been
+					// fetched.
+					var cat fleet.Catalog
+					if farm != "" || !asJSON {
+						c, err := loadFarmCatalog(ctx, a, st)
+						if err != nil {
+							return err
+						}
+						cat = c
+					}
+					if farm != "" {
+						resolved, err := cat.Resolve(farm)
+						if err != nil {
+							return err
+						}
+						f.DeploymentID = resolved.ID
+					}
+					// After the farm, so --farm narrows what a name has to be
+					// unique within.
+					if project != "" {
+						ids, note, err := resolveProjects(ctx, st, f.DeploymentID, project)
+						if err != nil {
+							return err
+						}
+						f.ProjectIDs = ids
+						if note != "" {
+							ui.Infof(os.Stderr, "%s", note)
+						}
+					}
+					if host != "" {
+						nova, err := novaNameFor(ctx, st, host, f.DeploymentID)
+						if err != nil {
+							return err
+						}
+						f.Hypervisor = nova
+					}
+					vms, err := st.Instances(ctx, f)
 					if err != nil {
 						return err
 					}
-					f.ProjectIDs = ids
-					if note != "" {
-						ui.Infof(os.Stderr, "%s", note)
+					if asJSON {
+						return writeJSON(vms)
 					}
-				}
-				if host != "" {
-					nova, err := novaNameFor(ctx, st, host, f.DeploymentID)
-					if err != nil {
-						return err
-					}
-					f.Hypervisor = nova
-				}
-				vms, err := st.Instances(ctx, f)
-				if err != nil {
-					return err
-				}
-				if asJSON {
-					return writeJSON(vms)
-				}
-				renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), wide)
-				return nil
+					renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), wide)
+					return nil
+				})
 			})
 		},
 	}
@@ -138,6 +175,70 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 	// uuids --id takes. Somebody who has the uuid is not searching for it.
 	cmd.ValidArgsFunction = completeVMName(env)
 	return cmd
+}
+
+// vmCatalog is the whole reading for an unnarrowed listing, and how old it is.
+//
+// A zero age means it came from the database. The live read is the full
+// snapshot rather than the light one plus a query: it costs about 150ms more
+// against a connection that costs ten seconds, and it is the reading that gets
+// stored — so the run after it, and the browser after that, pay neither.
+//
+// Before this, `vm` could read the stored reading but nothing except the
+// browser ever wrote one, so the fast path existed and almost never fired.
+func vmCatalog(ctx context.Context, a *app.App, lazy *openLater, live bool) (fleet.Catalog, time.Duration, error) {
+	if !live {
+		if cat, age, ok := storedCatalog(a, fleet.ShapeVMs, fleet.FreshFor); ok {
+			return cat, age, nil
+		}
+	}
+	var out fleet.Catalog
+	err := lazy.use(ctx, func(st *store.Store) error {
+		cat, err := loadVMCatalog(ctx, a, st)
+		out = cat
+		return err
+	})
+	return out, 0, err
+}
+
+// vmsFrom is the listing projected out of a reading.
+//
+// It reproduces exactly two of instancesOn's predicates — the deployment and
+// the missing rows — and nothing else, because those are the two it can
+// reproduce without guessing. The order is left alone: the rows arrived from
+// that statement with its ORDER BY, and both predicates are filters over it, so
+// what comes out here is what the database would have returned at the instant
+// it was read.
+//
+// The same function for the stored reading and the live one. Two projections
+// would be two chances to disagree about what `vm --farm x` means, and the
+// disagreement would only show up as a cached listing that looked slightly
+// wrong.
+//
+// Over AllVMs rather than the catalog's per-farm lists, which have already
+// dropped the missing rows — going through those would make --missing return
+// nothing and read as a fleet where nothing has ever been deleted.
+func vmsFrom(cat fleet.Catalog, selector string, includeMissing bool) ([]store.Instance, error) {
+	want := ""
+	if selector != "" {
+		f, err := cat.Resolve(selector)
+		if err != nil {
+			return nil, err
+		}
+		want = f.ID
+	}
+	rows := cat.AllVMs()
+	out := make([]store.Instance, 0, len(rows))
+	for _, v := range rows {
+		if want != "" && v.DeploymentID != want {
+			continue
+		}
+		if !includeMissing && v.MissingSince != nil {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // normalizeInstanceID accepts what Kubernetes writes as well as a bare UUID.

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -138,18 +139,39 @@ func hasPrefixFold(s, prefix string) bool {
 //
 // extra carries the words a particular flag accepts that are not deployments,
 // like the listing's "unassigned".
+// The stored reading answers first, the way completeInventoryHost uses the
+// local snapshot, and for the same reason twice over. This is the completion a
+// Tab reaches for most, and it is the one that most often comes back empty:
+// completionBudget is two seconds and the first contact with Vault and Postgres
+// after an idle period takes about ten, so the answer that was on disk all
+// along was being paid for and then abandoned.
+//
+// Anything inside the usable window, not just the fresh one. A Tab is not a
+// decision — the worst a day-old list can do is fail to offer a farm somebody
+// renamed this morning, and typing it still works. Every command that takes the
+// value resolves it against the database anyway.
 func completeFarm(env CommandEnv, extra ...string) completer {
-	return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
-		// nil app: a completion does not keep what it reads. It runs on a
-		// keystroke with a two-second budget, and a write on that path is a
-		// disk touch nobody asked for — step 4 gives it the cache to read
-		// from instead.
-		farms, err := farmChoices(ctx, nil, st)
-		if err != nil {
-			return nil
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		restore := silenceStderr()
+		if a, err := env.newApp(); err == nil {
+			if cat, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.UsableFor); ok {
+				restore()
+				return farmCompletions(cat.Farms(), extra, toComplete), cobra.ShellCompDirectiveNoFileComp
+			}
 		}
-		return farmCompletions(farms, extra, toComplete)
-	})
+		restore()
+		return env.completeFromStore(func(ctx context.Context, st *store.Store, toComplete string) []string {
+			// nil app: a completion does not keep what it reads. It runs on a
+			// keystroke with a two-second budget, and a write on that path is a
+			// disk touch nobody asked for. The listings fill this cache; a Tab
+			// only ever reads it.
+			farms, err := farmChoices(ctx, nil, st)
+			if err != nil {
+				return nil
+			}
+			return farmCompletions(farms, extra, toComplete)
+		})(cmd, args, toComplete)
+	}
 }
 
 func farmCompletions(farms []farmChoice, extra []string, toComplete string) []string {
