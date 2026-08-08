@@ -350,3 +350,50 @@ func TestDashboardLegendSeparatesRecordedFromInferred(t *testing.T) {
 		}
 	}
 }
+
+// An interface is (host, name), never a name.
+//
+// wg3 on the hub and wg3 on the Seoul gateway are two interfaces on two
+// machines. The operations ledger warns about the same trap from the other
+// side: three separate nodes are called wireguard-gw-incheon.
+//
+// hopKey used to qualify a hop only when its name collided with one of the
+// hub's, which merged two hops that shared a name with each other, and made
+// whether a hop was qualified at all depend on how somebody had named an
+// interface on a different node.
+func TestAHopInterfaceIsIdentifiedByItsHostNotOnlyItsName(t *testing.T) {
+	got := runDashboardJS(t, `
+const hub={id:"hub",ifaces:[{name:"wg0"},{name:"wg3"}]};
+const out=[
+  // hub-adjacent: one hub, so the bare name cannot be ambiguous
+  hopKey({source:"hub",target:"gw-a",iface:"wg3"},hub),
+  // a hop whose name collides with a hub interface
+  hopKey({source:"gw-a",target:"x",iface:"wg3"},hub),
+  // a hop whose name collides with another hop and NOT with the hub —
+  // this is the one that used to merge
+  hopKey({source:"gw-a",target:"y",iface:"wg-seoul"},hub),
+  hopKey({source:"gw-b",target:"z",iface:"wg-seoul"},hub),
+];
+console.log(JSON.stringify(out));
+`)
+	want := `["wg3","gw-a/wg3","gw-a/wg-seoul","gw-b/wg-seoul"]`
+	if got != want {
+		t.Errorf("hop keys = %s, want %s", got, want)
+	}
+}
+
+// The chip says the short name while it still picks out one interface, and
+// grows the host back the moment two chips would read the same. A legend that
+// prints two different interfaces under one word is worse than a long word.
+func TestAFilterChipGrowsItsHostOnlyWhenItWouldBeAmbiguous(t *testing.T) {
+	got := runDashboardJS(t, `
+const keys=["wg0","wg3","gw-a/wg3","gw-a/wg-seoul","gw-b/wg-personal"];
+console.log(JSON.stringify(keys.map(k=>ifLabel(k,keys))));
+`)
+	// wg3 appears bare (the hub's) and as gw-a/wg3, so the qualified one keeps
+	// its host. wg-seoul and wg-personal are unique, so they stay short.
+	want := `["wg0","wg3","gw-a/wg3","wg-seoul","wg-personal"]`
+	if got != want {
+		t.Errorf("labels = %s, want %s", got, want)
+	}
+}
