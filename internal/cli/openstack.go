@@ -52,12 +52,15 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 			"To look around rather than to query: 'vctl openstack explore' walks the same data by\n" +
 			"picking — deployment → hosts → VMs — and needs no identifier to start from.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+			return env.withApp(func(a *app.App) error {
+				ctx := cmd.Context()
+				st := &openLater{app: a}
+				defer st.Close()
 				// One reading for the whole command. The listing used to read
 				// hosts here and read them again inside the farm resolution
 				// below, so a --farm run compared a selector taken from one
 				// instant against rows taken from another.
-				cat, err := loadFarmCatalog(cmd.Context(), a, st)
+				cat, err := listingCatalog(ctx, a, st, mustBeLive(cmd, asJSON), loadFarmCatalog)
 				if err != nil {
 					return err
 				}
@@ -98,6 +101,10 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	cmd.Flags().BoolVar(&all, "all", false, "include hosts a probe examined and found no OpenStack on")
 	cmd.Flags().BoolVar(&parked, "parked", false, "include hosts the inventory has in maintenance or retired, and the farms made only of them")
+	// Persistent, so it means the same thing on every listing under here. The
+	// listings answer from the last reading when it is fresh, which is most of
+	// what makes them quick — this is how somebody says they would rather wait.
+	cmd.PersistentFlags().Bool("fresh", false, "read the database instead of the last stored reading")
 	registerCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
 	registerCompletion(cmd, "role", completeRole(env))
 	cmd.AddCommand(openstackHostCmd(env))

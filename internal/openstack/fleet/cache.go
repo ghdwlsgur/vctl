@@ -78,6 +78,16 @@ const (
 	ShapeVMs Shape = "vms"
 )
 
+// carries orders the shapes by what is in them. A reading stored under one
+// shape answers everything a lesser one would — that is the whole of what
+// "only supersets are written" buys.
+func (s Shape) carries() int {
+	if s == ShapeVMs {
+		return 2
+	}
+	return 1
+}
+
 // ErrNoCache means there is nothing usable on disk: no file, an unreadable one,
 // a version from another vctl, or a reading old enough to be misleading. Every
 // one of them leads the caller to the same next move — read the database — so
@@ -148,6 +158,47 @@ func (c *Cache) Load(s Shape, now time.Time) (Cached, error) {
 	}
 	out.Shape = s
 	return out, nil
+}
+
+// LoadAtLeast returns the newest stored reading that carries at least what s
+// asks for.
+//
+// A shape names a floor, not a file. A caller that wants counts is answered by
+// either reading, so it takes whichever is newer rather than the one named
+// after what it asked for — otherwise a browser that had just refreshed would
+// leave the listing beside it reading an hour-old farms file, and the two would
+// disagree for no reason a person could see.
+//
+// A caller that wants instance rows can only be answered by the reading that
+// has them, and gets nothing rather than an empty list.
+func (c *Cache) LoadAtLeast(s Shape, now time.Time) (Cached, error) {
+	var (
+		best     Cached
+		found    bool
+		firstErr error
+	)
+	for _, from := range []Shape{ShapeFarms, ShapeVMs} {
+		if from.carries() < s.carries() {
+			continue
+		}
+		got, err := c.Load(from, now)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if !found || got.CapturedAt.After(best.CapturedAt) {
+			best, found = got, true
+		}
+	}
+	if found {
+		return best, nil
+	}
+	if firstErr != nil {
+		return Cached{}, firstErr
+	}
+	return Cached{}, ErrNoCache
 }
 
 // Save stores a reading, atomically and at 0600.

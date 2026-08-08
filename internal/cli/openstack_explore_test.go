@@ -618,7 +618,7 @@ func TestExploreOpensFromTheStoredReadingWithoutADatabase(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	got, err := firstExploreScreen(context.Background(), a, &openLater{app: a})
+	got, err := firstExploreScreen(context.Background(), a, &openLater{app: a}, false)
 	if err != nil {
 		t.Fatalf("first screen: %v", err)
 	}

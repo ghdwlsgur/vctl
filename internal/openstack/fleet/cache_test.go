@@ -274,3 +274,71 @@ func TestAStoredFarmsReadingAlwaysCarriesCountsAndRuns(t *testing.T) {
 		t.Error("reconcile time was lost through the cache")
 	}
 }
+
+// A shape is a floor. A caller wanting counts is answered by either reading, so
+// it takes whichever is newer — a listing beside a browser that just refreshed
+// must not read the older file and disagree with it for no visible reason.
+func TestAskingForFarmsTakesWhicheverReadingIsNewer(t *testing.T) {
+	c := NewCache(t.TempDir())
+	old := time.Now().Add(-20 * time.Minute)
+	recent := time.Now().Add(-1 * time.Minute)
+
+	if err := c.Save(ShapeFarms, snapshotAt(old)); err != nil {
+		t.Fatalf("Save farms: %v", err)
+	}
+	if err := c.Save(ShapeVMs, snapshotAt(recent)); err != nil {
+		t.Fatalf("Save vms: %v", err)
+	}
+	got, err := c.LoadAtLeast(ShapeFarms, time.Now())
+	if err != nil {
+		t.Fatalf("LoadAtLeast: %v", err)
+	}
+	if !got.CapturedAt.Equal(recent) {
+		t.Errorf("took the reading from %v, want the newer one from %v", got.CapturedAt, recent)
+	}
+
+	// And the other way round, so this is not just a preference for one file.
+	if err := c.Save(ShapeFarms, snapshotAt(time.Now())); err != nil {
+		t.Fatalf("Save farms: %v", err)
+	}
+	got, err = c.LoadAtLeast(ShapeFarms, time.Now())
+	if err != nil {
+		t.Fatalf("LoadAtLeast: %v", err)
+	}
+	if got.CapturedAt.Equal(recent) {
+		t.Error("kept the vms reading after the farms one overtook it")
+	}
+}
+
+// Instance rows can only come from the reading that has them. Answering with a
+// farms reading would hand back an empty VM list that reads as a deployment
+// with none in it.
+func TestAskingForVMsIsNotAnsweredByAFarmsReading(t *testing.T) {
+	c := NewCache(t.TempDir())
+	if err := c.Save(ShapeFarms, snapshotAt(time.Now())); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := c.LoadAtLeast(ShapeVMs, time.Now()); !errors.Is(err, ErrNoCache) {
+		t.Errorf("a farms reading answered a request for VMs: %v", err)
+	}
+	if err := c.Save(ShapeVMs, snapshotAt(time.Now())); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := c.LoadAtLeast(ShapeVMs, time.Now())
+	if err != nil {
+		t.Fatalf("LoadAtLeast: %v", err)
+	}
+	if len(got.Fleet.Instances) == 0 {
+		t.Error("the reading that answered carries no instances")
+	}
+}
+
+// Nothing stored is nothing to serve, whichever shape was asked for.
+func TestLoadAtLeastWithNothingStored(t *testing.T) {
+	c := NewCache(t.TempDir())
+	for _, s := range []Shape{ShapeFarms, ShapeVMs} {
+		if _, err := c.LoadAtLeast(s, time.Now()); !errors.Is(err, ErrNoCache) {
+			t.Errorf("%s: %v", s, err)
+		}
+	}
+}

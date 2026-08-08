@@ -164,6 +164,15 @@ func (c Catalog) Farms() []Farm { return c.farms }
 // and the one that is always right is the count.
 func (c Catalog) VMs(farmID string) []store.Instance { return c.vms[farmID] }
 
+// AllVMs is every instance row in the reading, in the order the database
+// returned them and including the ones the control plane has stopped listing.
+//
+// Deliberately not the per-farm lists concatenated. Those have already dropped
+// the missing rows, and joining them back together would follow map order
+// rather than the deployment order the rows arrived in — so a caller wanting
+// the whole fleet takes the rows as they came.
+func (c Catalog) AllVMs() []store.Instance { return c.snap.Instances }
+
 // VMCount is how many VMs the control plane still lists, from either reading.
 func (c Catalog) VMCount(farmID string) int { return c.snap.VMs[farmID] }
 
