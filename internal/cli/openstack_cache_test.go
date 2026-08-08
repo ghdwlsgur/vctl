@@ -6,7 +6,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -172,7 +171,7 @@ func TestFreshIsAvailableOnEveryListingUnderOpenstack(t *testing.T) {
 // returned: the same two predicates, in the same order.
 func TestTheVMProjectionReproducesTheQueryItStandsInFor(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeVMs, time.Now())
-	cat, _, ok := storedCatalog(a, fleet.ShapeVMs, fleet.FreshFor)
+	cat, _, ok := storedCatalog(a, fleet.ShapeVMs, fleet.ForListing)
 	if !ok {
 		t.Fatal("the stored reading was not served")
 	}
@@ -215,10 +214,10 @@ func TestTheVMProjectionReproducesTheQueryItStandsInFor(t *testing.T) {
 // an empty list there reads as a deployment with nothing in it.
 func TestAVMListingIsNotServedFromAFarmsReading(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeFarms, time.Now())
-	if _, _, ok := storedCatalog(a, fleet.ShapeVMs, fleet.FreshFor); ok {
+	if _, _, ok := storedCatalog(a, fleet.ShapeVMs, fleet.ForListing); ok {
 		t.Error("a farms reading answered a request for VM rows")
 	}
-	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.FreshFor); !ok {
+	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForListing); !ok {
 		t.Error("and it did not answer the request it can answer")
 	}
 }
@@ -247,7 +246,7 @@ func TestFarmCompletionAnswersFromDiskWithoutADatabase(t *testing.T) {
 	// Two hours old is past a listing's window and well inside a Tab's. A Tab is
 	// not a decision — the worst a stale list does is fail to offer a farm
 	// somebody renamed this morning, and typing it still works.
-	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.FreshFor); ok {
+	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForListing); ok {
 		t.Error("the fixture is fresh enough for a listing; this test is not proving anything")
 	}
 }
@@ -263,16 +262,24 @@ func vmNames(vms []store.Instance) []string {
 // The line the stored reading may not cross.
 //
 // Listings, pickers and completions may be answered from disk. Connecting to a
-// machine, changing one, or asking a control plane about one may not — see the
-// block above storedCatalog for why each of those is different from looking.
+// machine, changing one, or asking a control plane about one may not — see
+// fleet.Purpose for why each of those is different from looking.
 //
 // A guard rather than a convention, because the mistake it prevents is one
 // nobody would notice making: listingCatalog is right there, it returns exactly
 // the catalog a connecting path also wants, and reusing it would work perfectly
 // until the day somebody was routed to an address that had been reassigned.
 //
-// By function where a file has both sides of the line in it — openstack_farm.go
-// defines the helpers as well as the two commands that must not call them.
+// fleet.Purpose names the same rule in the domain, and a purpose that may not
+// read returns no reading rather than a stale one. That is a floor, not a
+// fence: nothing makes a caller name the right purpose, so this test is still
+// the enforcement.
+//
+// Whole files now. openstack_farm.go used to be checked function by function
+// because it defined the helpers as well as the two commands forbidden to call
+// them; the helpers moved to openstack_cache.go, so the exception is gone and
+// the file is held to the line entirely. It still calls keepReading and
+// forgetReadings — storing a reading and dropping one are not reading one.
 func TestNothingThatConnectsOrChangesReadsTheStoredReading(t *testing.T) {
 	readsCache := map[string]bool{
 		"storedCatalog":  true,
@@ -281,18 +288,11 @@ func TestNothingThatConnectsOrChangesReadsTheStoredReading(t *testing.T) {
 		"LoadAtLeast":    true,
 		"FleetCache":     true,
 	}
-	for _, tc := range []struct {
-		file, what string
-		only       []string
-	}{
+	for _, tc := range []struct{ file, what string }{
 		{file: "ssh.go", what: "ssh connects to the machine it resolved"},
 		{file: "openstack_reconcile.go", what: "reconcile compares what is recorded against a control plane"},
 		{file: "openstack_farm_doctor.go", what: "doctor asks a farm's control plane about itself"},
-		{
-			file: "openstack_farm.go",
-			what: "naming and declaring the state of a deployment are writes",
-			only: []string{"openstackFarmNameCmd", "openstackFarmStateCmd"},
-		},
+		{file: "openstack_farm.go", what: "naming and declaring the state of a deployment are writes"},
 	} {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, tc.file, nil, 0)
@@ -301,7 +301,7 @@ func TestNothingThatConnectsOrChangesReadsTheStoredReading(t *testing.T) {
 		}
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || (len(tc.only) > 0 && !slices.Contains(tc.only, fn.Name.Name)) {
+			if !ok {
 				continue
 			}
 			ast.Inspect(fn, func(n ast.Node) bool {
@@ -338,14 +338,14 @@ func TestChangingADeploymentDropsTheStoredReading(t *testing.T) {
 	if err := a.FleetCache().Save(fleet.ShapeFarms, store.Fleet{ReadAt: time.Now()}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.FreshFor); !ok {
+	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForListing); !ok {
 		t.Fatal("nothing stored to begin with")
 	}
 
 	forgetReadings(a)
 
 	for _, s := range []fleet.Shape{fleet.ShapeFarms, fleet.ShapeVMs} {
-		if _, _, ok := storedCatalog(a, s, fleet.UsableFor); ok {
+		if _, _, ok := storedCatalog(a, s, fleet.ForFallback); ok {
 			t.Errorf("%s survived a change to the fleet", s)
 		}
 	}
@@ -481,5 +481,26 @@ func TestAScreenThatNeedsALoginSaysSoAndDoesNotRefresh(t *testing.T) {
 	// Init must not start one either — that is the automatic path.
 	if m.refreshing {
 		t.Error("the screen was set up to refresh automatically")
+	}
+}
+
+// A purpose that may not read gets nothing, even with a fresh reading on disk.
+//
+// This is the floor under the AST guard rather than a replacement for it.
+// Nothing makes a connecting path name ForConnecting — it is not supposed to
+// reach storedCatalog at all — but if one ever does, by whatever route, the
+// answer is "no stored reading" and it goes to the database. The failure mode
+// that matters here is a session opened to an address that has been reassigned,
+// and returning nothing cannot cause it.
+func TestAPurposeThatMayNotReadIsAnsweredWithNothing(t *testing.T) {
+	a := appWithStoredReading(t, fleet.ShapeFarms, time.Now())
+	// The reading is there for a purpose that may read it.
+	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForListing); !ok {
+		t.Fatal("nothing stored to begin with")
+	}
+	for _, why := range []fleet.Purpose{fleet.ForConnecting, fleet.ForChanging, fleet.ForDiagnosing} {
+		if _, _, ok := storedCatalog(a, fleet.ShapeFarms, why); ok {
+			t.Errorf("%s was answered from disk", why)
+		}
 	}
 }

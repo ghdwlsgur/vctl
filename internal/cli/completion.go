@@ -143,7 +143,7 @@ func fromStoredFleet(env CommandEnv, shape fleet.Shape, fn func(fleet.Catalog, s
 		if err != nil {
 			return nil, false
 		}
-		cat, _, ok := storedCatalog(a, shape, fleet.UsableFor)
+		cat, _, ok := storedCatalog(a, shape, fleet.ForCompletion)
 		if !ok {
 			return nil, false
 		}
@@ -177,7 +177,7 @@ func completeFarm(env CommandEnv, extra ...string) completer {
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		restore := silenceStderr()
 		if a, err := env.newApp(); err == nil {
-			if cat, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.UsableFor); ok {
+			if cat, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForCompletion); ok {
 				restore()
 				return farmCompletions(cat.Farms(), extra, toComplete), cobra.ShellCompDirectiveNoFileComp
 			}
