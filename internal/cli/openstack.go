@@ -60,7 +60,16 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 				// hosts here and read them again inside the farm resolution
 				// below, so a --farm run compared a selector taken from one
 				// instant against rows taken from another.
-				cat, err := listingCatalog(ctx, a, st, mustBeLive(cmd, asJSON), loadFarmCatalog)
+				// The full reading, not the light one, so this warms the cache.
+				//
+				// The light read is two statements where the full one is eight,
+				// and it deliberately stored nothing — a rule written to protect
+				// a shape contract. But the numbers say the trade was backwards:
+				// the query is 1.5% of this command and the connection is 98%, so
+				// the light read saved 90-135ms and cost every later run the whole
+				// ten seconds. `vctl openstack` is the command people type most,
+				// and it was the one command that could never warm what it read.
+				cat, err := listingCatalog(ctx, a, st, mustBeLive(cmd, asJSON), loadCatalog)
 				if err != nil {
 					return err
 				}
