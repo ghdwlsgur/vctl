@@ -397,3 +397,32 @@ console.log(JSON.stringify(keys.map(k=>ifLabel(k,keys))));
 		t.Errorf("labels = %s, want %s", got, want)
 	}
 }
+
+// The local-fabric lane is decided by the wire, not by an operator's label.
+//
+// AllowedIPs describe what the far side of a tunnel accepts, so the hub's own
+// ranges appear in the lists the other gateways advertise. Reading every edge
+// would mark the hub's own fabric as remote and empty the lane; only edges
+// leaving the hub say what the hub reaches through a peer.
+func TestARangeReachedOverATunnelIsNotTheHubsOwnFabric(t *testing.T) {
+	got := runDashboardJS(t, `
+const hub={id:"hub",dc:"incheon"};
+const topo={edges:[
+  // what the hub reaches through its peers — remote, whatever a label says
+  {source:"hub",target:"seoul-gw",allowed:"10.0.90.1/32, 192.168.201.0/24"},
+  {source:"hub",target:"sre-lb",  allowed:"192.168.110.0/24, 192.168.130.0/24"},
+  // the far side advertising a route back to the hub's own range: this must
+  // NOT make the hub's fabric look remote
+  {source:"seoul-gw",target:"hub",allowed:"10.0.90.2/32, 192.168.10.0/24"},
+]};
+console.log(JSON.stringify([...reachedOverATunnel(topo,hub)].sort()));
+`)
+	// cidrs() drops /32 host routes; a single address is not a network.
+	want := `["192.168.110.0/24","192.168.130.0/24","192.168.201.0/24"]`
+	if got != want {
+		t.Errorf("reached over a tunnel = %s, want %s", got, want)
+	}
+	if strings.Contains(got, "192.168.10.0/24") {
+		t.Error("the hub's own range was read as remote; the lane would come out empty")
+	}
+}
