@@ -709,9 +709,38 @@ function drawChrome({gz},{ZONE_R,HUBX,NATX,EPX,BANDX,H},hub){
 // The hub site's own networks: inventory /24s as bands on a grey bus into the
 // hub, plus the reverse-reach overlay. That overlay deliberately traces the same
 // path as the grey bus — it is route state on that wire, not second cabling.
+// reachedOverATunnel is every network the hub gets to by going through a peer.
+//
+// Only edges leaving the hub count. AllowedIPs describe what the far side of a
+// tunnel will accept, so the hub's own ranges appear in the lists the *other*
+// gateways advertise — reading every edge would mark the hub's own fabric as
+// remote and empty the lane.
+function reachedOverATunnel(topo,hub){
+  const out=new Set();
+  if(!hub)return out;
+  for(const e of (topo.edges||[])){
+    if(e.source!==hub.id)continue;
+    for(const c of cidrs(e.allowed))out.add(c);
+  }
+  return out;
+}
+
 function drawLocalFabric({gg,gn,gd,gt,grp},{HUBX,HUBY},topo,N,hub,spokes){
   const aggm=new Map();
-  for(const a of (topo.aggs||[]))if(zoneKey(a.dc)===zoneKey(hub.dc)){
+  // A network the hub reaches over a tunnel is not the hub's own fabric,
+  // however its hosts happen to be labelled.
+  //
+  // This lane used to be "inventory aggregates whose dc is in the hub's zone",
+  // which trusts an operator-typed label to answer a question the wire already
+  // answers. One host in Seoul tagged incheon-vm was enough to draw Seoul's
+  // 192.168.201.0/24 as an Incheon-local range — beside the wg0 tunnel that
+  // exists precisely because it is not local. The label was corrected, but the
+  // next mislabelled host would have redrawn it.
+  //
+  // The dc still decides which site a range belongs to. What it no longer does
+  // is override the tunnel that says the range is on the far side.
+  const remote=reachedOverATunnel(topo,hub);
+  for(const a of (topo.aggs||[]))if(zoneKey(a.dc)===zoneKey(hub.dc)&&!remote.has(a.cidr)){
     const c=aggm.get(a.cidr)||{cidr:a.cidr,count:0};c.count+=a.count;aggm.set(a.cidr,c);}
   let ly=150; const localBand=new Map();
   const laggs=[...aggm.values()].sort((a,b)=>b.count-a.count).slice(0,6);
