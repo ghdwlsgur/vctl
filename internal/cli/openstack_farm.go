@@ -258,6 +258,24 @@ func listingCatalog(ctx context.Context, a *app.App, st *openLater, live bool,
 		out = cat
 		return err
 	})
+	if err == nil {
+		return out, nil
+	}
+	// The database did not answer. A reading past the fresh window is exactly
+	// what to serve now: it was refused a moment ago because something better
+	// was expected to be available, and nothing better is.
+	//
+	// This is most of why anything is stored at all. Without it the fresh window
+	// was also the offline window, so a listing went from instant to failed five
+	// minutes after the last successful read — during an outage, which is when
+	// somebody most wants to see what the fleet looked like.
+	if !live {
+		if cat, age, ok := storedCatalog(a, fleet.ShapeFarms, fleet.UsableFor); ok {
+			ui.Warnf(os.Stderr, "database unreachable (%v) — showing the reading from %s ago",
+				err, ui.CompactDuration(age))
+			return cat, nil
+		}
+	}
 	return out, err
 }
 

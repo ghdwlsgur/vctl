@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/securefile"
@@ -224,6 +225,23 @@ func (c *Cache) LoadAtLeast(s Shape, now time.Time) (Cached, error) {
 // The snapshot's own ReadAt is the capture time. A snapshot without one is
 // refused rather than stamped with the current clock: a file claiming to be
 // fresh when nothing knows when it was read is worse than no file.
+// clearedPath records when something changed the fleet, so a reading taken
+// before that change cannot come back.
+func (c *Cache) clearedPath() string { return filepath.Join(c.Dir, "cleared-at") }
+
+// clearedAt is when the stored picture was last thrown away, or the zero time.
+func (c *Cache) clearedAt() time.Time {
+	b, err := os.ReadFile(c.clearedPath())
+	if err != nil {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(b)))
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
 func (c *Cache) Save(s Shape, snap store.Fleet) error {
 	if c == nil || c.Dir == "" {
 		return errors.New("fleet: no cache directory configured")
@@ -233,6 +251,24 @@ func (c *Cache) Save(s Shape, snap store.Fleet) error {
 	}
 	if err := securefile.EnsurePrivateDir(c.Dir, 0o700); err != nil {
 		return err
+	}
+	// Time only moves forward here.
+	//
+	// A reading is fetched, then written some time later, and the gap is a whole
+	// database round trip. Two things fit inside it. A browser that started
+	// before a rename can finish after the rename cleared the cache and put the
+	// pre-rename picture back — the operator sees the name they just changed
+	// away from, which is precisely what clearing exists to prevent. And a slow
+	// reading can land after a fast one and replace newer rows with older.
+	//
+	// Both are the same mistake: writing a reading older than what the file
+	// already knows. Refused rather than reported, because nothing went wrong —
+	// a later reading simply won.
+	if t := c.clearedAt(); !t.IsZero() && !snap.ReadAt.After(t) {
+		return nil
+	}
+	if prev, err := c.Load(s, time.Now()); err == nil && !snap.ReadAt.After(prev.CapturedAt) {
+		return nil
 	}
 	b, err := json.Marshal(Cached{Version: cacheVersion, CapturedAt: snap.ReadAt, Fleet: snap})
 	if err != nil {
@@ -255,5 +291,11 @@ func (c *Cache) Clear() error {
 			return err
 		}
 	}
-	return nil
+	// Removing the files is not enough on its own. A read that is already in
+	// flight will finish and write, so the moment of the change is recorded and
+	// Save refuses anything captured before it.
+	if err := securefile.EnsurePrivateDir(c.Dir, 0o700); err != nil {
+		return err
+	}
+	return securefile.WriteAtomic(c.clearedPath(), []byte(time.Now().Format(time.RFC3339Nano)), 0o600)
 }

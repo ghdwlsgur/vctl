@@ -367,3 +367,51 @@ func TestAReadingStampedInTheFutureIsRefused(t *testing.T) {
 		t.Errorf("ordinary clock skew discarded the reading: %v", err)
 	}
 }
+
+// A reading taken before a change cannot come back after it.
+//
+// A browser that started before a rename finishes after it. Clearing removed
+// the files, but the read already in flight still writes — and it writes the
+// pre-rename picture, showing the operator the name they just changed away
+// from, which is exactly what clearing exists to prevent.
+func TestAReadingFromBeforeAChangeCannotComeBack(t *testing.T) {
+	c := NewCache(t.TempDir())
+	inFlight := snapshotAt(time.Now().Add(-2 * time.Second)) // read before the change
+
+	if err := c.Clear(); err != nil { // the rename
+		t.Fatalf("Clear: %v", err)
+	}
+	if err := c.Save(ShapeFarms, inFlight); err != nil { // the late write
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := c.Load(ShapeFarms, time.Now()); !errors.Is(err, ErrNoCache) {
+		t.Error("a reading from before the change came back after it")
+	}
+	// A reading taken after the change is what the next screen should get.
+	if err := c.Save(ShapeFarms, snapshotAt(time.Now())); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := c.Load(ShapeFarms, time.Now()); err != nil {
+		t.Errorf("a reading from after the change was refused: %v", err)
+	}
+}
+
+// A slow reading landing after a fast one must not replace newer rows with
+// older. Time only moves forward in this file.
+func TestAnOlderReadingDoesNotOverwriteANewerOne(t *testing.T) {
+	c := NewCache(t.TempDir())
+	newest := time.Now()
+	if err := c.Save(ShapeFarms, snapshotAt(newest)); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := c.Save(ShapeFarms, snapshotAt(newest.Add(-time.Minute))); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := c.Load(ShapeFarms, time.Now())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.CapturedAt.Equal(newest) {
+		t.Errorf("stored reading is from %v, want the newer %v", got.CapturedAt, newest)
+	}
+}
