@@ -359,7 +359,8 @@ config 파일은 **선택 사항**입니다. `vctl`은 컴파일된 기본값으
 
 ```bash
 mkdir -p .vctl
-cp .vctl/config.example.yaml .vctl/config.yaml   # 그 다음 override할 값만 남기세요
+mkdir -p .vctl
+cp docs/config.example.yaml .vctl/config.yaml   # 그 다음 override할 값만 남기세요
 ```
 
 전체 key 목록입니다. 엔드포인트는 플레이스홀더로 적어뒀습니다. 빌드에 실제로
