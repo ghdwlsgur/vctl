@@ -583,11 +583,42 @@ function attachVips(topo,N,spokes){
 // focusClosure keeps hub-attached edges and drops this one — so clicking it dimmed
 // the whole diagram and lit nothing. Scoping to host/iface makes it addressable;
 // the plain name is kept everywhere else so the common case reads unchanged.
+// hopKey identifies the interface a hop tunnel leaves from.
+//
+// An interface is (host, name), never a name. wg3 on the hub and wg3 on the
+// Seoul gateway are two interfaces on two machines that happen to share a
+// word — the operations ledger warns about exactly this and names three
+// separate nodes called wireguard-gw-incheon.
+//
+// This used to qualify a hop only when its name collided with one of the hub's,
+// which got both halves wrong. Two hops sharing a name with each other but not
+// with the hub merged into one filter chip, so selecting it lit tunnels on
+// different machines as though they were one interface. And whether a hop was
+// qualified at all depended on how somebody had named an interface on a
+// different node, so adding a hub interface silently renamed unrelated filters.
+//
+// Hub-adjacent edges keep the bare name: there is one hub, so its names cannot
+// be ambiguous. Everything else carries its owner. e.iface describes the source
+// side, so the owner is e.source.
 function hopKey(e,hub){
   const bare=e.iface;
   if(!hub||!bare)return bare;
   if(e.source===hub.id||e.target===hub.id)return bare;
-  return (hub.ifaces||[]).some(i=>i.name===bare) ? e.source+"/"+bare : bare;
+  return e.source+"/"+bare;
+}
+
+// ifLabel is what a filter chip says, which is not what it means.
+//
+// The key is always (host, name); the label drops the host while the bare name
+// still picks out one chip, and grows it back the moment two chips would read
+// the same. So the common case stays short and the ambiguous case stops lying.
+function ifLabel(key,keys){
+  const cut=key.lastIndexOf("/");
+  if(cut<0)return key;
+  const bare=key.slice(cut+1);
+  let n=0;
+  for(const k of keys)if(k===bare||k.endsWith("/"+bare))n++;
+  return n>1?key:bare;
 }
 
 function vipIface(owner,v){
@@ -1168,8 +1199,10 @@ function buildLegend(){
     for(const i of (el.dataset.ifs||"").split("|"))if(i)ifs.add(i);
   }
   const el=document.getElementById("legend");
-  el.innerHTML=`<button type="button" class="i on" data-all>all</button>`+[...ifs].sort(ifCmp).map(i=>
-    `<button type="button" class="i" data-if="${esc(i)}"><span class="dt" style="background:${ifColor(i)}"></span>${esc(i)}</button>`).join("");
+  const keys=[...ifs].sort(ifCmp);
+  el.innerHTML=`<button type="button" class="i on" data-all>all</button>`+keys.map(i=>
+    `<button type="button" class="i" data-if="${esc(i)}" title="${esc(i)}">` +
+    `<span class="dt" style="background:${ifColor(i)}"></span>${esc(ifLabel(i,keys))}</button>`).join("");
   el.querySelector("[data-all]").addEventListener("click",()=>setFocus(null));
   el.querySelectorAll(".i[data-if]").forEach(ch=>ch.addEventListener("click",()=>setFocus(focusIf===ch.dataset.if?null:ch.dataset.if)));
 }
