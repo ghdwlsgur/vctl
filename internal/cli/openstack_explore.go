@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/timing"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -45,6 +48,9 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 			"  tab      move between the panes        v / h   VMs or hosts on the right\n" +
 			"  enter    open the row's detail         /       filter the focused pane\n" +
 			"  r        re-read from the database     q       quit\n\n" +
+			"Opens from the last reading when there is one and refreshes behind the screen,\n" +
+			"so the first thing on screen is not an empty pane. The title bar says which it\n" +
+			"is showing and how old it is.\n\n" +
 			"Read-only, and it reads the database alone — nothing here contacts a farm's\n" +
 			"control plane. Each detail screen is the same renderer the individual command\n" +
 			"uses: `openstack host` and `vm show`.\n\n" +
@@ -62,94 +68,158 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 					"use 'vctl openstack farm list', 'vctl openstack --farm <f>' and " +
 					"'vctl openstack vm --farm <f>' instead")
 			}
-			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
-				return runExplore(cmd.Context(), a, st, args)
+			// withApp, not withStore: opening the store is the expensive part
+			// and the screen may not need it at all. See openLater.
+			return env.withApp(func(a *app.App) error {
+				return runExplore(cmd.Context(), a, args)
 			})
 		},
 	}
 	return cmd
 }
 
-// runExplore reads, runs the screen, and reads again when the screen asks.
+// runExplore puts a screen up and lets it re-read behind itself.
 //
-// Reloading by leaving and re-entering the program rather than from inside
-// Update: a database call on the key path would stop the whole screen on a
-// database that is slow, with no way to say so while it is stopped. What the
-// reader had set up is carried across, so a reload shows as the numbers
-// changing and nothing else.
-func runExplore(ctx context.Context, a *app.App, st *store.Store, args []string) error {
-	var (
-		selected  string
-		carryOver *exploreModel
-	)
-	for {
-		// Before the screen, not on it. The first read of a session pays for a
-		// Vault credential and four queries — measured at about ten seconds on
-		// a cold path here — and an alternate screen that opens empty for that
-		// long looks like a program that has hung. On stderr, so the alternate
-		// screen wipes it the moment there is something to show.
-		ui.Infof(os.Stderr, "reading the fleet…")
-		data, err := loadExploreData(ctx, a, st)
-		if err != nil {
-			return err
-		}
-		if len(data.Farms) == 0 {
-			ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
-			return nil
-		}
-		if len(args) > 0 && selected == "" {
-			// Resolved against the first reading, so a typo fails before the
-			// screen opens rather than after.
-			f, err := resolveFarm(data.Farms, args[0])
-			if err != nil {
-				return err
-			}
-			selected = f.ID
-		}
-		m := newExploreModel(data)
-		if selected != "" {
-			m.selectFarmID(selected)
-		}
-		if carryOver != nil {
-			m.adoptView(*carryOver)
-		}
-		// The alternate screen, so the terminal somebody was working in comes
-		// back exactly as they left it.
-		res, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
-		if err != nil {
-			return err
-		}
-		final, ok := res.(exploreModel)
-		if !ok {
-			return nil
-		}
-		if final.err == errExploreReload {
-			if f, ok := final.currentFarm(); ok {
-				selected = f.ID
-			}
-			prev := final
-			carryOver = &prev
-			continue
-		}
-		// What was on screen at the end survives the screen. A VM's detail
-		// carries the ssh line that reaches it, and an alternate screen that
-		// restores on exit would take it back the moment somebody went to run
-		// it.
-		if len(final.carry) > 0 {
-			fmt.Fprintln(os.Stdout, strings.Join(final.carry, "\n"))
-		}
-		return final.err
+// The database call is a tea.Cmd rather than a step in Update: a read on the
+// key path stops the whole screen for as long as it takes, with no way to say
+// so while it is stopped. As a Cmd it runs in its own goroutine and arrives as
+// a message, so the browser stays usable — filtering, scrolling, opening a
+// detail — while the numbers behind it are being fetched.
+//
+// That also removes the reload loop this used to have. Refreshing in place
+// keeps the panes, the filters and the size because they were never taken
+// away, and the cursor stays on the row it was on by name rather than by
+// position.
+func runExplore(ctx context.Context, a *app.App, args []string) error {
+	st := &openLater{app: a}
+	defer st.Close()
+
+	data, err := firstExploreScreen(ctx, a, st)
+	if err != nil {
+		return err
 	}
+	if len(data.Farms) == 0 {
+		ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
+		return nil
+	}
+	m := newExploreModel(data)
+	m.refresh = func() (exploreData, error) { return loadExploreData(ctx, a, st) }
+	// A stored reading is a starting point, not an answer: the screen is up
+	// immediately and the refresh that corrects it is already running.
+	m.refreshing = data.Cached
+	if len(args) > 0 {
+		// Resolved against the first reading, so a typo fails before the screen
+		// opens rather than after.
+		f, err := resolveFarm(data.Farms, args[0])
+		if err != nil {
+			return err
+		}
+		m.selectFarmID(f.ID)
+	}
+	// The alternate screen, so the terminal somebody was working in comes back
+	// exactly as they left it.
+	res, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	if err != nil {
+		return err
+	}
+	final, ok := res.(exploreModel)
+	if !ok {
+		return nil
+	}
+	// What was on screen at the end survives the screen. A VM's detail carries
+	// the ssh line that reaches it, and an alternate screen that restores on
+	// exit would take it back the moment somebody went to run it.
+	if len(final.carry) > 0 {
+		fmt.Fprintln(os.Stdout, strings.Join(final.carry, "\n"))
+	}
+	return final.err
 }
 
-// adoptView carries what the reader set up across a reload: which pane, which
-// kind of row, the filters, the size. The cursor is not carried — the rows
-// behind it may be different ones now, and a cursor left on row 12 of a list
-// that changed is a worse guess than the top.
-func (m *exploreModel) adoptView(prev exploreModel) {
-	m.focus, m.kind = prev.focus, prev.kind
-	m.farmFilter, m.rowFilter = prev.farmFilter, prev.rowFilter
-	m.width, m.height = prev.width, prev.height
+// firstExploreScreen is what goes up before anything has been read.
+//
+// A stored reading opens the browser at once. Going to the database first buys
+// a Vault credential, a TLS handshake and four queries — measured at ten
+// seconds on a bad path here — against an alternate screen that shows nothing
+// for the whole of it, which is indistinguishable from a program that has hung.
+//
+// Only when authenticating is silent. With a lapsed token the read would put an
+// SSO prompt behind a full-screen program, where it cannot be seen or answered;
+// that login happens here, in front of the screen, as it did before.
+func firstExploreScreen(ctx context.Context, a *app.App, st *openLater) (exploreData, error) {
+	if !a.WouldPromptForLogin() {
+		if cached, err := a.FleetCache().Load(fleet.ShapeVMs, time.Now()); err == nil {
+			out := exploreDataFrom(fleet.From(cached.Fleet))
+			// A stored reading with nothing in it is not worth a screen. The
+			// caller answers an empty fleet with "no deployments yet, run the
+			// node agents" and returns, which would be advice about a fleet
+			// nobody has looked at since.
+			if len(out.Farms) > 0 {
+				out.Cached = true
+				return out, nil
+			}
+		}
+	}
+	// On stderr, so the alternate screen wipes it the moment there is something
+	// to show.
+	ui.Infof(os.Stderr, "reading the fleet…")
+	return loadExploreData(ctx, a, st)
+}
+
+// openLater is the inventory store, opened the first time something actually
+// needs it and kept for the rest of the session.
+//
+// The browser exists to be opened often and closed quickly, and most of what it
+// shows can come off disk. Opening the store up front — which is what wrapping
+// the command in withStore did — paid for a Vault credential and a TLS
+// handshake before deciding whether either was needed.
+//
+// One connection for the session rather than one per refresh: the setup is the
+// expensive part, and re-minting a database credential every time somebody
+// presses r would make the refresh cost what the first read cost.
+type openLater struct {
+	app *app.App
+
+	mu     sync.Mutex
+	st     *store.Store
+	closed bool
+}
+
+// errBrowserClosed is what a refresh still in flight gets when the screen has
+// already gone. Nothing is left to show it, and that is the point: it is not a
+// failure, it is a read nobody is waiting for any more.
+var errBrowserClosed = errors.New("the browser has closed")
+
+// use runs fn with the store.
+//
+// The lock is held for the whole call rather than only the open, so Close
+// cannot take the pool out from under a read that is still running — the
+// refresh runs in its own goroutine and the program can return while one is in
+// flight.
+func (l *openLater) use(ctx context.Context, fn func(*store.Store) error) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return errBrowserClosed
+	}
+	if l.st == nil {
+		st, err := l.app.OpenStore(ctx, app.PurposeInventoryRead)
+		if err != nil {
+			return err
+		}
+		l.st = st
+	}
+	return fn(l.st)
+}
+
+// Close releases the connection, waiting for any read still using it.
+func (l *openLater) Close() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.closed = true
+	if l.st != nil {
+		l.st.Close()
+		l.st = nil
+	}
 }
 
 // exploreData is the whole picture, read once.
@@ -166,25 +236,44 @@ type exploreData struct {
 	Runs   map[string]store.ReconcileRun
 	Nets   []string
 	ReadAt time.Time
+
+	// Cached says this came off disk rather than out of the database. The title
+	// bar says so too: a browser showing a stored reading as though it had just
+	// read is a browser that will eventually show somebody a machine that is
+	// gone.
+	Cached bool
 }
 
-func loadExploreData(ctx context.Context, a *app.App, st *store.Store) (exploreData, error) {
+func loadExploreData(ctx context.Context, a *app.App, st *openLater) (exploreData, error) {
 	defer timing.Start("explore-load")()
+	var out exploreData
+	err := st.use(ctx, func(st *store.Store) error {
+		// One transaction for the whole screen. This used to be four reads, two
+		// of which the picker's own assembly then repeated — so the left pane's
+		// host count and the right pane's VM list came from different instants.
+		cat, err := loadVMCatalog(ctx, a, st)
+		if err != nil {
+			return err
+		}
+		out = exploreDataFrom(cat)
+		return nil
+	})
+	return out, err
+}
+
+// exploreDataFrom lays a reading out the way the panes index it. The same
+// arrangement whether it came from the database or off disk — one shape means
+// the screen cannot behave differently depending on where its rows came from.
+func exploreDataFrom(cat fleet.Catalog) exploreData {
 	out := exploreData{
-		Hosts: map[string][]store.OpenStackHost{},
-		VMs:   map[string][]store.Instance{},
-		Nets:  operatorNetworks(),
+		Farms:  cat.Farms(),
+		Hosts:  map[string][]store.OpenStackHost{},
+		VMs:    map[string][]store.Instance{},
+		Names:  cat.Names(),
+		Runs:   map[string]store.ReconcileRun{},
+		Nets:   operatorNetworks(),
+		ReadAt: cat.ReadAt(),
 	}
-	// One transaction for the whole screen. This used to be four reads, two of
-	// which the picker's own assembly then repeated — so the left pane's host
-	// count and the right pane's VM list came from different instants.
-	cat, err := loadVMCatalog(ctx, a, st)
-	if err != nil {
-		return out, err
-	}
-	out.Farms = cat.Farms()
-	out.Names = cat.Names()
-	out.Runs = map[string]store.ReconcileRun{}
 	for _, f := range out.Farms {
 		out.Hosts[f.ID] = f.Hosts
 		out.VMs[f.ID] = cat.VMs(f.ID)
@@ -192,8 +281,7 @@ func loadExploreData(ctx context.Context, a *app.App, st *store.Store) (exploreD
 			out.Runs[f.ID] = *run
 		}
 	}
-	out.ReadAt = cat.ReadAt()
-	return out, nil
+	return out
 }
 
 // Which pane the keys go to.
@@ -238,10 +326,39 @@ type exploreModel struct {
 	// carry is printed after the screen is restored — see runExplore.
 	carry []string
 	err   error
+
+	// refresh reads the fleet again. Held as a function so the model can be
+	// driven in a test without a database, and called from a tea.Cmd so the
+	// read never blocks a keypress.
+	refresh    func() (exploreData, error)
+	refreshing bool
+	// refreshErr is a refresh that did not land. Shown rather than returned:
+	// what is already on screen is still worth reading, and a browser that
+	// exits because its background read failed loses the reader's place over
+	// something they did not ask for.
+	refreshErr error
 }
 
 func newExploreModel(d exploreData) exploreModel {
 	return exploreModel{data: d, width: 100, height: 30}
+}
+
+// exploreRefreshed carries a background read back to the screen.
+type exploreRefreshed struct {
+	data exploreData
+	err  error
+}
+
+// refreshCmd runs the read off the key path.
+func (m exploreModel) refreshCmd() tea.Cmd {
+	read := m.refresh
+	if read == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		data, err := read()
+		return exploreRefreshed{data: data, err: err}
+	}
 }
 
 func (m *exploreModel) selectFarmID(id string) {
@@ -254,7 +371,13 @@ func (m *exploreModel) selectFarmID(id string) {
 	}
 }
 
-func (m exploreModel) Init() tea.Cmd { return nil }
+// Init starts the correcting read when the screen went up on a stored one.
+func (m exploreModel) Init() tea.Cmd {
+	if !m.refreshing {
+		return nil
+	}
+	return m.refreshCmd()
+}
 
 // visibleFarms is the left pane's contents after its filter.
 func (m exploreModel) visibleFarms() []farmChoice {
@@ -362,10 +485,83 @@ func (m exploreModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
+	case exploreRefreshed:
+		return m.onRefreshed(msg), nil
 	case tea.KeyMsg:
 		return m.onKey(msg)
 	}
 	return m, nil
+}
+
+// onRefreshed swaps in a read that landed, keeping the reader where they were.
+//
+// The selection is restored by name, not by index. Rows move between readings —
+// a VM is deleted, a host is added — and a cursor put back on position 12 of a
+// list that changed points at a different machine, which is worse than a cursor
+// that moved.
+func (m exploreModel) onRefreshed(msg exploreRefreshed) exploreModel {
+	m.refreshing = false
+	if msg.err != nil {
+		m.refreshErr = msg.err
+		return m
+	}
+	was := m.selection()
+	m.data, m.refreshErr = msg.data, nil
+	m.restoreSelection(was)
+	return m
+}
+
+// exploreSelection is what the cursor was on, named rather than numbered.
+type exploreSelection struct{ farm, row string }
+
+func (m exploreModel) selection() exploreSelection {
+	var s exploreSelection
+	if f, ok := m.currentFarm(); ok {
+		s.farm = f.ID
+	}
+	if m.kind == kindHosts {
+		if hosts := m.visibleHosts(); len(hosts) > 0 {
+			s.row = hosts[clampIndex(m.rowCur, len(hosts))].Hostname
+		}
+		return s
+	}
+	if vms := m.visibleVMs(); len(vms) > 0 {
+		s.row = vms[clampIndex(m.rowCur, len(vms))].InstanceID
+	}
+	return s
+}
+
+// restoreSelection puts the cursor back on the same machine, or at the top when
+// it is no longer there — which is itself the news that it is gone.
+func (m *exploreModel) restoreSelection(s exploreSelection) {
+	m.farmCur, m.rowCur, m.rowTop = 0, 0, 0
+	if s.farm != "" {
+		for i, f := range m.visibleFarms() {
+			if f.ID == s.farm {
+				m.farmCur = i
+				break
+			}
+		}
+	}
+	if s.row == "" {
+		return
+	}
+	if m.kind == kindHosts {
+		for i, h := range m.visibleHosts() {
+			if h.Hostname == s.row {
+				m.rowCur = i
+				break
+			}
+		}
+	} else {
+		for i, v := range m.visibleVMs() {
+			if v.InstanceID == s.row {
+				m.rowCur = i
+				break
+			}
+		}
+	}
+	m.scrollRows()
 }
 
 func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -431,10 +627,14 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.typing = true
 		return m, nil
 	case "r":
-		// Deliberately not automatic. A screen that refreshes under the cursor
-		// moves the row somebody was about to open.
-		m.err = errExploreReload
-		return m, tea.Quit
+		// Deliberately not on a timer. A screen that re-reads on its own moves
+		// the row somebody was about to open, and a browser nobody is looking at
+		// would keep a database busy for no one.
+		if m.refreshing {
+			return m, nil
+		}
+		m.refreshing, m.refreshErr = true, nil
+		return m, m.refreshCmd()
 	case "enter":
 		if m.focus == paneFarms {
 			m.focus = paneRows
@@ -446,10 +646,6 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
-
-// errExploreReload is how the model asks the caller to read again. Reloading
-// inside Update would put a database call on the key path.
-var errExploreReload = fmt.Errorf("reload")
 
 func (m exploreModel) onFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
@@ -602,6 +798,9 @@ var (
 	exploreCursorStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	exploreFocusStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	exploreDimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	// Not muted, unlike everything else on that line: a refresh that failed is
+	// the reason the age beside it stopped moving.
+	exploreWarnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
 
 // bodyHeight is the number of lines the panes get.
@@ -670,9 +869,30 @@ func (m exploreModel) titleBar() string {
 		vms += len(liveInstances(vs))
 	}
 	head := exploreTitleStyle.Render("▌ vctl openstack")
-	detail := fmt.Sprintf("· %d deployments · %d hosts · %d VMs · read %s ago",
-		len(m.data.Farms), hosts, vms, ui.CompactDuration(time.Since(m.data.ReadAt)))
-	return head + " " + ui.Muted(detail)
+	detail := fmt.Sprintf("· %d deployments · %d hosts · %d VMs · %s",
+		len(m.data.Farms), hosts, vms, m.freshness())
+	line := head + " " + ui.Muted(detail)
+	if m.refreshErr != nil {
+		line += "  " + exploreWarnStyle.Render("refresh failed: "+oneLine(m.refreshErr.Error()))
+	}
+	return line
+}
+
+// freshness is the claim everything else on the screen rests on.
+//
+// A stored reading says it is stored. The two are the same rows and cannot be
+// told apart by looking at them, so the difference has to be written down: one
+// was true when it was read and the other was true a moment ago.
+func (m exploreModel) freshness() string {
+	age := ui.CompactDuration(time.Since(m.data.ReadAt))
+	what := "read " + age + " ago"
+	if m.data.Cached {
+		what = "cached · " + age + " old"
+	}
+	if m.refreshing {
+		what += " · reading…"
+	}
+	return what
 }
 
 func (m exploreModel) farmPaneLines() []string {

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -11,6 +13,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/config"
+	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -442,42 +447,219 @@ func names(vms []store.Instance) []string {
 	return out
 }
 
-// A reload keeps what the reader set up. Coming back to the deployments pane
-// showing VMs unfiltered, after somebody had narrowed to one project on one
-// farm, is a reload that costs more than it gives.
-func TestReloadKeepsThePaneKindAndFilters(t *testing.T) {
-	prev := testExploreModel()
-	prev.focus, prev.kind = paneRows, kindHosts
-	prev.farmFilter, prev.rowFilter = "seoul", "srv-000"
-	prev.width, prev.height = 200, 60
-	prev.rowCur, prev.farmCur = 5, 1
+// A refresh keeps what the reader set up. It used to leave and re-enter the
+// program to re-read, which meant rebuilding the model and carrying the panes,
+// the filters and the size across by hand; refreshing in place keeps them
+// because nothing takes them away.
+func TestRefreshingKeepsThePaneKindAndFilters(t *testing.T) {
+	m := testExploreModel()
+	m.focus, m.kind = paneRows, kindHosts
+	m.farmFilter, m.rowFilter = "seoul", "srv-000"
+	m.width, m.height = 200, 60
 
-	next := newExploreModel(prev.data)
-	next.adoptView(prev)
+	m = m.onRefreshed(exploreRefreshed{data: testExploreModel().data})
 
-	if next.focus != paneRows || next.kind != kindHosts {
-		t.Errorf("pane/kind = %v/%v", next.focus, next.kind)
+	if m.focus != paneRows || m.kind != kindHosts {
+		t.Errorf("pane/kind = %v/%v", m.focus, m.kind)
 	}
-	if next.farmFilter != "seoul" || next.rowFilter != "srv-000" {
-		t.Errorf("filters = %q / %q", next.farmFilter, next.rowFilter)
+	if m.farmFilter != "seoul" || m.rowFilter != "srv-000" {
+		t.Errorf("filters = %q / %q", m.farmFilter, m.rowFilter)
 	}
-	if next.width != 200 || next.height != 60 {
-		t.Errorf("size = %dx%d", next.width, next.height)
-	}
-	// Not the cursor: row 5 of the old list is not row 5 of the new one.
-	if next.rowCur != 0 {
-		t.Errorf("the cursor was carried onto rows that may have changed: %d", next.rowCur)
+	if m.width != 200 || m.height != 60 {
+		t.Errorf("size = %dx%d", m.width, m.height)
 	}
 }
 
-// r leaves the program so the caller can re-read; doing it inside Update would
-// put a database call on the key path and freeze the screen with nothing on it
-// to say why.
-func TestReloadAsksTheCallerRatherThanQueryingInline(t *testing.T) {
-	m := key(testExploreModel(), "r")
-	if m.err != errExploreReload {
-		t.Errorf("r produced err=%v, want the reload sentinel", m.err)
+// The cursor comes back onto the same machine, not the same row number.
+//
+// Rows move between readings — a VM is created, another is deleted — so putting
+// the cursor back on position 1 hands somebody a different machine than the one
+// they were looking at, in a browser whose next keypress may be enter.
+func TestRefreshingPutsTheCursorBackOnTheSameMachine(t *testing.T) {
+	m := testExploreModel()
+	m.focus = paneRows
+	m = key(m, "down") // the second VM: quay-registry
+	if got := m.selection().row; got != "u-2" {
+		t.Fatalf("cursor is on %q before the refresh", got)
 	}
+
+	// The same fleet with one more VM, sorted ahead of the one under the cursor.
+	next := testExploreModel().data
+	next.VMs["10.0.0.1:5000"] = append([]store.Instance{{
+		DeploymentID: "10.0.0.1:5000", InstanceID: "u-0", Name: "argocd", Status: "ACTIVE",
+		ProjectName: "platform", HypervisorHostname: "sre-srv-0001",
+	}}, next.VMs["10.0.0.1:5000"]...)
+
+	m = m.onRefreshed(exploreRefreshed{data: next})
+
+	if got := m.selection().row; got != "u-2" {
+		t.Errorf("after a refresh the cursor is on %q, want the machine it was on", got)
+	}
+	if m.rowCur != 2 {
+		t.Errorf("cursor at row %d; the new VM was inserted above it", m.rowCur)
+	}
+}
+
+// A machine that is gone takes the cursor to the top rather than to whatever
+// row inherited its number.
+func TestARefreshedRowThatIsGoneDoesNotHandOverItsPosition(t *testing.T) {
+	m := testExploreModel()
+	m.focus = paneRows
+	m = key(m, "down")
+
+	next := testExploreModel().data
+	next.VMs["10.0.0.1:5000"] = next.VMs["10.0.0.1:5000"][:1] // quay-registry is gone
+	m = m.onRefreshed(exploreRefreshed{data: next})
+
+	if m.rowCur != 0 {
+		t.Errorf("cursor at row %d after the row it was on disappeared", m.rowCur)
+	}
+}
+
+// r reads in the background. Reading inside Update would stop the whole screen
+// for as long as the database takes, with nothing on it to say why — the reason
+// this used to leave the program to re-read at all.
+func TestRefreshingHappensOffTheKeyPath(t *testing.T) {
+	m := testExploreModel()
+	m.refresh = func() (exploreData, error) {
+		t.Error("the refresh ran on the key path")
+		return exploreData{}, nil
+	}
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = out.(exploreModel)
+	if !m.refreshing {
+		t.Error("r did not start a refresh")
+	}
+	if cmd == nil {
+		t.Fatal("r produced no command, so nothing will read")
+	}
+	if m.err != nil {
+		t.Errorf("r ended the program: %v", m.err)
+	}
+	// A second r while one is in flight is not a second read.
+	before := m
+	out, cmd = before.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd != nil {
+		t.Error("r during a refresh started another one")
+	}
+	_ = out
+}
+
+// A stored reading says so, and stops saying so once the real one lands. The
+// two are the same rows and cannot be told apart by looking at them.
+func TestAStoredReadingSaysItIsStoredUntilTheRefreshLands(t *testing.T) {
+	m := testExploreModel()
+	m.data.Cached = true
+	m.data.ReadAt = time.Now().Add(-4 * time.Minute)
+	m.refreshing = true
+
+	got := stripANSI(m.titleBar())
+	for _, want := range []string{"cached", "4m old", "reading…"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("title %q does not carry %q", got, want)
+		}
+	}
+
+	fresh := testExploreModel().data
+	fresh.ReadAt = time.Now()
+	got = stripANSI(m.onRefreshed(exploreRefreshed{data: fresh}).titleBar())
+	if strings.Contains(got, "cached") || strings.Contains(got, "reading…") {
+		t.Errorf("title still claims a stored reading after a live one landed: %q", got)
+	}
+}
+
+// A refresh that fails leaves what is on screen alone and says what happened.
+// Exiting would lose the reader's place over something they did not ask for,
+// and the rows already up are still worth reading.
+func TestARefreshThatFailsKeepsWhatIsOnScreen(t *testing.T) {
+	m := testExploreModel()
+	m.data.Cached = true
+	before := len(m.data.Farms)
+
+	m = m.onRefreshed(exploreRefreshed{err: errors.New("dial tcp 192.168.201.12:5432: timeout")})
+
+	if len(m.data.Farms) != before {
+		t.Errorf("a failed refresh emptied the screen: %d farms", len(m.data.Farms))
+	}
+	if m.refreshing {
+		t.Error("still marked as reading after the read came back")
+	}
+	if got := stripANSI(m.titleBar()); !strings.Contains(got, "refresh failed") ||
+		!strings.Contains(got, "timeout") {
+		t.Errorf("title does not report the failure: %q", got)
+	}
+	if !m.data.Cached {
+		t.Error("the screen stopped calling itself cached without a live reading")
+	}
+}
+
+// The browser opens on the stored reading and does not go to the database to do
+// it. Opening the store first costs a Vault credential and a TLS handshake —
+// measured at ten seconds on a bad path — behind an alternate screen that shows
+// nothing for the whole of it.
+func TestExploreOpensFromTheStoredReadingWithoutADatabase(t *testing.T) {
+	dir := t.TempDir()
+	// A DSN nothing is listening on: reaching the database at all fails this.
+	a := &app.App{Cfg: &config.Config{
+		StateDir:   dir,
+		LocalDBDSN: "postgres://nobody@127.0.0.1:1/none?sslmode=disable",
+	}}
+	snap := store.Fleet{
+		Deployments: []store.Deployment{{ID: "10.0.0.1:5000", DisplayName: "seoul-a"}},
+		Hosts: []store.OpenStackHost{
+			{Hostname: "sre-srv-0001", Farm: "10.0.0.1:5000", Detected: true, Roles: []string{"compute"}},
+		},
+		Instances: []store.Instance{
+			{DeploymentID: "10.0.0.1:5000", InstanceID: "u-1", Name: "bastion", Status: "ACTIVE"},
+		},
+		ReadAt: time.Now().Add(-90 * time.Second),
+	}
+	if err := a.FleetCache().Save(fleet.ShapeVMs, snap); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	got, err := firstExploreScreen(context.Background(), a, &openLater{app: a})
+	if err != nil {
+		t.Fatalf("first screen: %v", err)
+	}
+	if !got.Cached {
+		t.Error("the screen does not know it came off disk")
+	}
+	if len(got.Farms) != 1 || got.Farms[0].Name != "seoul-a" {
+		t.Fatalf("farms = %v", got.Farms)
+	}
+	if len(got.VMs["10.0.0.1:5000"]) != 1 {
+		t.Errorf("the stored VMs did not survive: %v", got.VMs)
+	}
+	if !got.ReadAt.Equal(snap.ReadAt) {
+		t.Errorf("age is measured from %s, not from when the database was read", got.ReadAt)
+	}
+}
+
+// The store is opened when something needs it, not before the screen.
+//
+// Wrapping the command in withStore is what made the browser pay for a Vault
+// credential before deciding whether it needed one, and it is a one-word change
+// to put back.
+func TestExploreDoesNotOpenTheStoreBeforeTheScreen(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "openstack_explore.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "withStore" {
+			return true
+		}
+		t.Errorf("explore opens the store at %s; it opens it when a read needs it — see openLater",
+			fset.Position(call.Pos()))
+		return true
+	})
 }
 
 // Every line has to fit the terminal. A row one column too wide wraps, and a
