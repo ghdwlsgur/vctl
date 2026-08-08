@@ -1201,7 +1201,19 @@ function applyFocus(el,f,inherited){
   const precise=data.eids!==undefined||data.nodes!==undefined||data.hubif!==undefined||data.cidr!==undefined;
   let matched=inherited;
   if(keep!=null)matched=true;
-  else if(own!==undefined)matched=focusIfaces.has(own);
+  else if(own!==undefined){
+    matched=focusIfaces.has(own);
+    // An interface tag that does not match is not the last word when the same
+    // group also names nodes or edges that are in focus. A tunnel's far end is
+    // drawn by the chip that owns it — tagged with the interface facing the
+    // hub, which is a different name — so short-circuiting here dimmed the node
+    // at the other end of the very tunnel being focused. Measured: wg-seoul lit
+    // its tunnel and its hub and nothing else.
+    if(!matched&&precise){
+      if(data.eids!==undefined)matched=JSON.parse(data.eids).some(id=>focusEdges.has(id));
+      if(!matched&&data.nodes!==undefined)matched=JSON.parse(data.nodes).some(id=>focusNodes.has(id));
+    }
+  }
   // A routed-network band is semantic, not owned by the first interface that
   // happened to create it. The same CIDR can later receive wg-seoul/wg1 routes,
   // so CIDR focus must beat the band's initial data-ifs value.
