@@ -41,6 +41,9 @@ func New() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Before anything resolves a name — the Vault client below is the first to
+	// do so, and it would otherwise pay the system resolver's timeout.
+	config.UseDNSServer(cfg.DNSServer)
 	v, err := vaultc.New(cfg.VaultAddr, config.SRERootCA, cfg.StateDir)
 	if err != nil {
 		return nil, err

@@ -6,7 +6,7 @@ BIN         := $(BIN_DIR)/$(BINARY)
 VERSION     ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS     := -s -w -X main.version=$(VERSION)
 GOFILES     := $(shell find . -name '*.go' -not -path './vendor/*')
-EMBED_FILES := internal/cli/wg_serve.html
+EMBED_FILES := internal/cli/wg_serve.html internal/cli/wg_model.js internal/cli/wg_view.js
 
 # Pass arguments with: make run ARGS="ssh 0047"
 ARGS ?=
