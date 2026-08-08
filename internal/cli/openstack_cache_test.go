@@ -74,18 +74,34 @@ func TestAListingIsServedFromTheStoredReadingWhenItIsFresh(t *testing.T) {
 	}
 }
 
-// Past the fresh window it goes to the database instead of serving something
-// nobody was told the age of.
+// Past the fresh window it goes to the database — and when the database does
+// not answer, the reading it declined a moment ago is exactly what to show.
 //
-// UsableFor is the browser's window, not a listing's: the browser corrects
-// itself a second later and a command that prints once and exits does not.
-func TestAListingPastTheFreshWindowReadsTheDatabase(t *testing.T) {
+// The fresh window is not the offline window. It used to be both: five minutes
+// after the last successful read a listing went from instant to failed, during
+// an outage, which is when somebody most wants to see what the fleet looked
+// like. UsableFor is the ceiling that matters here, and the age is said out
+// loud beside it.
+func TestAListingPastTheFreshWindowFallsBackWhenTheDatabaseIsGone(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeFarms, time.Now().Add(-fleet.FreshFor-time.Minute))
 	st := &openLater{app: a}
 	defer st.Close()
 
-	if _, err := listingCatalog(context.Background(), a, st, false, loadFarmCatalog); err == nil {
-		t.Error("a reading older than the fresh window was served anyway")
+	cat, err := listingCatalog(context.Background(), a, st, false, loadFarmCatalog)
+	if err != nil {
+		t.Fatalf("nothing was served during an outage: %v", err)
+	}
+	if got := len(cat.Farms()); got != 2 {
+		t.Errorf("%d farms from the fallback reading", got)
+	}
+
+	// Past the usable ceiling there is nothing worth showing, and the database
+	// error is the actionable fact.
+	old := appWithStoredReading(t, fleet.ShapeFarms, time.Now().Add(-fleet.UsableFor-time.Hour))
+	oldSt := &openLater{app: old}
+	defer oldSt.Close()
+	if _, err := listingCatalog(context.Background(), old, oldSt, false, loadFarmCatalog); err == nil {
+		t.Error("a day-old reading was served instead of reporting the outage")
 	}
 }
 
