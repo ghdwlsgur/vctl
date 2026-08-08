@@ -129,6 +129,15 @@ wg-down: ## Stop the dashboard and its gateway polling
 	fi; \
 	rm -f $(WG_PID); echo "stopped (pid $$pid) — gateway polling has ended"
 
+.PHONY: wg-check
+# What the dashboard actually draws, measured under headless Chrome against the
+# page Go serves. `make check` cannot see this: the Go tests assert on what the
+# model returns, and every filtering bug so far has been in what was left on the
+# screen afterwards. Needs node and Chrome; set CHROME=/path/to/chrome if it is
+# not where the script looks. No database, no SSH, no gateway is touched.
+wg-check: ## Measure the WireGuard dashboard under headless Chrome
+	@node scripts/wg-dashboard-check.mjs
+
 .PHONY: smoke
 smoke: build ## Run Vault-backed smoke tests
 	@VCTL_BIN=$(BIN) ./scripts/smoke.sh
