@@ -32,9 +32,9 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: byPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				farms, err := farmChoices(ctx, st)
+				farms, err := farmChoices(ctx, a, st)
 				if err != nil {
 					return err
 				}
@@ -63,14 +63,14 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 					pick = farms[i]
 				}
 				now := time.Now()
-				a, err := collectAssessment(ctx, st, pick.ID, now)
+				assessment, err := collectAssessment(ctx, st, pick.ID, now)
 				if err != nil {
 					return err
 				}
 				if asJSON {
-					return writeJSON(a)
+					return writeJSON(assessment)
 				}
-				renderFarmShow(os.Stdout, a, now)
+				renderFarmShow(os.Stdout, assessment, now)
 				return nil
 			})
 		},

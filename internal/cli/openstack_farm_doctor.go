@@ -42,7 +42,7 @@ func openstackFarmDoctorCmd(env CommandEnv) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				farms, err := farmChoices(ctx, st)
+				farms, err := farmChoices(ctx, a, st)
 				if err != nil {
 					return err
 				}

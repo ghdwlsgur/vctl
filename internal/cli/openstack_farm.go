@@ -58,9 +58,9 @@ func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 		// it yet, which is the whole point of the command.
 		ValidArgsFunction: byPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				farms, err := farmChoices(ctx, st)
+				farms, err := farmChoices(ctx, a, st)
 				if err != nil {
 					return err
 				}
@@ -135,23 +135,64 @@ func farmStateMeanings() string {
 // One transaction, one instant. Before this each command opened its own reads
 // and two of them read the same tables twice in a single run — so a screen
 // could pair a host count from before a reconcile with a VM count from after.
-func loadCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) {
+func loadCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Catalog, error) {
 	defer timing.Start("fleet-query")()
 	snap, err := st.FleetSnapshot(ctx)
 	if err != nil {
 		return fleet.Catalog{}, err
 	}
+	keepReading(a, fleet.ShapeFarms, snap)
 	return fleet.From(snap), nil
+}
+
+// forgetReadings drops the stored picture after something changed it.
+//
+// A rename, a state change or a reconcile makes what is on disk wrong in the
+// one way a cache must never be: it shows somebody what they just changed away
+// from. Dropping is deliberate rather than rewriting — the command that changed
+// one field has not read the rest, and writing a partly-known picture back is
+// how a cache starts inventing.
+func forgetReadings(a *app.App) {
+	if a == nil {
+		return
+	}
+	if c := a.FleetCache(); c != nil {
+		_ = c.Clear()
+	}
+}
+
+// keepReading stores what was just read, for the next screen.
+//
+// Only readings that are supersets of their shape are stored. A shape has to
+// mean one thing: a caller loading ShapeFarms gets counts and reconcile times
+// because every writer of that shape had them, and a lesser reading being
+// written under it would turn "no VMs" from a fact into an artefact.
+//
+// Best effort and silent: a cache that cannot be written is a slower next
+// command, not a failed this one, and a warning on every run of a machine with
+// a full disk would be noise about something the command did successfully.
+func keepReading(a *app.App, shape fleet.Shape, snap store.Fleet) {
+	if a == nil {
+		return
+	}
+	if c := a.FleetCache(); c != nil {
+		_ = c.Save(shape, snap)
+	}
 }
 
 // loadVMCatalog is the one reading that carries the instance rows, for the
 // screen that lists them.
-func loadVMCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) {
+func loadVMCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Catalog, error) {
 	defer timing.Start("fleet-query+vms")()
 	snap, err := st.FleetSnapshotWithVMs(ctx)
 	if err != nil {
 		return fleet.Catalog{}, err
 	}
+	// Stored under both shapes: a full reading answers everything a light one
+	// would have, and a browser leaving a fresh reading behind should speed up
+	// the listing that follows it.
+	keepReading(a, fleet.ShapeVMs, snap)
+	keepReading(a, fleet.ShapeFarms, snap)
 	return fleet.From(snap), nil
 }
 
@@ -161,12 +202,18 @@ func loadVMCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) 
 // Most screens print how many VMs a deployment has and never which ones, and
 // carrying the rows to print a number is most of what those commands cost —
 // measured at 60–135ms per listing.
-func loadFarmCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error) {
+func loadFarmCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Catalog, error) {
 	defer timing.Start("fleet-query-light")()
 	snap, err := st.FleetFarms(ctx)
 	if err != nil {
 		return fleet.Catalog{}, err
 	}
+	// Deliberately not stored. This reading has no VM counts and no reconcile
+	// times — it does not need them — and writing it under the same shape would
+	// replace a full reading with a lesser one, so a later `farm list` would
+	// print every deployment as having zero VMs and never having reconciled.
+	//
+	// Only supersets are written; anything may be read. See loadCatalog.
 	return fleet.From(snap), nil
 }
 
@@ -176,8 +223,8 @@ func loadFarmCatalog(ctx context.Context, st *store.Store) (fleet.Catalog, error
 // Resolving a typed word and labelling a picker do not need instances, and
 // shell completion pays for what it reads on every Tab — so this is two
 // statements where loadCatalog is eight.
-func farmChoices(ctx context.Context, st *store.Store) ([]farmChoice, error) {
-	cat, err := loadFarmCatalog(ctx, st)
+func farmChoices(ctx context.Context, a *app.App, st *store.Store) ([]farmChoice, error) {
+	cat, err := loadFarmCatalog(ctx, a, st)
 	if err != nil {
 		return nil, err
 	}
@@ -299,9 +346,9 @@ func openstackFarmStateCmd(env CommandEnv) *cobra.Command {
 		Args:              cobra.MaximumNArgs(2),
 		ValidArgsFunction: byPosition(completeFarm(env), staticCompletions(store.HostStates...)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				farms, err := farmChoices(ctx, st)
+				farms, err := farmChoices(ctx, a, st)
 				if err != nil {
 					return err
 				}

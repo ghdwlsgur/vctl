@@ -62,8 +62,8 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 					"use 'vctl openstack farm list', 'vctl openstack --farm <f>' and " +
 					"'vctl openstack vm --farm <f>' instead")
 			}
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
-				return runExplore(cmd.Context(), st, args)
+			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+				return runExplore(cmd.Context(), a, st, args)
 			})
 		},
 	}
@@ -77,7 +77,7 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 // database that is slow, with no way to say so while it is stopped. What the
 // reader had set up is carried across, so a reload shows as the numbers
 // changing and nothing else.
-func runExplore(ctx context.Context, st *store.Store, args []string) error {
+func runExplore(ctx context.Context, a *app.App, st *store.Store, args []string) error {
 	var (
 		selected  string
 		carryOver *exploreModel
@@ -89,7 +89,7 @@ func runExplore(ctx context.Context, st *store.Store, args []string) error {
 		// long looks like a program that has hung. On stderr, so the alternate
 		// screen wipes it the moment there is something to show.
 		ui.Infof(os.Stderr, "reading the fleet…")
-		data, err := loadExploreData(ctx, st)
+		data, err := loadExploreData(ctx, a, st)
 		if err != nil {
 			return err
 		}
@@ -168,7 +168,7 @@ type exploreData struct {
 	ReadAt time.Time
 }
 
-func loadExploreData(ctx context.Context, st *store.Store) (exploreData, error) {
+func loadExploreData(ctx context.Context, a *app.App, st *store.Store) (exploreData, error) {
 	defer timing.Start("explore-load")()
 	out := exploreData{
 		Hosts: map[string][]store.OpenStackHost{},
@@ -178,7 +178,7 @@ func loadExploreData(ctx context.Context, st *store.Store) (exploreData, error) 
 	// One transaction for the whole screen. This used to be four reads, two of
 	// which the picker's own assembly then repeated — so the left pane's host
 	// count and the right pane's VM list came from different instants.
-	cat, err := loadVMCatalog(ctx, st)
+	cat, err := loadVMCatalog(ctx, a, st)
 	if err != nil {
 		return out, err
 	}

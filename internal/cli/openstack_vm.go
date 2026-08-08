@@ -50,7 +50,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 			"  vctl openstack vm 10.3.1         every VM answering on an address that starts there",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				// One argument, read by its shape. A UUID is an identity and a
 				// word is a search, and asking somebody to say which is which
@@ -77,7 +77,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 				// second was issued after the VMs had already been fetched.
 				var cat fleet.Catalog
 				if farm != "" || !asJSON {
-					c, err := loadFarmCatalog(ctx, st)
+					c, err := loadFarmCatalog(ctx, a, st)
 					if err != nil {
 						return err
 					}
@@ -176,8 +176,8 @@ func isInstanceID(v string) bool {
 
 // resolveFarmID turns a name people use into the deployment id rows carry, for
 // the callers that need nothing else from the reading.
-func resolveFarmID(ctx context.Context, st *store.Store, v string) (string, error) {
-	cat, err := loadFarmCatalog(ctx, st)
+func resolveFarmID(ctx context.Context, a *app.App, st *store.Store, v string) (string, error) {
+	cat, err := loadFarmCatalog(ctx, a, st)
 	if err != nil {
 		return "", err
 	}
@@ -542,7 +542,7 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 				// One reading answers both questions this command asks about
 				// deployments: which one --farm means, and what to call the one
 				// the VM turns out to be in.
-				cat, err := loadFarmCatalog(ctx, st)
+				cat, err := loadFarmCatalog(ctx, a, st)
 				if err != nil {
 					return err
 				}

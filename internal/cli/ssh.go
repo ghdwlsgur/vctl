@@ -288,7 +288,7 @@ func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string, all
 	return env.withStore(ctx, false, func(a *app.App, st *store.Store) error {
 		f := store.InstanceFilter{InstanceID: id, IncludeMissing: true}
 		if farm != "" {
-			resolved, err := resolveFarmID(ctx, st, farm)
+			resolved, err := resolveFarmID(ctx, a, st, farm)
 			if err != nil {
 				return err
 			}
