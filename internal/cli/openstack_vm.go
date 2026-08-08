@@ -188,7 +188,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 // browser ever wrote one, so the fast path existed and almost never fired.
 func vmCatalog(ctx context.Context, a *app.App, lazy *openLater, live bool) (fleet.Catalog, time.Duration, error) {
 	if !live {
-		if cat, age, ok := storedCatalog(a, fleet.ShapeVMs, fleet.FreshFor); ok {
+		if cat, age, ok := storedCatalog(a, fleet.ShapeVMs, fleet.ForListing); ok {
 			return cat, age, nil
 		}
 	}
