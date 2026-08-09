@@ -401,7 +401,7 @@ function wiringGeometry(topo, N, hub, { meshIf, mesh, hops, topSpokes, farSpokes
     const h = 52 + Math.max(rows, bandH);
     zoneGeo.push({ zk, clusters, y: zy, h }); zy += h + 26;
   }
-  const meshHeights = [...meshIf].map(ifc => 48 + mesh.filter(s => s.iface === ifc).length * 20 + 44 + 180);
+  const meshHeights = [...meshIf].map(ifc => 48 + mesh.filter(s => s.iface === ifc).length * 28 + 44 + 180);
   const leftH = HUBY + hubH + 84 + meshHeights.reduce((a, b) => a + b, 0) + hops.length * 180 + 160;
   const H = Math.max(zy + 40, leftH, 720), W = ZONE_R + 20;
   const drawW = Math.min(W, 1560);
@@ -451,13 +451,22 @@ function focusClosure(seed, topo, vipFocusNodes) {
 
   const hubOwns = !scopeHost && (hub.ifaces || []).some(i => i.name === seedIf);
   for (const e of E) {
-    if (e.iface !== seedIf) continue;
-    if (scopeHost && e.source !== scopeHost && e.target !== scopeHost) continue;
+    // One tunnel has two interface names. e.iface is the source-side summary,
+    // while the paired record keeps the far side in e.b. Filtering only on the
+    // summary made `wg0` stop at the hub's NAT/WAN fan-out and omit nodes whose
+    // own end is wg0 but whose hub end is wg3.
+    const sides = [
+      { host: e.source, iface: (e.a && e.a.iface) || e.iface, allowed: (e.a && e.a.allowed) || e.allowed },
+      { host: e.target, iface: (e.b && e.b.iface) || "", allowed: (e.b && e.b.allowed) || "" },
+    ];
+    const matchedSides = sides.filter(s => s.iface === seedIf && (!scopeHost || s.host === scopeHost));
+    if (matchedSides.length === 0) continue;
     if (hubOwns && e.source !== hub.id && e.target !== hub.id) continue;
     result.edges.add(e.id);
     result.nodes.add(e.source); result.nodes.add(e.target);
-    for (const c of cidrs(e.allowed)) result.cidrs.add(c);
-    if (e.source === hub.id || e.target === hub.id) result.hubIfaces.add(e.iface);
+    for (const side of matchedSides) for (const c of cidrs(side.allowed)) result.cidrs.add(c);
+    const hubSide = sides.find(s => s.host === hub.id);
+    if (hubSide && hubSide.iface) result.hubIfaces.add(hubSide.iface);
   }
   // A VIP is labelled with the interface that fronts it, so it belongs to this
   // tunnel's picture even though no edge carries it.
@@ -499,6 +508,10 @@ function focusVerdict(data, inherited, focus) {
   if (keep != null) return true;
   if (own !== undefined) {
     let matched = focus.ifaces.has(own);
+    // A far-side interface can cross a differently-named hub port. The hub
+    // port group carries both tags, so preserve that boundary without adding
+    // the hub name to focus.ifaces (which would light every tunnel on it).
+    if (!matched && data.hubif !== undefined) matched = focus.hubIfaces.has(data.hubif);
     // An interface tag that does not match is not the last word when the same
     // group also names nodes or edges that are in focus. A tunnel's far end is
     // drawn by the chip that owns it — tagged with the interface facing the
@@ -506,16 +519,39 @@ function focusVerdict(data, inherited, focus) {
     // at the other end of the very tunnel being focused. Measured: wg-seoul lit
     // its tunnel and its hub and nothing else.
     if (!matched && precise) {
-      if (data.eids !== undefined) matched = JSON.parse(data.eids).some(id => focus.edges.has(id));
-      if (!matched && data.nodes !== undefined) matched = JSON.parse(data.nodes).some(id => focus.nodes.has(id));
+      // An edge id is more specific than a shared endpoint. A status bead on
+      // wg-seoul can name the personal VM too, but that must not make the
+      // wg-seoul tunnel survive a wg-personal focus. Fall back to node identity
+      // only for node geometry that has no edge identity of its own.
+      if (data.eids !== undefined) return JSON.parse(data.eids).some(id => focus.edges.has(id));
+      if (data.nodes !== undefined) matched = JSON.parse(data.nodes).some(id => focus.nodes.has(id));
     }
     return matched;
   }
   // A routed-network band is semantic, not owned by the first interface that
-  // happened to create it. The same CIDR can later receive wg-seoul/wg1 routes,
-  // so CIDR focus must beat the band's initial data-ifs value.
-  if (data.cidr !== undefined) return focus.cidrs.has(data.cidr);
-  if (ifs !== undefined) return inherited || ifs.split("|").some(i => focus.ifaces.has(i));
+  // happened to create it. However, a concrete path can share that CIDR while
+  // belonging to another tunnel. In that case edge identity is the stronger
+  // signal; CIDR fallback is only for aggregate geometry without edge owners.
+  if (data.cidr !== undefined) {
+    if (data.eids !== undefined) {
+      const ids = JSON.parse(data.eids);
+      if (ids.length) return ids.some(id => focus.edges.has(id));
+    }
+    return focus.cidrs.has(data.cidr);
+  }
+  if (ifs !== undefined) {
+    let matched = inherited || ifs.split("|").some(i => focus.ifaces.has(i));
+    // data-ifs is the multi-owner form of data-ifc. A clustered card can be
+    // drawn under one side's scoped key while the selected tunnel reaches the
+    // same card from its other side, so precise edge/node identity must get the
+    // same fallback it receives for data-ifc above.
+    if (!matched && precise) {
+      if (data.eids !== undefined) return JSON.parse(data.eids).some(id => focus.edges.has(id));
+      if (data.nodes !== undefined) matched = JSON.parse(data.nodes).some(id => focus.nodes.has(id));
+      if (!matched && data.hubif !== undefined) matched = focus.hubIfaces.has(data.hubif);
+    }
+    return matched;
+  }
   if (precise) {
     let matched = inherited;
     if (data.eids !== undefined) matched = matched || JSON.parse(data.eids).some(id => focus.edges.has(id));

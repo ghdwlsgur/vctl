@@ -23,6 +23,8 @@ const topo={
      ifaces:[{name:"wg3",pub:"KST3"}]},
     {id:"srv32",label:"srv32",kind:"gateway",dc:"incheon",pub:"KS0",
      ifaces:[{name:"wg0",pub:"KS0"}]},
+    {id:"gpu",label:"gpu",kind:"host",dc:"incheon",pub:"KG0",
+     ifaces:[{name:"wg0",pub:"KG0"}]},
     {id:"ext|a",label:"ext-a",kind:"external"},
     {id:"ext|b",label:"ext-b",kind:"external"}
   ],
@@ -31,6 +33,12 @@ const topo={
      a:{host:"hub",iface:"wg1",pub:"KH1"},b:{host:"lb",iface:"wg1",pub:"KLB1"}},
     {id:"e-hub-srv32",source:"hub",target:"srv32",iface:"wg0",allowed:"10.0.0.0/24",
      a:{host:"hub",iface:"wg0",pub:"KH0"},b:{host:"srv32",iface:"wg0",pub:"KS0"}},
+    // The hub reaches this node over wg3, while the node calls its end wg0.
+    // A wg0 filter must still reach the node-side interface and light the wg3
+    // port that carries it across the NAT/WAN boundary.
+    {id:"e-hub-gpu",source:"hub",target:"gpu",iface:"wg3",allowed:"10.0.93.2/32",
+     a:{host:"hub",iface:"wg3",pub:"KH3",allowed:"10.0.93.2/32"},
+     b:{host:"gpu",iface:"wg0",pub:"KG0",allowed:"192.168.110.0/24"}},
     // Between two non-hub nodes, on names the hub also uses.
     {id:"e-staging-ext",source:"staging",target:"ext|a",iface:"wg3",allowed:"10.9.0.0/24"},
     {id:"e-srv32-ext",source:"srv32",target:"ext|b",iface:"wg0",allowed:"10.8.0.0/24"}
@@ -71,6 +79,40 @@ console.log([...closure("wg3").nodes].sort().join(","));
 `)
 	if strings.Contains(got, "lb") {
 		t.Errorf("focusing the hub's wg3 selected %q; lb has no wg3", got)
+	}
+}
+
+// An edge has two interface identities. The representative e.iface is the
+// source (hub) side, but operators also filter by the interface name shown on
+// the far node. Ignoring e.b.iface made wg0 light only the NAT/WAN fan-out and
+// leave every incheon node whose own interface is wg0 dimmed.
+func TestFilterMatchesTheFarEndpointInterface(t *testing.T) {
+	got := runModelJS(t, filterFixtureJS+`
+const f=closure("wg0");
+console.log(JSON.stringify({
+  nodes:[...f.nodes].sort(),
+  edges:[...f.edges].sort(),
+  hubIfaces:[...f.hubIfaces].sort(),
+  cidrs:[...f.cidrs].sort(),
+}));
+`)
+	var out struct {
+		Nodes     []string
+		Edges     []string
+		HubIfaces []string
+		CIDRs     []string
+	}
+	if err := json.Unmarshal([]byte(got), &out); err != nil {
+		t.Fatalf("unmarshal %q: %v", got, err)
+	}
+	if !slices.Contains(out.Nodes, "gpu") || !slices.Contains(out.Edges, "e-hub-gpu") {
+		t.Errorf("far-side wg0 is absent: nodes=%v edges=%v", out.Nodes, out.Edges)
+	}
+	if !slices.Contains(out.HubIfaces, "wg3") {
+		t.Errorf("far-side wg0 did not retain its hub boundary interface: %v", out.HubIfaces)
+	}
+	if !slices.Contains(out.CIDRs, "192.168.110.0/24") {
+		t.Errorf("far-side wg0 AllowedIPs are absent: %v", out.CIDRs)
 	}
 }
 

@@ -86,6 +86,9 @@ func wgDashboardFixture() Topology {
 		{Hostname: "wg-hub", IP: "192.0.2.1", DC: "incheon-vm"},
 		{Hostname: "lb-gw", IP: "192.0.2.41", DC: "incheon-vm"},
 		{Hostname: "relay-01", IP: "192.0.2.61", DC: "incheon-vm"},
+		{Hostname: "compute-top-01", IP: "192.0.2.71", DC: "incheon-compute"},
+		{Hostname: "compute-mesh-01", IP: "192.0.2.72", DC: "incheon-compute"},
+		{Hostname: "compute-hop-01", IP: "192.0.2.73", DC: "incheon-compute"},
 		{Hostname: "seoul-gw", IP: "192.0.2.21", DC: "seoul-onprem"},
 		{Hostname: "plain-host-01", IP: "192.0.2.60", DC: "incheon-vm"},
 	}
@@ -93,6 +96,9 @@ func wgDashboardFixture() Topology {
 	annotations := []store.WGEndpointAnnotation{
 		{PublicKey: "PEERA", Label: "branch-a", Kind: "vm", UnderlayIP: "10.10.1.5", Site: "seoul-onprem"},
 		{PublicKey: "PEERB", Label: "branch-b", Kind: "device", UnderlayIP: "10.10.2.5", Site: "seoul-onprem"},
+		{PublicKey: "LB3", Label: "lb-gw", Kind: "gateway", Site: "incheon-vm", ParentHostname: "compute-top-01"},
+		{PublicKey: "MESH1", Label: "mesh-vm-01", Kind: "vm", Site: "incheon-vm", ParentHostname: "compute-mesh-01"},
+		{PublicKey: "RELAY7", Label: "relay-01", Kind: "gateway", Site: "incheon-vm", ParentHostname: "compute-hop-01"},
 		// Two annotations on one collected host disagree on the label, which is
 		// what raises the endpoint card's WARNING badge.
 		{PublicKey: "SEOUL1", Label: "seoul-gw", Kind: "gateway", Site: "seoul-onprem"},

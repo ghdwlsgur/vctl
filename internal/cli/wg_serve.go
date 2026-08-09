@@ -14,6 +14,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
@@ -100,6 +101,15 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 			if err != nil {
 				ui.Warnf(os.Stderr, "list endpoint annotations (run vctl sync --migrate): %v", err)
 			}
+			instances, err := st.Instances(ctx, store.InstanceFilter{})
+			if err != nil {
+				ui.Warnf(os.Stderr, "list OpenStack VMs for endpoint placement: %v", err)
+			}
+			osHosts, err := st.OpenStackHosts(ctx)
+			if err != nil {
+				ui.Warnf(os.Stderr, "list OpenStack hosts for endpoint placement: %v", err)
+			}
+			annotations = enrichWGAnnotations(ifaces, servers, annotations, instances, osHosts)
 			topo, edgeFor := wireguard.Build(ifaces, peers, servers, annotations)
 			if vips, err := st.IPAllocList(ctx, "dnat-vip", "", ""); err == nil {
 				for _, v := range vips {

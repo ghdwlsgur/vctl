@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The dim pass, rule by rule.
 //
@@ -82,6 +85,71 @@ console.log(JSON.stringify([
 	}
 }
 
+// A clustered node card carries data-ifs instead of data-ifc because several
+// rows can share its physical-host wrapper. That list is only a drawing owner;
+// it must not hide a node reached from the other end of the selected edge. The
+// live failure was wg-seoul omitting wireguard-personal-incheon because its
+// card was initially drawn under the scoped sre-lb/wg-personal key.
+func TestFocusAForeignInterfaceListStillMatchesOnAFocusedEdgeOrNode(t *testing.T) {
+	got := runModelJS(t, focusJS+`
+console.log(JSON.stringify([
+  V({ifs:"sre-lb/wg-personal",eids:'["e-hub-seoul"]',nodes:'["other-node"]'}),
+  V({ifs:"sre-lb/wg-personal",eids:'["e-other"]',nodes:'["seoul-gw"]'}),
+  V({ifs:"sre-lb/wg-personal",nodes:'["seoul-gw"]'}),
+]));
+`)
+	if want := `[true,false,true]`; got != want {
+		t.Errorf("interface list with precise data = %s, want %s", got, want)
+	}
+}
+
+// Selecting a far-side wg0 can traverse the hub's wg3. The hub port carries
+// both tags (ifc=wg3, hubif=wg3), so hubif must be considered even though the
+// selected interface key itself is wg0.
+func TestFocusFarSideInterfaceKeepsItsHubBoundaryPort(t *testing.T) {
+	got := runModelJS(t, `
+const focus={
+  ifaces:new Set(["wg0"]), nodes:new Set(), edges:new Set(),
+  hubIfaces:new Set(["wg3"]), cidrs:new Set(),
+};
+console.log(JSON.stringify(focusVerdict({ifc:"wg3",hubif:"wg3"},false,focus)));
+`)
+	if got != "true" {
+		t.Errorf("far-side interface lost its hub boundary port: %s", got)
+	}
+}
+
+// A node card belongs to every tunnel that lands on the node, but a bead or
+// route carrying an edge id belongs to that edge. When both tags are present,
+// the edge is the more precise identity and must win. Otherwise selecting the
+// personal tunnel also leaves the VM's client tunnel and the load balancer's
+// hub tunnel lit merely because they share an endpoint.
+func TestFocusAnUnrelatedEdgeDoesNotSurviveThroughASharedNode(t *testing.T) {
+	got := runModelJS(t, focusJS+`
+console.log(JSON.stringify([
+  V({ifc:"wg-seoul",eids:'["e-other"]',nodes:'["seoul-gw"]'}),
+  V({ifc:"wg-seoul",eids:'["e-hub-seoul"]',nodes:'["other-node"]'}),
+]));
+`)
+	if want := `[false,true]`; got != want {
+		t.Errorf("edge/node precedence = %s, want %s", got, want)
+	}
+}
+
+// A non-hub hop is identified by host and interface. The routed-network path
+// is clickable too, so it must select the same scoped key as the tunnel and its
+// legend chip. Passing e.iface here produces the bare key and immediately dims
+// the geometry the user just clicked.
+func TestFocusReachPathUsesTheScopedHopKey(t *testing.T) {
+	view := string(wgViewJS)
+	if strings.Contains(view, "clickFocus(rp, e.iface)") {
+		t.Error("routed-network path drops the hop's host scope")
+	}
+	if !strings.Contains(view, "clickFocus(rp, hk)") {
+		t.Error("routed-network path does not use the scoped hop key")
+	}
+}
+
 // A routed-network band is semantic, not owned by the first interface that
 // happened to create it. The same CIDR can later receive wg-seoul/wg1 routes, so
 // CIDR focus must beat the band's initial data-ifs value.
@@ -90,9 +158,11 @@ func TestFocusACidrBandIsOwnedByItsRangeNotByWhoDrewIt(t *testing.T) {
 console.log(JSON.stringify([
   V({cidr:"192.168.201.0/24",ifs:"wg-seoul"}),  // drawn by wg-seoul, routed over wg1
   V({cidr:"10.9.0.0/24",ifs:"wg1"}),            // drawn by wg1, not in this closure
+  V({cidr:"192.168.201.0/24",eids:'["e-other"]'}), // same range, unrelated edge
+  V({cidr:"192.168.201.0/24",eids:'["e-hub-seoul"]'}), // same range and selected edge
 ]));
 `)
-	if want := `[true,false]`; got != want {
+	if want := `[true,false,false,true]`; got != want {
 		t.Errorf("cidr band = %s, want %s", got, want)
 	}
 }

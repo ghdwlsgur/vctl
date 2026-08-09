@@ -108,6 +108,14 @@ function statusDot(p, { cx, cy, r = 5.5, eid, col, title, prefix = "", detail = 
   return dot;
 }
 
+function physicalHostOf(N, node) {
+  return node && node.parent ? N.get(node.parent) : null;
+}
+
+function physicalHostLabel(host) {
+  return "PHYSICAL HOST · " + host.label + (host.ip ? " · " + host.ip : "");
+}
+
 // Column headings, the hub-zone box, and the NAT divider — the quiet backdrop
 // that makes the wiring scannable before anyone traces a coloured route.
 function drawChrome({ gz }, { ZONE_R, HUBX, NATX, EPX, BANDX, H }, hub) {
@@ -172,6 +180,7 @@ function drawLocalFabric({ gg, gn, gd, gt, grp }, { HUBX, HUBY }, topo, N, hub, 
     const d = `M${HUBX},${HUBY + 40} H272 V${lb.y} H244`;
     const pth = mk("path", { d, class: "reach", stroke: col }, g2);
     pth.dataset.overlay = "local-bus"; pth.dataset.cidr = c;
+    pth.dataset.eids = JSON.stringify([s.e.id, b.id]);
     mk("circle", { cx: 244, cy: lb.y, r: 4, fill: col, class: "sdot" }, g2d);
     hot(pth, () => [`${s.iface} → ${c}`, `reverse reachability — AllowedIPs on ${(N.get(s.oid) || {}).label || ""} · click to focus`]);
     clickFocus(pth, s.iface);
@@ -205,9 +214,12 @@ function drawMeshStacks({ gn, gd, gt, grp }, { HUBX, HUBY, hubH }, N, hub, { mes
   let my = HUBY + hubH + 84; let meshIdx = 0; const meshGeo = new Map();
   for (const ifc of meshIf) {
     const list = mesh.filter(s => s.iface === ifc);
-    const labels = list.map(s => ((N.get(s.oid) || {}).label || s.oid) + "");
+    const labels = list.map(s => {
+      const n = N.get(s.oid), parent = physicalHostOf(N, n);
+      return (parent ? physicalHostLabel(parent) + " · " : "") + ((n || {}).label || s.oid);
+    });
     const mw = Math.min(280, Math.max(200, Math.max(0, ...labels.map(l => l.length)) * 6.6 + 52));
-    const col = ifColor(ifc), bh = 48 + list.length * 20;
+    const col = ifColor(ifc), rowStep = 28, bh = 48 + list.length * rowStep;
     const meshEids = list.map(s => s.e.id), meshNodes = list.map(s => s.oid);
     const g2 = grp(gn, ifc, { nodes: meshNodes, eids: meshEids }), g2d = grp(gd, ifc, { nodes: meshNodes, eids: meshEids }),
       g2t = grp(gt, ifc, { eids: meshEids });
@@ -226,16 +238,26 @@ function drawMeshStacks({ gn, gd, gt, grp }, { HUBX, HUBY, hubH }, N, hub, { mes
     list.sort((a, b) => slash32(a.e.allowed).localeCompare(slash32(b.e.allowed), undefined, { numeric: true }));
     const dotX = 64 + mw - 14, lane = 64 + mw + 14;
     list.forEach((s, i) => {
-      const n = N.get(s.oid), y = my + 48 + i * 20;
-      const lbl = mk("text", { x: dotX - 12, y: y + 3, class: "bsub", "text-anchor": "end" }, g2d);
+      const n = N.get(s.oid), parent = physicalHostOf(N, n), y = my + 48 + i * rowStep;
+      // The stack is one visual card but each row is a different tunnel. Tag
+      // rows individually so selecting the far-side interface on six of nine
+      // peers does not light the other three merely because their parent stack
+      // contains at least one selected edge.
+      const rowD = mk("g", {}, g2d), rowT = mk("g", {}, g2t);
+      rowD.dataset.ifc = ifc; rowD.dataset.nodes = JSON.stringify([s.oid]); rowD.dataset.eids = JSON.stringify([s.e.id]);
+      rowT.dataset.ifc = ifc; rowT.dataset.eids = JSON.stringify([s.e.id]);
+      if (parent) {
+        mk("text", { x: dotX - 12, y: y - 6, class: "htit", "text-anchor": "end" }, rowD).textContent = physicalHostLabel(parent);
+      }
+      const lbl = mk("text", { x: dotX - 12, y: y + (parent ? 7 : 3), class: "bsub", "text-anchor": "end" }, rowD);
       lbl.textContent = (n ? n.label : s.oid) || "";
-      statusDot(g2d, {
+      statusDot(rowD, {
         cx: dotX, cy: y, r: 4.5, cls: "sdot", eid: s.e.id, col,
         title: (n ? n.label : s.oid), prefix: slash32(s.e.allowed) + " · "
       });
-      mk("path", { d: `M${dotX + 5},${y} H${lane}`, class: "tun", stroke: col, "stroke-width": 1.6 }, g2t);
+      mk("path", { d: `M${dotX + 5},${y} H${lane}`, class: "tun", stroke: col, "stroke-width": 1.6 }, rowT);
     });
-    const trunk = `M${lane},${my + 48 + (list.length - 1) * 20} V${my + 20} H${pdx} V${pdy + 6}`;
+    const trunk = `M${lane},${my + 48 + (list.length - 1) * rowStep} V${my + 20} H${pdx} V${pdy + 6}`;
     const p = mk("path", { d: trunk, class: "tun", stroke: col, "stroke-width": 2 }, g2t);
     hot(p, () => [`${ifc} · mesh ×${list.length}`, "hub ↔ local peer /32 fan-out · click to focus"]); clickFocus(p, ifc);
     meshGeo.set(ifc, { x: 64 + mw, y: my + bh / 2 });
@@ -255,6 +277,11 @@ function drawTopChips({ gn, gd, gt, gf, grp }, { EPX, HUBX, HUBW, remoteIf }, N,
     const cx0 = EPX + i * (cw + 24), cy = 96;
     const g2 = grp(gn, s.iface, { nodes: s.oid }), g2d = grp(gd, s.iface, { nodes: s.oid, eids: s.e.id }),
       g2t = grp(gt, s.iface, { eids: s.e.id }), g2f = grp(gf, s.iface, { eids: s.e.id });
+    const parent = physicalHostOf(N, n);
+    if (parent) {
+      mk("rect", { x: cx0 - 10, y: cy - 26, width: cw + 20, height: 86, rx: 10, class: "hbox k-host" }, g2);
+      mk("text", { x: cx0 + 2, y: cy - 10, class: "htit" }, g2).textContent = physicalHostLabel(parent);
+    }
     const box = nodeCard(g2, { x: cx0, y: cy, w: cw, h: 50, node: n });
     hot(box, () => [n.label, `${n.kind} · ${hub.dc ? zoneKey(hub.dc) : ""} (dials in to the hub site)`]); clickFocus(box, s.iface);
     topPos.set(s.oid, { x: cx0, y: cy, k: 1 });
@@ -289,7 +316,7 @@ function drawZones({ gz, gg, gn, gd, gt, gf, grp }, geo, N, { vipsBy, meshGeo, h
         const gp = mk("g", {}, gn); gp.dataset.ifs = cl.items.map(x => x.iface || "").filter(Boolean).join("|");
         gp.dataset.nodes = JSON.stringify(cl.items.map(x => x.oid));
         mk("rect", { x: EPX - 10, y: ry, width: EPW + 20, height: clH(cl), rx: 10, class: "hbox k-host" }, gp);
-        mk("text", { x: EPX + 2, y: ry + 16, class: "htit" }, gp).textContent = "PHYSICAL HOST · " + parent.label + (parent.ip ? " · " + parent.ip : "");
+        mk("text", { x: EPX + 2, y: ry + 16, class: "htit" }, gp).textContent = physicalHostLabel(parent);
       }
       let inY = parent ? ry + HOSTPAD - 6 : ry;
       for (const s of cl.items) {
@@ -437,9 +464,15 @@ function drawHops({ gn, gd, gt, gf, grp }, geo, N, hub, { hops, startY, epPos, b
     clickFocus(base, fk);
   }
   for (const [oid, { tn, sp, edges }] of hopBy) {
-    const bw2 = Math.max(200, tn.label.length * 7 + 26);
+    const parent = physicalHostOf(N, tn);
+    const parentNeed = parent ? physicalHostLabel(parent).length * 6.2 + 24 : 0;
+    const bw2 = Math.max(200, tn.label.length * 7 + 26, parentNeed);
     const g2 = mk("g", {}, gn); g2.dataset.ifs = edges.map(e => hopKey(e, hub)).join("|");
     g2.dataset.nodes = JSON.stringify([oid]); g2.dataset.eids = JSON.stringify(edges.map(e => e.id));
+    if (parent) {
+      mk("rect", { x: 54, y: hy - 26, width: bw2 + 20, height: 88, rx: 10, class: "hbox k-host" }, g2);
+      mk("text", { x: 66, y: hy - 10, class: "htit" }, g2).textContent = physicalHostLabel(parent);
+    }
     const bx2 = nodeCard(g2, { x: 64, y: hy, w: bw2, h: 52, node: tn, cls: tn.kind === "vm" ? "vmb" : "" });
     hot(bx2, () => [tn.label, `${tn.kind}${tn.dc ? " · " + tn.dc : ""}`]);
     leftPos.set(oid, { x: 64, y: hy, w: bw2, k: edges.length });
@@ -464,7 +497,7 @@ function drawHops({ gn, gd, gt, gf, grp }, geo, N, hub, { hops, startY, epPos, b
           mk("circle", { cx: BANDX - 12, cy: dy, r: 5, fill: col, class: "pdot" }, g2d);
           const rp = mk("path", { d: `M${chipR + 6},${hy + 40} H${NATX - 96 - k * 8} V${dy} H${BANDX - 18}`, class: "reach", stroke: col }, g2t);
           hot(rp, () => [`${e.iface} → ${c}`, `reachable via ${tn.label} (peer-side AllowedIPs) · click to focus`]);
-          clickFocus(rp, e.iface);
+          clickFocus(rp, hk);
         } else {
           const byy = hy + 64 + below * 48; below++;
           const rb = mk("rect", { x: 94, y: byy, width: bw2 - 30, height: 40, rx: 8, class: "nbox band k-net" }, g2);
@@ -561,6 +594,12 @@ function applyFocus(el, focused, inherited) {
     { data: el.dataset || {}, classes: el.classList, leaf: el.children.length === 0 },
     inherited, focus, focused);
   el.classList.toggle("dim", dim);
+  // Keep traffic as data and presentation as state. A filtered-out path must
+  // not retain the same `on` class as a visible, actively flowing tunnel; when
+  // focus is cleared, the last sampled traffic state restores it immediately.
+  if (el.classList.contains("flow")) {
+    el.classList.toggle("on", el.dataset.flowing === "1" && !dim);
+  }
   for (const c of el.children) applyFocus(c, focused, matched);
 }
 
@@ -608,9 +647,11 @@ function buildLegend() {
 function applyStats() {
   for (const t of tunnels) {
     const st = reading.stats[t.id];
-    if (st && (st.rx > 0 || st.tx > 0)) {
+    const flowing = !!(st && (st.rx > 0 || st.tx > 0));
+    t.fl.dataset.flowing = flowing ? "1" : "0";
+    if (flowing) {
       const r = st.rx + st.tx;
-      t.fl.classList.add("on");
+      t.fl.classList.toggle("on", !t.fl.classList.contains("dim"));
       t.fl.style.animationDuration = Math.max(.5, 2.6 - Math.log10(r + 1) * .38) + "s";
       t.base.setAttribute("stroke-width", Math.min(4.6, 2 + Math.log10(r + 1) * .5));
     } else t.fl.classList.remove("on");

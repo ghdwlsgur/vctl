@@ -221,7 +221,8 @@
   .sdot{stroke:var(--panel);stroke-width:1.6}
   .jdot{fill:var(--ring)}
   .hot{cursor:pointer}
-  .dim{opacity:.06;transition:opacity .15s}
+  .dim{opacity:.06;filter:none;transition:opacity .15s}
+  .flow.on.dim,.dim .flow.on{opacity:.06;animation:none;transition:none}
   @media (prefers-reduced-motion:reduce){.flow{display:none}svg#net{transition:none}}
   #tip{position:fixed;pointer-events:none;z-index:30;background:var(--panel);border:1px solid var(--ring);
     border-radius:5px;padding:9px 11px;font-size:11px;box-shadow:var(--shadow);
