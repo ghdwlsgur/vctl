@@ -168,6 +168,7 @@ const MEASURE = String.raw`
     // full strength, so filtering read as "a few dots changed colour".
     const beads=painted.filter(isBead);
     const stillGlowing=dim.filter(isBead).filter(glowing);
+    const stillFlowing=dim.filter(el=>el.classList.contains("flow")&&el.classList.contains("on"));
     // A container that dims takes its matched descendants with it.
     const dimmedContainers=dim.filter(el=>el.children.length>0);
     // Chrome is the frame, not the drawing.
@@ -175,10 +176,51 @@ const MEASURE = String.raw`
       ["lanerule","lanehead","zone","zlab","zsub","nat","natlab"].some(c=>el.classList.contains(c)));
     // The selected interface's own geometry must survive its own selection.
     const ownDimmed=dim.filter(el=>el.dataset&&el.dataset.ifc===key);
+    // A compact mesh card contains several node rows. If its aggregate group
+    // matches one focused edge, unrelated rows still need their own edge/node
+    // tags or every peer in the card stays bright.
+    const idsByLabel=new Map();
+    for(const n of ((curTopo&&curTopo.nodes)||[])){
+      const a=idsByLabel.get(n.label)||[];a.push(n.id);idsByLabel.set(n.label,a);
+    }
+    const foreignNodeLabels=lit.filter(el=>el.tagName&&el.tagName.toLowerCase()==="text")
+      .filter(el=>{
+        const owner=el.closest("[data-nodes]");if(!owner)return false;
+        let owned=[];try{owned=JSON.parse(owner.dataset.nodes||"[]");}catch(_){return false;}
+        const candidates=(idsByLabel.get((el.textContent||"").trim())||[]).filter(id=>owned.includes(id));
+        return candidates.length>0&&candidates.every(id=>!focus.nodes.has(id));
+      });
+    // Clean isolation is still wrong if it achieves that by hiding one end of
+    // the selected tunnel. Every focused endpoint must retain a visible label.
+    // Resolve through data-nodes so duplicate labels in different farms do not
+    // accidentally satisfy each other.
+    const hubId=(prep(curTopo).hub||{}).id;
+    const missingNodeLabels=[...focus.nodes].filter(id=>id!==hubId).filter(id=>{
+      const n=(curTopo.nodes||[]).find(x=>x.id===id);if(!n)return true;
+      const labels=painted.filter(el=>el.tagName&&el.tagName.toLowerCase()==="text")
+        .filter(el=>(el.textContent||"").trim()===n.label)
+        .filter(el=>{const owner=el.closest("[data-nodes]");if(!owner)return false;
+          try{return JSON.parse(owner.dataset.nodes||"[]").includes(id);}catch(_){return false;}});
+      return labels.length===0||labels.every(el=>el.classList.contains("dim"));
+    });
+    // Placement is part of the tunnel architecture, not optional decoration.
+    // A selected VM may live in a far-zone card, a same-site top chip, or a
+    // compact mesh row; all three renderers must keep its physical host visible.
+    const missingParentLabels=[...focus.nodes].filter(id=>id!==hubId).flatMap(id=>{
+      const n=(curTopo.nodes||[]).find(x=>x.id===id);if(!n||!n.parent)return [];
+      const parent=(curTopo.nodes||[]).find(x=>x.id===n.parent);if(!parent)return [n.parent];
+      const labels=painted.filter(el=>el.tagName&&el.tagName.toLowerCase()==="text")
+        .filter(el=>(el.textContent||"").includes(parent.label))
+        .filter(el=>{const owner=el.closest("[data-nodes]");if(!owner)return false;
+          try{return JSON.parse(owner.dataset.nodes||"[]").includes(id);}catch(_){return false;}});
+      return labels.length===0||labels.every(el=>el.classList.contains("dim"))?[parent.id]:[];
+    });
     perFocus[key]={lit:lit.length,dim:dim.length,
       dimmedBeads:dim.filter(isBead).length,glowWhileDim:stillGlowing.length,
+      flowWhileDim:stillFlowing.length,
       dimmedContainers:dimmedContainers.length,dimmedChrome:dimmedChrome.length,
-      ownDimmed:ownDimmed.length};
+      ownDimmed:ownDimmed.length,foreignNodeLabels:foreignNodeLabels.length,
+      missingNodeLabels:missingNodeLabels.length,missingParentLabels:missingParentLabels.length};
     ok("focus "+key+" isolates something",dim.length>0,"nothing dimmed");
     ok("focus "+key+" leaves something",lit.length>0,"everything dimmed");
     // A pass here is only worth reading if some bead was actually dimmed. Zero
@@ -189,12 +231,24 @@ const MEASURE = String.raw`
       stillGlowing.length+" of "+dim.filter(isBead).length+" dimmed beads still painting a glow: "+
       [...new Set(stillGlowing.map(el=>"."+[...el.classList].join(".")+
         " {"+getComputedStyle(el).filter+"}"))].slice(0,3).join(" | "));
+    ok("focus "+key+" stops dimmed flow",stillFlowing.length===0,
+      stillFlowing.length+" dimmed flow paths still carry the active class: "+
+      stillFlowing.slice(0,3).map(el=>{const s=getComputedStyle(el);return "."+
+        [...el.classList].join(".")+" {opacity:"+s.opacity+"; animation:"+s.animationName+"}";
+      }).join(" | "));
     ok("focus "+key+" dims no container",dimmedContainers.length===0,
       dimmedContainers.length+" containers dimmed, taking their children with them");
     ok("focus "+key+" spares the chrome",dimmedChrome.length===0,
       dimmedChrome.length+" frame elements dimmed");
     ok("focus "+key+" spares its own geometry",ownDimmed.length===0,
       ownDimmed.length+" elements tagged "+key+" were dimmed by selecting "+key);
+    ok("focus "+key+" dims unrelated node rows",foreignNodeLabels.length===0,
+      foreignNodeLabels.length+" unrelated node labels stayed lit: "+
+      foreignNodeLabels.slice(0,3).map(el=>(el.textContent||"").trim()).join(", "));
+    ok("focus "+key+" lights every tunnel endpoint",missingNodeLabels.length===0,
+      missingNodeLabels.length+" endpoint labels are missing or dim: "+missingNodeLabels.join(", "));
+    ok("focus "+key+" shows every endpoint's physical host",missingParentLabels.length===0,
+      missingParentLabels.length+" physical-host labels are missing or dim: "+missingParentLabels.join(", "));
   }
   out.facts.focus=perFocus;
 
