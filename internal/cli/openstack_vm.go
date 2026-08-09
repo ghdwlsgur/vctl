@@ -88,19 +88,17 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 				// reading was stored under.
 				narrowed := search != "" || address != "" || id != "" || project != "" || host != ""
 				if !narrowed {
-					cat, cached, err := vmCatalog(ctx, a, lazy, mustBeLive(cmd, asJSON))
+					rd, err := vmCatalog(ctx, a, lazy, mustBeLive(cmd, asJSON))
 					if err != nil {
 						return err
 					}
+					cat := rd.Catalog
 					vms, err := vmsFrom(cat, farm, showGone)
 					if err != nil {
 						return err
 					}
 					if asJSON {
 						return writeJSON(vms)
-					}
-					if cached > 0 {
-						ui.Infof(os.Stderr, "cached · read %s ago · --fresh to re-read", ui.CompactDuration(cached))
 					}
 					renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), wide)
 					return nil
@@ -177,28 +175,21 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 	return cmd
 }
 
-// vmCatalog is the whole reading for an unnarrowed listing, and how old it is.
+// vmCatalog is the whole reading for an unnarrowed listing, and where it came
+// from.
 //
-// A zero age means it came from the database. The live read is the full
-// snapshot rather than the light one plus a query: it costs about 150ms more
-// against a connection that costs ten seconds, and it is the reading that gets
-// stored — so the run after it, and the browser after that, pay neither.
+// The live read is the full snapshot rather than the light one plus a query: it
+// costs about 150ms more against a connection that costs ten seconds, and it is
+// the reading that gets stored — so the run after it, and the browser after
+// that, pay neither.
 //
-// Before this, `vm` could read the stored reading but nothing except the
-// browser ever wrote one, so the fast path existed and almost never fired.
-func vmCatalog(ctx context.Context, a *app.App, lazy *openLater, live bool) (fleet.Catalog, time.Duration, error) {
-	if !live {
-		if cat, age, ok := storedCatalog(a, fleet.ShapeVMs, fleet.ForListing); ok {
-			return cat, age, nil
-		}
-	}
-	var out fleet.Catalog
-	err := lazy.use(ctx, func(st *store.Store) error {
-		cat, err := loadVMCatalog(ctx, a, st)
-		out = cat
-		return err
-	})
-	return out, 0, err
+// This used to be its own sequence, and it was the same sequence as the other
+// two listings minus the last branch: when the database refused, `openstack` and
+// `farm list` served the stored reading and `vm` returned the error. Not a
+// decision — a copy that stopped early. Going through listingReading is what
+// makes the three agree by construction.
+func vmCatalog(ctx context.Context, a *app.App, lazy *openLater, live bool) (fleet.Reading, error) {
+	return listingReading(ctx, a, lazy, fleet.ShapeVMs, live, fleetSnapshotWithVMs)
 }
 
 // vmsFrom is the listing projected out of a reading.

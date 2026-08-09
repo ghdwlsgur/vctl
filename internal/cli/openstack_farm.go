@@ -134,34 +134,41 @@ func farmStateMeanings() string {
 		"retired: not operated any more, and hidden from the listing"
 }
 
-// loadCatalog reads the fleet once and returns what every farm-taking command
-// resolves and renders against.
+// fleetSnapshot reads the fleet once: what every farm-taking command resolves
+// and renders against.
 //
 // One transaction, one instant. Before this each command opened its own reads
 // and two of them read the same tables twice in a single run — so a screen
 // could pair a host count from before a reconcile with a VM count from after.
-func loadCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Catalog, error) {
+//
+// It returns the snapshot rather than the catalog and does not store it. Both
+// are fleet.Reader's business: it knows which shape was asked for, so it stores
+// under the right one, and folding into a catalog is what a caller wanted rather
+// than part of reading.
+func fleetSnapshot(ctx context.Context, st *store.Store) (store.Fleet, error) {
 	defer timing.Start("fleet-query")()
-	snap, err := st.FleetSnapshot(ctx)
-	if err != nil {
-		return fleet.Catalog{}, err
-	}
-	keepReading(a, fleet.ShapeFarms, snap)
-	return fleet.From(snap), nil
+	return st.FleetSnapshot(ctx)
 }
 
-// loadVMCatalog is the one reading that carries the instance rows, for the
+// fleetSnapshotWithVMs is the reading that carries the instance rows, for the
 // screen that lists them.
-func loadVMCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Catalog, error) {
+func fleetSnapshotWithVMs(ctx context.Context, st *store.Store) (store.Fleet, error) {
 	defer timing.Start("fleet-query+vms")()
-	snap, err := st.FleetSnapshotWithVMs(ctx)
+	return st.FleetSnapshotWithVMs(ctx)
+}
+
+// loadVMCatalog is the full reading for a caller that is not going through a
+// Reader — the browser, which manages its own freshness against its own window.
+//
+// Stored once, as ShapeVMs. A full reading answers everything a light one would
+// have, and LoadAtLeast already reaches up: a caller asking for farms considers
+// both files and takes whichever is newer. Writing it twice bought nothing and
+// cost a second copy of the same 200KB on every browse.
+func loadVMCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Catalog, error) {
+	snap, err := fleetSnapshotWithVMs(ctx, st)
 	if err != nil {
 		return fleet.Catalog{}, err
 	}
-	// Stored once. A full reading answers everything a light one would have, and
-	// LoadAtLeast already reaches up: a caller asking for farms considers both
-	// files and takes whichever is newer. Writing it twice bought nothing and
-	// cost a second copy of the same 200KB on every browse.
 	keepReading(a, fleet.ShapeVMs, snap)
 	return fleet.From(snap), nil
 }

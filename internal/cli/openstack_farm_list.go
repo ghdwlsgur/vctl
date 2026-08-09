@@ -86,11 +86,11 @@ func farmSummaries(ctx context.Context, a *app.App, st *openLater, live bool) ([
 	// a deployment gains a host on the timescale of somebody racking one — so a
 	// stored reading inside the fresh window is not a lesser answer to this
 	// question, it is the same one.
-	cat, err := listingCatalog(ctx, a, st, live, loadCatalog)
+	rd, err := listingReading(ctx, a, st, fleet.ShapeFarms, live, fleetSnapshot)
 	if err != nil {
 		return nil, err
 	}
-	return summarize(cat), nil
+	return summarize(rd.Catalog), nil
 }
 
 func summarize(cat fleet.Catalog) []farmSummary {
