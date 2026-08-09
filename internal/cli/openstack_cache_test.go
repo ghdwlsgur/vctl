@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -63,10 +64,14 @@ func TestAListingIsServedFromTheStoredReadingWhenItIsFresh(t *testing.T) {
 	st := &openLater{app: a}
 	defer st.Close()
 
-	cat, err := listingCatalog(context.Background(), a, st, false, loadFarmCatalog)
+	rd, err := listingReading(context.Background(), a, st, fleet.ShapeFarms, false, fleetSnapshot)
 	if err != nil {
 		t.Fatalf("listing: %v", err)
 	}
+	if rd.Source != fleet.FromStored {
+		t.Errorf("source = %v, want the stored reading", rd.Source)
+	}
+	cat := rd.Catalog
 	if got := len(cat.Farms()); got != 2 {
 		t.Fatalf("%d farms from the stored reading", got)
 	}
@@ -88,11 +93,18 @@ func TestAListingPastTheFreshWindowFallsBackWhenTheDatabaseIsGone(t *testing.T) 
 	st := &openLater{app: a}
 	defer st.Close()
 
-	cat, err := listingCatalog(context.Background(), a, st, false, loadFarmCatalog)
+	rd, err := listingReading(context.Background(), a, st, fleet.ShapeFarms, false, fleetSnapshot)
 	if err != nil {
 		t.Fatalf("nothing was served during an outage: %v", err)
 	}
-	if got := len(cat.Farms()); got != 2 {
+	if rd.Source != fleet.FromFallback {
+		t.Errorf("source = %v, want the offline fallback", rd.Source)
+	}
+	// The operator is being shown an old picture and is owed the reason.
+	if rd.Err == nil {
+		t.Error("the fallback did not carry why the database was skipped")
+	}
+	if got := len(rd.Catalog.Farms()); got != 2 {
 		t.Errorf("%d farms from the fallback reading", got)
 	}
 
@@ -101,7 +113,7 @@ func TestAListingPastTheFreshWindowFallsBackWhenTheDatabaseIsGone(t *testing.T) 
 	old := appWithStoredReading(t, fleet.ShapeFarms, time.Now().Add(-fleet.UsableFor-time.Hour))
 	oldSt := &openLater{app: old}
 	defer oldSt.Close()
-	if _, err := listingCatalog(context.Background(), old, oldSt, false, loadFarmCatalog); err == nil {
+	if _, err := listingReading(context.Background(), old, oldSt, fleet.ShapeFarms, false, fleetSnapshot); err == nil {
 		t.Error("a day-old reading was served instead of reporting the outage")
 	}
 }
@@ -114,7 +126,7 @@ func TestJSONAndFreshBothRefuseTheStoredReading(t *testing.T) {
 	st := &openLater{app: a}
 	defer st.Close()
 
-	if _, err := listingCatalog(context.Background(), a, st, true, loadFarmCatalog); err == nil {
+	if _, err := listingReading(context.Background(), a, st, fleet.ShapeFarms, true, fleetSnapshot); err == nil {
 		t.Error("a run that asked for the database was answered from disk")
 	}
 
@@ -171,7 +183,7 @@ func TestFreshIsAvailableOnEveryListingUnderOpenstack(t *testing.T) {
 // returned: the same two predicates, in the same order.
 func TestTheVMProjectionReproducesTheQueryItStandsInFor(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeVMs, time.Now())
-	cat, _, ok := storedCatalog(a, fleet.ShapeVMs, fleet.ForListing)
+	cat, _, ok := storedReader(a).Stored(fleet.ShapeVMs, fleet.ForListing)
 	if !ok {
 		t.Fatal("the stored reading was not served")
 	}
@@ -214,10 +226,10 @@ func TestTheVMProjectionReproducesTheQueryItStandsInFor(t *testing.T) {
 // an empty list there reads as a deployment with nothing in it.
 func TestAVMListingIsNotServedFromAFarmsReading(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeFarms, time.Now())
-	if _, _, ok := storedCatalog(a, fleet.ShapeVMs, fleet.ForListing); ok {
+	if _, _, ok := storedReader(a).Stored(fleet.ShapeVMs, fleet.ForListing); ok {
 		t.Error("a farms reading answered a request for VM rows")
 	}
-	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForListing); !ok {
+	if _, _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); !ok {
 		t.Error("and it did not answer the request it can answer")
 	}
 }
@@ -246,7 +258,7 @@ func TestFarmCompletionAnswersFromDiskWithoutADatabase(t *testing.T) {
 	// Two hours old is past a listing's window and well inside a Tab's. A Tab is
 	// not a decision — the worst a stale list does is fail to offer a farm
 	// somebody renamed this morning, and typing it still works.
-	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForListing); ok {
+	if _, _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); ok {
 		t.Error("the fixture is fresh enough for a listing; this test is not proving anything")
 	}
 }
@@ -282,12 +294,20 @@ func vmNames(vms []store.Instance) []string {
 // forgetReadings — storing a reading and dropping one are not reading one.
 func TestNothingThatConnectsOrChangesReadsTheStoredReading(t *testing.T) {
 	readsCache := map[string]bool{
-		"storedCatalog":  true,
-		"listingCatalog": true,
+		"storedReader":   true,
+		"fleetReader":    true,
+		"listingReading": true,
 		"vmCatalog":      true,
+		"Stored":         true,
 		"LoadAtLeast":    true,
 		"FleetCache":     true,
 	}
+	// The list above is strings, which is how a guard goes quietly blind: it
+	// named storedCatalog and listingCatalog for as long as those existed, and
+	// the rename to fleet.Reader left it watching for two functions nobody could
+	// call any more. It would have passed forever. Every local name here has to
+	// still be declared in this package, so the next rename fails here.
+	assertDeclaredInPackage(t, "storedReader", "fleetReader", "listingReading", "vmCatalog")
 	for _, tc := range []struct{ file, what string }{
 		{file: "ssh.go", what: "ssh connects to the machine it resolved"},
 		{file: "openstack_reconcile.go", what: "reconcile compares what is recorded against a control plane"},
@@ -338,14 +358,14 @@ func TestChangingADeploymentDropsTheStoredReading(t *testing.T) {
 	if err := a.FleetCache().Save(fleet.ShapeFarms, store.Fleet{ReadAt: time.Now()}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForListing); !ok {
+	if _, _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); !ok {
 		t.Fatal("nothing stored to begin with")
 	}
 
 	forgetReadings(a)
 
 	for _, s := range []fleet.Shape{fleet.ShapeFarms, fleet.ShapeVMs} {
-		if _, _, ok := storedCatalog(a, s, fleet.ForFallback); ok {
+		if _, _, ok := storedReader(a).Stored(s, fleet.ForFallback); ok {
 			t.Errorf("%s survived a change to the fleet", s)
 		}
 	}
@@ -495,12 +515,110 @@ func TestAScreenThatNeedsALoginSaysSoAndDoesNotRefresh(t *testing.T) {
 func TestAPurposeThatMayNotReadIsAnsweredWithNothing(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeFarms, time.Now())
 	// The reading is there for a purpose that may read it.
-	if _, _, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForListing); !ok {
+	if _, _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); !ok {
 		t.Fatal("nothing stored to begin with")
 	}
 	for _, why := range []fleet.Purpose{fleet.ForConnecting, fleet.ForChanging, fleet.ForDiagnosing} {
-		if _, _, ok := storedCatalog(a, fleet.ShapeFarms, why); ok {
+		if _, _, ok := storedReader(a).Stored(fleet.ShapeFarms, why); ok {
 			t.Errorf("%s was answered from disk", why)
 		}
+	}
+}
+
+// assertDeclaredInPackage fails when a name the guard above watches for is no
+// longer a function in this package.
+//
+// A guard written as a list of strings survives a rename by pointing at nothing,
+// and a guard pointing at nothing passes. This is what makes the rename loud.
+func assertDeclaredInPackage(t *testing.T, names ...string) {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	found := map[string]bool{}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, decl := range f.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				found[fn.Name.Name] = true
+			}
+		}
+	}
+	for _, n := range names {
+		if !found[n] {
+			t.Errorf("the cache guard watches for %q, which is not declared in this package any more.\n"+
+				"Renaming a reader without updating the guard leaves it watching for nothing, which passes.", n)
+		}
+	}
+}
+
+// The three listings agree about an outage.
+//
+// They did not. `openstack` and `farm list` served the stored reading when the
+// database refused; `vm` returned the error — not by decision but because its
+// copy of the same sequence stopped one branch earlier. Nobody would have
+// noticed until an outage, which is the one time it matters.
+//
+// Stated over all three rather than for `vm` alone, because the thing worth
+// holding is that they agree, not that one of them was patched.
+func TestEveryListingServesTheStoredReadingDuringAnOutage(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		shape fleet.Shape
+		load  func(context.Context, *store.Store) (store.Fleet, error)
+	}{
+		{"openstack", fleet.ShapeFarms, fleetSnapshot},
+		{"farm list", fleet.ShapeFarms, fleetSnapshot},
+		{"vm", fleet.ShapeVMs, fleetSnapshotWithVMs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Past the fresh window, so the stored reading is declined first and
+			// only the outage brings it back.
+			a := appWithStoredReading(t, fleet.ShapeVMs, time.Now().Add(-fleet.FreshFor-time.Minute))
+			st := &openLater{app: a}
+			defer st.Close()
+
+			rd, err := listingReading(context.Background(), a, st, tc.shape, false, tc.load)
+			if err != nil {
+				t.Fatalf("%s reported the outage instead of showing what it had: %v", tc.name, err)
+			}
+			if rd.Source != fleet.FromFallback {
+				t.Errorf("source = %v, want the offline fallback", rd.Source)
+			}
+			if got := len(rd.Catalog.Farms()); got != 2 {
+				t.Errorf("%d farms from the fallback reading", got)
+			}
+		})
+	}
+}
+
+// A VM listing served from disk carries the instance rows.
+//
+// The shape is the promise: asking for ShapeVMs and being handed a farms
+// reading would print an empty list, which reads as a deployment somebody
+// emptied rather than as a reading that never had the rows.
+func TestTheVMListingFallbackStillHasItsInstances(t *testing.T) {
+	a := appWithStoredReading(t, fleet.ShapeVMs, time.Now().Add(-fleet.FreshFor-time.Minute))
+	st := &openLater{app: a}
+	defer st.Close()
+
+	rd, err := listingReading(context.Background(), a, st, fleet.ShapeVMs, false, fleetSnapshotWithVMs)
+	if err != nil {
+		t.Fatalf("vm listing during an outage: %v", err)
+	}
+	vms, err := vmsFrom(rd.Catalog, "", false)
+	if err != nil {
+		t.Fatalf("vmsFrom: %v", err)
+	}
+	if got := vmNames(vms); strings.Join(got, ",") != "bastion,quay,worker-1" {
+		t.Errorf("fallback VM rows = %v", got)
 	}
 }

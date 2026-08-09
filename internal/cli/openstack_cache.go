@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"os"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -67,66 +66,78 @@ func keepReading(a *app.App, shape fleet.Shape, snap store.Fleet) {
 	}
 }
 
-// storedCatalog serves the last reading when it is young enough for what is
-// being asked.
+// fleetReader is how a listing gets a reading: the stored one when it is fresh
+// enough, the database otherwise, and a stale one when the database will not
+// answer at all.
 //
-// The window belongs to the caller's purpose, not to the cache — see
-// fleet.Purpose for which purpose gets which, and why. Callers used to pass a
-// duration, which meant a call site said how long it would accept rather than
-// what it was for, and the two were only connected by a comment.
-func storedCatalog(a *app.App, shape fleet.Shape, why fleet.Purpose) (fleet.Catalog, time.Duration, bool) {
-	if a == nil || !why.MayReadStored() {
-		return fleet.Catalog{}, 0, false
+// The policy is fleet.Reader's — which shape, which window, whether to fall
+// back. What is supplied here is the wiring that only this package has: the
+// app's cache, and a store that is opened on first use rather than up front, so
+// a run answered from disk never pays for a connection it did not need.
+func fleetReader(a *app.App, lazy *openLater, load func(context.Context, *store.Store) (store.Fleet, error)) *fleet.Reader {
+	r := &fleet.Reader{}
+	if a != nil {
+		r.Cache = a.FleetCache()
 	}
-	now := time.Now()
-	got, err := a.FleetCache().LoadAtLeast(shape, now)
-	if err != nil {
-		return fleet.Catalog{}, 0, false
+	r.Load = func(ctx context.Context) (store.Fleet, error) {
+		var snap store.Fleet
+		err := lazy.use(ctx, func(s *store.Store) error {
+			got, err := load(ctx, s)
+			snap = got
+			return err
+		})
+		return snap, err
 	}
-	if age := got.Age(now); age <= why.MaxAge() {
-		return fleet.From(got.Fleet), age, true
-	}
-	return fleet.Catalog{}, 0, false
+	return r
 }
 
-// listingCatalog is what a printed listing reads: the stored reading when it is
-// fresh, the database otherwise.
+// storedReader answers from disk and never opens anything.
 //
-// The age is said out loud on stderr. A listing that quietly answers from disk
-// is a listing somebody will eventually act on without knowing how old it was —
-// and stderr rather than stdout, so a piped listing still pipes the listing.
-//
-// live forces the database. Two things set it: --fresh, and --json — a program
-// reading the output cannot see the note that says how old the answer is, so it
-// is given the real thing rather than a claim it has no way to check.
-func listingCatalog(ctx context.Context, a *app.App, st *openLater, live bool,
-	read func(context.Context, *app.App, *store.Store) (fleet.Catalog, error),
-) (fleet.Catalog, error) {
-	if !live {
-		if cat, age, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForListing); ok {
-			ui.Infof(os.Stderr, "cached · read %s ago · --fresh to re-read", ui.CompactDuration(age))
-			return cat, nil
-		}
+// For shell completion, which has to answer on a keypress: a Reader with no Load
+// cannot fall through to a database, so a completion cannot accidentally acquire
+// one and make the shell hang on a Vault round trip.
+func storedReader(a *app.App) *fleet.Reader {
+	r := &fleet.Reader{}
+	if a != nil {
+		r.Cache = a.FleetCache()
 	}
-	var out fleet.Catalog
-	err := st.use(ctx, func(s *store.Store) error {
-		cat, err := read(ctx, a, s)
-		out = cat
-		return err
+	return r
+}
+
+// announce says where an answer came from, when it did not come from the
+// database.
+//
+// On stderr, so a piped listing still pipes the listing. A listing that quietly
+// answers from disk is one somebody will eventually act on without knowing how
+// old it was — and the fallback case says why the database was skipped, because
+// an operator being shown an old picture is owed the reason.
+func announce(r fleet.Reading) {
+	switch r.Source {
+	case fleet.FromStored:
+		ui.Infof(os.Stderr, "cached · read %s ago · --fresh to re-read", ui.CompactDuration(r.Age))
+	case fleet.FromFallback:
+		ui.Warnf(os.Stderr, "database unreachable (%v) — showing the reading from %s ago",
+			r.Err, ui.CompactDuration(r.Age))
+	}
+}
+
+// listingReading is the whole of what a printed listing does to get its data.
+//
+// One function rather than the same four lines at each listing, because the
+// listings drifted apart when it was four lines: `openstack` and `farm list`
+// served a stored reading when the database was unreachable and `vm` failed
+// instead, not by decision but because its copy stopped one branch earlier.
+func listingReading(ctx context.Context, a *app.App, lazy *openLater, shape fleet.Shape, live bool,
+	load func(context.Context, *store.Store) (store.Fleet, error),
+) (fleet.Reading, error) {
+	rd, err := fleetReader(a, lazy, load).Read(ctx, fleet.ReadRequest{
+		Shape: shape, Purpose: fleet.ForListing, Live: live,
 	})
-	if err == nil {
-		return out, nil
+	if err != nil {
+		return fleet.Reading{}, err
 	}
-	// The database did not answer. A reading past the fresh window is exactly
-	// what to serve now — see fleet.ForFallback.
-	if !live {
-		if cat, age, ok := storedCatalog(a, fleet.ShapeFarms, fleet.ForFallback); ok {
-			ui.Warnf(os.Stderr, "database unreachable (%v) — showing the reading from %s ago",
-				err, ui.CompactDuration(age))
-			return cat, nil
-		}
-	}
-	return out, err
+	announce(rd)
+	return rd, nil
 }
 
 // wantsFresh reports whether the operator asked for the database specifically.

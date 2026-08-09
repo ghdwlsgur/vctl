@@ -69,10 +69,11 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 				// the light read saved 90-135ms and cost every later run the whole
 				// ten seconds. `vctl openstack` is the command people type most,
 				// and it was the one command that could never warm what it read.
-				cat, err := listingCatalog(ctx, a, st, mustBeLive(cmd, asJSON), loadCatalog)
+				rd, err := listingReading(ctx, a, st, fleet.ShapeFarms, mustBeLive(cmd, asJSON), fleetSnapshot)
 				if err != nil {
 					return err
 				}
+				cat := rd.Catalog
 				hosts := cat.Hosts()
 				// Parked hosts go first, before coverage, so the denominator and
 				// the table are counting the same fleet.
