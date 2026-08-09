@@ -1,7 +1,12 @@
 package store
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -419,5 +424,77 @@ func TestFoldDoesNotFightAMembershipWithTheHostsKeystone(t *testing.T) {
 	}
 	if got[0].Farm != "seoul-a" {
 		t.Errorf("farm = %q, want the filed membership", got[0].Farm)
+	}
+}
+
+// The assembler has no database in it.
+//
+// The point of the split is that everything in openstack_fold.go is a pure
+// function over rows, which is what lets the cases above exist at all — the fold
+// used to sit beside the statements that produced its input, and exercising
+// "which deployment does this host belong to" meant standing up Postgres.
+//
+// Stated as a guard rather than as a habit because the pull is one-directional:
+// the next person needing one more column here has a query two files away and no
+// reason to think twice. This is the reason to think twice.
+func TestTheAssemblerHasNoDatabaseInIt(t *testing.T) {
+	const file = "openstack_fold.go"
+	src, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, file, src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", file, err)
+	}
+
+	for _, imp := range f.Imports {
+		switch imp.Path.Value {
+		case `"maps"`, `"sort"`, `"slices"`, `"strings"`, `"time"`, `"fmt"`:
+		default:
+			t.Errorf("%s imports %s; the assembler takes rows and returns records, "+
+				"so anything beyond the standard library it sorts and merges with is a layer leaking in",
+				file, imp.Path.Value)
+		}
+	}
+
+	// A statement in here means a query ran where a decision belongs.
+	ast.Inspect(f, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		up := strings.ToUpper(lit.Value)
+		for _, kw := range []string{"SELECT ", "INSERT ", "UPDATE ", "DELETE ", "FROM "} {
+			if strings.Contains(up, kw) {
+				t.Errorf("%s contains SQL at %s: %.60s", file, fset.Position(lit.Pos()), lit.Value)
+			}
+		}
+		return true
+	})
+
+	// And the judgement is here rather than having drifted back. Named, because
+	// a guard on a file that no longer holds anything passes quietly.
+	declared := map[string]bool{}
+	for _, decl := range f.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			declared[d.Name.Name] = true
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				if ts, ok := spec.(*ast.TypeSpec); ok {
+					declared[ts.Name.Name] = true
+				}
+			}
+		}
+	}
+	for _, name := range []string{
+		"foldCapabilityRows", "attachFarm", "farmClaim", "better", "conflicting",
+		"confidenceRank", "mergeInto", "mergeDetails", "InService", "isPlaceholderRole",
+	} {
+		if !declared[name] {
+			t.Errorf("%s no longer declares %s; the fleet judgement moved back into the adapter", file, name)
+		}
 	}
 }
