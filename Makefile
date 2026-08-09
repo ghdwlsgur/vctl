@@ -135,6 +135,10 @@ wg-down: ## Stop the dashboard and its gateway polling
 # model returns, and every filtering bug so far has been in what was left on the
 # screen afterwards. Needs node and Chrome; set CHROME=/path/to/chrome if it is
 # not where the script looks. No database, no SSH, no gateway is touched.
+#
+# CI runs it too, as the "WireGuard Dashboard" job, so a layout change that only
+# breaks in a browser fails the pull request rather than the next person to open
+# the page.
 wg-check: ## Measure the WireGuard dashboard under headless Chrome
 	@node scripts/wg-dashboard-check.mjs
 

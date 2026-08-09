@@ -38,6 +38,43 @@ jobs:
       - name: Build
         run: go build ./cmd/vctl
 
+  dashboard:
+    name: WireGuard Dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      # The measurement builds its topology by running the Go fixture test, so
+      # this job needs a toolchain even though what it checks is a browser.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.26.5"
+          cache: true
+
+      # Node and Chrome both ship in the runner image. Using them as they are
+      # keeps this job from adding a third-party action to a repository that
+      # pins every one of them by digest and scans itself with Trivy. The cost
+      # is that a runner image change can take them away, so assert they are
+      # here — a missing browser must not read the same as a passing check.
+      - name: Check for Node and Chrome
+        run: |
+          node --version
+          for c in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium; do
+            if [ -x "$c" ]; then echo "CHROME=$c" >> "$GITHUB_ENV"; exit 0; fi
+          done
+          echo "no Chrome in the runner image; the dashboard check cannot run" >&2
+          exit 1
+
+      # What `make check` cannot see. The Go tests assert on what the model
+      # returns; every filtering and layout bug so far has been in what was
+      # left on the screen afterwards — a bead still glowing under .dim, a
+      # physical host drawn by one renderer and not the other three. This
+      # opens the page Go serves under headless Chrome and reads the result.
+      - name: Measure the dashboard
+        run: make wg-check
+
   integration:
     name: Store Integration
     runs-on: ubuntu-latest
