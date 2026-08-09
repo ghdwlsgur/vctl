@@ -108,12 +108,23 @@ function statusDot(p, { cx, cy, r = 5.5, eid, col, title, prefix = "", detail = 
   return dot;
 }
 
-function physicalHostOf(N, node) {
-  return node && node.parent ? N.get(node.parent) : null;
+// The physical host a placement names, drawn the same way in every lane: a frame
+// around the box the endpoint fills, and the host's name in its cap. Callers
+// pass the box they are about to draw into and nothing else — where that box
+// sits is the renderer's business, how a host looks is not.
+function drawHostFrame(p, pl, box) {
+  if (!pl.host) return;
+  const f = hostFrame(box);
+  mk("rect", { x: f.x, y: f.y, width: f.width, height: f.height, rx: f.rx, class: "hbox k-host" }, p);
+  mk("text", { x: box.x + 2, y: f.y + 16, class: "htit" }, p).textContent = pl.caption;
 }
 
-function physicalHostLabel(host) {
-  return "PHYSICAL HOST · " + host.label + (host.ip ? " · " + host.ip : "");
+// Where a frame will not fit, the same name is a caption line above the row. The
+// mesh stack packs its rows 28px apart inside one card, so a rectangle per row
+// would be a box around a box around nothing.
+function drawHostCaption(p, pl, { x, y, anchor = "start" }) {
+  if (!pl.host) return;
+  mk("text", { x, y, class: "htit", "text-anchor": anchor }, p).textContent = pl.caption;
 }
 
 // Column headings, the hub-zone box, and the NAT divider — the quiet backdrop
@@ -215,8 +226,8 @@ function drawMeshStacks({ gn, gd, gt, grp }, { HUBX, HUBY, hubH }, N, hub, { mes
   for (const ifc of meshIf) {
     const list = mesh.filter(s => s.iface === ifc);
     const labels = list.map(s => {
-      const n = N.get(s.oid), parent = physicalHostOf(N, n);
-      return (parent ? physicalHostLabel(parent) + " · " : "") + ((n || {}).label || s.oid);
+      const pl = place(N, N.get(s.oid));
+      return (pl.caption ? pl.caption + " · " : "") + ((pl.node || {}).label || s.oid);
     });
     const mw = Math.min(280, Math.max(200, Math.max(0, ...labels.map(l => l.length)) * 6.6 + 52));
     const col = ifColor(ifc), rowStep = 28, bh = 48 + list.length * rowStep;
@@ -238,18 +249,14 @@ function drawMeshStacks({ gn, gd, gt, grp }, { HUBX, HUBY, hubH }, N, hub, { mes
     list.sort((a, b) => slash32(a.e.allowed).localeCompare(slash32(b.e.allowed), undefined, { numeric: true }));
     const dotX = 64 + mw - 14, lane = 64 + mw + 14;
     list.forEach((s, i) => {
-      const n = N.get(s.oid), parent = physicalHostOf(N, n), y = my + 48 + i * rowStep;
+      const n = N.get(s.oid), pl = place(N, n), y = my + 48 + i * rowStep;
       // The stack is one visual card but each row is a different tunnel. Tag
       // rows individually so selecting the far-side interface on six of nine
       // peers does not light the other three merely because their parent stack
       // contains at least one selected edge.
-      const rowD = mk("g", {}, g2d), rowT = mk("g", {}, g2t);
-      rowD.dataset.ifc = ifc; rowD.dataset.nodes = JSON.stringify([s.oid]); rowD.dataset.eids = JSON.stringify([s.e.id]);
-      rowT.dataset.ifc = ifc; rowT.dataset.eids = JSON.stringify([s.e.id]);
-      if (parent) {
-        mk("text", { x: dotX - 12, y: y - 6, class: "htit", "text-anchor": "end" }, rowD).textContent = physicalHostLabel(parent);
-      }
-      const lbl = mk("text", { x: dotX - 12, y: y + (parent ? 7 : 3), class: "bsub", "text-anchor": "end" }, rowD);
+      const rowD = grp(g2d, ifc, { nodes: [s.oid], eids: [s.e.id] }), rowT = grp(g2t, ifc, { eids: [s.e.id] });
+      drawHostCaption(rowD, pl, { x: dotX - 12, y: y - 6, anchor: "end" });
+      const lbl = mk("text", { x: dotX - 12, y: y + (pl.host ? 7 : 3), class: "bsub", "text-anchor": "end" }, rowD);
       lbl.textContent = (n ? n.label : s.oid) || "";
       statusDot(rowD, {
         cx: dotX, cy: y, r: 4.5, cls: "sdot", eid: s.e.id, col,
@@ -277,11 +284,7 @@ function drawTopChips({ gn, gd, gt, gf, grp }, { EPX, HUBX, HUBW, remoteIf }, N,
     const cx0 = EPX + i * (cw + 24), cy = 96;
     const g2 = grp(gn, s.iface, { nodes: s.oid }), g2d = grp(gd, s.iface, { nodes: s.oid, eids: s.e.id }),
       g2t = grp(gt, s.iface, { eids: s.e.id }), g2f = grp(gf, s.iface, { eids: s.e.id });
-    const parent = physicalHostOf(N, n);
-    if (parent) {
-      mk("rect", { x: cx0 - 10, y: cy - 26, width: cw + 20, height: 86, rx: 10, class: "hbox k-host" }, g2);
-      mk("text", { x: cx0 + 2, y: cy - 10, class: "htit" }, g2).textContent = physicalHostLabel(parent);
-    }
+    drawHostFrame(g2, place(N, n), { x: cx0, y: cy, w: cw, h: 50 });
     const box = nodeCard(g2, { x: cx0, y: cy, w: cw, h: 50, node: n });
     hot(box, () => [n.label, `${n.kind} · ${hub.dc ? zoneKey(hub.dc) : ""} (dials in to the hub site)`]); clickFocus(box, s.iface);
     topPos.set(s.oid, { x: cx0, y: cy, k: 1 });
@@ -313,10 +316,13 @@ function drawZones({ gz, gg, gn, gd, gt, gf, grp }, geo, N, { vipsBy, meshGeo, h
     for (const cl of zg.clusters) {
       const parent = cl.parent;
       if (parent) {
-        const gp = mk("g", {}, gn); gp.dataset.ifs = cl.items.map(x => x.iface || "").filter(Boolean).join("|");
-        gp.dataset.nodes = JSON.stringify(cl.items.map(x => x.oid));
-        mk("rect", { x: EPX - 10, y: ry, width: EPW + 20, height: clH(cl), rx: 10, class: "hbox k-host" }, gp);
-        mk("text", { x: EPX + 2, y: ry + 16, class: "htit" }, gp).textContent = physicalHostLabel(parent);
+        // The far-zone frame wraps a whole cluster rather than one card, so the
+        // box handed over is the cluster's interior — the same frame arithmetic
+        // then produces the rectangle this lane has always drawn.
+        const gp = grp(gn, null, { ifs: cl.items.map(x => x.iface), nodes: cl.items.map(x => x.oid) });
+        drawHostFrame(gp, placedOn(parent), {
+          x: EPX, y: ry + HOSTFRAME.cap, w: EPW, h: clH(cl) - HOSTFRAME.cap - HOSTFRAME.pad,
+        });
       }
       let inY = parent ? ry + HOSTPAD - 6 : ry;
       for (const s of cl.items) {
@@ -464,15 +470,12 @@ function drawHops({ gn, gd, gt, gf, grp }, geo, N, hub, { hops, startY, epPos, b
     clickFocus(base, fk);
   }
   for (const [oid, { tn, sp, edges }] of hopBy) {
-    const parent = physicalHostOf(N, tn);
-    const parentNeed = parent ? physicalHostLabel(parent).length * 6.2 + 24 : 0;
-    const bw2 = Math.max(200, tn.label.length * 7 + 26, parentNeed);
-    const g2 = mk("g", {}, gn); g2.dataset.ifs = edges.map(e => hopKey(e, hub)).join("|");
-    g2.dataset.nodes = JSON.stringify([oid]); g2.dataset.eids = JSON.stringify(edges.map(e => e.id));
-    if (parent) {
-      mk("rect", { x: 54, y: hy - 26, width: bw2 + 20, height: 88, rx: 10, class: "hbox k-host" }, g2);
-      mk("text", { x: 66, y: hy - 10, class: "htit" }, g2).textContent = physicalHostLabel(parent);
-    }
+    const pl = place(N, tn);
+    const bw2 = Math.max(200, tn.label.length * 7 + 26, pl.captionWidth);
+    const g2 = grp(gn, null, {
+      ifs: edges.map(e => hopKey(e, hub)), nodes: [oid], eids: edges.map(e => e.id),
+    });
+    drawHostFrame(g2, pl, { x: 64, y: hy, w: bw2, h: 52 });
     const bx2 = nodeCard(g2, { x: 64, y: hy, w: bw2, h: 52, node: tn, cls: tn.kind === "vm" ? "vmb" : "" });
     hot(bx2, () => [tn.label, `${tn.kind}${tn.dc ? " · " + tn.dc : ""}`]);
     leftPos.set(oid, { x: 64, y: hy, w: bw2, k: edges.length });
@@ -546,6 +549,11 @@ function render(topo) {
   const grp = (parent, ifc, meta = {}) => {
     const g = mk("g", {}, parent);
     if (ifc) g.dataset.ifc = ifc;
+    // ifs is the multi-owner form of ifc, for a group that several tunnels
+    // reach. Set whenever the caller names it, empty string included: an empty
+    // data-ifs and an absent one take different branches in focusVerdict, and
+    // the lanes that grew this by hand relied on the empty one.
+    if (meta.ifs !== undefined) g.dataset.ifs = [].concat(meta.ifs).filter(Boolean).join("|");
     if (meta.nodes) g.dataset.nodes = JSON.stringify([].concat(meta.nodes).filter(Boolean));
     if (meta.eids) g.dataset.eids = JSON.stringify([].concat(meta.eids).filter(Boolean));
     if (meta.hubif) g.dataset.hubif = meta.hubif;

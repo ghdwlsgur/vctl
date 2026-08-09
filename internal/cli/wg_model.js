@@ -354,6 +354,63 @@ function ifLabel(key, keys) {
   return n > 1 ? key : bare;
 }
 
+// ---------- placement: what owns an endpoint, and how it is framed ----------
+//
+// Four renderers place endpoints — the mesh stack, the hub-zone chip row, the
+// far-zone rows and the hop chips. Each one used to decide for itself whether an
+// endpoint had a physical host and what that host looked like. Three wrote their
+// own rectangle arithmetic; the fourth drew nothing at all, and that was a bug
+// for as long as it existed: the same VM showed its physical host or not
+// depending on which lane a filter happened to put it in.
+//
+// The rule is one rule, so it lives here. A placement says what owns the
+// endpoint and what to call it; hostFrame says how large the frame around it is.
+// The renderers keep the part that is genuinely theirs — where on the canvas the
+// endpoint goes.
+
+// Padding on three sides and a taller cap at the top for the host's name. These
+// numbers are what the chip and hop lanes already drew (a 50-high card inside an
+// 86-high frame, a 52 inside an 88), so lanes now line up by construction rather
+// than by two people having done the same sum.
+const HOSTFRAME = { pad: 10, cap: 26, rx: 10 };
+
+const hostCaption = h => "PHYSICAL HOST · " + h.label + (h.ip ? " · " + h.ip : "");
+
+// placedOn is the placement arrived at from the host side — a far-zone cluster
+// was already grouped by its host, so it has nothing to look up.
+function placedOn(host) {
+  const caption = host ? hostCaption(host) : "";
+  return {
+    host: host || null,
+    caption,
+    // What the caption costs a box that has to be wide enough to show it.
+    captionWidth: caption ? caption.length * 6.2 + 24 : 0,
+  };
+}
+
+// place is the placement arrived at from the endpoint side: the machine under
+// this node, if the topology names one.
+//
+// No site field. Which zone a node belongs to is zoneBuckets' answer and the
+// renderers already have it; carrying a second copy here would give two places
+// to disagree about it and nobody to read either.
+function place(N, node) {
+  const p = placedOn(node && node.parent ? N.get(node.parent) : null);
+  p.node = node || null;
+  return p;
+}
+
+// The frame around a placed endpoint, given the box the endpoint itself fills.
+function hostFrame({ x, y, w, h }) {
+  return {
+    x: x - HOSTFRAME.pad,
+    y: y - HOSTFRAME.cap,
+    width: w + HOSTFRAME.pad * 2,
+    height: h + HOSTFRAME.cap + HOSTFRAME.pad,
+    rx: HOSTFRAME.rx,
+  };
+}
+
 // ---------- geometry: the layout grid, measured once ----------
 // Every column x, the hub's height, and each zone's box are derived from content
 // (longest label, peer counts, VIP stacks) rather than fixed, so this computes
@@ -671,6 +728,7 @@ if (typeof module !== "undefined" && module.exports) {
     esc, fmtRate, hsLabel, zoneKey, ifCmp, kindLabel, kindClass, cidrs, slash32, ago,
     edgeHosts, tunnelState, countStates,
     prep, wiringModel, zoneBuckets, attachVips, vipIface, hopKey, ifLabel,
+    HOSTFRAME, hostCaption, placedOn, place, hostFrame,
     wiringGeometry, reachedOverATunnel,
     focusClosure, hasChromeClass, focusVerdict, focusPass,
     stateKeyHTML, kindKeyHTML, liveSummary, driftText, topologyClock,
