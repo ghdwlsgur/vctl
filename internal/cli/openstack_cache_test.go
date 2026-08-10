@@ -161,6 +161,7 @@ func TestFreshIsAvailableOnEveryListingUnderOpenstack(t *testing.T) {
 	root := NewRoot(Dependencies{})
 	for _, path := range [][]string{
 		{"openstack"},
+		{"openstack", "list"},
 		{"openstack", "vm"},
 		{"openstack", "farm", "list"},
 		{"openstack", "explore"},

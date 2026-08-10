@@ -94,9 +94,13 @@ func TestDependenciesNewAppInjected(t *testing.T) {
 		return nil, errors.New("sentinel")
 	}})
 
-	cmd := findCmd(root, "openstack")
-	if cmd == nil {
+	openstack := findCmd(root, "openstack")
+	if openstack == nil {
 		t.Fatal("no openstack command in the tree")
+	}
+	cmd := findCmd(openstack, "list")
+	if cmd == nil {
+		t.Fatal("no openstack list command in the tree")
 	}
 	if err := cmd.RunE(cmd, nil); err == nil {
 		t.Fatal("expected the injected factory's error")

@@ -110,10 +110,64 @@ func TestExploreRefusesWithoutATerminalAndNamesWhatToRunInstead(t *testing.T) {
 	if err == nil {
 		t.Fatal("explore ran with no terminal")
 	}
-	for _, want := range []string{"farm list", "--farm"} {
+	for _, want := range []string{"openstack list", "--farm"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal does not mention %q: %v", want, err)
 		}
+	}
+}
+
+// Browsing is the default human path. The old tabular listing remains an
+// explicit subcommand for scripts and for terminals that cannot run a TUI.
+func TestBareOpenStackBrowsesAndListPreservesTheTable(t *testing.T) {
+	root := NewRoot(Dependencies{})
+	openstack, _, err := root.Find([]string{"openstack"})
+	if err != nil {
+		t.Fatalf("find openstack: %v", err)
+	}
+	if err := openstack.Args(openstack, []string{"seoul"}); err != nil {
+		t.Fatalf("bare openstack does not accept a starting farm: %v", err)
+	}
+	if err := openstack.RunE(openstack, []string{"seoul"}); err == nil || !strings.Contains(err.Error(), "full-screen browser") {
+		t.Fatalf("bare openstack did not enter the browser path: %v", err)
+	}
+
+	list, _, err := root.Find([]string{"openstack", "list"})
+	if err != nil {
+		t.Fatalf("the old table has no list command: %v", err)
+	}
+	for _, flag := range []string{"farm", "role", "wide", "json", "all", "parked"} {
+		if list.Flags().Lookup(flag) == nil {
+			t.Errorf("openstack list lost --%s", flag)
+		}
+	}
+}
+
+func TestLegacyBareListingFlagsStillChooseTheTable(t *testing.T) {
+	for _, flags := range [][]string{
+		{"--farm", "seoul"}, {"--role", "compute"}, {"--wide"},
+		{"--json"}, {"--all"}, {"--parked"}, {"--fresh", "--json"},
+	} {
+		t.Run(strings.Join(flags, "_"), func(t *testing.T) {
+			called := false
+			root := NewRoot(Dependencies{NewApp: func() (*app.App, error) {
+				called = true
+				return nil, errors.New("listing sentinel")
+			}})
+			cmd, _, err := root.Find([]string{"openstack"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.ParseFlags(flags); err != nil {
+				t.Fatalf("parse %v: %v", flags, err)
+			}
+			if err := cmd.RunE(cmd, nil); err == nil || err.Error() != "listing sentinel" {
+				t.Fatalf("%v did not take the listing path: %v", flags, err)
+			}
+			if !called {
+				t.Fatalf("%v entered the terminal browser instead of the listing", flags)
+			}
+		})
 	}
 }
 
@@ -378,10 +432,18 @@ func TestTheTitleBarSaysHowOldTheReadingIs(t *testing.T) {
 	m := testExploreModel()
 	m.data.ReadAt = time.Now().Add(-3 * time.Minute)
 	got := stripANSI(m.titleBar())
-	for _, want := range []string{"2 deployments", "3 hosts", "3 VMs", "read 3m ago"} {
+	for _, want := range []string{"OPENSTACK", "2 farms", "3 hosts", "3 VMs", "read 3m ago"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("title %q does not carry %q", got, want)
 		}
+	}
+}
+
+func TestAFreshReadingSaysJustNow(t *testing.T) {
+	m := testExploreModel()
+	got := stripANSI(m.titleBar())
+	if !strings.Contains(got, "just now") || strings.Contains(got, "0s ago") {
+		t.Fatalf("fresh title = %q", got)
 	}
 }
 
@@ -689,13 +751,20 @@ func TestNoRenderedLineOverflowsTheTerminal(t *testing.T) {
 func TestTheFrameShowsBothPanesAndTheKeys(t *testing.T) {
 	got := stripANSI(testExploreModel().View())
 	for _, want := range []string{
-		"DEPLOYMENTS", "seoul-a", "seoul-b", // left
+		"FARMS", "seoul-a", "2H 2V", "seoul-b", "1H 1V", // left
 		"NAME", "PROJECT", "bastion", "platform", // right
-		"tab pane", "q quit", // footer
+		"tab switch", "q quit", // footer
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the frame does not carry %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestTheSummaryHasBreathingRoomBeforeTheBrowserPanes(t *testing.T) {
+	lines := strings.Split(stripANSI(testExploreModel().View()), "\n")
+	if len(lines) < 3 || lines[1] != "" || !strings.Contains(lines[2], "FARMS") {
+		t.Fatalf("expected summary, blank line, then panes; first lines are %q", lines[:min(3, len(lines))])
 	}
 }
 

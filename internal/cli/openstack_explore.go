@@ -21,7 +21,7 @@ import (
 // top of both.
 //
 // It exists because the data was only reachable by naming it. Hosts are
-// `openstack --farm`, VMs are `openstack vm --farm`, a VM's detail is
+// `openstack list --farm`, VMs are `openstack vm --farm`, a VM's detail is
 // `vm show <uuid>` — three commands and an identifier nobody has memorised, in
 // an order that is only obvious once you already know the answer. Moving a
 // cursor asks the same questions without knowing any of it.
@@ -55,22 +55,25 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: byPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// A full-screen program needs a screen. Naming the commands that
-			// answer the same questions without one is more useful than
-			// reporting the absence of a terminal.
-			if !isTerminal() {
-				return fmt.Errorf("explore is a full-screen browser and there is no terminal; " +
-					"use 'vctl openstack farm list', 'vctl openstack --farm <f>' and " +
-					"'vctl openstack vm --farm <f>' instead")
-			}
-			// withApp, not withStore: opening the store is the expensive part
-			// and the screen may not need it at all. See openLater.
-			return env.withApp(func(a *app.App) error {
-				return runExplore(cmd.Context(), a, args, wantsFresh(cmd))
-			})
+			return runOpenStackExplore(cmd, env, args)
 		},
 	}
 	return cmd
+}
+
+func runOpenStackExplore(cmd *cobra.Command, env CommandEnv, args []string) error {
+	// A full-screen program needs a screen. Naming the commands that answer the
+	// same questions without one is more useful than reporting its absence.
+	if !isTerminal() {
+		return fmt.Errorf("openstack is a full-screen browser and there is no terminal; " +
+			"use 'vctl openstack list', 'vctl openstack list --farm <f>' and " +
+			"'vctl openstack vm --farm <f>' instead")
+	}
+	// withApp, not withStore: opening the store is the expensive part and the
+	// screen may not need it at all. See openLater.
+	return env.withApp(func(a *app.App) error {
+		return runExplore(cmd.Context(), a, args, wantsFresh(cmd))
+	})
 }
 
 // runExplore puts a screen up and lets it re-read behind itself.
