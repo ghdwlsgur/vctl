@@ -27,7 +27,7 @@ import (
 // and predictable; every column that varies is on the right.
 const (
 	farmPaneWidth = 26
-	chromeLines   = 4 // title, pane heading, column heading, footer
+	chromeLines   = 5 // title, breathing room, pane heading, column heading, footer
 )
 
 var (
@@ -66,7 +66,7 @@ func (m exploreModel) View() string {
 		return m.detailView()
 	}
 	var b strings.Builder
-	b.WriteString(m.clip(m.titleBar()) + "\n")
+	b.WriteString(m.clip(m.titleBar()) + "\n\n")
 
 	farmLines := m.farmPaneLines()
 	rowLines := m.rowPaneLines()
@@ -106,10 +106,10 @@ func (m exploreModel) titleBar() string {
 	for _, vs := range m.data.VMs {
 		vms += len(liveInstances(vs))
 	}
-	head := exploreTitleStyle.Render("▌ vctl openstack")
-	detail := fmt.Sprintf("· %d deployments · %d hosts · %d VMs · %s",
+	head := exploreTitleStyle.Render("OPENSTACK")
+	detail := fmt.Sprintf("%d farms · %d hosts · %d VMs · %s",
 		len(m.data.Farms), hosts, vms, m.freshness())
-	line := head + " " + ui.Muted(detail)
+	line := head + "  " + ui.Muted(detail)
 	if m.refreshErr != nil {
 		line += "  " + exploreWarnStyle.Render("refresh failed: "+oneLine(m.refreshErr.Error()))
 	}
@@ -122,10 +122,21 @@ func (m exploreModel) titleBar() string {
 // told apart by looking at them, so the difference has to be written down: one
 // was true when it was read and the other was true a moment ago.
 func (m exploreModel) freshness() string {
-	age := ui.CompactDuration(time.Since(m.data.ReadAt))
-	what := "read " + age + " ago"
+	elapsed := time.Since(m.data.ReadAt)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	age := ui.CompactDuration(elapsed)
+	when := age + " ago"
+	if elapsed < time.Minute {
+		when = "just now"
+	}
+	what := "read " + when
 	if m.data.Cached {
 		what = "cached · " + age + " old"
+		if elapsed < time.Minute {
+			what = "cached · just now"
+		}
 	}
 	if m.refreshing {
 		what += " · reading…"
@@ -138,24 +149,32 @@ func (m exploreModel) freshness() string {
 
 func (m exploreModel) farmPaneLines() []string {
 	farms := m.visibleFarms()
-	title := "DEPLOYMENTS"
+	title := "FARMS"
 	if m.farmFilter != "" {
 		title += " /" + m.farmFilter
 	}
-	out := []string{exploreHeadingStyle.Render(ui.Truncate(title, farmPaneWidth))}
+	out := []string{paneHeading(ui.Truncate(title, farmPaneWidth), m.focus == paneFarms)}
 	for i, f := range farms {
 		name := f.Name
 		if name == "" {
 			name = f.ID
 		}
-		count := fmt.Sprintf("%d", len(m.data.Hosts[f.ID]))
-		text := ui.PadRight(ui.Truncate(name, farmPaneWidth-5), farmPaneWidth-5) + ui.Muted(count)
+		count := fmt.Sprintf("%dH %dV", len(m.data.Hosts[f.ID]), len(liveInstances(m.data.VMs[f.ID])))
+		nameWidth := max(6, farmPaneWidth-lipgloss.Width(count)-3)
+		text := ui.PadRight(ui.Truncate(name, nameWidth), nameWidth) + " " + ui.Muted(count)
 		out = append(out, m.cursorLine(text, i == clampIndex(m.farmCur, len(farms)), m.focus == paneFarms))
 	}
 	if len(farms) == 0 {
 		out = append(out, ui.Muted("  no match"))
 	}
 	return out
+}
+
+func paneHeading(s string, active bool) string {
+	if active {
+		return exploreTitleStyle.Render(s)
+	}
+	return exploreHeadingStyle.Render(s)
 }
 
 // cursorLine marks the selected row, and marks it differently in the pane that
@@ -260,7 +279,7 @@ func (m exploreModel) rowPaneLines() []string {
 	// heading gives way to it rather than the other way round.
 	head = ui.Truncate(head, max(8, width-lipgloss.Width(note)-2))
 	out := []string{
-		exploreHeadingStyle.Render(head) + "  " + ui.Muted(note),
+		paneHeading(head, m.focus == paneRows) + "  " + ui.Muted(note),
 		"  " + cols.header(width-2),
 	}
 	if len(cells) == 0 {
@@ -352,8 +371,8 @@ func (m exploreModel) footer() string {
 	// without being told, and a footer cut in half by the terminal edge tells
 	// them nothing at all.
 	keys := []string{
-		"tab pane", "↑↓ move", "enter detail", "v VMs", "s hosts",
-		"/ filter", "r reload", "q quit",
+		"tab switch", "↑↓ move", "enter open", "v VMs", "s hosts",
+		"/ filter", "r refresh", "q quit",
 	}
 	for len(keys) > 2 && lipgloss.Width(strings.Join(keys, " · ")) > m.width {
 		keys = append(keys[:len(keys)-2], keys[len(keys)-1])

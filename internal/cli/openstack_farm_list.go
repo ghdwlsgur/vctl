@@ -18,7 +18,7 @@ import (
 // openstackFarmListCmd answers "which deployments are there, and is anything
 // wrong with them".
 //
-// `vctl openstack` answers a different question — which hosts run OpenStack —
+// `vctl openstack list` answers a different question — which hosts run OpenStack —
 // and reading a fleet's deployments off it means counting group headers. The
 // farm command had no list at all, so `vctl openstack farm` printed help and
 // the way to see the deployments was to look at something else.

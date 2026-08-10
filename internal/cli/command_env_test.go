@@ -50,9 +50,13 @@ func TestTwoTreesDoNotShareDependencies(t *testing.T) {
 	}})
 
 	// Build B second, then run A. Under the old shape A would reach B's factory.
-	osA := findCmd(rootA, "openstack")
-	if osA == nil {
+	openstackA := findCmd(rootA, "openstack")
+	if openstackA == nil {
 		t.Fatal("no openstack command in tree A")
+	}
+	osA := findCmd(openstackA, "list")
+	if osA == nil {
+		t.Fatal("no openstack list command in tree A")
 	}
 	if err := osA.RunE(osA, nil); err == nil {
 		t.Fatal("expected tree A's factory to fail")
@@ -64,7 +68,14 @@ func TestTwoTreesDoNotShareDependencies(t *testing.T) {
 		t.Error("tree A reached tree B's factory")
 	}
 
-	osB := findCmd(rootB, "openstack")
+	openstackB := findCmd(rootB, "openstack")
+	if openstackB == nil {
+		t.Fatal("no openstack command in tree B")
+	}
+	osB := findCmd(openstackB, "list")
+	if osB == nil {
+		t.Fatal("no openstack list command in tree B")
+	}
 	if err := osB.RunE(osB, nil); err == nil {
 		t.Fatal("expected tree B's factory to fail")
 	}

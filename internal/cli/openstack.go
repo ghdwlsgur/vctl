@@ -28,95 +28,35 @@ import (
 const capabilityFreshWindow = 3 * time.Hour
 
 func openstackCmd(env CommandEnv) *cobra.Command {
-	var (
-		farm   string
-		role   string
-		wide   bool
-		asJSON bool
-		all    bool
-		parked bool
-	)
+	var legacy openStackListOptions
 	cmd := &cobra.Command{
-		Use:     "openstack",
+		Use:     "openstack [deployment]",
 		Aliases: []string{"os"},
-		// A stray argument was accepted and ignored, so `vctl openstack seoul`
-		// printed the whole fleet and read as a filtered listing. Narrowing is
-		// what --farm and --role are for.
-		Args:  cobra.NoArgs,
-		Short: "Show which hosts run OpenStack, in what role, and for which farm",
-		Long: "Read what the node agents' capability probes found: the deployment a host belongs to,\n" +
-			"the roles it holds, and the versions it runs.\n\n" +
-			"A host appears here only once a probe has filed a result for it. Membership in a farm\n" +
-			"is shown when something declared or confirmed it — never inferred from what a host runs,\n" +
-			"because two unrelated deployments behind one endpoint look identical from a host.\n\n" +
-			"To look around rather than to query: 'vctl openstack explore' walks the same data by\n" +
-			"picking — deployment → hosts → VMs — and needs no identifier to start from.",
+		Args:    cobra.MaximumNArgs(1),
+		Short:   "Browse OpenStack farms, hosts and VMs",
+		Long: "Open the interactive OpenStack fleet browser. Pass a deployment name to start there.\n\n" +
+			"Use 'vctl openstack list' for the tabular host listing and JSON output.\n" +
+			"The former listing flags remain accepted here for compatibility. If a deployment\n" +
+			"name matches a subcommand, use 'vctl openstack explore <deployment>'.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withApp(func(a *app.App) error {
-				ctx := cmd.Context()
-				st := &openLater{app: a}
-				defer st.Close()
-				// One reading for the whole command. The listing used to read
-				// hosts here and read them again inside the farm resolution
-				// below, so a --farm run compared a selector taken from one
-				// instant against rows taken from another.
-				// The full reading, not the light one, so this warms the cache.
-				//
-				// The light read is two statements where the full one is eight,
-				// and it deliberately stored nothing — a rule written to protect
-				// a shape contract. But the numbers say the trade was backwards:
-				// the query is 1.5% of this command and the connection is 98%, so
-				// the light read saved 90-135ms and cost every later run the whole
-				// ten seconds. `vctl openstack` is the command people type most,
-				// and it was the one command that could never warm what it read.
-				rd, err := listingReading(ctx, a, st, fleet.ShapeFarms, mustBeLive(cmd, asJSON), fleetSnapshot)
-				if err != nil {
-					return err
+			if legacy.requested(cmd) {
+				if len(args) > 0 {
+					return fmt.Errorf("a deployment argument opens the browser; use 'vctl openstack list --farm %s' for the table", args[0])
 				}
-				cat := rd.Catalog
-				hosts := cat.Hosts()
-				// Parked hosts go first, before coverage, so the denominator and
-				// the table are counting the same fleet.
-				if !parked {
-					hosts = store.InService(hosts, cat.Deployments())
-				}
-				// Coverage is over the whole fleet, so it is taken before the
-				// filters — otherwise `--role compute` would report the fleet as
-				// having only compute nodes in it.
-				cov := coverageOf(cat, hosts)
-				// Resolved through the same rules every other command uses. This
-				// filter matched ids and membership ids only, so `--farm
-				// seoul-b` — the name printed in this very listing — selected
-				// nothing and rendered that as an empty fleet.
-				selector := farm
-				if selector != "" && !strings.EqualFold(selector, unassignedFarm) {
-					f, err := cat.Resolve(selector)
-					if err != nil {
-						return err
-					}
-					selector = f.ID
-				}
-				hosts = filterOpenStack(hosts, selector, role, all)
-				if asJSON {
-					return writeJSON(openStackExport{Hosts: hosts, Coverage: cov})
-				}
-				renderOpenStack(os.Stdout, hosts, cov, wide, time.Now())
-				return nil
-			})
+				return runOpenStackList(cmd, env, legacy)
+			}
+			return runOpenStackExplore(cmd, env, args)
 		},
 	}
-	cmd.Flags().StringVar(&farm, "farm", "", "only hosts in this deployment; use 'unassigned' for the ones nothing has claimed")
-	cmd.Flags().StringVar(&role, "role", "", "only hosts holding this role, for example compute or controller")
-	cmd.Flags().BoolVar(&wide, "wide", false, "show every component and version instead of the summary column")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	cmd.Flags().BoolVar(&all, "all", false, "include hosts a probe examined and found no OpenStack on")
-	cmd.Flags().BoolVar(&parked, "parked", false, "include hosts the inventory has in maintenance or retired, and the farms made only of them")
+	registerOpenStackListFlags(cmd, &legacy, true)
 	// Persistent, so it means the same thing on every listing under here. The
 	// listings answer from the last reading when it is fresh, which is most of
 	// what makes them quick — this is how somebody says they would rather wait.
 	cmd.PersistentFlags().Bool("fresh", false, "read the database instead of the last stored reading")
 	registerCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
 	registerCompletion(cmd, "role", completeRole(env))
+	cmd.ValidArgsFunction = byPosition(completeFarm(env))
+	cmd.AddCommand(openstackListCmd(env))
 	cmd.AddCommand(openstackHostCmd(env))
 	// Deliberately not app-gated, for the same reason `vctl migrate` is not.
 	//
@@ -139,6 +79,83 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 	// the parent did nothing but require mutate permission to read its help.
 	cmd.AddCommand(openstackFarmCmd(env))
 	return cmd
+}
+
+type openStackListOptions struct {
+	farm, role  string
+	wide, json  bool
+	all, parked bool
+}
+
+func (o openStackListOptions) requested(cmd *cobra.Command) bool {
+	for _, name := range []string{"farm", "role", "wide", "json", "all", "parked"} {
+		if cmd.Flags().Changed(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func registerOpenStackListFlags(cmd *cobra.Command, o *openStackListOptions, hidden bool) {
+	cmd.Flags().StringVar(&o.farm, "farm", "", "only hosts in this deployment; use 'unassigned' for unclaimed hosts")
+	cmd.Flags().StringVar(&o.role, "role", "", "only hosts holding this role, for example compute or controller")
+	cmd.Flags().BoolVar(&o.wide, "wide", false, "show every component and version")
+	cmd.Flags().BoolVar(&o.json, "json", false, "machine-readable output")
+	cmd.Flags().BoolVar(&o.all, "all", false, "include hosts where no OpenStack was detected")
+	cmd.Flags().BoolVar(&o.parked, "parked", false, "include maintenance and retired hosts")
+	if hidden {
+		for _, name := range []string{"farm", "role", "wide", "json", "all", "parked"} {
+			_ = cmd.Flags().MarkHidden(name)
+		}
+	}
+}
+
+func openstackListCmd(env CommandEnv) *cobra.Command {
+	var opts openStackListOptions
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List OpenStack hosts in a table",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runOpenStackList(cmd, env, opts)
+		},
+	}
+	registerOpenStackListFlags(cmd, &opts, false)
+	registerCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
+	registerCompletion(cmd, "role", completeRole(env))
+	return cmd
+}
+
+func runOpenStackList(cmd *cobra.Command, env CommandEnv, opts openStackListOptions) error {
+	return env.withApp(func(a *app.App) error {
+		ctx := cmd.Context()
+		st := &openLater{app: a}
+		defer st.Close()
+		rd, err := listingReading(ctx, a, st, fleet.ShapeFarms, mustBeLive(cmd, opts.json), fleetSnapshot)
+		if err != nil {
+			return err
+		}
+		cat := rd.Catalog
+		hosts := cat.Hosts()
+		if !opts.parked {
+			hosts = store.InService(hosts, cat.Deployments())
+		}
+		cov := coverageOf(cat, hosts)
+		selector := opts.farm
+		if selector != "" && !strings.EqualFold(selector, unassignedFarm) {
+			f, err := cat.Resolve(selector)
+			if err != nil {
+				return err
+			}
+			selector = f.ID
+		}
+		hosts = filterOpenStack(hosts, selector, opts.role, opts.all)
+		if opts.json {
+			return writeJSON(openStackExport{Hosts: hosts, Coverage: cov})
+		}
+		renderOpenStack(os.Stdout, hosts, cov, opts.wide, time.Now())
+		return nil
+	})
 }
 
 // coverageOf puts the listing in proportion, from the same reading the table

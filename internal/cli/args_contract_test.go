@@ -10,14 +10,14 @@ import (
 // A command that ignores an argument it was given is a command that ran
 // something other than what was asked for.
 //
-// `vctl openstack seoul` printed the whole fleet and read as a filtered
-// listing; `vctl openstack reconcile seoul` reconciled every deployment while
-// looking like it reconciled one. Both are typos with no error and a plausible
-// result, which is the combination that gets acted on.
+// `vctl openstack reconcile seoul` reconciled every deployment while looking
+// like it reconciled one. The bare `openstack` command now deliberately takes
+// a farm name to open the browser there; its table is `openstack list` and
+// still takes no positional argument.
 func TestCommandsThatTakeNoArgumentsRefuseThem(t *testing.T) {
 	root := NewRoot(Dependencies{})
 	for _, path := range [][]string{
-		{"openstack"},
+		{"openstack", "list"},
 		{"openstack", "reconcile"},
 	} {
 		t.Run(strings.Join(path, " "), func(t *testing.T) {
