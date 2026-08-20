@@ -32,6 +32,10 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: byPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, err := commandOutput(cmd, asJSON)
+			if err != nil {
+				return err
+			}
 			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				farms, err := farmChoices(ctx, a, st)
@@ -67,8 +71,8 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if asJSON {
-					return writeJSON(assessment)
+				if format != outputTable {
+					return writeStructured(format, assessment)
 				}
 				renderFarmShow(os.Stdout, assessment, now)
 				return nil
@@ -76,7 +80,7 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	return cmd
+	return supportsStructuredOutput(cmd)
 }
 
 // farmStaleWindow is how old a successful reconcile may be before this view

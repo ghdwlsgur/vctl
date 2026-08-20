@@ -33,24 +33,27 @@ func openstackFarmListCmd(env CommandEnv) *cobra.Command {
 		Short: "Every deployment, with how recently anything confirmed it",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, err := commandOutput(cmd, asJSON)
+			if err != nil {
+				return err
+			}
 			return env.withApp(func(a *app.App) error {
 				ctx := cmd.Context()
 				st := &openLater{app: a}
 				defer st.Close()
-				rows, err := farmSummaries(ctx, a, st, mustBeLive(cmd, asJSON))
+				rows, err := farmSummaries(ctx, a, st, mustBeLive(cmd, format != outputTable))
 				if err != nil {
 					return err
 				}
-				if asJSON {
-					return writeJSON(rows)
+				if format != outputTable {
+					return writeStructured(format, rows)
 				}
-				renderFarmList(os.Stdout, rows, time.Now())
-				return nil
+				return renderFarmList(os.Stdout, rows, time.Now())
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
-	return cmd
+	return supportsStructuredOutput(cmd)
 }
 
 // farmSummary is one deployment as an operator scans it.
@@ -120,15 +123,16 @@ func farmSortKey(f farmSummary) string {
 	return f.ID
 }
 
-func renderFarmList(w io.Writer, rows []farmSummary, now time.Time) {
+func renderFarmList(w io.Writer, rows []farmSummary, now time.Time) error {
+	return renderFarmListWidth(w, rows, now, 0)
+}
+
+func renderFarmListWidth(w io.Writer, rows []farmSummary, now time.Time, width int) error {
 	if len(rows) == 0 {
 		ui.Infof(w, "no deployments yet. Run the node agents, then 'vctl openstack'.")
-		return
+		return nil
 	}
-	cells := [][]string{{
-		ui.Muted("NAME"), ui.Muted("ENDPOINT"), ui.Muted("REGION"), ui.Muted("STATE"),
-		ui.Muted("HOSTS"), ui.Muted("VMS"), ui.Muted("RECONCILED"), "",
-	}}
+	cells := make([][]string, 0, len(rows))
 	for _, f := range rows {
 		name := f.Name
 		if name == "" {
@@ -145,17 +149,17 @@ func renderFarmList(w io.Writer, rows []farmSummary, now time.Time) {
 			farmListNote(f),
 		})
 	}
-	widths := ui.ColumnWidths(cells)
-	for i := range cells {
-		line := "  "
-		for j, c := range cells[i] {
-			if j > 0 {
-				line += "  "
-			}
-			line += ui.PadRight(c, widths[j])
-		}
-		fmt.Fprintln(w, trimTrailing(line))
+	columns := []ui.Column{
+		{Header: "name", MinWidth: 14, MaxWidth: 28},
+		{Header: "endpoint", MinWidth: 14, MaxWidth: 24, Optional: true, Priority: 3},
+		{Header: "region", MinWidth: 6, MaxWidth: 12, Optional: true, Priority: 4},
+		{Header: "state", MinWidth: 5, MaxWidth: 8},
+		{Header: "hosts", MinWidth: 5, MaxWidth: 5, AlignRight: true},
+		{Header: "vms", MinWidth: 3, MaxWidth: 4, AlignRight: true},
+		{Header: "reconciled", MinWidth: 10, MaxWidth: 10},
+		{Header: "note", MinWidth: 12, MaxWidth: 44, Optional: true, Priority: 2},
 	}
+	return ui.ResponsiveTable(w, columns, cells, ui.TableOptions{Width: width, Indent: "  "})
 }
 
 // farmReconciledCell says when membership was last settled, which is what makes
@@ -181,11 +185,4 @@ func farmListNote(f farmSummary) string {
 	default:
 		return ""
 	}
-}
-
-func trimTrailing(s string) string {
-	for len(s) > 0 && s[len(s)-1] == ' ' {
-		s = s[:len(s)-1]
-	}
-	return s
 }

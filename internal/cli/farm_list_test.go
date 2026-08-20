@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // The last successful reconcile is what makes every other number on the row
@@ -29,6 +31,33 @@ func TestFarmListLeadsWithWhetherAnythingConfirmedIt(t *testing.T) {
 	for _, h := range []string{"NAME", "ENDPOINT", "HOSTS", "VMS", "RECONCILED"} {
 		if !strings.Contains(out, h) {
 			t.Errorf("no %s header:\n%s", h, out)
+		}
+	}
+}
+
+func TestFarmListAdaptsToANarrowTerminal(t *testing.T) {
+	now := time.Now()
+	recent := now.Add(-time.Minute)
+	var buf bytes.Buffer
+	renderFarmListWidth(&buf, []farmSummary{{
+		ID: "192.168.201.115:5000", Name: "a-long-openstack-farm-name", Region: "incheon",
+		State: "active", Hosts: 7, VMs: 65, Reconciled: &recent,
+	}}, now, 72)
+
+	out := stripANSI(buf.String())
+	for _, want := range []string{"NAME", "STATE", "HOSTS", "VMS", "RECONCILED"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("narrow farm list dropped essential column %q:\n%s", want, out)
+		}
+	}
+	for _, optional := range []string{"ENDPOINT", "REGION"} {
+		if strings.Contains(out, optional) {
+			t.Errorf("narrow farm list retained optional column %q:\n%s", optional, out)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n") {
+		if width := lipgloss.Width(line); width > 72 {
+			t.Errorf("line width %d exceeds 72: %q", width, line)
 		}
 	}
 }

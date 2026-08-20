@@ -56,6 +56,10 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 			"hosts both sides agree on to confirmed. Disagreements are reported, not resolved.\n\n" +
 			"Credentials are read from Vault under " + vaultFarmPrefix + "/vctl-<host_port>, at use time.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, err := commandOutput(cmd, asJSON)
+			if err != nil {
+				return err
+			}
 			return env.withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				farms, err := st.LocalOnlyFarms(ctx)
@@ -113,7 +117,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 					}
 					ids = append(ids, id)
 				}
-				if skipped > 0 && !asJSON {
+				if skipped > 0 && format == outputTable {
 					ui.Infof(os.Stderr, "skipping %d retired deployment(s); --include-retired to reconcile them", skipped)
 				}
 				sort.Strings(ids)
@@ -136,7 +140,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 					return err
 				}
 				startedAt := time.Now()
-				if !asJSON {
+				if format == outputTable {
 					ui.Section(os.Stdout, "openstack reconcile")
 				}
 				rep, runErr := svc.Run(ctx, req)
@@ -148,8 +152,8 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 				if !dryRun {
 					forgetReadings(a)
 				}
-				if asJSON {
-					if err := writeJSON(reconcileReportJSON(rep, startedAt, took, dryRun)); err != nil {
+				if format != outputTable {
+					if err := writeStructured(format, reconcileReportJSON(rep, startedAt, took, dryRun)); err != nil {
 						return err
 					}
 				} else {
@@ -191,7 +195,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 	// database: these four words are the contract.
 	registerCompletion(cmd, "fail-on", staticCompletions(
 		"unreachable", "no-credentials", "partial", "warning"))
-	return cmd
+	return supportsStructuredOutput(cmd)
 }
 
 // farmOfHost finds which deployment this machine belongs to.

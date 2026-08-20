@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -49,24 +50,21 @@ func statusCmd(env CommandEnv) *cobra.Command {
 					return nil
 				}
 				defer st.Close()
-				servers, _ := st.ListWithStatus(ctx, "")
-				// "Reporting" has to mean reporting now, not ever. Counting any
-				// host with a server_status row read as healthy while every agent
-				// in production had been silent for two days — the row survives the
-				// agent. `vctl list` already judges the same data by freshness, so
-				// this brings the two into agreement.
-				var withAgent int
-				for _, server := range servers {
-					if liveStatusText(server) == "up" {
-						withAgent++
-					}
+				servers, err := st.ListWithStatus(ctx, "")
+				if err != nil {
+					rows = append(rows, ui.KV{Key: "Inventory DB", Value: "query failed (" + err.Error() + ")", State: ui.StateFail})
+					rows = append(rows, cacheStatusRow(a))
+					ui.KVs(os.Stdout, rows)
+					return nil
 				}
 				rows = append(rows, ui.KV{Key: "Inventory DB", Value: fmt.Sprintf("OK · %d hosts", len(servers)), State: ui.StateOK})
-				agentState := agentCoverageState(len(servers), withAgent)
+				agents := summarizeAgents(servers, time.Now())
+				agentState := agents.State()
+				managed := agents.Reporting + agents.Stale
 				rows = append(rows, ui.KV{
 					Key:   "Node agents",
 					State: agentState,
-					Raw:   fmt.Sprintf("%s  %s", ui.Badge(agentState, fmt.Sprintf("%d/%d reporting", withAgent, len(servers))), ui.Bar(withAgent, len(servers), 12)),
+					Raw:   fmt.Sprintf("%s  %s", ui.Badge(agentState, agents.Text()), ui.Bar(agents.Reporting, managed, 12)),
 				})
 				rows = append(rows, cacheStatusRow(a))
 				ui.KVs(os.Stdout, rows)
@@ -74,6 +72,42 @@ func statusCmd(env CommandEnv) *cobra.Command {
 			})
 		},
 	}
+}
+
+type agentSummary struct {
+	Reporting int
+	Stale     int
+	Unmanaged int
+}
+
+// summarizeAgents keeps the management denominator honest. A server_status row
+// proves an agent was installed at least once; its freshness says whether that
+// managed agent is healthy now. Inventory with no row is unmanaged, not a
+// failed installation, and therefore does not dilute the reporting ratio.
+func summarizeAgents(servers []store.ServerWithStatus, now time.Time) agentSummary {
+	var summary agentSummary
+	for _, server := range servers {
+		switch {
+		case server.Status == nil:
+			summary.Unmanaged++
+		case !server.Status.LastSeenAt.Before(now.Add(-statusFreshnessWindow)):
+			summary.Reporting++
+		default:
+			summary.Stale++
+		}
+	}
+	return summary
+}
+
+func (s agentSummary) Text() string {
+	return fmt.Sprintf("%d reporting · %d stale · %d unmanaged", s.Reporting, s.Stale, s.Unmanaged)
+}
+
+func (s agentSummary) State() ui.State {
+	if s.Reporting == 0 || s.Stale > 0 {
+		return ui.StateWarn
+	}
+	return ui.StateOK
 }
 
 // authMethodRow says which identity vctl actually holds.

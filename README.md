@@ -388,7 +388,7 @@ The collector ingests `process_exec`/`process_exit` from Tetragon; events link t
 
 **Only events that link to a session are stored.** A host emits exec/exit for everything it runs, which on a Kubernetes node is overwhelmingly container and kubelet churn: it belongs to no login, nothing back-fills `session_id`, and `vctl session` joins on it, so storing it costs disk and answers nothing. An unlinked event is held for `--attribution-grace` (30s) and retried first, because a login's earliest commands arrive before the session row exists; only after that is it discarded. `--require-session=false` restores full host capture. Both `vctl collect --host` and `vctl watch-sessions --hostname` must record the same inventory name — attribution joins the two on hostname, so pinning one side alone links nothing.
 
-**Runtime host status.** `vctl node-agent` reports a lightweight liveness heartbeat (load, memory, disk) into `server_status` *only for hosts already present in `servers`* — it never creates inventory. `vctl list` and `vctl status` surface this freshness alongside topology.
+**Runtime host status.** `vctl node-agent` reports a lightweight liveness heartbeat (load, memory, disk) into `server_status` *only for hosts already present in `servers`* — it never creates inventory. `vctl list` and `vctl status` surface this freshness alongside topology. Status separates agents that are currently `reporting`, agents with a `stale` heartbeat, and `unmanaged` inventory that has never reported.
 
 **Long-running credential renewal.** These daemons hold a Postgres pool for days, but Vault dynamic DB creds are short-lived (1h default, 4h max). The pool recycles each physical connection well inside that window and re-fetches a live credential before connecting, re-authenticating the Vault session if the token lapsed. A daemon never outlives its credential lease and needs no Vault Agent.
 
@@ -429,7 +429,7 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl exec -- <cmd>` | Run a child process with `VAULT_TOKEN` and `VAULT_ADDR` |
 | `vctl agent [--sink <path>]` | Keep a token alive and write it to sink files |
 | `vctl ssh [host\|user@addr] [--server <host>]` | Connect by exact, fuzzy, IP, or interactive selection (picker filters by DC with ←/→); `--server` resolves exactly or by IP and connects non-interactively (scripts/agents). `user@addr` connects to an address directly, skipping inventory |
-| `vctl list [--dc <dc>]` | List inventory hosts (primary + extra IPs, non-default SSH port, observed liveness, and the operator-declared state when it is not `active`) |
+| `vctl list [--dc <dc>] [--wide]` | List inventory hosts in a compact responsive table; `--wide` separates agent, state, and SSH user columns |
 | `vctl openstack [deployment]` | Full-screen browser: farms on the left, the selected one's VMs or hosts on the right, `enter` for the same detail view `openstack host` / `vm show` print. `tab` moves between panes, `/` filters, `r` refreshes. Read-only, and it reads the database alone — nothing here contacts a control plane. `explore`, `browse`, and `ui` remain aliases |
 | `vctl openstack list [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | Tabular host listing for scripts and non-interactive use: which hosts run OpenStack, their roles, and their deployment. The former flags on bare `vctl openstack` remain accepted for compatibility |
 | `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure] [--json] [--fail-on <problems>]` | Ask each deployment's control plane which hosts it owns and promote the ones both sides agree on to `confirmed`. Credentials are read from Vault at `kv/teams/sre/vctl-<host_port>` (fields: `auth_url`, `username`, `password`, optional `project_name`/`user_domain`/`project_domain`) |
@@ -458,6 +458,8 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl migrate [--status]` | Apply pending schema migrations, tracked in `schema_migrations` by name and checksum and serialised on an advisory lock; `--status` reports without changing anything |
 | `vctl completion bash\|zsh\|fish\|powershell` | Print the shell completion script. Farms, hosts, roles, projects and VM UUIDs complete from the live inventory; a VM completes to its UUID and reads as its name |
 | `vctl logout` | Remove the cached Vault token |
+
+Commands that expose structured data accept `-o, --output table|json|yaml`. Existing `--json` flags remain supported for compatibility.
 
 ## Configuration
 

@@ -50,6 +50,10 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 			"  vctl openstack vm 10.3.1         every VM answering on an address that starts there",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, err := commandOutput(cmd, asJSON)
+			if err != nil {
+				return err
+			}
 			return env.withApp(func(a *app.App) error {
 				ctx := cmd.Context()
 				lazy := &openLater{app: a}
@@ -88,7 +92,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 				// reading was stored under.
 				narrowed := search != "" || address != "" || id != "" || project != "" || host != ""
 				if !narrowed {
-					rd, err := vmCatalog(ctx, a, lazy, mustBeLive(cmd, asJSON))
+					rd, err := vmCatalog(ctx, a, lazy, mustBeLive(cmd, format != outputTable))
 					if err != nil {
 						return err
 					}
@@ -97,8 +101,8 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 					if err != nil {
 						return err
 					}
-					if asJSON {
-						return writeJSON(vms)
+					if format != outputTable {
+						return writeStructured(format, vms)
 					}
 					renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), wide)
 					return nil
@@ -110,7 +114,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 					// and the second was issued after the VMs had already been
 					// fetched.
 					var cat fleet.Catalog
-					if farm != "" || !asJSON {
+					if farm != "" || format == outputTable {
 						c, err := loadFarmCatalog(ctx, a, st)
 						if err != nil {
 							return err
@@ -147,8 +151,8 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 					if err != nil {
 						return err
 					}
-					if asJSON {
-						return writeJSON(vms)
+					if format != outputTable {
+						return writeStructured(format, vms)
 					}
 					renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), wide)
 					return nil
@@ -172,7 +176,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 	// The positional is a search, so it completes to names rather than to the
 	// uuids --id takes. Somebody who has the uuid is not searching for it.
 	cmd.ValidArgsFunction = completeVMName(env)
-	return cmd
+	return supportsStructuredOutput(cmd)
 }
 
 // vmCatalog is the whole reading for an unnarrowed listing, and where it came

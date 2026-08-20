@@ -57,23 +57,15 @@ func NewRoot(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{
 		Version: Version,
 		Use:     "vctl",
-		Short:   "CLI for direct Vault token management and SSH CA access",
-		Long: `vctl manages Vault tokens without a local daemon.
+		Short:   "SRE infrastructure control plane",
+		Long: `vctl is the SRE infrastructure control plane for secure access, inventory,
+OpenStack farms and the WireGuard network.
 
-Token lifecycle:
-  vctl login            log in with userpass, oidc, or approle
-  vctl token            print a valid token after renewal or re-auth
-  vctl exec -- <cmd>    inject VAULT_TOKEN into a child process
-  vctl agent            keep a token alive and write sink files
-
-SSH CA access:
-  vctl ssh <name>       resolve inventory and connect with a short-lived cert
-  vctl list             list accessible inventory hosts
-  vctl node-agent       report host runtime status for registered inventory
-  vctl sync             sync inventory from ~/.ssh/config and probes
-  vctl audit            show the central SSH access log
-
-Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault issues a short-lived SSH certificate for each connection.`,
+Start here:
+  vctl status           check your login and control-plane connections
+  vctl list             browse the host inventory
+  vctl ssh <host>       connect with a short-lived SSH certificate
+  vctl openstack        explore farms, physical hosts and VMs`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		// App-layer RBAC (layer 2) gate. Runs before every command; ungated
@@ -81,6 +73,9 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if debugTiming {
 				timing.Enable()
+			}
+			if err := validateOutputSelection(cmd); err != nil {
+				return err
 			}
 			return enforceRBAC(env, cmd)
 		},
@@ -91,30 +86,51 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 	// without a debugger.
 	root.PersistentFlags().BoolVar(&debugTiming, "debug-timing", false,
 		"print where the command's time went (auth, credential, connect, query, render)")
+	root.PersistentFlags().StringP("output", "o", string(outputTable),
+		"output format for supported commands: table|json|yaml")
 
 	// Only mutate/connect commands are gated (default-deny without a grant).
 	// Read commands (list/status/audit/session) are ungated = allowed to any
 	// authenticated user. The `vctl rbac` mutations gate themselves (classAdmin).
-	root.AddCommand(
-		loginCmd(env), logoutCmd(env), tokenCmd(env),
-		gate(execCmd(env), "exec", classMutate), agentCmd(env),
-		gate(sshCmd(env), "ssh", classMutate),
-		lsCmd(env),
-		ipCmd(env),
-		wgCmd(env),
-		openstackCmd(env),
-		gate(syncCmd(env), "sync", classMutate),
-		addCmd(env), editCmd(env), deleteCmd(env), migrateCmd(env), // already gated inside
-		statusCmd(env), auditCmd(env),
-		gate(trustCACmd(env), "trust-ca", classMutate), caCmd(env),
-		sessionCmd(env), sessionStartCmd(env), collectCmd(env),
-		gate(retentionCmd(env), "retention", classRead),
-		pruneCmd(env),
-		openStackPruneCmd(env),
-		watchSessionsCmd(env), nodeAgentCmd(env),
-		rbacCmd(env), mcpCmd(env), cacheCmd(env),
+	root.AddGroup(
+		&cobra.Group{ID: "access", Title: "Access Commands:"},
+		&cobra.Group{ID: "infrastructure", Title: "Infrastructure Commands:"},
+		&cobra.Group{ID: "operations", Title: "Operations Commands:"},
+		&cobra.Group{ID: "administration", Title: "Administration Commands:"},
+		&cobra.Group{ID: "automation", Title: "Automation Commands:"},
 	)
+	addCommandGroup(root, "access",
+		loginCmd(env), logoutCmd(env), tokenCmd(env),
+		gate(execCmd(env), "exec", classMutate),
+		gate(sshCmd(env), "ssh", classMutate),
+		gate(trustCACmd(env), "trust-ca", classMutate), caCmd(env), sessionCmd(env),
+	)
+	addCommandGroup(root, "infrastructure",
+		lsCmd(env), ipCmd(env), wgCmd(env), openstackCmd(env), statusCmd(env),
+	)
+	addCommandGroup(root, "operations",
+		gate(syncCmd(env), "sync", classMutate),
+		addCmd(env), editCmd(env), deleteCmd(env), auditCmd(env), cacheCmd(env),
+		gate(retentionCmd(env), "retention", classRead),
+	)
+	addCommandGroup(root, "administration", migrateCmd(env), rbacCmd(env))
+	addCommandGroup(root, "automation",
+		agentCmd(env), sessionStartCmd(env), collectCmd(env), pruneCmd(env),
+		openStackPruneCmd(env), watchSessionsCmd(env), nodeAgentCmd(env), mcpCmd(env),
+	)
+	root.SetHelpCommandGroupID("automation")
+	root.SetCompletionCommandGroupID("automation")
 	return root
+}
+
+// addCommandGroup keeps the root's information architecture at the root. A
+// command owns its behaviour; the control plane owns where an operator finds
+// it. Callers do not need to repeat GroupID across every command constructor.
+func addCommandGroup(root *cobra.Command, group string, commands ...*cobra.Command) {
+	for _, command := range commands {
+		command.GroupID = group
+	}
+	root.AddCommand(commands...)
 }
 
 func withAppFrom(newApp func() (*app.App, error), fn func(*app.App) error) error {

@@ -35,11 +35,11 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 		Args:    cobra.MaximumNArgs(1),
 		Short:   "Browse OpenStack farms, hosts and VMs",
 		Long: "Open the interactive OpenStack fleet browser. Pass a deployment name to start there.\n\n" +
-			"Use 'vctl openstack list' for the tabular host listing and JSON output.\n" +
+			"Use 'vctl openstack list' for tabular or structured host output.\n" +
 			"The former listing flags remain accepted here for compatibility. If a deployment\n" +
 			"name matches a subcommand, use 'vctl openstack explore <deployment>'.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if legacy.requested(cmd) {
+			if legacy.requested(cmd) || cmd.Flags().Changed("output") {
 				if len(args) > 0 {
 					return fmt.Errorf("a deployment argument opens the browser; use 'vctl openstack list --farm %s' for the table", args[0])
 				}
@@ -78,7 +78,7 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 	// The farm subtree gates its own leaves — see openstackFarmCmd. Annotating
 	// the parent did nothing but require mutate permission to read its help.
 	cmd.AddCommand(openstackFarmCmd(env))
-	return cmd
+	return supportsStructuredOutput(cmd)
 }
 
 type openStackListOptions struct {
@@ -123,15 +123,19 @@ func openstackListCmd(env CommandEnv) *cobra.Command {
 	registerOpenStackListFlags(cmd, &opts, false)
 	registerCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
 	registerCompletion(cmd, "role", completeRole(env))
-	return cmd
+	return supportsStructuredOutput(cmd)
 }
 
 func runOpenStackList(cmd *cobra.Command, env CommandEnv, opts openStackListOptions) error {
+	format, err := commandOutput(cmd, opts.json)
+	if err != nil {
+		return err
+	}
 	return env.withApp(func(a *app.App) error {
 		ctx := cmd.Context()
 		st := &openLater{app: a}
 		defer st.Close()
-		rd, err := listingReading(ctx, a, st, fleet.ShapeFarms, mustBeLive(cmd, opts.json), fleetSnapshot)
+		rd, err := listingReading(ctx, a, st, fleet.ShapeFarms, mustBeLive(cmd, format != outputTable), fleetSnapshot)
 		if err != nil {
 			return err
 		}
@@ -150,8 +154,8 @@ func runOpenStackList(cmd *cobra.Command, env CommandEnv, opts openStackListOpti
 			selector = f.ID
 		}
 		hosts = filterOpenStack(hosts, selector, opts.role, opts.all)
-		if opts.json {
-			return writeJSON(openStackExport{Hosts: hosts, Coverage: cov})
+		if format != outputTable {
+			return writeStructured(format, openStackExport{Hosts: hosts, Coverage: cov})
 		}
 		renderOpenStack(os.Stdout, hosts, cov, opts.wide, time.Now())
 		return nil
@@ -733,6 +737,10 @@ func openstackHostCmd(env CommandEnv) *cobra.Command {
 		// found nothing" is an answer this command exists to show.
 		ValidArgsFunction: completeOpenStackHost(env, false),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, err := commandOutput(cmd, asJSON)
+			if err != nil {
+				return err
+			}
 			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				row, err := resolveHost(ctx, st, args, "OpenStack detail")
@@ -747,14 +755,14 @@ func openstackHostCmd(env CommandEnv) *cobra.Command {
 					if h.Hostname != row.Hostname {
 						continue
 					}
-					if asJSON {
-						return writeJSON(h)
+					if format != outputTable {
+						return writeStructured(format, h)
 					}
 					renderOpenStackHost(os.Stdout, h, time.Now())
 					return nil
 				}
-				if asJSON {
-					return writeJSON(map[string]any{"hostname": row.Hostname, "probed": false})
+				if format != outputTable {
+					return writeStructured(format, map[string]any{"hostname": row.Hostname, "probed": false})
 				}
 				// Not an error: the host exists, nothing has looked at it. Saying
 				// "not found" would send someone looking for a missing inventory
@@ -765,7 +773,7 @@ func openstackHostCmd(env CommandEnv) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	return cmd
+	return supportsStructuredOutput(cmd)
 }
 
 func renderOpenStackHost(w io.Writer, h store.OpenStackHost, now time.Time) {

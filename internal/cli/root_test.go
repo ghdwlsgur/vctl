@@ -83,6 +83,62 @@ func TestUnknownCommandErrorsWithoutApp(t *testing.T) {
 	}
 }
 
+func TestRootHelpPresentsTheSREControlPlaneByWorkflow(t *testing.T) {
+	root := NewRoot(fakeDeps(t))
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("--help: %v", err)
+	}
+
+	help := out.String()
+	for _, want := range []string{
+		"vctl is the SRE infrastructure control plane",
+		"Access Commands:",
+		"Infrastructure Commands:",
+		"Operations Commands:",
+		"Administration Commands:",
+		"Automation Commands:",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("help missing %q:\n%s", want, help)
+		}
+	}
+	if strings.Index(help, "Access Commands:") > strings.Index(help, "Automation Commands:") {
+		t.Fatalf("human workflows should appear before automation commands:\n%s", help)
+	}
+}
+
+func TestRootOffersOneOutputFlagAndRejectsUnsupportedStructuredOutput(t *testing.T) {
+	root := NewRoot(fakeDeps(t))
+	flag := root.PersistentFlags().Lookup("output")
+	if flag == nil || flag.Shorthand != "o" || flag.DefValue != "table" {
+		t.Fatalf("output flag = %+v, want -o/--output defaulting to table", flag)
+	}
+
+	root.SetArgs([]string{"status", "--output", "json"})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), `status does not support --output json`) {
+		t.Fatalf("status -o json error = %v", err)
+	}
+}
+
+func TestStructuredOutputCommandsAcceptJSONAndYAML(t *testing.T) {
+	root := NewRoot(fakeDeps(t))
+	openstack := findCmd(root, "openstack")
+	list := findCmd(openstack, "list")
+	for _, format := range []string{"json", "yaml"} {
+		if err := list.ParseFlags([]string{"--output", format}); err != nil {
+			t.Fatalf("parse -o %s: %v", format, err)
+		}
+		if err := validateOutputSelection(list); err != nil {
+			t.Errorf("openstack list -o %s: %v", format, err)
+		}
+	}
+}
+
 // The injected factory has to reach the commands, which is the whole reason
 // Dependencies exists. Asserted through a command rather than through a package
 // variable — there is no longer one to read, and the variable was never the
