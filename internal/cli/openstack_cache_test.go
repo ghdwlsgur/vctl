@@ -184,10 +184,11 @@ func TestFreshIsAvailableOnEveryListingUnderOpenstack(t *testing.T) {
 // returned: the same two predicates, in the same order.
 func TestTheVMProjectionReproducesTheQueryItStandsInFor(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeVMs, time.Now())
-	cat, _, ok := storedReader(a).Stored(fleet.ShapeVMs, fleet.ForListing)
+	rd, ok := storedReader(a).Stored(fleet.ShapeVMs, fleet.ForListing)
 	if !ok {
 		t.Fatal("the stored reading was not served")
 	}
+	cat := rd.Catalog
 
 	all, err := vmsFrom(cat, "", false)
 	if err != nil {
@@ -227,10 +228,10 @@ func TestTheVMProjectionReproducesTheQueryItStandsInFor(t *testing.T) {
 // an empty list there reads as a deployment with nothing in it.
 func TestAVMListingIsNotServedFromAFarmsReading(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeFarms, time.Now())
-	if _, _, ok := storedReader(a).Stored(fleet.ShapeVMs, fleet.ForListing); ok {
+	if _, ok := storedReader(a).Stored(fleet.ShapeVMs, fleet.ForListing); ok {
 		t.Error("a farms reading answered a request for VM rows")
 	}
-	if _, _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); !ok {
+	if _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); !ok {
 		t.Error("and it did not answer the request it can answer")
 	}
 }
@@ -259,7 +260,7 @@ func TestFarmCompletionAnswersFromDiskWithoutADatabase(t *testing.T) {
 	// Two hours old is past a listing's window and well inside a Tab's. A Tab is
 	// not a decision — the worst a stale list does is fail to offer a farm
 	// somebody renamed this morning, and typing it still works.
-	if _, _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); ok {
+	if _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); ok {
 		t.Error("the fixture is fresh enough for a listing; this test is not proving anything")
 	}
 }
@@ -359,14 +360,14 @@ func TestChangingADeploymentDropsTheStoredReading(t *testing.T) {
 	if err := a.FleetCache().Save(fleet.ShapeFarms, store.Fleet{ReadAt: time.Now()}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if _, _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); !ok {
+	if _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); !ok {
 		t.Fatal("nothing stored to begin with")
 	}
 
 	forgetReadings(a)
 
 	for _, s := range []fleet.Shape{fleet.ShapeFarms, fleet.ShapeVMs} {
-		if _, _, ok := storedReader(a).Stored(s, fleet.ForFallback); ok {
+		if _, ok := storedReader(a).Stored(s, fleet.ForFallback); ok {
 			t.Errorf("%s survived a change to the fleet", s)
 		}
 	}
@@ -516,11 +517,11 @@ func TestAScreenThatNeedsALoginSaysSoAndDoesNotRefresh(t *testing.T) {
 func TestAPurposeThatMayNotReadIsAnsweredWithNothing(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeFarms, time.Now())
 	// The reading is there for a purpose that may read it.
-	if _, _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); !ok {
+	if _, ok := storedReader(a).Stored(fleet.ShapeFarms, fleet.ForListing); !ok {
 		t.Fatal("nothing stored to begin with")
 	}
 	for _, why := range []fleet.Purpose{fleet.ForConnecting, fleet.ForChanging, fleet.ForDiagnosing} {
-		if _, _, ok := storedReader(a).Stored(fleet.ShapeFarms, why); ok {
+		if _, ok := storedReader(a).Stored(fleet.ShapeFarms, why); ok {
 			t.Errorf("%s was answered from disk", why)
 		}
 	}

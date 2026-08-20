@@ -118,7 +118,9 @@ func (r *Reader) clock() time.Time {
 	return time.Now()
 }
 
-// Stored answers from disk or not at all.
+// Stored answers from disk or not at all. Its Reading carries the same
+// provenance as Read, so callers do not have to reconstruct source and age from
+// parallel return values.
 //
 // This is the whole of what a completion may do: a Tab keypress has to answer
 // now or it is not completion, and opening a database to do it would make the
@@ -126,19 +128,19 @@ func (r *Reader) clock() time.Time {
 // or say nothing" and "answer from disk or go and look" are different
 // operations, and a completion that fell through to the database would be a
 // completion that sometimes took ten seconds.
-func (r *Reader) Stored(shape Shape, why Purpose) (Catalog, time.Duration, bool) {
+func (r *Reader) Stored(shape Shape, why Purpose) (Reading, bool) {
 	if r == nil || r.Cache == nil || !why.MayReadStored() {
-		return Catalog{}, 0, false
+		return Reading{}, false
 	}
 	now := r.clock()
 	got, err := r.Cache.LoadAtLeast(shape, now)
 	if err != nil {
-		return Catalog{}, 0, false
+		return Reading{}, false
 	}
 	if age := got.Age(now); age <= why.MaxAge() {
-		return From(got.Fleet), age, true
+		return Reading{Catalog: From(got.Fleet), Source: FromStored, Age: age}, true
 	}
-	return Catalog{}, 0, false
+	return Reading{}, false
 }
 
 // Read answers a request from the stored reading or the database, in that order,
@@ -156,8 +158,8 @@ func (r *Reader) Stored(shape Shape, why Purpose) (Catalog, time.Duration, bool)
 // is exactly when somebody wants to see what the fleet last looked like.
 func (r *Reader) Read(ctx context.Context, req ReadRequest) (Reading, error) {
 	if !req.Live {
-		if cat, age, ok := r.Stored(req.Shape, req.Purpose); ok {
-			return Reading{Catalog: cat, Source: FromStored, Age: age}, nil
+		if rd, ok := r.Stored(req.Shape, req.Purpose); ok {
+			return rd, nil
 		}
 	}
 	snap, err := r.Load(ctx)
@@ -171,8 +173,9 @@ func (r *Reader) Read(ctx context.Context, req ReadRequest) (Reading, error) {
 		return Reading{Catalog: From(snap), Source: FromDatabase}, nil
 	}
 	if !req.Live {
-		if cat, age, ok := r.Stored(req.Shape, ForFallback); ok {
-			return Reading{Catalog: cat, Source: FromFallback, Age: age, Err: err}, nil
+		if rd, ok := r.Stored(req.Shape, ForFallback); ok {
+			rd.Source, rd.Err = FromFallback, err
+			return rd, nil
 		}
 	}
 	return Reading{}, err
