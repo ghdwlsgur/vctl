@@ -28,6 +28,7 @@ PG_PORT="${PG_PORT:-5432}"
 # For direct psql (bare-metal / laptop via vctl-postgres.sre.local), set PG_EXEC_POD="".
 PG_EXEC_POD="${PG_EXEC_POD:-vctl-postgres-0}"
 PG_EXEC_NS="${PG_EXEC_NS:-vctl}"
+PG_KUBE_CONTEXT="${PG_KUBE_CONTEXT:-}"
 
 # Group -> privileges. Mirrors the per-user grants that database.tf USED to embed,
 # now applied to shared groups exactly once. Keep in sync with database.tf grants.
@@ -109,7 +110,11 @@ ALTER DEFAULT PRIVILEGES FOR ROLE vctl_owner IN SCHEMA public
 SQL
 
 if [ -n "${PG_EXEC_POD}" ]; then
-  kubectl exec -i -n "${PG_EXEC_NS}" "${PG_EXEC_POD}" -- \
+  KUBECTL=(kubectl)
+  if [ -n "${PG_KUBE_CONTEXT}" ]; then
+    KUBECTL+=(--context "${PG_KUBE_CONTEXT}")
+  fi
+  "${KUBECTL[@]}" exec -i -n "${PG_EXEC_NS}" "${PG_EXEC_POD}" -- \
     env PGPASSWORD="${PG_ADMIN_PASS}" psql -h 127.0.0.1 -U "${PG_ADMIN_USER}" -d "${PG_DB}" -v ON_ERROR_STOP=1 <<SQL
 ${GROUPS_SQL}
 SQL
