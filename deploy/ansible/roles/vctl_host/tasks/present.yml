@@ -127,7 +127,7 @@
   ansible.builtin.set_fact:
     vctl_host_needs_secret_id: >-
       {{ not vctl_host_secret_id.stat.exists or
-         ((ansible_date_time.epoch | int) -
+         ((ansible_facts["date_time"]["epoch"] | int) -
           (vctl_host_secret_id.stat.mtime | default(0) | int)) >
          (vctl_host_secret_rotation_days | int * 86400) or
          (vctl_host_approle_marker.content | default('') | b64decode | trim)
