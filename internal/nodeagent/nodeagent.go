@@ -142,9 +142,18 @@ func (a *Agent) heartbeatLoop(ctx context.Context, c *conn) error {
 	if interval <= 0 {
 		interval = defaultInterval
 	}
+	// The ping goes here, in the loop, and not in a goroutine of its own. A
+	// separate pinger keeps answering systemd while this loop is wedged, which
+	// is precisely the state worth catching — see watchdog.go.
+	wd := newWatchdog()
+	defer wd.close()
+	warnTooSlow(wd, interval, a.warnf)
+
 	if err := report(); err != nil {
 		a.warnf("status report failed: %v", err)
 	}
+	wd.ping(a.warnf)
+
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -155,6 +164,9 @@ func (a *Agent) heartbeatLoop(ctx context.Context, c *conn) error {
 			if err := report(); err != nil {
 				a.warnf("status report failed: %v", err)
 			}
+			// After the report, success or not. A failed report is the loop
+			// working; an absent ping is the loop not running.
+			wd.ping(a.warnf)
 		}
 	}
 }
