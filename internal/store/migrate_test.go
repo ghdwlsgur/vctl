@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +40,61 @@ func TestEmbeddedMigrationsAreSortedAndHashed(t *testing.T) {
 		if files[i].checksum != again[i].checksum {
 			t.Errorf("%s hashed differently on a second read", files[i].name)
 		}
+	}
+}
+
+// Hardening an already-populated production database must protect new writes
+// without requiring every legacy row to be clean during application startup.
+func TestDBAHardeningDefersLegacyConstraintValidation(t *testing.T) {
+	files, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sql string
+	for _, f := range files {
+		if f.name == "022_dba_hardening.sql" {
+			sql = f.sql
+			break
+		}
+	}
+	if sql == "" {
+		t.Fatal("022_dba_hardening.sql is not embedded")
+	}
+	for _, want := range []string{"server_status_server_fk", "wg_peer_status_peer_fk"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("hardening migration is missing %s", want)
+		}
+	}
+	if strings.Count(sql, "NOT VALID") < 10 {
+		t.Errorf("hardening migration no longer defers legacy validation")
+	}
+	if strings.Contains(sql, "VALIDATE CONSTRAINT") {
+		t.Error("application startup attempts an operational constraint validation")
+	}
+	if strings.Contains(sql, "\nCREATE INDEX ") {
+		t.Error("transactional application migration builds an index that can block production writes")
+	}
+
+	online, err := os.ReadFile("../../deploy/vault/postgres-online-indexes.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"idx_access_log_cert_signed",
+		"idx_audit_session_host_cgroup_started",
+		"idx_openstack_instances_active_observed",
+		"indisvalid",
+		"DROP INDEX CONCURRENTLY IF EXISTS public.idx_audit_session_serial",
+	} {
+		if !strings.Contains(string(online), want) {
+			t.Errorf("online index script is missing %s", want)
+		}
+	}
+	if strings.Count(string(online), "INDEX CONCURRENTLY") < 12 {
+		t.Error("an online DBA index lost CONCURRENTLY")
+	}
+	if !strings.Contains(string(online), "AND i.indisvalid AND i.indisready") {
+		t.Error("the old cert index can be dropped before its replacement is valid")
 	}
 }
 

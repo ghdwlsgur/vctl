@@ -12,6 +12,7 @@ import (
 	"net"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -357,9 +358,13 @@ func (s *Store) Resolve(ctx context.Context, query string) (*Server, []Server, e
 
 	where := `hostname ILIKE '%'||$1||'%'`
 	if net.ParseIP(query) != nil {
-		// Match the address across primary, operator-curated, and observed sets.
-		where = `host(ip)=$1 OR $1::inet = ANY(extra_ips) OR hostname IN ` +
-			`(SELECT hostname FROM server_status WHERE $1::inet = ANY(observed_ips))`
+		// The exact predicates use the btree/GIN indexes for the normal host-mask
+		// representation. The host() fallbacks preserve compatibility with legacy
+		// INET values such as 192.0.2.10/24, whose prefix participates in equality.
+		where = `(ip=$1::inet OR host(ip)=host($1::inet)) OR ` +
+			`(extra_ips @> ARRAY[$1::inet] OR EXISTS (SELECT 1 FROM unnest(extra_ips) a WHERE host(a)=host($1::inet))) OR ` +
+			`hostname IN (SELECT hostname FROM server_status WHERE ` +
+			`observed_ips @> ARRAY[$1::inet] OR EXISTS (SELECT 1 FROM unnest(observed_ips) a WHERE host(a)=host($1::inet)))`
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+selectCols+` FROM servers WHERE `+where+` ORDER BY hostname`, query)
 	if err != nil {
@@ -540,16 +545,26 @@ func (s *Store) Upsert(ctx context.Context, sv Server) error {
 	}
 
 	// Known host (by IP): refresh liveness only, preserve operator fields.
-	var existing string
-	err := s.pool.QueryRow(ctx, `SELECT hostname FROM servers WHERE host(ip)=$1 LIMIT 1`, sv.IP).Scan(&existing)
-	switch {
-	case err == nil:
+	var existing []string
+	err := s.pool.QueryRow(ctx,
+		// Equality is the indexed common path; host() keeps legacy masked INET
+		// values from being mistaken for a new machine during synchronization.
+		`SELECT coalesce(array_agg(hostname ORDER BY hostname), '{}') FROM servers
+		 WHERE ip=$1::inet OR host(ip)=host($1::inet)`,
+		sv.IP).Scan(&existing)
+	if err != nil {
+		return err
+	}
+	switch len(existing) {
+	case 1:
 		_, err = s.pool.Exec(ctx, `
 			UPDATE servers SET ssh_port=$2, ca_role=$3, last_seen_up=$4, updated_at=now()
-			WHERE hostname=$1`, existing, sv.Port, sv.CARole, sv.LastSeenUp)
+			WHERE hostname=$1`, existing[0], sv.Port, sv.CARole, sv.LastSeenUp)
 		return err
-	case err != pgx.ErrNoRows:
-		return err
+	case 0:
+		// New address; insert below.
+	default:
+		return fmt.Errorf("primary IP %s belongs to multiple servers: %s", sv.IP, strings.Join(existing, ", "))
 	}
 
 	// New host: insert sync-derived values. The hostname conflict fallback also

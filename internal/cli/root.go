@@ -109,6 +109,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		gate(trustCACmd(env), "trust-ca", classMutate), caCmd(env),
 		sessionCmd(env), sessionStartCmd(env), collectCmd(env),
 		gate(retentionCmd(env), "retention", classRead),
+		pruneCmd(env),
 		watchSessionsCmd(env), nodeAgentCmd(env),
 		rbacCmd(env), mcpCmd(env), cacheCmd(env),
 	)
@@ -208,6 +209,8 @@ func (e CommandEnv) audit() (*app.App, *audit.Store, error) {
 		purpose := app.PurposeAuditRead
 		if p == audit.Ingest {
 			purpose = app.PurposeAuditIngest
+		} else if p == audit.Prune {
+			purpose = app.PurposeAuditPrune
 		}
 		return a.OpenStore(ctx, purpose)
 	}), nil

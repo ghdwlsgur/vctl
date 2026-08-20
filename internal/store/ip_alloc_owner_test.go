@@ -5,6 +5,19 @@ import (
 	"testing"
 )
 
+func TestIPAllocationRejectsUnknownKindAndStatus(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	for _, tc := range []IPAllocation{
+		{IP: "192.0.2.241", Kind: "mystery", Status: "active"},
+		{IP: "192.0.2.242", Kind: "server", Status: "mystery"},
+	} {
+		if err := st.IPAllocUpsert(ctx, tc); err == nil {
+			t.Errorf("accepted kind=%q status=%q", tc.Kind, tc.Status)
+		}
+	}
+}
+
 // The column shipped with migration 014 and had no writer: IPAllocUpsert writes
 // every column from its struct and does not mention this one, so a VIP could be
 // recorded but never bound. Integration — needs VCTL_TEST_DSN.

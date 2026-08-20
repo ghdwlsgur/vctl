@@ -14,21 +14,10 @@ import (
 
 // retentionCmd reports audit retention. It does not delete.
 //
-// It used to be `vctl prune` and it used to try to delete, through a
-// database/creds/vctl-pruner credential. That never worked: no Vault policy grants
-// that path, so the command could not authenticate — and app-layer RBAC refused it
-// one step earlier anyway, even with --dry-run. Meanwhile the READMEs said
-// "retention is enforced by vctl prune (a CronJob)", which was not true either:
-// the CronJob runs SQL directly as the table owner and does not involve vctl at
-// all. A command nobody could run, described by docs that named the wrong
-// mechanism.
-//
-// Deleting audit records stays where it already is — in-cluster, as the table
-// owner, over the pod-local socket. That job needs no credential distribution and
-// no network path, and it keeps DELETE on audit tables out of every credential an
-// operator carries. Giving the CLI a second way to do the same thing would widen
-// that for no operational gain: an off-schedule run is
-// `kubectl create job --from=cronjob/vctl-kernel-event-prune`.
+// Deleting audit records stays in-cluster behind the hidden prune automation
+// command and its dedicated AppRole. No human operator credential carries DELETE;
+// an off-schedule run is
+// `kubectl create job --from=cronjob/vctl-audit-prune`.
 //
 // What was missing was not a second deletion path. It was knowing the size — a
 // delete-only job returns space to the table's free list rather than the volume,
@@ -44,11 +33,11 @@ func retentionCmd(env CommandEnv) *cobra.Command {
 		Short: "Report kernel audit retention and on-disk footprint",
 		Long: `retention reports what audit data is past its horizon and what it costs on disk.
 
-It never deletes. Deletion runs in-cluster from the prune CronJob, as the table
-owner over the pod-local socket, so no operator credential carries DELETE on the
-audit tables. To run it off schedule:
+It never deletes. Deletion runs in-cluster from the prune CronJob with a
+delete-only Vault role, so no operator credential carries DELETE on the audit
+tables. To run it off schedule:
 
-  kubectl -n vctl create job --from=cronjob/vctl-kernel-event-prune prune-now
+  kubectl -n vctl create job --from=cronjob/vctl-audit-prune prune-now
 
 Horizons default to config (kernel_retention_days / session_retention_days).
 
@@ -87,7 +76,7 @@ Horizons default to config (kernel_retention_days / session_retention_days).
 					if err != nil {
 						return err
 					}
-					ui.Infof(os.Stderr, "audit_session: %d rows older than %s (%dd horizon)",
+					ui.Infof(os.Stderr, "audit_session: %d ended, unreferenced rows eligible before %s (%dd horizon)",
 						ns, sessionCut.Format("2006-01-02"), sessionDays)
 				} else {
 					ui.Infof(os.Stderr, "audit_session: retention disabled (session_retention_days = 0)")
@@ -103,6 +92,59 @@ Horizons default to config (kernel_retention_days / session_retention_days).
 	}
 	cmd.Flags().IntVar(&days, "days", 0, "kernel_event horizon in days to report against (default: config)")
 	cmd.Flags().IntVar(&sessionDays, "session-days", 0, "audit_session horizon in days; 0 reports retention as disabled")
+	return cmd
+}
+
+// pruneCmd is the automation interface used by the in-cluster retention
+// CronJob. It is hidden because human credentials intentionally cannot obtain
+// the delete-only database role; operators use `vctl retention` to inspect and
+// Kubernetes to trigger this job off schedule.
+func pruneCmd(env CommandEnv) *cobra.Command {
+	var days, sessionDays, batchSize int
+	cmd := &cobra.Command{
+		Use:    "prune",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			a, adb, err := env.audit()
+			if err != nil {
+				return err
+			}
+			if !cmd.Flags().Changed("days") {
+				days = a.Cfg.KernelRetentionDays
+			}
+			if !cmd.Flags().Changed("session-days") {
+				sessionDays = a.Cfg.SessionRetentionDays
+			}
+			if days <= 0 {
+				return fmt.Errorf("kernel retention days must be > 0 (got %d)", days)
+			}
+			if sessionDays < 0 {
+				return fmt.Errorf("session retention days must be >= 0 (got %d)", sessionDays)
+			}
+			if batchSize <= 0 {
+				return fmt.Errorf("batch size must be > 0 (got %d)", batchSize)
+			}
+
+			now := time.Now()
+			cutoff := store.AuditCutoff{KernelEventsBefore: now.AddDate(0, 0, -days)}
+			if sessionDays > 0 {
+				sessionCutoff := now.AddDate(0, 0, -sessionDays)
+				cutoff.SessionsBefore = &sessionCutoff
+			}
+			return adb.Pruning(cmd.Context(), func(st audit.Pruner) error {
+				result, err := st.PruneAudit(cmd.Context(), cutoff, batchSize)
+				if err != nil {
+					return err
+				}
+				ui.Successf(os.Stdout, "pruned %d kernel event(s) and %d session(s)", result.KernelEvents, result.Sessions)
+				return nil
+			})
+		},
+	}
+	cmd.Flags().IntVar(&days, "days", 0, "kernel_event retention in days (default: config)")
+	cmd.Flags().IntVar(&sessionDays, "session-days", 0, "audit_session retention in days; 0 keeps sessions")
+	cmd.Flags().IntVar(&batchSize, "batch-size", 10_000, "rows deleted per transaction")
 	return cmd
 }
 

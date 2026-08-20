@@ -384,7 +384,7 @@ vctl session <cert-serial>          # full kernel timeline for one access
 vctl session <cert-serial> --json   # machine-readable export (e.g. for an agent)
 ```
 
-The collector ingests `process_exec`/`process_exit` from Tetragon; events link to sessions by cgroup id, falling back to cert serial. Retention is enforced by a CronJob that deletes in batches as the table owner over the pod-local socket — not through vctl, so no operator credential carries DELETE on the audit tables. `vctl retention` reports the same numbers read-only, including on-disk footprint. High-volume `kernel_event` rows expire sooner than the small `audit_session` index, mirroring Teleport's storage-lifecycle model.
+The collector ingests `process_exec`/`process_exit` from Tetragon; events link to sessions by cgroup id, falling back to cert serial. Retention is enforced by a CronJob that invokes the hidden `vctl prune` automation command with a dedicated delete-only Vault role, so no human operator credential carries DELETE on the audit tables. `vctl retention` reports the same numbers read-only, including on-disk footprint. High-volume `kernel_event` rows expire sooner than the small `audit_session` index, mirroring Teleport's storage-lifecycle model.
 
 **Only events that link to a session are stored.** A host emits exec/exit for everything it runs, which on a Kubernetes node is overwhelmingly container and kubelet churn: it belongs to no login, nothing back-fills `session_id`, and `vctl session` joins on it, so storing it costs disk and answers nothing. An unlinked event is held for `--attribution-grace` (30s) and retried first, because a login's earliest commands arrive before the session row exists; only after that is it discarded. `--require-session=false` restores full host capture. Both `vctl collect --host` and `vctl watch-sessions --hostname` must record the same inventory name — attribution joins the two on hostname, so pinning one side alone links nothing.
 
@@ -493,7 +493,7 @@ db_role_identity: vctl-identity
 db_role_audit_ro: vctl-audit-ro
 db_role_audit_write: vctl-audit-writer
 db_role_audit_ingest: vctl-audit-ingest
-db_role_prune: vctl-pruner
+db_role_audit_prune: vctl-pruner
 db_role_status: vctl-status
 db_role_migrate: vctl-migrator
 db_migration_owner: vctl_owner

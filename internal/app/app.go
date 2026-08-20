@@ -324,6 +324,7 @@ const (
 	PurposeAuditRead
 	PurposeAuditWrite
 	PurposeAuditIngest
+	PurposeAuditPrune
 	PurposeMigrate
 	purposeCount
 )
@@ -347,6 +348,8 @@ func (a *App) roleFor(p Purpose) (string, error) {
 		return a.Cfg.DBRoleAuditWrite, nil
 	case PurposeAuditIngest:
 		return a.Cfg.DBRoleAuditIngest, nil
+	case PurposeAuditPrune:
+		return a.Cfg.DBRoleAuditPrune, nil
 	case PurposeMigrate:
 		return a.Cfg.DBRoleMigrate, nil
 	default:

@@ -36,6 +36,77 @@ func TestMergeAddresses(t *testing.T) {
 	}
 }
 
+// Sync identifies an existing inventory row by primary IP. If legacy data has
+// duplicates, choosing one with LIMIT 1 corrupts whichever row the planner
+// happened to return; fail closed until a DBA resolves the ambiguity.
+func TestUpsertRejectsAnAmbiguousPrimaryIP(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const ip = "192.0.2.243"
+	for _, host := range []string{"duplicate-ip-a", "duplicate-ip-b"} {
+		_, _ = st.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=$1`, host)
+		ok, err := st.Insert(ctx, Server{Hostname: host, IP: ip, Port: 22, User: "root", DC: "test", CARole: "sre-core"})
+		if err != nil || !ok {
+			t.Fatalf("seed %s: ok=%v err=%v", host, ok, err)
+		}
+		t.Cleanup(func() { _, _ = st.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=$1`, host) })
+	}
+
+	err := st.Upsert(ctx, Server{Hostname: "incoming", IP: ip, Port: 22, DC: "test", CARole: "sre-core"})
+	if err == nil || !strings.Contains(err.Error(), "multiple servers") {
+		t.Fatalf("ambiguous upsert error = %v", err)
+	}
+}
+
+// PostgreSQL INET equality includes the prefix length. Older inventory can
+// therefore contain 192.0.2.10/24 even though vctl treats it as a host address.
+// Keep the indexed host-mask path fast without making those rows disappear from
+// resolution or causing sync to create a duplicate hostname for the same host.
+func TestMaskedINETValuesRemainResolvableAndSyncable(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	host := "masked-inet-host-" + time.Now().Format("150405.000000")
+	incoming := host + "-duplicate"
+	_, _ = st.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=ANY($1::text[])`, []string{host, incoming})
+	t.Cleanup(func() {
+		_, _ = st.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=ANY($1::text[])`, []string{host, incoming})
+	})
+
+	if _, err := st.pool.Exec(ctx, `
+		INSERT INTO servers (hostname, ip, ssh_port, ssh_user, dc, ca_role, extra_ips)
+		VALUES ($1, '192.0.2.244/24'::inet, 22, 'root', 'test', 'sre-core',
+		        ARRAY['198.51.100.244/24'::inet])`, host); err != nil {
+		t.Fatalf("seed masked server: %v", err)
+	}
+	if _, err := st.pool.Exec(ctx, `
+		INSERT INTO server_status (hostname, observed_ips)
+		VALUES ($1, ARRAY['203.0.113.244/24'::inet])`, host); err != nil {
+		t.Fatalf("seed masked status: %v", err)
+	}
+
+	for _, addr := range []string{"192.0.2.244", "198.51.100.244", "203.0.113.244"} {
+		got, candidates, err := st.Resolve(ctx, addr)
+		if err != nil || got == nil || got.Hostname != host || len(candidates) != 0 {
+			t.Fatalf("Resolve(%s) = server=%v candidates=%v err=%v", addr, got, candidates, err)
+		}
+	}
+
+	if err := st.Upsert(ctx, Server{
+		Hostname: incoming, IP: "192.0.2.244", Port: 2222, DC: "test", CARole: "sre-core",
+	}); err != nil {
+		t.Fatalf("Upsert masked primary: %v", err)
+	}
+	var count int
+	if err := st.pool.QueryRow(ctx,
+		`SELECT count(*) FROM servers WHERE hostname=ANY($1::text[])`,
+		[]string{host, incoming}).Scan(&count); err != nil {
+		t.Fatalf("count sync rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("sync created a duplicate for masked primary: count=%d", count)
+	}
+}
+
 func TestOpenLocalRejectsNonLoopbackHost(t *testing.T) {
 	for _, dsn := range []string{
 		"postgres://user:pass@db.example.com/vctl",
@@ -168,9 +239,8 @@ func TestSessionEventRoundTrip(t *testing.T) {
 		t.Fatalf("events linked = %d, want 2", got)
 	}
 
-	// Fixture cleanup, straight to the pool. Retention deletion is not a Store
-	// method any more: it runs in-cluster as the table owner and vctl only reports
-	// on it.
+	// Fixture cleanup is deliberately exact and local to the integration test;
+	// production retention goes through the bounded PruneAudit operation.
 	for _, q := range []string{"DELETE FROM kernel_event", "DELETE FROM audit_session"} {
 		if _, err := st.pool.Exec(ctx, q); err != nil {
 			t.Fatalf("cleanup %q: %v", q, err)

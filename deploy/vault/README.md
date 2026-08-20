@@ -9,6 +9,8 @@ the vctl repo alone — even if Vault state (or the vault-iac repo) is wiped.
 - **`*.hcl`** — the Vault policy definitions, read by `policies.tf`.
 - **`postgres-owner.sh`** — the one step Terraform can't do: create the stable
   Postgres owner role (`vctl_owner`) via psql. Run it once before `apply`.
+- **`postgres-online-indexes.sh`** — builds performance indexes concurrently,
+  outside the transactional application migration. See `DATABASE_OPERATIONS.md`.
 
 > **Criterion:** deploying Vault from *this directory alone* must be enough to
 > **use** vctl — login, ssh, audit, host agents. That is the bar.

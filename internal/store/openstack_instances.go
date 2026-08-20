@@ -66,11 +66,15 @@ func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []In
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	batch := &pgx.Batch{}
+	// done marks the final statement for each VM, so the return value keeps its
+	// old meaning even though all statements cross the network in one batch.
+	var done []bool
 	for _, i := range in {
 		if i.InstanceID == "" {
 			continue
 		}
-		if _, err := tx.Exec(ctx, `
+		batch.Queue(`
 			INSERT INTO openstack_instances
 				(deployment_id, instance_id, project_id, project_name, name, status, power_state, task_state,
 				 availability_zone, hypervisor_hostname, flavor_id, image_id,
@@ -90,36 +94,48 @@ func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []In
 				created_at=EXCLUDED.created_at, updated_at=EXCLUDED.updated_at,
 				observed_at=EXCLUDED.observed_at,
 				-- Coming back clears it, so the column always means "missing now".
-				missing_since=NULL`,
+					missing_since=NULL`,
 			deployment, i.InstanceID, i.ProjectID, i.ProjectName, i.Name, i.Status, i.PowerState, i.TaskState,
 			i.AvailabilityZone, i.HypervisorHostname, i.FlavorID, i.ImageID,
-			i.CreatedAt, i.UpdatedAt, at); err != nil {
-			return 0, err
-		}
+			i.CreatedAt, i.UpdatedAt, at)
+		done = append(done, false)
 		// Addresses are replaced wholesale rather than merged: a VM that loses a
 		// floating IP has to lose the row, and there is no key to diff on that
 		// the address itself does not already provide.
-		if _, err := tx.Exec(ctx,
+		batch.Queue(
 			`DELETE FROM openstack_instance_addresses WHERE deployment_id=$1 AND instance_id=$2`,
-			deployment, i.InstanceID); err != nil {
-			return 0, err
-		}
+			deployment, i.InstanceID)
+		done = append(done, false)
 		for _, a := range i.Addresses {
 			if a.Address == "" {
 				continue
 			}
-			if _, err := tx.Exec(ctx, `
+			batch.Queue(`
 				INSERT INTO openstack_instance_addresses
 					(deployment_id, instance_id, network_name, address, address_type, ip_version)
 				VALUES ($1,$2,$3,$4,$5,$6)
 				ON CONFLICT (deployment_id, instance_id, address) DO UPDATE SET
 					network_name=EXCLUDED.network_name, address_type=EXCLUDED.address_type,
 					ip_version=EXCLUDED.ip_version`,
-				deployment, i.InstanceID, a.NetworkName, a.Address, a.Type, a.IPVersion); err != nil {
-				return 0, err
+				deployment, i.InstanceID, a.NetworkName, a.Address, a.Type, a.IPVersion)
+			done = append(done, false)
+		}
+		done[len(done)-1] = true
+	}
+	if len(done) > 0 {
+		results := tx.SendBatch(ctx, batch)
+		for _, completesInstance := range done {
+			if _, err := results.Exec(); err != nil {
+				_ = results.Close()
+				return seen, err
+			}
+			if completesInstance {
+				seen++
 			}
 		}
-		seen++
+		if err := results.Close(); err != nil {
+			return seen, err
+		}
 	}
 
 	// Anything this deployment had and did not list now. First absence stamps
