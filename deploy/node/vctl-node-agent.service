@@ -30,6 +30,31 @@ Environment=GOMAXPROCS=2
 ExecStart=/usr/local/bin/vctl node-agent --interval 5m
 Restart=always
 RestartSec=30
+# Restart the agent when its loop stops going round.
+#
+# Restart=always already covers the agent exiting. It does not cover the agent
+# staying up and doing nothing, and that is the failure this fleet actually had:
+# a container runtime leaked 16,383 mounts on one host, /proc/self/mountinfo
+# reached 2.8MB, and something in the process re-read it forever. The unit sat at
+# `active (running)`, pegged at CPUQuota=2%, and reported nothing for 57 days.
+# From systemd's side that is indistinguishable from an idle agent.
+#
+# The agent pings once per report, inside the loop rather than from a goroutine
+# of its own — a separate pinger would keep answering while the loop is wedged,
+# which is the state worth catching.
+#
+# 20m against --interval 5m is three missed reports of headroom. Tight enough to
+# catch a hang the same hour, loose enough that a slow Vault or a long DB
+# handshake does not restart a working agent. Raising --interval without raising
+# this turns the agent into a restart loop; it warns at startup when the two
+# cross, because they live in different files.
+#
+# NotifyAccess is required: it defaults to none for a non-notify service, and
+# without it systemd discards the ping and kills the agent every 20 minutes.
+# Type stays simple — READY=1 is never sent, so making this Type=notify would
+# hang startup instead.
+WatchdogSec=20m
+NotifyAccess=main
 User=root
 StateDirectory=vctl
 StateDirectoryMode=0700
