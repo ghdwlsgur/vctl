@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -515,8 +516,33 @@ func (c *conn) closeLocked() {
 // first after a failure. A daemon that logs every successful heartbeat writes
 // 288 lines a day per host to say nothing happened, and the failures worth
 // reading get buried in them.
+// slowCollect is when gathering the status is worth complaining about.
+//
+// Collection reads a handful of small files under /proc and finishes in
+// milliseconds. Seconds means one of those files is not small any more — the
+// host that prompted this had a 2.8MB mount table.
+//
+// The number exists because the last time this went wrong there were no
+// application logs at all — the agent burned a core for 57 days and the journal
+// held nothing but systemd's own start lines, so the diagnosis went to strace.
+// One line here would have said where to look.
+const slowCollect = 2 * time.Second
+
 func reportStatus(ctx context.Context, st Sink, hostname, version string, healthy *bool, log logger) error {
+	// Collection only, and deliberately. The cycle also includes the write that
+	// carries this number, so a total would have to describe itself — the row
+	// would always say zero. Collection is the half that reads /proc, which is
+	// the half that got expensive.
+	started := time.Now()
 	status := hoststatus.Collect(hostname, version)
+	took := time.Since(started)
+	ms := int(took.Milliseconds())
+	status.CollectMs = &ms
+	if took >= slowCollect {
+		log.warnf("gathering status took %s (usually milliseconds); mount table has %s entries",
+			took.Round(time.Millisecond), mountsFor(status))
+	}
+
 	ok, err := st.UpsertServerStatus(ctx, status)
 	if err != nil {
 		*healthy = false
@@ -534,4 +560,13 @@ func reportStatus(ctx context.Context, st Sink, hostname, version string, health
 		*healthy = true
 	}
 	return nil
+}
+
+// mountsFor renders the mount count for the slow-cycle warning, saying so when
+// nothing measured it rather than printing a zero that reads like a fact.
+func mountsFor(st store.ServerStatus) string {
+	if st.MountCount == nil {
+		return "an unknown number of"
+	}
+	return strconv.Itoa(*st.MountCount)
 }

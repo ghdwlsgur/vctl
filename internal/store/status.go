@@ -21,6 +21,16 @@ type ServerStatus struct {
 	MemoryUsedPct   *float64
 	DiskRootUsedPct *float64
 	ObservedIPs     []string // non-loopback IPv4 the agent sees on the host's NICs
+
+	// MountCount is how many entries the host's mount table has, and CollectMs is
+	// how long gathering it took. Both are about the agent
+	// rather than the host — see migration 026.
+	//
+	// Pointers because absent and zero are different answers. An agent that
+	// predates these columns has measured nothing; a host can genuinely report
+	// zero. A dashboard that cannot tell them apart is quietly wrong.
+	MountCount *int
+	CollectMs  *int
 }
 
 // ServerWithStatus combines operator-managed inventory with observed runtime state.
@@ -56,9 +66,9 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO server_status
 			(hostname, last_seen_at, agent_version, os, kernel, uptime_seconds, load1,
-			 memory_used_pct, disk_root_used_pct, observed_ips, updated_at)
+			 memory_used_pct, disk_root_used_pct, observed_ips, mount_count, collect_ms, updated_at)
 		SELECT $1, now(), NULLIF($2,''), NULLIF($3,''), NULLIF($4,''), NULLIF($5::bigint,0), $6,
-		       $7, $8, coalesce($9::inet[],'{}'), now()
+		       $7, $8, coalesce($9::inet[],'{}'), $10, $11, now()
 		WHERE EXISTS (SELECT 1 FROM servers WHERE hostname=$1)
 		ON CONFLICT (hostname) DO UPDATE SET
 			last_seen_at=EXCLUDED.last_seen_at,
@@ -70,9 +80,14 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 			memory_used_pct=EXCLUDED.memory_used_pct,
 			disk_root_used_pct=EXCLUDED.disk_root_used_pct,
 			observed_ips=EXCLUDED.observed_ips,
+			-- coalesce, not EXCLUDED. An older agent sends NULL for these, and
+			-- overwriting a real measurement with its silence would make a
+			-- half-upgraded fleet look like it had stopped measuring.
+			mount_count=coalesce(EXCLUDED.mount_count, server_status.mount_count),
+			collect_ms=coalesce(EXCLUDED.collect_ms, server_status.collect_ms),
 			updated_at=now()`,
 		st.Hostname, st.AgentVersion, st.OS, st.Kernel, st.UptimeSeconds, st.Load1,
-		st.MemoryUsedPct, st.DiskRootUsedPct, st.ObservedIPs)
+		st.MemoryUsedPct, st.DiskRootUsedPct, st.ObservedIPs, st.MountCount, st.CollectMs)
 	if err != nil {
 		return false, err
 	}
@@ -83,7 +98,8 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStatus, error) {
 	q := `SELECT ` + prefixedSelectCols("srv") + `,
 		       coalesce(ss.hostname,''), ss.last_seen_at, coalesce(ss.agent_version,''), coalesce(ss.os,''), coalesce(ss.kernel,''),
-		       coalesce(ss.uptime_seconds,0), ss.load1, ss.memory_used_pct, ss.disk_root_used_pct, ` + ipArrayCol("ss.observed_ips") + `
+		       coalesce(ss.uptime_seconds,0), ss.load1, ss.memory_used_pct, ss.disk_root_used_pct, ` + ipArrayCol("ss.observed_ips") + `,
+		       ss.mount_count, ss.collect_ms
 		FROM servers srv
 		LEFT JOIN server_status ss ON ss.hostname = srv.hostname`
 	var args []any
@@ -103,11 +119,13 @@ func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStat
 		var st ServerStatus
 		var lastSeen sql.NullTime
 		var load1, memoryUsed, diskUsed sql.NullFloat64
+		var mountCount, collectMs sql.NullInt32
 		var observedIPs []string
 		err := r.Scan(&item.Hostname, &item.IP, &item.Port, &item.User, &item.JumpVia, &item.DC, &item.CARole,
 			&item.CAKeyVersion, &item.LastSeenUp, &item.ExtraIPs, &item.State,
 			&statusHost, &lastSeen, &st.AgentVersion, &st.OS, &st.Kernel,
-			&st.UptimeSeconds, &load1, &memoryUsed, &diskUsed, &observedIPs)
+			&st.UptimeSeconds, &load1, &memoryUsed, &diskUsed, &observedIPs,
+			&mountCount, &collectMs)
 		if err != nil {
 			return item, err
 		}
@@ -120,6 +138,8 @@ func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStat
 			st.MemoryUsedPct = nullFloatPtr(memoryUsed)
 			st.DiskRootUsedPct = nullFloatPtr(diskUsed)
 			st.ObservedIPs = observedIPs
+			st.MountCount = nullInt32Ptr(mountCount)
+			st.CollectMs = nullInt32Ptr(collectMs)
 			item.Status = &st
 		}
 		return item, nil
@@ -138,4 +158,14 @@ func prefixedSelectCols(alias string) string {
 	return p + "hostname, host(" + p + "ip), " + p + "ssh_port, " + p + "ssh_user, coalesce(" + p + "jump_via,''), " +
 		p + "dc, " + p + "ca_role, " + p + "ca_key_version, " + p + "last_seen_up, " + extraIPsCol(p) +
 		", coalesce(" + p + "state,'active')"
+}
+
+// nullInt32Ptr keeps "not measured" distinct from "measured zero" — see
+// ServerStatus.MountCount.
+func nullInt32Ptr(v sql.NullInt32) *int {
+	if !v.Valid {
+		return nil
+	}
+	n := int(v.Int32)
+	return &n
 }

@@ -116,3 +116,84 @@ func imageTag(ref string) string {
 	}
 	return ""
 }
+
+// versionEndpoint is the Docker-compatible version report. Podman serves it too,
+// and its Components carry the OCI runtime — which is the field worth having.
+const versionEndpoint = "http://localhost/version"
+
+// apiVersion is the part of the response worth reading.
+type apiVersion struct {
+	Version    string `json:"Version"`
+	Components []struct {
+		Name    string `json:"Name"`
+		Version string `json:"Version"`
+	} `json:"Components"`
+}
+
+// engineVersions asks one engine's socket what it and its OCI runtime are.
+//
+// This exists because a runtime version was the whole cause of a real incident
+// and nothing in the fleet recorded it. One host ran crun 1.23.1 while the rest
+// ran 1.27; the old one leaked 16,383 mount entries into the host's mount table
+// and the agent on it burned a core reading /proc/self/mountinfo for 57 days.
+// The two hosts were otherwise identical — same distro family, same Kolla
+// containers, same shared-propagation bind mounts. Finding it meant logging into
+// both and running rpm -q by hand.
+//
+// Recorded as capability components, beside nova-compute and libvirt, because it
+// is the same kind of fact: a version this deployment is running that somebody
+// will eventually need to compare across hosts.
+//
+// Best effort. A socket that answers the container listing but not this is a
+// version we do not learn, not a probe that failed — the listing is what the
+// capability is actually built from.
+func engineVersions(ctx context.Context, socket string) map[string]string {
+	client := &http.Client{
+		Timeout: socketTimeout,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+			},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, versionEndpoint, nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var v apiVersion
+	// 256KB: this response is a few hundred bytes and the process is capped at 48M.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 256<<10)).Decode(&v); err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	if v.Version != "" {
+		out["engine"] = v.Version
+	}
+	for _, c := range v.Components {
+		// Podman spells it "OCI Runtime (crun)"; Docker reports "runc" as its
+		// own component. Key on the role rather than the implementation so the
+		// two are comparable across a mixed fleet.
+		n := strings.ToLower(c.Name)
+		switch {
+		case strings.Contains(n, "oci runtime"), n == "runc", n == "crun":
+			if c.Version != "" {
+				out["oci-runtime"] = c.Version
+				// The implementation is worth keeping too: crun and runc are
+				// not interchangeable and their version numbers are unrelated.
+				out["oci-runtime-name"] = strings.TrimSpace(c.Name)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
