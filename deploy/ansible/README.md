@@ -110,6 +110,8 @@ directory and read the diff before restarting anything.
 - The release **linux binary** placed at `files/vctl` (gitignored):
   `gh release download vX.Y.Z -p 'vctl_*_linux_amd64.tar.gz' && tar -xzf … -C files/`
   (or switch the play to install the `.deb`/`.rpm` from the release).
+  Set `vctl_host_bin_sha256` from the release `checksums.txt`; the role verifies
+  the installed bytes before restarting any daemon.
 - The current Vault SSH CA **public key** placed at `files/vault-ca.pub`
   (gitignored). Verify its fingerprint through a trusted channel before running
   `trust-vault-ssh-ca.yml`.
@@ -140,13 +142,18 @@ ansible-playbook -i inventory.ini site.yml -l k8s_nodes -e vctl_host_install_tet
 ansible-playbook -i inventory.ini site.yml -l <host> -e vctl_host_state=absent
 ```
 
+`site.yml` advances in 20% waves and stops on the first failed host. Override
+with `-e vctl_rollout_serial=1` for a strict one-host canary. Every enabled
+service must pass `systemctl is-active` after its handlers run.
+
 `vctl_host_enable_services` stays effectively gated on the `secret_id` being present, so a
 host never crash-loops before its credential is in place. node-agent and
 watch-sessions do **not** need Tetragon; only the collector does.
 
 SSH host-key checking is enabled. Populate the control user's `known_hosts`
-through a trusted channel before onboarding a server. Re-run the play at least
-every 21 days so the 30-day AppRole secret ID rotates before expiry.
+through a trusted channel before onboarding a server. Re-run the play regularly.
+Secret IDs no longer expire silently, but the role rotates them after 21 days
+to bound the lifetime of a leaked credential.
 
 > Keep real inventories and `files/` (binary, secret_id, CA pubkey) out of git —
 > see `.gitignore`. Only `inventory.example.ini` is committed.

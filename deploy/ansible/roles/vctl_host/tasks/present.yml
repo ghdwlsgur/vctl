@@ -9,6 +9,20 @@
     mode: "0755"
   notify: Restart vctl services # new binary only applies after a restart
 
+- name: Verify installed vctl binary checksum
+  when: vctl_host_require_binary_checksum | bool
+  ansible.builtin.stat:
+    path: "{{ vctl_host_bin_dest }}"
+    checksum_algorithm: sha256
+  register: vctl_host_installed_binary
+
+- name: Require the expected vctl binary checksum
+  when: vctl_host_require_binary_checksum | bool
+  ansible.builtin.assert:
+    that:
+      - vctl_host_installed_binary.stat.checksum == vctl_host_bin_sha256
+    fail_msg: "Installed vctl binary checksum does not match the release checksum"
+
 # --- DNS: host resolves vault/vctl-postgres .sre.local via the network's LB ---
 - name: Resolve *.sre.local to the LB (audit daemons reach Vault/Postgres)
   ansible.builtin.blockinfile:
@@ -219,6 +233,11 @@
 - name: Install Tetragon (bare VM)
   when: vctl_host_install_tetragon | bool
   block:
+    - name: Require a supported Tetragon architecture
+      ansible.builtin.assert:
+        that:
+          - vctl_host_tetragon_arch | length > 0
+        fail_msg: "Unsupported Tetragon architecture: {{ ansible_architecture }}"
     # Root-only stage dir (not /tmp) — no multiuser race on the root-run tarball.
     - name: Stage dir for Tetragon
       ansible.builtin.file:
@@ -243,7 +262,7 @@
     - name: Run Tetragon installer (systemd)
       ansible.builtin.command: ./install.sh
       args:
-        chdir: "/opt/vctl/tetragon-stage/tetragon-{{ vctl_host_tetragon_version }}-amd64"
+        chdir: "/opt/vctl/tetragon-stage/tetragon-{{ vctl_host_tetragon_version }}-{{ vctl_host_tetragon_arch }}"
         creates: /usr/lib/systemd/system/tetragon.service
     - name: Ensure tracingpolicy dir
       ansible.builtin.file:
@@ -360,6 +379,19 @@
     enabled: true
     state: started
     daemon_reload: true
+  loop: "{{ vctl_host_services }}"
+
+- name: Apply pending unit and binary handlers before health checks
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify enabled vctl services are healthy
+  when: vctl_host_enable_services | bool and (vctl_host_secret_id.stat.exists | default(false))
+  ansible.builtin.command: "systemctl is-active {{ item }}"
+  register: vctl_host_service_health
+  changed_when: false
+  retries: "{{ vctl_host_health_retries | int }}"
+  delay: "{{ vctl_host_health_delay | int }}"
+  until: vctl_host_service_health.rc == 0
   loop: "{{ vctl_host_services }}"
 
 - name: Keep collector stopped when not requested (no Tetragon / node-only)

@@ -36,10 +36,10 @@ row count.
 
 ## OpenStack missing-instance retention
 
-`openstack_instances.missing_since` is an incident record, so vctl does not
-guess a deletion period. The online index `idx_openstack_instances_missing`
-makes a bounded archive job possible. Until the SRE team sets a retention
-policy, alert on both rows and bytes:
+`openstack_instances.missing_since` is retained for 180 days for incident
+review. The hidden `openstack-prune-missing` automation command deletes older
+rows in bounded transactions using the dedicated `vctl-openstack-pruner` role;
+address rows follow through the cascading foreign key. Monitor rows and bytes:
 
 ```sql
 SELECT count(*) AS missing_rows,
@@ -50,9 +50,9 @@ FROM openstack_instances
 WHERE missing_since IS NOT NULL;
 ```
 
-Choose the archive/delete horizon from the incident-retention requirement, not
-from current disk pressure. A future job should delete by indexed
-`missing_since` in bounded batches, like audit pruning.
+Change the horizon only through the GitOps CronJob and the matching
+`openstack_missing_retention_days` config. Do not shorten it in response to
+temporary disk pressure without changing the incident-retention requirement.
 
 ## `kernel_event` partition conversion
 

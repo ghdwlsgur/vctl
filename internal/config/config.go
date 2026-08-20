@@ -41,21 +41,22 @@ type Config struct {
 	OIDCRole   string `yaml:"oidc_role"`   // Vault OIDC role (phase 2)
 	OIDCMount  string `yaml:"oidc_mount"`  // Vault OIDC auth mount path
 
-	DBHost            string `yaml:"db_host"`
-	DBServerName      string `yaml:"db_server_name"` // TLS SNI override; defaults to DBHost. Use for port-forward/proxy where dial host != cert name.
-	DBPort            int    `yaml:"db_port"`
-	DBName            string `yaml:"db_name"`
-	DBRoleRO          string `yaml:"db_role_ro"`           // database/creds/<ro> for read paths
-	DBRoleRW          string `yaml:"db_role_rw"`           // database/creds/<rw> for sync/admin paths
-	DBRoleIdentity    string `yaml:"db_role_identity"`     // seen_users upsert during login
-	DBRoleAuditRO     string `yaml:"db_role_audit_ro"`     // access/session/kernel audit reads
-	DBRoleAuditWrite  string `yaml:"db_role_audit_write"`  // append-only SSH access records
-	DBRoleAuditIngest string `yaml:"db_role_audit_ingest"` // host collector/session lifecycle
-	DBRoleAuditPrune  string `yaml:"db_role_audit_prune"`  // retention job: audit deletes only
-	DBRoleStatus      string `yaml:"db_role_status"`       // database/creds/<status> for node-agent status updates
-	DBRoleMigrate     string `yaml:"db_role_migrate"`      // database/creds/<migrator> for schema changes
-	DBMigrationOwner  string `yaml:"db_migration_owner"`   // stable owner role for migration objects
-	LocalDBDSN        string `yaml:"-"`                    // dev/test only; env-only loopback DSN
+	DBHost               string `yaml:"db_host"`
+	DBServerName         string `yaml:"db_server_name"` // TLS SNI override; defaults to DBHost. Use for port-forward/proxy where dial host != cert name.
+	DBPort               int    `yaml:"db_port"`
+	DBName               string `yaml:"db_name"`
+	DBRoleRO             string `yaml:"db_role_ro"`              // database/creds/<ro> for read paths
+	DBRoleRW             string `yaml:"db_role_rw"`              // database/creds/<rw> for sync/admin paths
+	DBRoleIdentity       string `yaml:"db_role_identity"`        // seen_users upsert during login
+	DBRoleAuditRO        string `yaml:"db_role_audit_ro"`        // access/session/kernel audit reads
+	DBRoleAuditWrite     string `yaml:"db_role_audit_write"`     // append-only SSH access records
+	DBRoleAuditIngest    string `yaml:"db_role_audit_ingest"`    // host collector/session lifecycle
+	DBRoleAuditPrune     string `yaml:"db_role_audit_prune"`     // retention job: audit deletes only
+	DBRoleOpenStackPrune string `yaml:"db_role_openstack_prune"` // deleted-VM history retention only
+	DBRoleStatus         string `yaml:"db_role_status"`          // database/creds/<status> for node-agent status updates
+	DBRoleMigrate        string `yaml:"db_role_migrate"`         // database/creds/<migrator> for schema changes
+	DBMigrationOwner     string `yaml:"db_migration_owner"`      // stable owner role for migration objects
+	LocalDBDSN           string `yaml:"-"`                       // dev/test only; env-only loopback DSN
 
 	// Kernel-audit retention. Raw kernel_event rows are high-volume; sessions are
 	// small metadata kept much longer as the dataset index. Deletion is delegated
@@ -73,8 +74,10 @@ type Config struct {
 	// takes effect, and this one only decides what gets reported. While this said 90
 	// and the job said 14, the report described a horizon nothing enforced. Raising it
 	// here without raising the volume re-arms the outage.
-	KernelRetentionDays  int `yaml:"kernel_retention_days"`  // kernel_event horizon reported/enforced
-	SessionRetentionDays int `yaml:"session_retention_days"` // audit_session horizon (0 = keep forever)
+	KernelRetentionDays           int `yaml:"kernel_retention_days"`            // kernel_event horizon reported/enforced
+	SessionRetentionDays          int `yaml:"session_retention_days"`           // audit_session horizon (0 = keep forever)
+	AccessRetentionDays           int `yaml:"access_retention_days"`            // access_log horizon; must outlive sessions
+	OpenStackMissingRetentionDays int `yaml:"openstack_missing_retention_days"` // missing VM history horizon
 
 	// Local inventory cache. A snapshot under StateDir keeps host lookup working
 	// while Postgres is unreachable; see internal/invcache. Writes are unaffected
@@ -189,6 +192,7 @@ func (c *Config) applyEnv() {
 	envStr(&c.DBRoleAuditWrite, "VCTL_DB_ROLE_AUDIT_WRITE")
 	envStr(&c.DBRoleAuditIngest, "VCTL_DB_ROLE_AUDIT_INGEST")
 	envStr(&c.DBRoleAuditPrune, "VCTL_DB_ROLE_AUDIT_PRUNE")
+	envStr(&c.DBRoleOpenStackPrune, "VCTL_DB_ROLE_OPENSTACK_PRUNE")
 	envStr(&c.DBRoleStatus, "VCTL_DB_ROLE_STATUS") // VCTL-only
 	envStrPair(&c.DBRoleMigrate, "DB_ROLE_MIGRATE")
 	envStrPair(&c.DBMigrationOwner, "DB_MIGRATION_OWNER")
@@ -199,6 +203,8 @@ func (c *Config) applyEnv() {
 	envStr(&c.CacheMaxAge, "VCTL_CACHE_MAX_AGE")                   // VCTL-only
 	envInt(&c.KernelRetentionDays, "VCTL_KERNEL_RETENTION_DAYS")   // VCTL-only
 	envInt(&c.SessionRetentionDays, "VCTL_SESSION_RETENTION_DAYS") // VCTL-only
+	envInt(&c.AccessRetentionDays, "VCTL_ACCESS_RETENTION_DAYS")   // VCTL-only
+	envInt(&c.OpenStackMissingRetentionDays, "VCTL_OPENSTACK_MISSING_RETENTION_DAYS")
 	envStrPair(&c.CARole, "CA_ROLE")
 	envBool(&c.SSHDirectFirst, "VCTL_SSH_DIRECT_FIRST") // VCTL-only
 	envStrPair(&c.SSHDefaultUser, "SSH_DEFAULT_USER")

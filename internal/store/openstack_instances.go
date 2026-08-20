@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -158,6 +159,37 @@ func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []In
 		}
 	}
 	return seen, tx.Commit(ctx)
+}
+
+// PruneMissingOpenStackInstances removes deleted-VM history older than before
+// in bounded transactions. Address rows follow through the existing cascading
+// foreign key. Active instances are never candidates.
+func (s *Store) PruneMissingOpenStackInstances(ctx context.Context, before time.Time, batchSize int) (int64, error) {
+	if before.IsZero() {
+		return 0, fmt.Errorf("missing-instance cutoff is required")
+	}
+	if batchSize <= 0 {
+		batchSize = 5_000
+	}
+	var total int64
+	for {
+		tag, err := s.pool.Exec(ctx, `
+			WITH doomed AS (
+				SELECT deployment_id, instance_id FROM openstack_instances
+				WHERE missing_since < $1
+				ORDER BY missing_since LIMIT $2
+			)
+			DELETE FROM openstack_instances i USING doomed d
+			WHERE i.deployment_id=d.deployment_id AND i.instance_id=d.instance_id`, before, batchSize)
+		if err != nil {
+			return total, err
+		}
+		n := tag.RowsAffected()
+		total += n
+		if n < int64(batchSize) {
+			return total, nil
+		}
+	}
 }
 
 // InstanceFilter narrows a listing.

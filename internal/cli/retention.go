@@ -27,6 +27,7 @@ func retentionCmd(env CommandEnv) *cobra.Command {
 	var (
 		days        int
 		sessionDays int
+		accessDays  int
 	)
 	cmd := &cobra.Command{
 		Use:   "retention",
@@ -57,6 +58,9 @@ Horizons default to config (kernel_retention_days / session_retention_days).
 				if !cmd.Flags().Changed("session-days") {
 					sessionDays = a.Cfg.SessionRetentionDays
 				}
+				if !cmd.Flags().Changed("access-days") {
+					accessDays = a.Cfg.AccessRetentionDays
+				}
 				if days <= 0 {
 					return fmt.Errorf("kernel retention days must be > 0 (got %d); set --days or kernel_retention_days", days)
 				}
@@ -81,6 +85,16 @@ Horizons default to config (kernel_retention_days / session_retention_days).
 				} else {
 					ui.Infof(os.Stderr, "audit_session: retention disabled (session_retention_days = 0)")
 				}
+				if accessDays > 0 {
+					accessCut := now.AddDate(0, 0, -accessDays)
+					na, err := st.CountAccessLogsBefore(ctx, accessCut)
+					if err != nil {
+						return err
+					}
+					ui.Infof(os.Stderr, "access_log: %d rows older than %s (%dd horizon)", na, accessCut.Format("2006-01-02"), accessDays)
+				} else {
+					ui.Infof(os.Stderr, "access_log: retention disabled (access_retention_days = 0)")
+				}
 
 				fp, err := st.AuditFootprint(ctx)
 				if err != nil {
@@ -92,6 +106,7 @@ Horizons default to config (kernel_retention_days / session_retention_days).
 	}
 	cmd.Flags().IntVar(&days, "days", 0, "kernel_event horizon in days to report against (default: config)")
 	cmd.Flags().IntVar(&sessionDays, "session-days", 0, "audit_session horizon in days; 0 reports retention as disabled")
+	cmd.Flags().IntVar(&accessDays, "access-days", 0, "access_log horizon in days; 0 reports retention as disabled")
 	return cmd
 }
 
@@ -100,7 +115,7 @@ Horizons default to config (kernel_retention_days / session_retention_days).
 // the delete-only database role; operators use `vctl retention` to inspect and
 // Kubernetes to trigger this job off schedule.
 func pruneCmd(env CommandEnv) *cobra.Command {
-	var days, sessionDays, batchSize int
+	var days, sessionDays, accessDays, batchSize int
 	cmd := &cobra.Command{
 		Use:    "prune",
 		Hidden: true,
@@ -116,11 +131,23 @@ func pruneCmd(env CommandEnv) *cobra.Command {
 			if !cmd.Flags().Changed("session-days") {
 				sessionDays = a.Cfg.SessionRetentionDays
 			}
+			if !cmd.Flags().Changed("access-days") {
+				accessDays = a.Cfg.AccessRetentionDays
+			}
 			if days <= 0 {
 				return fmt.Errorf("kernel retention days must be > 0 (got %d)", days)
 			}
 			if sessionDays < 0 {
 				return fmt.Errorf("session retention days must be >= 0 (got %d)", sessionDays)
+			}
+			if accessDays < 0 {
+				return fmt.Errorf("access retention days must be >= 0 (got %d)", accessDays)
+			}
+			if accessDays > 0 && sessionDays == 0 {
+				return fmt.Errorf("access logs cannot expire while sessions are retained forever")
+			}
+			if accessDays > 0 && sessionDays > 0 && accessDays <= sessionDays {
+				return fmt.Errorf("access retention days (%d) must exceed session retention days (%d) to preserve session attribution", accessDays, sessionDays)
 			}
 			if batchSize <= 0 {
 				return fmt.Errorf("batch size must be > 0 (got %d)", batchSize)
@@ -132,18 +159,23 @@ func pruneCmd(env CommandEnv) *cobra.Command {
 				sessionCutoff := now.AddDate(0, 0, -sessionDays)
 				cutoff.SessionsBefore = &sessionCutoff
 			}
+			if accessDays > 0 {
+				accessCutoff := now.AddDate(0, 0, -accessDays)
+				cutoff.AccessLogsBefore = &accessCutoff
+			}
 			return adb.Pruning(cmd.Context(), func(st audit.Pruner) error {
 				result, err := st.PruneAudit(cmd.Context(), cutoff, batchSize)
 				if err != nil {
 					return err
 				}
-				ui.Successf(os.Stdout, "pruned %d kernel event(s) and %d session(s)", result.KernelEvents, result.Sessions)
+				ui.Successf(os.Stdout, "pruned %d kernel event(s), %d session(s), and %d access log(s)", result.KernelEvents, result.Sessions, result.AccessLogs)
 				return nil
 			})
 		},
 	}
 	cmd.Flags().IntVar(&days, "days", 0, "kernel_event retention in days (default: config)")
 	cmd.Flags().IntVar(&sessionDays, "session-days", 0, "audit_session retention in days; 0 keeps sessions")
+	cmd.Flags().IntVar(&accessDays, "access-days", 0, "access_log retention in days; 0 keeps access logs")
 	cmd.Flags().IntVar(&batchSize, "batch-size", 10_000, "rows deleted per transaction")
 	return cmd
 }

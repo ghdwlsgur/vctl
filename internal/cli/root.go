@@ -110,6 +110,7 @@ Secrets are not stored in inventory. Tokens are renewed before expiry, and Vault
 		sessionCmd(env), sessionStartCmd(env), collectCmd(env),
 		gate(retentionCmd(env), "retention", classRead),
 		pruneCmd(env),
+		openStackPruneCmd(env),
 		watchSessionsCmd(env), nodeAgentCmd(env),
 		rbacCmd(env), mcpCmd(env), cacheCmd(env),
 	)

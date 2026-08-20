@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/authz"
+	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -113,6 +115,33 @@ func TestPruneIsAHiddenAutomationCommand(t *testing.T) {
 	}
 }
 
+func TestOpenStackPruneIsAHiddenAutomationCommand(t *testing.T) {
+	cmd := findCmd(NewRoot(Dependencies{}), "openstack-prune-missing")
+	if cmd == nil {
+		t.Fatal("the OpenStack retention CronJob has no prune command to invoke")
+	}
+	if !cmd.Hidden {
+		t.Fatal("openstack-prune-missing is visible in operator help")
+	}
+	if _, ok := authz.ClassOf("openstack-prune-missing"); ok {
+		t.Fatal("the database-role-only OpenStack prune command was added to human app RBAC")
+	}
+}
+
+func TestPruneRejectsAccessRetentionWhenSessionsAreKeptForever(t *testing.T) {
+	cmd := pruneCmd(CommandEnv{NewApp: func() (*app.App, error) {
+		return &app.App{Cfg: &config.Config{
+			KernelRetentionDays: 14,
+			AccessRetentionDays: 1095,
+		}}, nil
+	}})
+	cmd.SetArgs(nil)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "sessions are retained forever") {
+		t.Fatalf("prune error = %v, want permanent-session attribution guard", err)
+	}
+}
+
 func TestPruneCronJobUsesTheAutomationCommandAndCurrentRetentionContract(t *testing.T) {
 	b, err := os.ReadFile("../../deploy/audit/prune-cronjob.yaml")
 	if err != nil {
@@ -123,6 +152,9 @@ func TestPruneCronJobUsesTheAutomationCommandAndCurrentRetentionContract(t *test
 		`args: ["prune", "--batch-size=5000"]`,
 		"VCTL_KERNEL_RETENTION_DAYS",
 		"VCTL_SESSION_RETENTION_DAYS",
+		"VCTL_ACCESS_RETENTION_DAYS",
+		"VCTL_AUTH_METHOD",
+		"VCTL_KUBERNETES_ROLE",
 	} {
 		if !strings.Contains(manifest, want) {
 			t.Errorf("prune CronJob is missing %q", want)
@@ -131,6 +163,9 @@ func TestPruneCronJobUsesTheAutomationCommandAndCurrentRetentionContract(t *test
 	if strings.Contains(manifest, "v0.1.14") {
 		t.Error("prune CronJob still pins the obsolete image")
 	}
+	if strings.Contains(manifest, "vctl-prune-approle") || strings.Contains(manifest, "pods/exec") {
+		t.Error("prune CronJob retains the old static-secret or pod-exec privilege path")
+	}
 
 	policy, err := os.ReadFile("../../deploy/vault/vctl-pruner.hcl")
 	if err != nil {
@@ -138,5 +173,12 @@ func TestPruneCronJobUsesTheAutomationCommandAndCurrentRetentionContract(t *test
 	}
 	if !strings.Contains(string(policy), `path "database/creds/vctl-pruner"`) {
 		t.Error("pruner AppRole cannot obtain its delete-only database credential")
+	}
+	groups, err := os.ReadFile("../../deploy/vault/postgres-groups.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(groups), "GRANT SELECT,DELETE ON access_log, audit_session, kernel_event TO vctl_pruner") {
+		t.Error("pruner database role does not cover the full retention contract")
 	}
 }

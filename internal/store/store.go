@@ -84,6 +84,16 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// Workload describes the concurrency a caller can actually use. Long-running
+// heartbeat/collector loops are serial and must not reserve the same pool fanout
+// as interactive commands that issue independent queries.
+type Workload int
+
+const (
+	WorkloadInteractive Workload = iota
+	WorkloadSerial
+)
+
 // Pool tuning is bounded by two facts outside this package, both recorded here
 // so the test can enforce them.
 const (
@@ -136,7 +146,14 @@ func MaxConnAge() time.Duration {
 }
 
 func tunePool(cfg *pgxpool.Config) {
+	tunePoolFor(cfg, WorkloadInteractive)
+}
+
+func tunePoolFor(cfg *pgxpool.Config, workload Workload) {
 	cfg.MaxConns = 4
+	if workload == WorkloadSerial {
+		cfg.MaxConns = 1
+	}
 	// Recycling a connection no longer implies issuing a credential — see
 	// internal/dbcreds — so the lifetime is set for connection hygiene rather
 	// than pushed as close to the lease as it will safely go. Staying well
@@ -157,6 +174,12 @@ func tunePool(cfg *pgxpool.Config) {
 // Use serverName when dialing through a port-forward/proxy where the dial host
 // (e.g. 127.0.0.1) differs from the certificate's DNS name.
 func Open(ctx context.Context, host string, port int, dbname string, getCreds CredsFunc, serverName string, caPEM []byte) (*Store, error) {
+	return OpenFor(ctx, host, port, dbname, getCreds, serverName, caPEM, WorkloadInteractive)
+}
+
+// OpenFor opens the inventory using a pool sized for the caller's real
+// concurrency. WorkloadSerial keeps each fleet daemon at one DB connection.
+func OpenFor(ctx context.Context, host string, port int, dbname string, getCreds CredsFunc, serverName string, caPEM []byte, workload Workload) (*Store, error) {
 	// No userinfo in the DSN: credentials are injected per-connection by
 	// BeforeConnect so the pool can refresh them as dynamic leases roll over.
 	//
@@ -189,7 +212,7 @@ func Open(ctx context.Context, host string, port int, dbname string, getCreds Cr
 	// therefore cannot vouch for. There is exactly one way to reach the inventory
 	// database, and it is the verified one above.
 	cfg.ConnConfig.Fallbacks = nil
-	tunePool(cfg)
+	tunePoolFor(cfg, workload)
 	cfg.BeforeConnect = func(ctx context.Context, cc *pgx.ConnConfig) error {
 		user, pass, err := getCreds(ctx)
 		if err != nil {

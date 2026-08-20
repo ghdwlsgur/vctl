@@ -401,6 +401,17 @@ func TestPoolIdleTimeoutDoesNotRaceDaemonHeartbeat(t *testing.T) {
 	}
 }
 
+func TestSerialWorkloadCannotFanOutDatabaseConnections(t *testing.T) {
+	cfg, err := pgxpool.ParseConfig("postgres://localhost:5432/vctl")
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	tunePoolFor(cfg, WorkloadSerial)
+	if cfg.MaxConns != 1 {
+		t.Fatalf("serial workload MaxConns = %d, want 1", cfg.MaxConns)
+	}
+}
+
 // Caching a credential only pays off if there is a usable window between the
 // moment it is issued and the moment it can no longer cover a new connection's
 // full life. That window is credentialTTL - MaxConnAge - the holder's margin.

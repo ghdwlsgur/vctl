@@ -13,6 +13,15 @@
       and Postgres) in inventory/group_vars or -e vctl_host_sre_lb_ip=<ip>; or set
       vctl_host_vault_lb_ip and vctl_host_pg_lb_ip separately when they differ (e.g. incheon).
 
+- name: Require a release checksum for production binary installation
+  when: vctl_host_state == 'present' and vctl_host_require_binary_checksum | bool
+  ansible.builtin.assert:
+    that:
+      - vctl_host_bin_sha256 | length == 64
+    fail_msg: >-
+      Set vctl_host_bin_sha256 from the release checksums.txt. Use
+      -e vctl_host_require_binary_checksum=false only for an explicit development run.
+
 # --- clock discipline -------------------------------------------------------
 # Session start times come from the PAM marker, i.e. from THIS host's clock (they
 # have to — started_at is part of the audit_session conflict key). So an

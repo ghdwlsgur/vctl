@@ -126,6 +126,43 @@ func TestInstancesMarkAbsenceInsteadOfDeleting(t *testing.T) {
 	}
 }
 
+func TestPruneMissingOpenStackInstancesKeepsLiveAndRecentHistory(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	const farm = "vm-farm-retention"
+	seedInstanceFarm(t, st, farm)
+	now := time.Now().UTC()
+	if _, err := st.ReplaceInstances(ctx, farm, []Instance{
+		vm("uuid-live", "live", "gpu04"),
+		vm("uuid-old", "old", "gpu04", InstanceAddress{Address: "10.44.0.2", Type: "fixed", IPVersion: 4}),
+		vm("uuid-recent", "recent", "gpu04"),
+	}, now.AddDate(-1, 0, 0), true); err != nil {
+		t.Fatalf("seed instances: %v", err)
+	}
+	if _, err := st.pool.Exec(ctx, `UPDATE openstack_instances SET missing_since=$1 WHERE deployment_id=$2 AND instance_id='uuid-old'`, now.AddDate(0, 0, -200), farm); err != nil {
+		t.Fatalf("mark old: %v", err)
+	}
+	if _, err := st.pool.Exec(ctx, `UPDATE openstack_instances SET missing_since=$1 WHERE deployment_id=$2 AND instance_id='uuid-recent'`, now.AddDate(0, 0, -10), farm); err != nil {
+		t.Fatalf("mark recent: %v", err)
+	}
+
+	got, err := st.PruneMissingOpenStackInstances(ctx, now.AddDate(0, 0, -180), 1)
+	if err != nil || got != 1 {
+		t.Fatalf("prune = (%d,%v), want one old row", got, err)
+	}
+	rows, err := st.Instances(ctx, InstanceFilter{DeploymentID: farm, IncludeMissing: true})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("remaining instances = %d, %v", len(rows), err)
+	}
+	var oldAddresses int
+	if err := st.pool.QueryRow(ctx, `SELECT count(*) FROM openstack_instance_addresses WHERE deployment_id=$1 AND instance_id='uuid-old'`, farm).Scan(&oldAddresses); err != nil {
+		t.Fatalf("count old addresses: %v", err)
+	}
+	if oldAddresses != 0 {
+		t.Fatalf("old address rows remain: %d", oldAddresses)
+	}
+}
+
 // A VM that comes back stops being missing, so the column always means
 // "missing now" rather than "was missing once".
 // Integration — needs VCTL_TEST_DSN.
