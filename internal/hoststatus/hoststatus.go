@@ -27,6 +27,7 @@ func Collect(hostname, agentVersion string) store.ServerStatus {
 		MemoryUsedPct:   memoryUsedPct(),
 		DiskRootUsedPct: diskUsedPct("/"),
 		ObservedIPs:     localIPv4s(),
+		MountCount:      mountCount(),
 	}
 }
 

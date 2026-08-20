@@ -46,6 +46,10 @@ type OpenStack struct {
 	// listSocket asks a container engine's socket for its containers; swapped
 	// in tests. Nil means the real HTTP-over-unix-socket client.
 	listSocket func(ctx context.Context, socket string) (map[string]containerInfo, error)
+
+	// versionSocket asks the same socket what the engine and its OCI runtime
+	// are; swapped in tests for the same reason listSocket is.
+	versionSocket func(ctx context.Context, socket string) map[string]string
 	// operatorNets are the address prefixes people reach things on, used to
 	// pick which of Horizon's several binds to report.
 	operatorNets []string
@@ -219,6 +223,39 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		}
 		if p.exists("/dev/kvm") {
 			res.Details["hypervisor"] = "kvm"
+		}
+	}
+
+	// The container runtime the whole deployment runs inside.
+	//
+	// Recorded because a runtime version was the entire cause of a real incident
+	// and nothing in the fleet held it. One host ran crun 1.23.1 while the rest
+	// ran 1.27; the old one leaked 16,383 mount entries into the host's mount
+	// table and the agent on it burned a core for 57 days. Same distro family,
+	// same Kolla containers, same bind mounts — the only difference was this
+	// number, and finding it meant logging into two hosts and running rpm -q.
+	//
+	// Not a Service. Reporting the engine as a systemd unit here would put a
+	// second, differently-derived opinion about podman.service beside the one
+	// the socket already gives.
+	for _, sock := range containerSockets {
+		if !p.exists(sock.path) {
+			continue
+		}
+		v := p.socketVersions(ctx, sock.path)
+		if v["engine"] != "" {
+			res.Components[sock.engine] = hoststatus.Component{Version: v["engine"]}
+		}
+		if v["oci-runtime"] != "" {
+			res.Components["oci-runtime"] = hoststatus.Component{Version: v["oci-runtime"]}
+			if n := v["oci-runtime-name"]; n != "" {
+				res.Details["oci_runtime"] = n
+			}
+		}
+		// One engine is enough. A host with both sockets is answered by whichever
+		// comes first in containerSockets, the same order the listing uses.
+		if len(v) > 0 {
+			break
 		}
 	}
 
@@ -401,6 +438,14 @@ func (p *OpenStack) socketList(ctx context.Context, socket string) (map[string]c
 		return p.listSocket(ctx, socket)
 	}
 	return listViaSocket(ctx, socket)
+}
+
+// socketVersions is the same seam for the version request.
+func (p *OpenStack) socketVersions(ctx context.Context, socket string) map[string]string {
+	if p.versionSocket != nil {
+		return p.versionSocket(ctx, socket)
+	}
+	return engineVersions(ctx, socket)
 }
 
 // mergeContainers keeps the first engine's answer for a name, so a host running
