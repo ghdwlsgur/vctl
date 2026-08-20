@@ -110,8 +110,9 @@ directory and read the diff before restarting anything.
 - The release **linux binary** placed at `files/vctl` (gitignored):
   `gh release download vX.Y.Z -p 'vctl_*_linux_amd64.tar.gz' && tar -xzf … -C files/`
   (or switch the play to install the `.deb`/`.rpm` from the release).
-  Set `vctl_host_bin_sha256` from the release `checksums.txt`; the role verifies
-  the installed bytes before restarting any daemon.
+  First verify the downloaded archive against release `checksums.txt`, then set
+  `vctl_host_bin_sha256` to `sha256sum files/vctl` (the extracted binary digest).
+  The role verifies those installed bytes before restarting any daemon.
 - The current Vault SSH CA **public key** placed at `files/vault-ca.pub`
   (gitignored). Verify its fingerprint through a trusted channel before running
   `trust-vault-ssh-ca.yml`.

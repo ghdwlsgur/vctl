@@ -9,9 +9,9 @@ vctl_host_sshd_service: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }
 #   gh release download vX.Y.Z -p 'vctl_*_linux_amd64.tar.gz' && tar -xzf … -C files/
 vctl_host_bin_src: "{{ vctl_bin_src | default(playbook_dir + '/files/vctl') }}"
 vctl_host_bin_dest: "{{ vctl_bin_dest | default('/usr/local/bin/vctl') }}"
-# Release checksum from checksums.txt. Empty keeps source-tree development
-# usable, but production inventory should set it so a compromised control-node
-# staging file cannot silently replace the fleet binary.
+# SHA-256 of the extracted release binary after its archive has been verified
+# against checksums.txt. A compromised control-node staging file must not
+# silently replace the fleet binary.
 vctl_host_bin_sha256: "{{ vctl_bin_sha256 | default('') }}"
 vctl_host_require_binary_checksum: "{{ require_binary_checksum | default(true) }}"
 

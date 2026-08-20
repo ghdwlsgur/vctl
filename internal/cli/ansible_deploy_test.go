@@ -23,4 +23,10 @@ func TestAnsibleFleetRolloutHasIntegrityAndHealthGates(t *testing.T) {
 			t.Errorf("Ansible role is missing %q", want)
 		}
 	}
+	if strings.Contains(string(present), "ansible_date_time") {
+		t.Fatal("Ansible role still relies on deprecated top-level injected facts")
+	}
+	if !strings.Contains(string(present), `ansible_facts["date_time"]["epoch"]`) {
+		t.Fatal("Ansible role does not read the gathered epoch through ansible_facts")
+	}
 }
