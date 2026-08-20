@@ -326,7 +326,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl exec -- <cmd>` | 자식 프로세스를 `VAULT_TOKEN`, `VAULT_ADDR`와 함께 실행합니다 |
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |
 | `vctl ssh [host\|user@addr] [--server <host>]` | exact, fuzzy, IP, interactive 선택으로 접속합니다(픽커는 ←/→로 DC 필터). `--server`는 정확히 또는 IP로 해석해 비대화형으로 접속합니다(스크립트/에이전트용). `user@addr` 형태는 인벤토리를 거치지 않고 주소로 바로 접속합니다 |
-| `vctl list [--dc <dc>]` | 인벤토리 호스트를 나열합니다(primary + extra IP, 비표준 SSH 포트, 관측된 liveness, 그리고 `active` 가 아닐 때의 운영 상태) |
+| `vctl list [--dc <dc>] [--wide]` | 인벤토리를 터미널 폭에 맞는 간결한 표로 표시합니다. `--wide`는 에이전트·운영 상태·SSH 사용자를 별도 열로 표시합니다 |
 | `vctl openstack [deployment]` | 전체 화면 브라우저. 왼쪽은 팜, 오른쪽은 선택한 팜의 VM 또는 호스트, `enter`로 `openstack host`·`vm show`와 같은 상세 화면을 엽니다. `tab`으로 창 이동, `/` 필터, `r` 새로고침. 읽기 전용이며 DB만 읽습니다 — 컨트롤 플레인에 접속하지 않습니다. `explore`·`browse`·`ui`도 계속 사용할 수 있습니다 |
 | `vctl openstack list [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | 스크립트와 비대화형 환경을 위한 호스트 표입니다. 어떤 호스트가 OpenStack을 돌리는지, 역할과 팜 소속을 보여줍니다. 기존 bare `vctl openstack`의 listing 플래그도 호환을 위해 계속 동작합니다 |
 | `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure] [--json] [--fail-on <problems>]` | 각 배포의 컨트롤 플레인에 어느 호스트가 자기 것인지 묻고, 양쪽이 일치하는 호스트를 `confirmed`로 올립니다. 자격증명은 Vault `kv/teams/sre/vctl-<host_port>`에서 읽습니다(필드: `auth_url`·`username`·`password`, 선택 `project_name`·`user_domain`·`project_domain`) |
@@ -350,6 +350,8 @@ claude mcp add vctl -- vctl mcp
 | `vctl migrate [--status]` | 미적용 스키마 마이그레이션을 적용합니다. `schema_migrations`에 이름·checksum으로 기록하고 advisory lock으로 직렬화합니다. `--status`는 아무것도 바꾸지 않고 현황만 보여줍니다 |
 | `vctl completion bash\|zsh\|fish\|powershell` | 셸 자동완성 스크립트를 출력합니다. 팜·호스트·역할·프로젝트·VM UUID를 인벤토리에서 바로 채웁니다. VM은 이름으로 읽히고 UUID로 완성됩니다 |
 | `vctl logout` | 캐시된 Vault 토큰을 제거합니다 |
+
+구조화 데이터를 제공하는 명령은 `-o, --output table|json|yaml`을 지원합니다. 기존 `--json` 플래그도 호환성을 위해 계속 동작합니다.
 
 ## Configuration
 

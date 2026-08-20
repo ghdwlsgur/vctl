@@ -315,7 +315,7 @@ vctl session <cert-serial> --json   # machine-readable export (e.g. for an agent
 
 **セッションにリンクされたイベントのみを保存します。** ホストは実行するすべてについて exec/exit を出力し、Kubernetes ノードではその大半がコンテナと kubelet の生成消滅です。どのログインにも属さず、`session_id` を後から埋めるものはなく、`vctl session` はその列で結合するため、保存してもディスクを消費するだけで何も答えません。リンクできなかったイベントは `--attribution-grace`(30秒)の間保持され優先的に再試行されます。ログイン直後のコマンドはセッション行が書かれる前に届くからです。それを過ぎて初めて破棄します。`--require-session=false` で全ホストキャプチャに戻せます。`vctl collect --host` と `vctl watch-sessions --hostname` は同じインベントリ名を記録する必要があります。突合はホスト名で結合するため、片側だけ固定しても何もリンクされません。
 
-**ランタイムのホスト状態。** `vctl node-agent` は軽量な生存ハートビート(負荷、メモリ、ディスク)を、*すでに `servers` に存在するホストについてのみ* `server_status` に報告します。インベントリを作成することは決してありません。`vctl list` と `vctl status` はこの鮮度をトポロジと並べて表示します。
+**ランタイムのホスト状態。** `vctl node-agent` は軽量な生存ハートビート(負荷、メモリ、ディスク)を、*すでに `servers` に存在するホストについてのみ* `server_status` に報告します。インベントリを作成することは決してありません。`vctl list` と `vctl status` はこの鮮度をトポロジと並べ、現在報告中の `reporting`、古いハートビートしかない `stale`、一度も報告していない `unmanaged` インベントリを区別します。
 
 **長時間稼働する資格情報の更新。** これらのデーモンは Postgres プールを何日も保持しますが、Vault の動的 DB 資格情報は短命です(デフォルト 1h、最大 4h)。プールはそのウィンドウの十分内側で物理接続を再生成し、接続前に有効な資格情報を再取得し、トークンが失効していれば Vault セッションを再認証します。デーモンが資格情報のリースより長生きすることはなく、Vault Agent も不要です。
 
@@ -355,7 +355,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl exec -- <cmd>` | `VAULT_TOKEN` と `VAULT_ADDR` を渡して子プロセスを実行する |
 | `vctl agent [--sink <path>]` | トークンを生かし続け、シンクファイルに書き出す |
 | `vctl ssh [host\|user@addr] [--server <host>]` | 完全一致、あいまい一致、IP、対話的な選択で接続する(ピッカーは ←/→ で DC フィルタ)。`--server` は完全一致または IP で解決し、非対話的に接続する(スクリプト/エージェント向け). `user@addr` 形式はインベントリを経由せずアドレスへ直接接続する |
-| `vctl list [--dc <dc>]` | インベントリのホストを一覧表示する(プライマリ + 追加 IP、非標準 SSH ポート、観測された liveness、および `active` でない場合の運用状態) |
+| `vctl list [--dc <dc>] [--wide]` | インベントリを端末幅に合わせた簡潔な表で表示する。`--wide` はエージェント・運用状態・SSH ユーザーを別の列に表示する |
 | `vctl openstack [deployment]` | 全画面ブラウザ。左にファーム、右に選択したファームの VM またはホストを表示し、`enter` で `openstack host`・`vm show` と同じ詳細画面を開く。`tab` でペイン移動、`/` 絞り込み、`r` 更新。読み取り専用で DB のみを読む — コントロールプレーンには接続しない。`explore`・`browse`・`ui` も引き続き使用できる |
 | `vctl openstack list [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | スクリプトと非対話環境向けのホスト表。どのホストが OpenStack を動かし、その役割とファーム所属を表示する。従来の bare `vctl openstack` の listing フラグも互換性のため引き続き動作する |
 | `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure] [--json] [--fail-on <problems>]` | 各デプロイのコントロールプレーンにどのホストが自分のものかを問い合わせ、両者が一致したホストを `confirmed` に昇格する。認証情報は Vault の `kv/teams/sre/vctl-<host_port>` から読む(フィールド: `auth_url`・`username`・`password`、任意で `project_name`・`user_domain`・`project_domain`) |
@@ -382,6 +382,8 @@ claude mcp add vctl -- vctl mcp
 | `vctl migrate [--status]` | 未適用のスキーママイグレーションを適用する。`schema_migrations` に名前と checksum で記録し、advisory lock で直列化する。`--status` は何も変更せず状況だけ表示する |
 | `vctl completion bash\|zsh\|fish\|powershell` | シェル補完スクリプトを出力する。ファーム・ホスト・ロール・プロジェクト・VM UUID をインベントリから直接補完し、VM は名前で読めて UUID で確定する |
 | `vctl logout` | キャッシュされた Vault トークンを削除する |
+
+構造化データを提供するコマンドは `-o, --output table|json|yaml` をサポートする。既存の `--json` フラグも互換性のため引き続き利用できる。
 
 ## Configuration
 

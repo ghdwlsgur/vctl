@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -39,6 +38,10 @@ Two uses:
   vctl session <cert-serial> --json   machine-readable export`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, err := commandOutput(cmd, asJSON)
+			if err != nil {
+				return err
+			}
 			_, adb, err := env.audit()
 			if err != nil {
 				return err
@@ -50,8 +53,8 @@ Two uses:
 					if err != nil {
 						return err
 					}
-					if asJSON {
-						return writeJSON(sessions)
+					if format != outputTable {
+						return writeStructured(format, sessions)
 					}
 					return printSessions(sessions)
 				}
@@ -65,8 +68,8 @@ Two uses:
 					ui.Warnf(os.Stderr, "no session recorded for serial %s (collector/stamper deployed on the host?)", serial)
 					return nil
 				}
-				if asJSON {
-					return writeJSON(timelineExport(sessions, events))
+				if format != outputTable {
+					return writeStructured(format, timelineExport(sessions, events))
 				}
 				return printTimeline(sessions, events, sessionDetailOptions{Full: full, Width: detailWidth})
 			})
@@ -79,7 +82,7 @@ Two uses:
 	cmd.Flags().BoolVar(&full, "full", false, "show full command details without truncating table cells")
 	cmd.Flags().IntVar(&detailWidth, "detail-width", 120, "max visible width for the detail column; use --full to disable")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "max sessions to show")
-	return cmd
+	return supportsStructuredOutput(cmd)
 }
 
 // sessionStartCmd registers an SSH session (cert serial -> human, on a host).
@@ -241,12 +244,6 @@ func timelineExport(sessions []store.AuditSession, events map[int64][]store.Kern
 		out = append(out, so)
 	}
 	return out
-}
-
-func writeJSON(v any) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
 }
 
 func dur(start time.Time, end *time.Time) string {

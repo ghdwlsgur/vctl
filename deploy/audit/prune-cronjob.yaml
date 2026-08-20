@@ -37,7 +37,7 @@ spec:
           containers:
             - name: prune
               # Pin to a release tag; pull from the internal trusted registry.
-              image: harbor.sre.local/sre/vctl:v0.2.52
+              image: harbor.sre.local/sre/vctl:v0.2.53
               args: ["prune", "--batch-size=5000"]
               env:
                 - name: VCTL_AUTH_METHOD

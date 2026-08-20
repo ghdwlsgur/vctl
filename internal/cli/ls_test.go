@@ -30,6 +30,38 @@ func TestRenderInventoryOmitsRuntimeStatus(t *testing.T) {
 	}
 }
 
+func TestRenderInventoryHasCompactAndWideColumnContracts(t *testing.T) {
+	seen := time.Now().Add(-time.Minute)
+	servers := []store.InventoryRow{{
+		Server: store.Server{
+			Hostname: "host-a", IP: "192.0.2.1", User: "sre-admin", DC: "seoul",
+			State: store.StateMaintenance,
+		},
+		Addresses: []string{"192.0.2.1"}, AgentSeen: &seen,
+	}}
+
+	var compact strings.Builder
+	renderInventory(&compact, servers, false, false)
+	compactText := stripANSI(compact.String())
+	for _, want := range []string{"HOST", "STATUS", "ADDRESS", "VIA", "up maint"} {
+		if !strings.Contains(compactText, want) {
+			t.Errorf("compact inventory missing %q:\n%s", want, compactText)
+		}
+	}
+	if strings.Contains(compactText, "USER") {
+		t.Errorf("compact inventory includes the wide-only USER column:\n%s", compactText)
+	}
+
+	var wide strings.Builder
+	renderInventoryMode(&wide, servers, false, false, true)
+	wideText := stripANSI(wide.String())
+	for _, want := range []string{"AGENT", "STATE", "USER", "sre-admin"} {
+		if !strings.Contains(wideText, want) {
+			t.Errorf("wide inventory missing %q:\n%s", want, wideText)
+		}
+	}
+}
+
 // A snapshot cannot answer "is this host up right now", so the listing must not
 // imply an answer. Both the per-row agent cell and the footer have to say the
 // data is local, or a stale inventory reads exactly like a live one.

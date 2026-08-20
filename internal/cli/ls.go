@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
@@ -21,6 +20,7 @@ func lsCmd(env CommandEnv) *cobra.Command {
 	var (
 		dc     string
 		allIPs bool
+		wide   bool
 	)
 	cmd := &cobra.Command{
 		Use:     "list",
@@ -36,13 +36,13 @@ func lsCmd(env CommandEnv) *cobra.Command {
 					ui.Warnf(os.Stderr, "inventory is empty. Run 'vctl sync' first.")
 					return nil
 				}
-				renderInventory(os.Stdout, servers, inv.Cached(), allIPs)
-				return nil
+				return renderInventoryMode(os.Stdout, servers, inv.Cached(), allIPs, wide)
 			})
 		},
 	}
 	cmd.Flags().StringVar(&dc, "dc", "", "DC filter, for example incheon or seoul-onprem")
 	cmd.Flags().BoolVar(&allIPs, "all-ips", false, "list every address a host answers on instead of a count")
+	cmd.Flags().BoolVar(&wide, "wide", false, "show separate agent, state and SSH user columns")
 	return cmd
 }
 
@@ -152,56 +152,64 @@ func agentCell(r store.InventoryRow, cached bool) string {
 //
 // Servers arrive already sorted by (dc, hostname) from the store, so a single
 // pass can detect group boundaries.
-func renderInventory(w io.Writer, servers []store.InventoryRow, cached, allIPs bool) {
-	// The hostname is column 0 rather than a value carried alongside the row.
-	// Keeping it separate meant every later index was off by one — widths[0] for
-	// the host, widths[j+1] for everything else — which is a standing invitation
-	// to misalign a column while adding one.
-	cells := make([][]string, len(servers)) // host, agent, state, ip, user, jump
+func renderInventory(w io.Writer, servers []store.InventoryRow, cached, allIPs bool) error {
+	return renderInventoryMode(w, servers, cached, allIPs, false)
+}
+
+func renderInventoryMode(w io.Writer, servers []store.InventoryRow, cached, allIPs, wide bool) error {
+	groups := make([]ui.TableGroup, 0)
+	var current *ui.TableGroup
 	for i, s := range servers {
+		if i == 0 || s.DC != servers[i-1].DC {
+			name := s.DC
+			if name == "" {
+				name = "(no dc)"
+			}
+			groups = append(groups, ui.TableGroup{Title: name})
+			current = &groups[len(groups)-1]
+		}
 		jump := s.JumpVia
 		if jump == "" {
 			jump = ui.Muted("direct")
 		}
-		cells[i] = []string{
-			ui.Truncate(s.Hostname, 40),
-			agentCell(s, cached),
-			// Next to the agent column on purpose: the pair is the whole point.
-			// "no-agent" beside "broken" is a filed fault; "no-agent" beside a
-			// blank state is a host nobody has looked at.
-			stateCell(s.State),
-			ipCell(s, allIPs),
-			s.User,
-			jump,
+		row := []string{
+			s.Hostname,
+			strings.TrimSpace(agentCell(s, cached) + " " + stateCell(s.State)),
+			ipCell(s, allIPs), jump,
+		}
+		if wide {
+			row = []string{s.Hostname, agentCell(s, cached), stateCell(s.State), ipCell(s, allIPs), s.User, jump}
+		}
+		current.Rows = append(current.Rows, row)
+	}
+	for i := range groups {
+		unit := "hosts"
+		if len(groups[i].Rows) == 1 {
+			unit = "host"
+		}
+		groups[i].Meta = fmt.Sprintf("%d %s", len(groups[i].Rows), unit)
+	}
+	columns := []ui.Column{
+		{Header: "host", MinWidth: 14, MaxWidth: 34},
+		{Header: "status", MinWidth: 8, MaxWidth: 18},
+		{Header: "address", MinWidth: 12, MaxWidth: 26},
+		{Header: "via", MinWidth: 8, MaxWidth: 24},
+	}
+	if wide {
+		columns = []ui.Column{
+			{Header: "host", MinWidth: 14, MaxWidth: 34},
+			{Header: "agent", MinWidth: 7, MaxWidth: 12},
+			{Header: "state", MinWidth: 5, MaxWidth: 8, Optional: true, Priority: 2},
+			{Header: "address", MinWidth: 12, MaxWidth: 26},
+			{Header: "user", MinWidth: 4, MaxWidth: 12, Optional: true, Priority: 3},
+			{Header: "via", MinWidth: 8, MaxWidth: 24},
 		}
 	}
-	widths := ui.ColumnWidths(cells)
-
-	dcStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	for i := 0; i < len(servers); {
-		dc := servers[i].DC
-		name := dc
-		if name == "" {
-			name = "(no dc)"
-		}
-		end := i + 1
-		for end < len(servers) && servers[end].DC == dc {
-			end++
-		}
-		fmt.Fprintf(w, "%s %s\n", dcStyle.Render("▌ "+name), ui.Muted(fmt.Sprintf("· %d hosts", end-i)))
-
-		for ; i < end; i++ {
-			var line strings.Builder
-			line.WriteString("  ")
-			for j, c := range cells[i] {
-				if j > 0 {
-					line.WriteString("  ")
-				}
-				line.WriteString(ui.PadRight(c, widths[j]))
-			}
-			fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
-		}
-		fmt.Fprintln(w)
+	if err := ui.GroupedTable(w, columns, groups, ui.TableOptions{Indent: "  "}); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
 	}
 	footer := fmt.Sprintf("%d hosts", len(servers))
 	if cached {
@@ -209,7 +217,8 @@ func renderInventory(w io.Writer, servers []store.InventoryRow, cached, allIPs b
 		// someone pipes the listing into a file or another tool.
 		footer += " · local snapshot; agent liveness unavailable"
 	}
-	fmt.Fprintln(w, ui.Muted(footer))
+	_, err := fmt.Fprintln(w, ui.Muted(footer))
+	return err
 }
 
 // statusFreshnessWindow is how recently a node-agent must have reported for a

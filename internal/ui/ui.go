@@ -216,57 +216,11 @@ func Table(w io.Writer, headers []string, rows [][]string) error {
 	if len(headers) == 0 {
 		return nil
 	}
-	widths := make([]int, len(headers))
+	columns := make([]Column, len(headers))
 	for i, header := range headers {
-		widths[i] = lipgloss.Width(header)
+		columns[i] = Column{Header: header}
 	}
-	for _, row := range rows {
-		for i := range headers {
-			if i >= len(row) {
-				continue
-			}
-			if n := lipgloss.Width(row[i]); n > widths[i] {
-				widths[i] = n
-			}
-		}
-	}
-
-	styledHeaders := make([]string, len(headers))
-	for i, header := range headers {
-		styledHeaders[i] = headerStyle.Render(strings.ToUpper(header))
-	}
-	if _, err := fmt.Fprintln(w, joinPadded(styledHeaders, widths)); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(w, mutedStyle.Render(joinRule(widths))); err != nil {
-		return err
-	}
-	for _, row := range rows {
-		if _, err := fmt.Fprintln(w, joinPadded(row, widths)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func joinPadded(cells []string, widths []int) string {
-	out := make([]string, len(widths))
-	for i := range widths {
-		cell := ""
-		if i < len(cells) {
-			cell = cells[i]
-		}
-		out[i] = PadRight(cell, widths[i])
-	}
-	return strings.Join(out, "  ")
-}
-
-func joinRule(widths []int) string {
-	parts := make([]string, len(widths))
-	for i, width := range widths {
-		parts[i] = strings.Repeat("─", width)
-	}
-	return strings.Join(parts, "  ")
+	return ResponsiveTable(w, columns, rows, TableOptions{})
 }
 
 // PadRight right-pads s with spaces to width display columns, measuring with
