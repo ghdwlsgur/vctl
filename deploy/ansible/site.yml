@@ -12,6 +12,10 @@
 # vctl_host_audit_stack.
 - name: Onboard vctl node status stack (audit is explicit opt-in)
   hosts: all
+  # A bad binary or credential rotation must stop in a small batch instead of
+  # restarting the entire SRE fleet simultaneously.
+  serial: "{{ vctl_rollout_serial | default('20%') }}"
+  max_fail_percentage: 0
   become: true
   gather_facts: true
   roles:

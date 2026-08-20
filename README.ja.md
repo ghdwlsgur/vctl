@@ -415,9 +415,14 @@ db_role_audit_ro: vctl-audit-ro
 db_role_audit_write: vctl-audit-writer
 db_role_audit_ingest: vctl-audit-ingest
 db_role_audit_prune: vctl-pruner
+db_role_openstack_prune: vctl-openstack-pruner
 db_role_status: vctl-status
 db_role_migrate: vctl-migrator
 db_migration_owner: vctl_owner
+kernel_retention_days: 14
+session_retention_days: 365
+access_retention_days: 1095
+openstack_missing_retention_days: 180
 
 ca_role: sre-core
 ssh_sign: 30m

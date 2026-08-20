@@ -39,6 +39,7 @@ type Reader interface {
 	AuditFootprint(ctx context.Context) ([]store.TableFootprint, error)
 	CountKernelEventsBefore(ctx context.Context, t time.Time) (int64, error)
 	CountSessionsBefore(ctx context.Context, t time.Time) (int64, error)
+	CountAccessLogsBefore(ctx context.Context, t time.Time) (int64, error)
 }
 
 // Ingestor is what the ingest role may do: record sessions as they start and

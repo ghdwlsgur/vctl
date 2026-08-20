@@ -9,6 +9,11 @@ vctl_host_sshd_service: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }
 #   gh release download vX.Y.Z -p 'vctl_*_linux_amd64.tar.gz' && tar -xzf … -C files/
 vctl_host_bin_src: "{{ vctl_bin_src | default(playbook_dir + '/files/vctl') }}"
 vctl_host_bin_dest: "{{ vctl_bin_dest | default('/usr/local/bin/vctl') }}"
+# Release checksum from checksums.txt. Empty keeps source-tree development
+# usable, but production inventory should set it so a compromised control-node
+# staging file cannot silently replace the fleet binary.
+vctl_host_bin_sha256: "{{ vctl_bin_sha256 | default('') }}"
+vctl_host_require_binary_checksum: "{{ require_binary_checksum | default(true) }}"
 
 # Daemon scope.
 #   vctl_host_install_collect=false installs the collector unit but does NOT enable it (it
@@ -52,13 +57,21 @@ vctl_host_secret_rotation_days: 21
 # start. Opt in with the audit stack, or set this explicitly.
 vctl_host_install_tetragon: "{{ install_tetragon | default(vctl_host_audit_stack) }}"
 vctl_host_tetragon_version: "{{ tetragon_version | default('v1.1.2') }}"
-vctl_host_tetragon_archive: "tetragon-{{ vctl_host_tetragon_version }}-amd64.tar.gz"
+vctl_host_tetragon_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+vctl_host_tetragon_arch: "{{ vctl_host_tetragon_arch_map.get(ansible_architecture, '') }}"
+vctl_host_tetragon_archive: "tetragon-{{ vctl_host_tetragon_version }}-{{ vctl_host_tetragon_arch }}.tar.gz"
 vctl_host_tetragon_url: >-
   {{ tetragon_url | default('https://github.com/cilium/tetragon/releases/download/' +
      vctl_host_tetragon_version + '/' + vctl_host_tetragon_archive) }}
 # Pin the release digest per version (e.g. "sha256:…"). Empty = no verification
 # (acceptable only for the public HTTPS URL; set before fronting an internal mirror).
 vctl_host_tetragon_sha256: "{{ tetragon_sha256 | default('') }}"
+
+# Fleet rollout and post-start health gate.
+vctl_host_health_retries: "{{ health_retries | default(6) }}"
+vctl_host_health_delay: "{{ health_delay | default(5) }}"
 
 # Verbose SRE tracingpolicy (security_file_open + tcp_connect for a narrow command
 # set) is high-volume — opt-in, "canary only". When false, exec/exit still flow

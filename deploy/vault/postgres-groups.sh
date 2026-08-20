@@ -37,7 +37,8 @@ DECLARE g text;
 BEGIN
   FOREACH g IN ARRAY ARRAY[
     'vctl_ro','vctl_rw','vctl_status','vctl_identity',
-    'vctl_audit_ro','vctl_audit_writer','vctl_audit_ingest','vctl_pruner'
+    'vctl_audit_ro','vctl_audit_writer','vctl_audit_ingest','vctl_pruner',
+    'vctl_openstack_pruner','vctl_backup'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = g) THEN
       EXECUTE format('CREATE ROLE %I NOLOGIN', g);
@@ -48,10 +49,12 @@ END $$;
 -- CONNECT + schema USAGE for every group (inherited by dynamic members).
 GRANT CONNECT ON DATABASE vctl TO
   vctl_ro, vctl_rw, vctl_status, vctl_identity,
-  vctl_audit_ro, vctl_audit_writer, vctl_audit_ingest, vctl_pruner;
+  vctl_audit_ro, vctl_audit_writer, vctl_audit_ingest, vctl_pruner,
+  vctl_openstack_pruner, vctl_backup;
 GRANT USAGE ON SCHEMA public TO
   vctl_ro, vctl_rw, vctl_status, vctl_identity,
-  vctl_audit_ro, vctl_audit_writer, vctl_audit_ingest, vctl_pruner;
+  vctl_audit_ro, vctl_audit_writer, vctl_audit_ingest, vctl_pruner,
+  vctl_openstack_pruner, vctl_backup;
 
 -- ro: inventory + app-RBAC + IPAM/WireGuard reads. Audit payloads deliberately excluded.
 GRANT SELECT ON servers, server_status, rbac_groups, rbac_members, rbac_grants, seen_users,
@@ -81,7 +84,14 @@ GRANT SELECT,INSERT ON kernel_event TO vctl_audit_ingest;
 GRANT USAGE,SELECT ON SEQUENCE audit_session_id_seq, kernel_event_id_seq TO vctl_audit_ingest;
 
 -- pruner: retention — count/delete audit rows, no rewrite.
-GRANT SELECT,DELETE ON audit_session, kernel_event TO vctl_pruner;
+GRANT SELECT,DELETE ON access_log, audit_session, kernel_event TO vctl_pruner;
+
+-- OpenStack history pruner: deleted-instance records only. Address rows cascade.
+GRANT SELECT,DELETE ON openstack_instances TO vctl_openstack_pruner;
+
+-- Backup: logical dump reads every current and future table/sequence, no writes.
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO vctl_backup;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO vctl_backup;
 
 -- Sequences: every write group needs USAGE on the serial PKs it inserts through
 -- (first surfaced 2026-07-25: rw upsert of a NEW server hit servers_id_seq 42501).
@@ -92,6 +102,10 @@ GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO
 ALTER DEFAULT PRIVILEGES FOR ROLE vctl_owner IN SCHEMA public
   GRANT USAGE,SELECT ON SEQUENCES TO
   vctl_rw, vctl_status, vctl_identity, vctl_audit_writer, vctl_audit_ingest;
+ALTER DEFAULT PRIVILEGES FOR ROLE vctl_owner IN SCHEMA public
+  GRANT SELECT ON TABLES TO vctl_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE vctl_owner IN SCHEMA public
+  GRANT SELECT ON SEQUENCES TO vctl_backup;
 SQL
 
 if [ -n "${PG_EXEC_POD}" ]; then

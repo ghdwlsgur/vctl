@@ -325,6 +325,7 @@ const (
 	PurposeAuditWrite
 	PurposeAuditIngest
 	PurposeAuditPrune
+	PurposeOpenStackPrune
 	PurposeMigrate
 	purposeCount
 )
@@ -350,6 +351,8 @@ func (a *App) roleFor(p Purpose) (string, error) {
 		return a.Cfg.DBRoleAuditIngest, nil
 	case PurposeAuditPrune:
 		return a.Cfg.DBRoleAuditPrune, nil
+	case PurposeOpenStackPrune:
+		return a.Cfg.DBRoleOpenStackPrune, nil
 	case PurposeMigrate:
 		return a.Cfg.DBRoleMigrate, nil
 	default:
@@ -379,7 +382,12 @@ func (a *App) OpenStore(ctx context.Context, p Purpose) (*store.Store, error) {
 		})
 		return store.OpenLocal(ctx, a.Cfg.LocalDBDSN)
 	}
-	return a.openRole(ctx, role)
+	workload := store.WorkloadInteractive
+	switch p {
+	case PurposeStatus, PurposeAuditIngest, PurposeAuditPrune, PurposeOpenStackPrune:
+		workload = store.WorkloadSerial
+	}
+	return a.openRole(ctx, role, workload)
 }
 
 // LogAccess records one SSH access attempt to the central audit table using
@@ -405,7 +413,7 @@ func (a *App) LogAccess(ctx context.Context, entry store.AccessEntry) error {
 }
 
 // openRole opens Postgres with a specific Vault database role.
-func (a *App) openRole(ctx context.Context, role string) (*store.Store, error) {
+func (a *App) openRole(ctx context.Context, role string, workload store.Workload) (*store.Store, error) {
 	// getCreds runs before each new pool connection. It re-establishes the Vault
 	// session if the token lapsed, then asks the cache for a credential, so a
 	// daemon holding the pool for hours never outlives a credential lease.
@@ -454,7 +462,7 @@ func (a *App) openRole(ctx context.Context, role string) (*store.Store, error) {
 		return user, pass, err
 	}
 	openedAt := time.Now()
-	st, err := store.Open(ctx, a.Cfg.DBHost, a.Cfg.DBPort, a.Cfg.DBName, getCreds, a.Cfg.DBServerName, config.SRERootCA)
+	st, err := store.OpenFor(ctx, a.Cfg.DBHost, a.Cfg.DBPort, a.Cfg.DBName, getCreds, a.Cfg.DBServerName, config.SRERootCA, workload)
 	credentialMu.Lock()
 	spent := credentialTime
 	credentialMu.Unlock()

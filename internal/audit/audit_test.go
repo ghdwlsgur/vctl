@@ -46,6 +46,7 @@ func (*fakeConn) InsertKernelEventsAttributed(context.Context, []store.KernelEve
 func (*fakeConn) PruneAudit(context.Context, store.AuditCutoff, int) (store.AuditPruneResult, error) {
 	return store.AuditPruneResult{}, nil
 }
+func (*fakeConn) CountAccessLogsBefore(context.Context, time.Time) (int64, error) { return 0, nil }
 
 // Each scope asks for the credential its work needs, and nothing else.
 //

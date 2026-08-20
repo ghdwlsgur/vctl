@@ -1,7 +1,13 @@
 # Daily kernel-audit retention. The hidden `vctl prune` automation command uses
 # a Vault-issued delete-only credential and deletes in bounded transactions.
 #
-# Needs: vctl image + AppRole creds (vctl-pruner) in secret `vctl-prune-approle`.
+# Needs: Vault kubernetes auth role `vctl-prune` bound to this ServiceAccount.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vctl-prune
+  namespace: vctl
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -19,6 +25,7 @@ spec:
       backoffLimit: 2
       template:
         spec:
+          serviceAccountName: vctl-prune
           restartPolicy: Never
           securityContext:
             runAsNonRoot: true
@@ -30,19 +37,23 @@ spec:
           containers:
             - name: prune
               # Pin to a release tag; pull from the internal trusted registry.
-              image: harbor.sre.local/sre/vctl:v0.2.51
+              image: harbor.sre.local/sre/vctl:v0.2.52
               args: ["prune", "--batch-size=5000"]
               env:
                 - name: VCTL_AUTH_METHOD
-                  value: approle
-                - name: VCTL_ROLE_ID_FILE
-                  value: /etc/vctl/role-id
-                - name: VCTL_SECRET_ID_FILE
-                  value: /etc/vctl/secret-id
+                  value: kubernetes
+                - name: VCTL_KUBERNETES_ROLE
+                  value: vctl-prune
+                - name: VAULT_ADDR
+                  value: https://vault.sre.local
+                - name: VCTL_DB_HOST
+                  value: vctl-postgres.vctl.svc.cluster.local
                 - name: VCTL_KERNEL_RETENTION_DAYS
                   value: "14"
                 - name: VCTL_SESSION_RETENTION_DAYS
                   value: "365"
+                - name: VCTL_ACCESS_RETENTION_DAYS
+                  value: "1095"
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
@@ -59,14 +70,8 @@ spec:
                   cpu: 200m
                   memory: 128Mi
               volumeMounts:
-                - name: approle
-                  mountPath: /etc/vctl
-                  readOnly: true
                 - name: state
                   mountPath: /home/nonroot/.vctl
           volumes:
-            - name: approle
-              secret:
-                secretName: vctl-prune-approle
             - name: state
               emptyDir: {}

@@ -33,7 +33,7 @@ resource "vault_database_secret_backend_connection" "vctl_pg" {
   allowed_roles = [
     "vctl-ro", "vctl-identity", "vctl-rw", "vctl-audit-ro",
     "vctl-audit-writer", "vctl-audit-ingest", "vctl-pruner",
-    "vctl-status", "vctl-migrator"
+    "vctl-status", "vctl-migrator", "vctl-openstack-pruner", "vctl-backup"
   ]
 
   postgresql {
@@ -134,6 +134,26 @@ resource "vault_database_secret_backend_role" "pruner" {
   default_ttl           = 3600
   max_ttl               = 14400
   creation_statements   = ["${local.create_login} GRANT vctl_pruner TO \"{{name}}\";"]
+  revocation_statements = local.revoke_stmts
+}
+
+resource "vault_database_secret_backend_role" "openstack_pruner" {
+  backend               = local.db_backend
+  name                  = "vctl-openstack-pruner"
+  db_name               = local.db_name
+  default_ttl           = 3600
+  max_ttl               = 14400
+  creation_statements   = ["${local.create_login} GRANT vctl_openstack_pruner TO \"{{name}}\";"]
+  revocation_statements = local.revoke_stmts
+}
+
+resource "vault_database_secret_backend_role" "backup" {
+  backend               = local.db_backend
+  name                  = "vctl-backup"
+  db_name               = local.db_name
+  default_ttl           = 3600
+  max_ttl               = 3600
+  creation_statements   = ["${local.create_login} GRANT vctl_backup TO \"{{name}}\";"]
   revocation_statements = local.revoke_stmts
 }
 

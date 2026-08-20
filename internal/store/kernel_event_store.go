@@ -32,12 +32,14 @@ type KernelEvent struct {
 type AuditCutoff struct {
 	KernelEventsBefore time.Time
 	SessionsBefore     *time.Time
+	AccessLogsBefore   *time.Time
 }
 
 // AuditPruneResult reports what one complete retention pass removed.
 type AuditPruneResult struct {
 	KernelEvents int64
 	Sessions     int64
+	AccessLogs   int64
 }
 
 // PruneAudit removes expired audit rows in bounded transactions. Small commits
@@ -46,6 +48,12 @@ type AuditPruneResult struct {
 func (s *Store) PruneAudit(ctx context.Context, cutoff AuditCutoff, batchSize int) (AuditPruneResult, error) {
 	if cutoff.KernelEventsBefore.IsZero() {
 		return AuditPruneResult{}, fmt.Errorf("kernel event cutoff is required")
+	}
+	if cutoff.SessionsBefore == nil && cutoff.AccessLogsBefore != nil {
+		return AuditPruneResult{}, fmt.Errorf("access logs cannot expire while sessions are retained forever")
+	}
+	if cutoff.SessionsBefore != nil && cutoff.AccessLogsBefore != nil && !cutoff.AccessLogsBefore.Before(*cutoff.SessionsBefore) {
+		return AuditPruneResult{}, fmt.Errorf("access log cutoff must be older than session cutoff to preserve attribution")
 	}
 	if batchSize <= 0 {
 		batchSize = 10_000
@@ -68,27 +76,49 @@ func (s *Store) PruneAudit(ctx context.Context, cutoff AuditCutoff, batchSize in
 			break
 		}
 	}
-	if cutoff.SessionsBefore == nil {
-		return out, nil
-	}
-	for {
-		tag, err := s.pool.Exec(ctx, `
-			WITH doomed AS (
-				SELECT s.id FROM audit_session s
-				WHERE s.started_at < $1
-				  AND s.ended_at IS NOT NULL
-				  AND NOT EXISTS (SELECT 1 FROM kernel_event e WHERE e.session_id=s.id)
-				ORDER BY s.started_at LIMIT $2
-			)
-			DELETE FROM audit_session s USING doomed d WHERE s.id=d.id`,
-			*cutoff.SessionsBefore, batchSize)
-		if err != nil {
-			return out, err
+	if cutoff.SessionsBefore != nil {
+		for {
+			tag, err := s.pool.Exec(ctx, `
+				WITH doomed AS (
+					SELECT s.id FROM audit_session s
+					WHERE s.started_at < $1
+					  AND s.ended_at IS NOT NULL
+					  AND NOT EXISTS (SELECT 1 FROM kernel_event e WHERE e.session_id=s.id)
+					ORDER BY s.started_at LIMIT $2
+				)
+				DELETE FROM audit_session s USING doomed d WHERE s.id=d.id`,
+				*cutoff.SessionsBefore, batchSize)
+			if err != nil {
+				return out, err
+			}
+			n := tag.RowsAffected()
+			out.Sessions += n
+			if n < int64(batchSize) {
+				break
+			}
 		}
-		n := tag.RowsAffected()
-		out.Sessions += n
-		if n < int64(batchSize) {
-			break
+	}
+	// access_log supplies the human attribution used by session history, so its
+	// horizon is validated by the caller to be longer than the session horizon
+	// and it is deleted last. Keeping this ordering inside the store means every
+	// automation adapter gets the same safe behavior.
+	if cutoff.AccessLogsBefore != nil {
+		for {
+			tag, err := s.pool.Exec(ctx, `
+				WITH doomed AS (
+					SELECT id FROM access_log
+					WHERE signed_at < $1 ORDER BY signed_at LIMIT $2
+				)
+				DELETE FROM access_log a USING doomed d WHERE a.id=d.id`,
+				*cutoff.AccessLogsBefore, batchSize)
+			if err != nil {
+				return out, err
+			}
+			n := tag.RowsAffected()
+			out.AccessLogs += n
+			if n < int64(batchSize) {
+				break
+			}
 		}
 	}
 	return out, nil
@@ -208,6 +238,14 @@ func (s *Store) CountSessionsBefore(ctx context.Context, t time.Time) (int64, er
 		WHERE s.started_at < $1
 		  AND s.ended_at IS NOT NULL
 		  AND NOT EXISTS (SELECT 1 FROM kernel_event e WHERE e.session_id=s.id)`, t).Scan(&n)
+	return n, err
+}
+
+// CountAccessLogsBefore returns how many access attribution rows are older than
+// the configured legal/audit horizon.
+func (s *Store) CountAccessLogsBefore(ctx context.Context, t time.Time) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM access_log WHERE signed_at < $1`, t).Scan(&n)
 	return n, err
 }
 

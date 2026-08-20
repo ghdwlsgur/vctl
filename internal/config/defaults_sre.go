@@ -13,28 +13,31 @@ import (
 // Defaults returns compiled onboarding defaults for the SRE environment.
 func Defaults() *Config {
 	return &Config{
-		OperatorNetworks:     []string{"192.168."},
-		VaultAddr:            "https://vault.sre.local",
-		AuthMethod:           "oidc", // people: GitLab SSO by default; --method userpass for bootstrap
-		OIDCRole:             "vctl",
-		OIDCMount:            "oidc",
-		DBHost:               "vctl-postgres.sre.local", // must match the certificate dnsName for verify-full
-		DBPort:               5432,
-		DBName:               "vctl",
-		DBRoleRO:             "vctl-ro",
-		DBRoleRW:             "vctl-rw",
-		DBRoleIdentity:       "vctl-identity",
-		DBRoleAuditRO:        "vctl-audit-ro",
-		DBRoleAuditWrite:     "vctl-audit-writer",
-		DBRoleAuditIngest:    "vctl-audit-ingest",
-		DBRoleAuditPrune:     "vctl-pruner",
-		DBRoleStatus:         "vctl-status",
-		DBRoleMigrate:        "vctl-migrator",
-		DBMigrationOwner:     "vctl_owner",
-		KernelRetentionDays:  14,
-		SessionRetentionDays: 365,
-		CacheRefresh:         "1h",
-		CacheOfflineTTL:      "24h",
+		OperatorNetworks:              []string{"192.168."},
+		VaultAddr:                     "https://vault.sre.local",
+		AuthMethod:                    "oidc", // people: GitLab SSO by default; --method userpass for bootstrap
+		OIDCRole:                      "vctl",
+		OIDCMount:                     "oidc",
+		DBHost:                        "vctl-postgres.sre.local", // must match the certificate dnsName for verify-full
+		DBPort:                        5432,
+		DBName:                        "vctl",
+		DBRoleRO:                      "vctl-ro",
+		DBRoleRW:                      "vctl-rw",
+		DBRoleIdentity:                "vctl-identity",
+		DBRoleAuditRO:                 "vctl-audit-ro",
+		DBRoleAuditWrite:              "vctl-audit-writer",
+		DBRoleAuditIngest:             "vctl-audit-ingest",
+		DBRoleAuditPrune:              "vctl-pruner",
+		DBRoleOpenStackPrune:          "vctl-openstack-pruner",
+		DBRoleStatus:                  "vctl-status",
+		DBRoleMigrate:                 "vctl-migrator",
+		DBMigrationOwner:              "vctl_owner",
+		KernelRetentionDays:           14,
+		SessionRetentionDays:          365,
+		AccessRetentionDays:           1095,
+		OpenStackMissingRetentionDays: 180,
+		CacheRefresh:                  "1h",
+		CacheOfflineTTL:               "24h",
 		// 7d. Was 720h (30d), chosen "long enough never to bite in practice" — which
 		// is another way of saying the guard was off. Inventory drifts faster than a
 		// month: a host in this fleet lost its primary address outright and the
