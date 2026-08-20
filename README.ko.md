@@ -382,7 +382,7 @@ db_role_identity: vctl-identity
 db_role_audit_ro: vctl-audit-ro
 db_role_audit_write: vctl-audit-writer
 db_role_audit_ingest: vctl-audit-ingest
-db_role_prune: vctl-pruner
+db_role_audit_prune: vctl-pruner
 db_role_status: vctl-status
 db_role_migrate: vctl-migrator
 db_migration_owner: vctl_owner

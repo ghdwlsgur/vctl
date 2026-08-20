@@ -27,6 +27,7 @@ func Defaults() *Config {
 		DBRoleAuditRO:        "vctl-audit-ro",
 		DBRoleAuditWrite:     "vctl-audit-writer",
 		DBRoleAuditIngest:    "vctl-audit-ingest",
+		DBRoleAuditPrune:     "vctl-pruner",
 		DBRoleStatus:         "vctl-status",
 		DBRoleMigrate:        "vctl-migrator",
 		DBMigrationOwner:     "vctl_owner",

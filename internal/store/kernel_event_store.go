@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,6 +25,73 @@ type KernelEvent struct {
 	Filename   string
 	DestAddr   string
 	ExitCode   *int
+}
+
+// AuditCutoff is the retention horizon for each audit tier. A nil SessionsBefore
+// keeps session metadata indefinitely while still pruning raw events.
+type AuditCutoff struct {
+	KernelEventsBefore time.Time
+	SessionsBefore     *time.Time
+}
+
+// AuditPruneResult reports what one complete retention pass removed.
+type AuditPruneResult struct {
+	KernelEvents int64
+	Sessions     int64
+}
+
+// PruneAudit removes expired audit rows in bounded transactions. Small commits
+// keep row locks and WAL bursts bounded; callers get one deep operation rather
+// than having to reproduce the loop and its session-safety rule.
+func (s *Store) PruneAudit(ctx context.Context, cutoff AuditCutoff, batchSize int) (AuditPruneResult, error) {
+	if cutoff.KernelEventsBefore.IsZero() {
+		return AuditPruneResult{}, fmt.Errorf("kernel event cutoff is required")
+	}
+	if batchSize <= 0 {
+		batchSize = 10_000
+	}
+	var out AuditPruneResult
+	for {
+		tag, err := s.pool.Exec(ctx, `
+			WITH doomed AS (
+				SELECT id FROM kernel_event
+				WHERE ts < $1 ORDER BY ts LIMIT $2
+			)
+			DELETE FROM kernel_event e USING doomed d WHERE e.id=d.id`,
+			cutoff.KernelEventsBefore, batchSize)
+		if err != nil {
+			return out, err
+		}
+		n := tag.RowsAffected()
+		out.KernelEvents += n
+		if n < int64(batchSize) {
+			break
+		}
+	}
+	if cutoff.SessionsBefore == nil {
+		return out, nil
+	}
+	for {
+		tag, err := s.pool.Exec(ctx, `
+			WITH doomed AS (
+				SELECT s.id FROM audit_session s
+				WHERE s.started_at < $1
+				  AND s.ended_at IS NOT NULL
+				  AND NOT EXISTS (SELECT 1 FROM kernel_event e WHERE e.session_id=s.id)
+				ORDER BY s.started_at LIMIT $2
+			)
+			DELETE FROM audit_session s USING doomed d WHERE s.id=d.id`,
+			*cutoff.SessionsBefore, batchSize)
+		if err != nil {
+			return out, err
+		}
+		n := tag.RowsAffected()
+		out.Sessions += n
+		if n < int64(batchSize) {
+			break
+		}
+	}
+	return out, nil
 }
 
 // InsertKernelEvents writes a batch of events whether or not they attribute to a
@@ -87,13 +155,19 @@ func (s *Store) insertKernelEvents(ctx context.Context, evs []KernelEvent, requi
 		return 0, nil, err
 	}
 	defer tx.Rollback(ctx)
-	n := 0
-	var unattributed []int
-	for i, e := range evs {
-		tag, err := tx.Exec(ctx, q,
+	batch := &pgx.Batch{}
+	for _, e := range evs {
+		batch.Queue(q,
 			e.SessionID, e.CertSerial, e.Hostname, e.TS, e.Kind, e.PID, e.PPID, e.CgroupID,
 			e.Binary, e.Args, e.CWD, e.UID, e.Filename, e.DestAddr, e.ExitCode, requireSession)
+	}
+	results := tx.SendBatch(ctx, batch)
+	n := 0
+	var unattributed []int
+	for i := range evs {
+		tag, err := results.Exec()
 		if err != nil {
+			_ = results.Close()
 			return n, nil, err
 		}
 		if tag.RowsAffected() == 0 {
@@ -101,6 +175,9 @@ func (s *Store) insertKernelEvents(ctx context.Context, evs []KernelEvent, requi
 			continue
 		}
 		n++
+	}
+	if err := results.Close(); err != nil {
+		return n, nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, nil, err
@@ -110,12 +187,9 @@ func (s *Store) insertKernelEvents(ctx context.Context, evs []KernelEvent, requi
 
 // --- retention (reported by `vctl retention`; enforced by the prune CronJob) ---
 //
-// Nothing here deletes. Retention deletion runs in-cluster from the prune
-// CronJob, as the table owner over the pod-local socket. That is deliberate: the
-// job needs no credential distribution and no network path, and it keeps the
-// ability to delete audit records out of every credential an operator carries.
-// vctl reads the same numbers so the footprint is visible without granting
-// anyone DELETE.
+// Retention deletion runs only through the hidden in-cluster prune command with
+// its delete-only Vault role. Human operator credentials cannot obtain that role;
+// vctl retention reads the same numbers without DELETE.
 
 // CountKernelEventsBefore returns how many kernel_event rows are older than t.
 func (s *Store) CountKernelEventsBefore(ctx context.Context, t time.Time) (int64, error) {
@@ -124,10 +198,16 @@ func (s *Store) CountKernelEventsBefore(ctx context.Context, t time.Time) (int64
 	return n, err
 }
 
-// CountSessionsBefore returns how many audit_session rows started before t.
+// CountSessionsBefore returns how many ended audit_session rows are eligible for
+// pruning before t. Open sessions and sessions with retained events are not
+// reported as overdue when the pruner intentionally cannot remove them.
 func (s *Store) CountSessionsBefore(ctx context.Context, t time.Time) (int64, error) {
 	var n int64
-	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM audit_session WHERE started_at < $1`, t).Scan(&n)
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM audit_session s
+		WHERE s.started_at < $1
+		  AND s.ended_at IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM kernel_event e WHERE e.session_id=s.id)`, t).Scan(&n)
 	return n, err
 }
 

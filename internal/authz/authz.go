@@ -43,9 +43,8 @@ var gated = map[string]Class{
 	"audit":    ClassRead,
 	"session":  ClassRead,
 	// retention reports what is past its horizon and what it costs on disk; it
-	// deletes nothing. It was "prune" and ClassMutate, guarding a deletion path
-	// that could never run — see cli/retention.go. Deletion lives in the prune
-	// CronJob, which does not go through vctl at all.
+	// deletes nothing. The hidden prune automation command is intentionally not
+	// in this human RBAC catalog; its delete-only Vault role is the authorization.
 	"retention": ClassRead,
 }
 

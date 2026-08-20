@@ -324,28 +324,36 @@ const (
 	PurposeAuditRead
 	PurposeAuditWrite
 	PurposeAuditIngest
+	PurposeAuditPrune
 	PurposeMigrate
+	purposeCount
 )
 
-// roleFor maps a purpose to its configured Vault database role.
-func (a *App) roleFor(p Purpose) string {
+// roleFor maps a purpose to its configured Vault database role. Unknown values
+// are rejected rather than inheriting read access: adding a purpose without an
+// explicit least-privilege decision must fail closed.
+func (a *App) roleFor(p Purpose) (string, error) {
 	switch p {
+	case PurposeInventoryRead:
+		return a.Cfg.DBRoleRO, nil
 	case PurposeInventoryWrite:
-		return a.Cfg.DBRoleRW
+		return a.Cfg.DBRoleRW, nil
 	case PurposeStatus:
-		return a.Cfg.DBRoleStatus
+		return a.Cfg.DBRoleStatus, nil
 	case PurposeIdentity:
-		return a.Cfg.DBRoleIdentity
+		return a.Cfg.DBRoleIdentity, nil
 	case PurposeAuditRead:
-		return a.Cfg.DBRoleAuditRO
+		return a.Cfg.DBRoleAuditRO, nil
 	case PurposeAuditWrite:
-		return a.Cfg.DBRoleAuditWrite
+		return a.Cfg.DBRoleAuditWrite, nil
 	case PurposeAuditIngest:
-		return a.Cfg.DBRoleAuditIngest
+		return a.Cfg.DBRoleAuditIngest, nil
+	case PurposeAuditPrune:
+		return a.Cfg.DBRoleAuditPrune, nil
 	case PurposeMigrate:
-		return a.Cfg.DBRoleMigrate
-	default: // PurposeInventoryRead
-		return a.Cfg.DBRoleRO
+		return a.Cfg.DBRoleMigrate, nil
+	default:
+		return "", fmt.Errorf("unknown database purpose %d", p)
 	}
 }
 
@@ -357,6 +365,10 @@ var localDSNOnce sync.Once
 // OpenStore ensures login, requests dynamic DB credentials for the purpose's
 // Vault role, and opens Postgres.
 func (a *App) OpenStore(ctx context.Context, p Purpose) (*store.Store, error) {
+	role, err := a.roleFor(p)
+	if err != nil {
+		return nil, err
+	}
 	if a.Cfg.LocalDBDSN != "" {
 		// The local DSN ignores the purpose, so every caller shares one static
 		// credential instead of its own least-privilege DB role. Say so on stderr:
@@ -367,7 +379,7 @@ func (a *App) OpenStore(ctx context.Context, p Purpose) (*store.Store, error) {
 		})
 		return store.OpenLocal(ctx, a.Cfg.LocalDBDSN)
 	}
-	return a.openRole(ctx, a.roleFor(p))
+	return a.openRole(ctx, role)
 }
 
 // LogAccess records one SSH access attempt to the central audit table using

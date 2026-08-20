@@ -55,6 +55,12 @@ type Ingestor interface {
 	InsertKernelEventsAttributed(ctx context.Context, evs []store.KernelEvent) (int, []int, error)
 }
 
+// Pruner is the narrow capability held by the in-cluster retention job. It can
+// remove expired audit data, but it cannot read timelines or append records.
+type Pruner interface {
+	PruneAudit(ctx context.Context, cutoff store.AuditCutoff, batchSize int) (store.AuditPruneResult, error)
+}
+
 // Conn is an open audit connection: everything the two scopes need, plus the
 // close this package owns.
 //
@@ -64,6 +70,7 @@ type Ingestor interface {
 type Conn interface {
 	Reader
 	Ingestor
+	Pruner
 	Close()
 }
 
@@ -79,6 +86,7 @@ type Purpose int
 const (
 	Read Purpose = iota
 	Ingest
+	Prune
 )
 
 // Store is audit access with its credentials and pool lifetime hidden.
@@ -101,6 +109,11 @@ func (s *Store) Reading(ctx context.Context, fn func(Reader) error) error {
 // Ingesting runs fn against the ingest role.
 func (s *Store) Ingesting(ctx context.Context, fn func(Ingestor) error) error {
 	return s.with(ctx, Ingest, func(c Conn) error { return fn(c) })
+}
+
+// Pruning runs fn with the delete-only retention role.
+func (s *Store) Pruning(ctx context.Context, fn func(Pruner) error) error {
+	return s.with(ctx, Prune, func(c Conn) error { return fn(c) })
 }
 
 func (s *Store) with(ctx context.Context, p Purpose, fn func(Conn) error) error {

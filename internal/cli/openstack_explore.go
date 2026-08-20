@@ -147,8 +147,8 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 // that login happens here, in front of the screen, as it did before.
 func firstExploreScreen(ctx context.Context, a *app.App, st *openLater, live bool) (exploreData, error) {
 	if !live {
-		if cached, err := a.FleetCache().Load(fleet.ShapeVMs, time.Now()); err == nil {
-			out := exploreDataFrom(fleet.From(cached.Fleet))
+		if rd, ok := storedReader(a).Stored(fleet.ShapeVMs, fleet.ForBrowsing); ok {
+			out := exploreDataFrom(rd.Catalog)
 			// A stored reading with nothing in it is not worth a screen. The
 			// caller answers an empty fleet with "no deployments yet, run the
 			// node agents" and returns, which would be advice about a fleet

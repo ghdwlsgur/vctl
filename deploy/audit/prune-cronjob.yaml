@@ -1,6 +1,5 @@
-# Daily kernel-audit retention. Runs `vctl prune` with config defaults
-# (kernel_retention_days / session_retention_days). Mirrors Teleport's model:
-# structured rows live in the DB, a lifecycle job enforces retention.
+# Daily kernel-audit retention. The hidden `vctl prune` automation command uses
+# a Vault-issued delete-only credential and deletes in bounded transactions.
 #
 # Needs: vctl image + AppRole creds (vctl-pruner) in secret `vctl-prune-approle`.
 apiVersion: batch/v1
@@ -31,8 +30,8 @@ spec:
           containers:
             - name: prune
               # Pin to a release tag; pull from the internal trusted registry.
-              image: harbor.sre.local/sre/vctl:v0.1.14
-              args: ["prune"]
+              image: harbor.sre.local/sre/vctl:v0.2.51
+              args: ["prune", "--batch-size=5000"]
               env:
                 - name: VCTL_AUTH_METHOD
                   value: approle
@@ -40,6 +39,10 @@ spec:
                   value: /etc/vctl/role-id
                 - name: VCTL_SECRET_ID_FILE
                   value: /etc/vctl/secret-id
+                - name: VCTL_KERNEL_RETENTION_DAYS
+                  value: "14"
+                - name: VCTL_SESSION_RETENTION_DAYS
+                  value: "365"
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true

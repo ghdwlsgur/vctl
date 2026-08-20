@@ -43,6 +43,9 @@ func (*fakeConn) InsertKernelEvents(context.Context, []store.KernelEvent) (int, 
 func (*fakeConn) InsertKernelEventsAttributed(context.Context, []store.KernelEvent) (int, []int, error) {
 	return 0, nil, nil
 }
+func (*fakeConn) PruneAudit(context.Context, store.AuditCutoff, int) (store.AuditPruneResult, error) {
+	return store.AuditPruneResult{}, nil
+}
 
 // Each scope asks for the credential its work needs, and nothing else.
 //
@@ -64,8 +67,11 @@ func TestEachScopeAsksForItsOwnCredential(t *testing.T) {
 	if err := s.Ingesting(context.Background(), func(Ingestor) error { return nil }); err != nil {
 		t.Fatalf("Ingesting: %v", err)
 	}
-	if len(asked) != 2 || asked[0] != Read || asked[1] != Ingest {
-		t.Errorf("credentials asked for = %v, want [Read Ingest]", asked)
+	if err := s.Pruning(context.Background(), func(Pruner) error { return nil }); err != nil {
+		t.Fatalf("Pruning: %v", err)
+	}
+	if len(asked) != 3 || asked[0] != Read || asked[1] != Ingest || asked[2] != Prune {
+		t.Errorf("credentials asked for = %v, want [Read Ingest Prune]", asked)
 	}
 }
 
@@ -114,4 +120,5 @@ func TestTheRealStoreSatisfiesTheScopes(t *testing.T) {
 	var _ Conn = (*store.Store)(nil)
 	var _ Reader = (*store.Store)(nil)
 	var _ Ingestor = (*store.Store)(nil)
+	var _ Pruner = (*store.Store)(nil)
 }

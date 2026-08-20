@@ -110,7 +110,7 @@ Canary sizing checklist:
 systemctl status vctl-collect vctl-watch-sessions
 journalctl -u vctl-collect -u vctl-watch-sessions --since -1h --no-pager
 systemd-cgtop
-vctl prune --dry-run
+vctl retention
 ```
 
 If the collector drops events or falls behind, first raise `VCTL_COLLECT_BATCH`

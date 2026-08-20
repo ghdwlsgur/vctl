@@ -96,3 +96,47 @@ func TestRetentionIsGatedAsRead(t *testing.T) {
 		t.Fatal("prune is still in the gated catalog")
 	}
 }
+
+// Retention deletion is an automation interface, not an operator command. The
+// CronJob must be able to invoke it, while ordinary help and app RBAC do not
+// advertise a destructive path that human credentials cannot authorize.
+func TestPruneIsAHiddenAutomationCommand(t *testing.T) {
+	cmd := findCmd(NewRoot(Dependencies{}), "prune")
+	if cmd == nil {
+		t.Fatal("the retention CronJob has no prune command to invoke")
+	}
+	if !cmd.Hidden {
+		t.Fatal("prune is visible in operator help")
+	}
+	if _, ok := authz.ClassOf("prune"); ok {
+		t.Fatal("the AppRole-only prune command was added to human app RBAC")
+	}
+}
+
+func TestPruneCronJobUsesTheAutomationCommandAndCurrentRetentionContract(t *testing.T) {
+	b, err := os.ReadFile("../../deploy/audit/prune-cronjob.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := string(b)
+	for _, want := range []string{
+		`args: ["prune", "--batch-size=5000"]`,
+		"VCTL_KERNEL_RETENTION_DAYS",
+		"VCTL_SESSION_RETENTION_DAYS",
+	} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("prune CronJob is missing %q", want)
+		}
+	}
+	if strings.Contains(manifest, "v0.1.14") {
+		t.Error("prune CronJob still pins the obsolete image")
+	}
+
+	policy, err := os.ReadFile("../../deploy/vault/vctl-pruner.hcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(policy), `path "database/creds/vctl-pruner"`) {
+		t.Error("pruner AppRole cannot obtain its delete-only database credential")
+	}
+}

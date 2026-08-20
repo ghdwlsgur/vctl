@@ -51,12 +51,10 @@ func (s *Store) SetExtraIPs(ctx context.Context, hostname string, ips []string) 
 // it is now. A rename has to carry all of them or the row keeps its old key and
 // silently stops joining.
 //
-// There are no foreign keys anywhere in this schema, so nothing enforces this
-// list — Postgres will happily leave every one of these pointing at a name that
-// no longer exists, and each failure shows up somewhere different: the host
-// reads as no-agent in `vctl list`, its WireGuard interfaces vanish from the
-// graph, its IP ledger entry stops resolving. Adding a hostname column without
-// adding it here reintroduces exactly that.
+// Inventory-owned tables are carried by foreign keys. The ordinary hostname
+// attributes below are deliberately loose references (they may describe a host
+// before it is registered or after it is retired), so rename still updates them
+// explicitly.
 //
 // Audit tables are deliberately absent — see the comment on Rename.
 // keyed marks a column that is part of its table's primary key. Those are the
@@ -119,6 +117,19 @@ func (s *Store) Rename(ctx context.Context, oldHost, newHost string) (bool, erro
 	}
 	defer tx.Rollback(ctx)
 
+	// Clear stale inventory-owned observations under the destination before the
+	// FK cascades run. If a live server already owns newHost the later UPDATE
+	// fails and this transaction restores everything.
+	for _, c := range renameCarried {
+		if !c.keyed {
+			continue
+		}
+		del := `DELETE FROM ` + c.table + ` WHERE ` + c.column + `=$1`
+		if _, err := tx.Exec(ctx, del, newHost); err != nil {
+			return false, err
+		}
+	}
+
 	tag, err := tx.Exec(ctx, `UPDATE servers SET hostname=$2, updated_at=now() WHERE hostname=$1`, oldHost, newHost)
 	if err != nil {
 		return false, err
@@ -134,16 +145,8 @@ func (s *Store) Rename(ctx context.Context, oldHost, newHost string) (bool, erro
 
 	for _, c := range renameCarried {
 		if c.keyed {
-			// Clear any row already sitting under the new name before moving this
-			// host's onto it. Delete only removes from servers, so a host retired
-			// under that name can leave its status or WireGuard rows behind, and the
-			// update would hit the primary key. Dropping them is right — they
-			// describe a machine the inventory no longer has, and keeping them would
-			// hand the renamed host another machine's state.
-			del := `DELETE FROM ` + c.table + ` WHERE ` + c.column + `=$1`
-			if _, err := tx.Exec(ctx, del, newHost); err != nil {
-				return false, err
-			}
+			// The server FK (and the WireGuard FK chain) already carried it.
+			continue
 		}
 		upd := `UPDATE ` + c.table + ` SET ` + c.column + `=$2 WHERE ` + c.column + `=$1`
 		if _, err := tx.Exec(ctx, upd, oldHost, newHost); err != nil {
