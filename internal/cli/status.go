@@ -129,8 +129,11 @@ func (s agentSummary) State() ui.State {
 // fail. A first version did, and printed "ssh will not work" directly above a
 // line reporting that the SSH CA read had succeeded.
 func authMethodRow(ctx context.Context, a *app.App) ui.KV {
-	who := a.Vault.Identity(ctx)
-	if who == "" {
+	// One lookup answers both questions this row asks (who, via which
+	// method). Diagnostic: a failed lookup renders as "not logged in" rather
+	// than failing the status screen that exists to show broken states.
+	info, err := a.Vault.LookupToken(ctx)
+	if err != nil || info.Identity == "" {
 		want := a.Cfg.AuthMethod
 		if want == "" {
 			want = "userpass"
@@ -139,13 +142,13 @@ func authMethodRow(ctx context.Context, a *app.App) ui.KV {
 	}
 	// Unattended callers name their own method, so this only fires where
 	// somebody meant to be themselves and is not.
-	if !machineIdentity(a.Vault.TokenAuthMethod(ctx)) || machineIdentity(a.Cfg.AuthMethod) {
-		return ui.KV{Key: "Auth method", Value: who}
+	if !machineIdentity(info.AuthMethod) || machineIdentity(a.Cfg.AuthMethod) {
+		return ui.KV{Key: "Auth method", Value: info.Identity}
 	}
 	return ui.KV{
 		Key: "Auth method",
 		Value: fmt.Sprintf("%s — a machine identity, not yours. "+
-			"Run 'vctl login' to hold your own group policies", who),
+			"Run 'vctl login' to hold your own group policies", info.Identity),
 		State: ui.StateWarn,
 	}
 }

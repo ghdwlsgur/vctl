@@ -410,9 +410,12 @@ func rbacWhoamiCmd(env CommandEnv) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			return env.withStore(ctx, false, func(a *app.App, st *store.Store) error {
-				user := a.Vault.Identity(ctx)
-				pols, _ := a.Vault.TokenPolicies(ctx)
-				isAdmin := authz.HasAdminPolicy(pols)
+				info, err := a.Vault.LookupToken(ctx)
+				if err != nil {
+					return err
+				}
+				user := info.Identity
+				isAdmin := authz.HasAdminPolicy(info.Policies)
 				groups, err := st.RBACGroupsForUser(ctx, user)
 				if err != nil && !authz.IsUninitializedRBAC(err) {
 					return err
@@ -445,8 +448,11 @@ func rbacCheckCmd(env CommandEnv) *cobra.Command {
 			ctx := cmd.Context()
 			return env.withStore(ctx, false, func(a *app.App, st *store.Store) error {
 				want := args[0]
-				pols, _ := a.Vault.TokenPolicies(ctx)
-				if authz.HasAdminPolicy(pols) {
+				info, err := a.Vault.LookupToken(ctx)
+				if err != nil {
+					return err
+				}
+				if authz.HasAdminPolicy(info.Policies) {
 					fmt.Fprintf(os.Stdout, "%s %q (admin bypass)\n", ui.OK("allow"), want)
 					return nil
 				}
@@ -467,7 +473,7 @@ func rbacCheckCmd(env CommandEnv) *cobra.Command {
 					fmt.Fprintf(os.Stdout, "%s %q (admin-only — needs vctl-admin or sre-admin)\n", ui.Fail("deny"), want)
 					return nil
 				}
-				cmds, err := st.RBACCommandsForUser(ctx, a.Vault.Identity(ctx))
+				cmds, err := st.RBACCommandsForUser(ctx, info.Identity)
 				if err != nil {
 					return err
 				}

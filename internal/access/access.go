@@ -35,8 +35,14 @@ type CertSigner interface {
 
 // Identifier returns the current Vault identity, used to attribute audit rows.
 // Satisfied by *vaultc.Client.
+//
+// The error matters here: a failed lookup used to collapse into "", and the
+// audit row it fed was indistinguishable from one made by a legitimately
+// nameless token. The connection still proceeds — Vault just signed its
+// certificate, so the failure is a blip, not an authorization problem — but
+// the caller is told the attribution is missing instead of it going quietly.
 type Identifier interface {
-	Identity(ctx context.Context) string
+	Identity(ctx context.Context) (string, error)
 }
 
 // AuditLogger records one access attempt. Satisfied by *app.App.
@@ -109,10 +115,22 @@ type Connector struct {
 func (c *Connector) Connect(ctx context.Context, req Request) error {
 	req.HostKey.apply(req.Target)
 	sign, serial := c.signFunc(ctx)
-	vaultUser := c.Identity.Identity(ctx)
+	vaultUser := c.attributedIdentity(ctx)
 	info, err := sshc.Connect(ctx, req.Target, sign)
 	c.record(ctx, accessEntry(vaultUser, req.Target, info, serial(), err))
 	return err
+}
+
+// attributedIdentity is who the audit row will name. A lookup failure is
+// surfaced through OnAuditError — the same channel a failed audit write uses,
+// because both mean the same thing: the trail for this connection is
+// incomplete and somebody should know now, not during an investigation.
+func (c *Connector) attributedIdentity(ctx context.Context) string {
+	id, err := c.Identity.Identity(ctx)
+	if err != nil && c.OnAuditError != nil {
+		c.OnAuditError(fmt.Errorf("identity lookup failed; the audit row will carry no user: %w", err))
+	}
+	return id
 }
 
 // Execute runs a single command on the target non-interactively and returns its
@@ -142,7 +160,7 @@ func (c *Connector) run(ctx context.Context, req Request, command string, timeou
 	}
 	req.HostKey.apply(req.Target)
 	sign, serial := c.signFunc(runCtx)
-	vaultUser := c.Identity.Identity(ctx)
+	vaultUser := c.attributedIdentity(ctx)
 	res, info, err := sshc.Run(runCtx, req.Target, sign, command)
 	return Result{
 			Host: req.Target.Name, Addr: req.Target.Addr,

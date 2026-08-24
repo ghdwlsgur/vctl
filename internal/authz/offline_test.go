@@ -13,8 +13,9 @@ type stubPolicies struct {
 	identity string
 }
 
-func (s stubPolicies) TokenPolicies(context.Context) ([]string, error) { return s.pols, nil }
-func (s stubPolicies) Identity(context.Context) string                 { return s.identity }
+func (s stubPolicies) TokenIdentity(context.Context) (string, []string, error) {
+	return s.identity, s.pols, nil
+}
 
 var errDBDown = errors.New("postgres connect: connection refused")
 
