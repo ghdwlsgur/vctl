@@ -365,7 +365,7 @@ func TestChangingADeploymentDropsTheStoredReading(t *testing.T) {
 		t.Fatal("nothing stored to begin with")
 	}
 
-	forgetReadings(a)
+	forgetReadings(context.Background(), a, nil)
 
 	for _, s := range []fleet.Shape{fleet.ShapeFarms, fleet.ShapeVMs} {
 		if _, ok := storedReader(a).Stored(s, fleet.ForFallback); ok {
@@ -374,7 +374,7 @@ func TestChangingADeploymentDropsTheStoredReading(t *testing.T) {
 	}
 	// And again on a cache that is already empty, since a rename may be the
 	// first thing anybody runs.
-	forgetReadings(a)
+	forgetReadings(context.Background(), a, nil)
 }
 
 // Every command that changes a deployment drops the reading. Naming and

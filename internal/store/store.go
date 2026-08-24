@@ -461,28 +461,22 @@ type InventoryRow struct {
 // for observed_ips (so `vctl ssh --server <ip>` matches) plus last_seen_at and
 // agent_version (so the listing can flag agent liveness) — not the full metrics.
 func (s *Store) ListInventory(ctx context.Context, dc string) ([]InventoryRow, error) {
-	q := `SELECT ` + prefixedSelectCols("srv") + `, ` + ipArrayCol("ss.observed_ips") + `,
-		ss.last_seen_at, coalesce(ss.agent_version,'')
-		FROM servers srv
-		LEFT JOIN server_status ss ON ss.hostname = srv.hostname`
-	var args []any
-	if dc != "" {
-		q += ` WHERE srv.dc=$1`
-		args = append(args, dc)
+	// ListWithStatus projected through InventoryRow — the same derivation the
+	// snapshot cache serves offline listings from, so the two paths cannot
+	// disagree about what a listing row contains. This was a second
+	// implementation: its own SELECT (a strict subset of ListWithStatus's) and
+	// its own 14-destination scan, i.e. one pure-surplus query kept in sync by
+	// hand and a differential test. Reading the wider row costs a few extra
+	// status columns on a query whose expense is the connection, not the data.
+	rows, err := s.ListWithStatus(ctx, dc)
+	if err != nil {
+		return nil, err
 	}
-	q += ` ORDER BY srv.dc, srv.hostname`
-	return queryAndCollect(ctx, s.pool, q, args, func(r pgx.Rows) (InventoryRow, error) {
-		var row InventoryRow
-		var observed []string
-		err := r.Scan(&row.Hostname, &row.IP, &row.Port, &row.User, &row.JumpVia, &row.DC,
-			&row.CARole, &row.CAKeyVersion, &row.LastSeenUp, &row.ExtraIPs, &row.State, &observed,
-			&row.AgentSeen, &row.AgentVersion)
-		if err != nil {
-			return row, err
-		}
-		row.Addresses = mergeAddresses(row.IP, row.ExtraIPs, observed)
-		return row, nil
-	})
+	out := make([]InventoryRow, len(rows))
+	for i, w := range rows {
+		out[i] = w.InventoryRow()
+	}
+	return out, nil
 }
 
 // mergeAddresses returns the primary address first, then the extra and observed
@@ -503,6 +497,16 @@ func mergeAddresses(primary string, sets ...[]string) []string {
 		}
 	}
 	return out
+}
+
+// Now reports the database's clock. A caller stamping an ordering marker that
+// is later compared against a reading's ReadAt needs this clock, not the
+// machine's — the comparison is only meaningful like with like, and the two
+// clocks are not the same thing on a workstation that drifts.
+func (s *Store) Now(ctx context.Context) (time.Time, error) {
+	var t time.Time
+	err := s.pool.QueryRow(ctx, `SELECT now()`).Scan(&t)
+	return t, err
 }
 
 // AccessEntry is one row of the inventory-level SSH access audit.
