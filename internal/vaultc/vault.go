@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	vault "github.com/hashicorp/vault/api"
@@ -21,6 +22,13 @@ import (
 type Client struct {
 	api       *vault.Client
 	tokenPath string
+
+	// mu guards tokenExp and renewable. The underlying vault.Client locks its
+	// own token, but these two are ours — and they are read from whatever
+	// goroutine pgxpool opens a connection on (the credential callback checks
+	// login first), while a login or renewal on another writes them. time.Time
+	// is multi-word, so that read is a torn value, not just a stale one.
+	mu        sync.Mutex
 	tokenExp  time.Time
 	renewable bool
 }
@@ -52,7 +60,10 @@ func New(addr string, caPEM []byte, stateDir string) (*Client, error) {
 
 // HasValidToken reports whether the cached token is valid with 60s of margin.
 func (c *Client) HasValidToken() bool {
-	return c.api.Token() != "" && c.tokenExp.After(time.Now().Add(60*time.Second))
+	c.mu.Lock()
+	exp := c.tokenExp
+	c.mu.Unlock()
+	return c.api.Token() != "" && exp.After(time.Now().Add(60*time.Second))
 }
 
 func (c *Client) loadToken() {
@@ -64,8 +75,10 @@ func (c *Client) loadToken() {
 	if err := json.Unmarshal(b, &t); err != nil {
 		return
 	}
+	c.mu.Lock()
 	c.tokenExp = t.Expires
 	c.renewable = t.Renewable
+	c.mu.Unlock()
 	if t.Token != "" && t.Expires.After(time.Now()) {
 		c.api.SetToken(t.Token)
 	}
@@ -73,8 +86,10 @@ func (c *Client) loadToken() {
 
 func (c *Client) saveToken(token string, ttl time.Duration, renewable bool) error {
 	exp := time.Now().Add(ttl)
+	c.mu.Lock()
 	c.tokenExp = exp
 	c.renewable = renewable
+	c.mu.Unlock()
 	c.api.SetToken(token)
 	b, err := json.Marshal(cachedToken{Token: token, Expires: exp, Renewable: renewable})
 	if err != nil {
@@ -104,17 +119,26 @@ func (c *Client) applyAuth(sec *vault.Secret) error {
 func (c *Client) Token() string { return c.api.Token() }
 
 // Renewable reports whether the current token can be renewed.
-func (c *Client) Renewable() bool { return c.renewable }
+func (c *Client) Renewable() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.renewable
+}
 
 // Expiry returns the cached token expiry time.
-func (c *Client) Expiry() time.Time { return c.tokenExp }
+func (c *Client) Expiry() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tokenExp
+}
 
 // TTL returns the remaining token lifetime.
 func (c *Client) TTL() time.Duration {
-	if c.tokenExp.IsZero() {
+	exp := c.Expiry()
+	if exp.IsZero() {
 		return 0
 	}
-	d := time.Until(c.tokenExp)
+	d := time.Until(exp)
 	if d < 0 {
 		return 0
 	}
@@ -197,8 +221,10 @@ func (c *Client) TokenPolicies(ctx context.Context) ([]string, error) {
 // Logout clears the cached token.
 func (c *Client) Logout() error {
 	c.api.ClearToken()
+	c.mu.Lock()
 	c.tokenExp = time.Time{}
 	c.renewable = false
+	c.mu.Unlock()
 	if err := os.Remove(c.tokenPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
