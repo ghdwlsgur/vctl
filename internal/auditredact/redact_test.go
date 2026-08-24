@@ -14,6 +14,9 @@ func TestArguments(t *testing.T) {
 		{"environment", `env API_KEY=abc TOKEN=def command`, `env API_KEY=[REDACTED] TOKEN=[REDACTED] command`},
 		{"kubernetes literal", `kubectl create secret generic x --from-literal=password=abc`, `kubectl create secret generic x --from-literal=password=[REDACTED]`},
 		{"uri userinfo", `psql postgres://user:pass@db.internal/vctl`, `psql postgres://user:[REDACTED]@db.internal/vctl`},
+		// The "@" must survive whatever set of rules ran before the URI one —
+		// it is what keeps the redacted URI a URI.
+		{"uri userinfo beside other secrets", `run --token=abc postgres://user:pass@db.internal/vctl`, `run --token=[REDACTED] postgres://user:[REDACTED]@db.internal/vctl`},
 		{"ordinary args", `kubectl get pods -n vctl`, `kubectl get pods -n vctl`},
 	}
 	for _, tt := range tests {
