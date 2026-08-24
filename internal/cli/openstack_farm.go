@@ -60,13 +60,9 @@ func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				farms, err := farmChoices(ctx, a, st)
-				if err != nil {
+				farms, ok, err := farmChoicesForPick(ctx, a, st)
+				if err != nil || !ok {
 					return err
-				}
-				if len(farms) == 0 {
-					ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
-					return nil
 				}
 				id, name := "", ""
 				if len(args) > 0 {
@@ -208,29 +204,62 @@ func farmChoices(ctx context.Context, a *app.App, st *store.Store) ([]farmChoice
 	return cat.Farms(), nil
 }
 
-// resolveFarmName fills in whatever was not given on the command line.
-func resolveFarmName(farms []farmChoice, id, name, region string) (string, string, string, error) {
-	if id != "" {
-		// resolveFarm rather than a position lookup: this path renames a
-		// deployment, and its error says which ids share a name instead of
-		// picking one of them.
-		f, err := resolveFarm(farms, id)
-		if err != nil {
-			return "", "", "", err
-		}
-		if name != "" {
-			return f.ID, strings.TrimSpace(name), region, nil
-		}
-		return farmNameForm(f, region)
+// farmChoicesForPick loads the light catalog and tells the operator when
+// there is nothing to pick from. ok=false with a nil error means the command
+// is done: the warning has been printed and there is nothing to act on.
+func farmChoicesForPick(ctx context.Context, a *app.App, st *store.Store) ([]farmChoice, bool, error) {
+	farms, err := farmChoices(ctx, a, st)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(farms) == 0 {
+		ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
+		return nil, false, nil
+	}
+	return farms, true, nil
+}
+
+// firstArg is the optional positional selector, "" when none was given.
+func firstArg(args []string) string {
+	if len(args) > 0 {
+		return args[0]
+	}
+	return ""
+}
+
+// pickFarm answers "which deployment?" — from the selector when one was
+// given, from a picker when one was not.
+//
+// The selector always goes through resolveFarm, so a name two deployments
+// share is reported as such instead of as "no deployment %q" — which is what
+// a position lookup's -1 reads as. Four commands carried this block as
+// separate copies, and `farm state` had drifted onto the position lookup:
+// the same typed word its siblings explained came back as the lesser
+// diagnosis, on a path that changes a deployment's declared state.
+func pickFarm(farms []farmChoice, selector, title string) (farmChoice, error) {
+	if selector != "" {
+		return resolveFarm(farms, selector)
 	}
 	if !isTerminal() {
-		return "", "", "", fmt.Errorf("a deployment is required when there is no terminal to pick at")
+		return farmChoice{}, fmt.Errorf("a deployment is required when there is no terminal to pick at")
 	}
-	i, err := pickIndex(farmPickLabels(farms), nil, "Name a deployment")
+	i, err := pickIndex(farmPickLabels(farms), nil, title)
+	if err != nil {
+		return farmChoice{}, err
+	}
+	return farms[i], nil
+}
+
+// resolveFarmName fills in whatever was not given on the command line.
+func resolveFarmName(farms []farmChoice, id, name, region string) (string, string, string, error) {
+	f, err := pickFarm(farms, id, "Name a deployment")
 	if err != nil {
 		return "", "", "", err
 	}
-	return farmNameForm(farms[i], region)
+	if name != "" {
+		return f.ID, strings.TrimSpace(name), region, nil
+	}
+	return farmNameForm(f, region)
 }
 
 // resolveFarm turns what somebody typed into exactly one deployment.
@@ -243,10 +272,14 @@ func resolveFarm(farms []farmChoice, selector string) (farmChoice, error) {
 	return fleet.Resolve(farms, selector)
 }
 
-// indexOfFarm is resolveFarm for the callers that need a position in the list
-// they were given, such as the interactive picker's starting cursor.
-func indexOfFarm(farms []farmChoice, selector string) int {
-	return fleet.IndexOf(farms, selector)
+// farmFormDesc is a form's description of the deployment it is about: the
+// id, and the size and shape when it has hosts. The name and state forms
+// carried identical copies of this assembly.
+func farmFormDesc(f farmChoice) string {
+	if n := len(f.Hosts); n > 0 {
+		return fmt.Sprintf("%s · %d hosts · %s", f.ID, n, farmShape(f.Hosts, false))
+	}
+	return f.ID
 }
 
 // farmPickLabels shows what each deployment contains, because the endpoint on
@@ -285,10 +318,7 @@ func farmNameForm(f farmChoice, region string) (string, string, string, error) {
 	if region == "" {
 		region = f.Region
 	}
-	desc := f.ID
-	if n := len(f.Hosts); n > 0 {
-		desc = fmt.Sprintf("%s · %d hosts · %s", f.ID, n, farmShape(f.Hosts, false))
-	}
+	desc := farmFormDesc(f)
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title("Name").
 			Description(desc).
@@ -325,13 +355,9 @@ func openstackFarmStateCmd(env CommandEnv) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				farms, err := farmChoices(ctx, a, st)
-				if err != nil {
+				farms, ok, err := farmChoicesForPick(ctx, a, st)
+				if err != nil || !ok {
 					return err
-				}
-				if len(farms) == 0 {
-					ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
-					return nil
 				}
 				id, state := "", ""
 				if len(args) > 0 {
@@ -363,28 +389,18 @@ func openstackFarmStateCmd(env CommandEnv) *cobra.Command {
 
 // resolveFarmState fills in whatever was not given on the command line.
 func resolveFarmState(farms []farmChoice, id, state, note string) (string, string, string, error) {
-	if id != "" {
-		i := indexOfFarm(farms, id)
-		if i < 0 {
-			return "", "", "", fmt.Errorf("no deployment %q; run 'vctl openstack' to see them", id)
-		}
-		if state != "" {
-			if !store.ValidState(state) {
-				return "", "", "", fmt.Errorf("%q is not a state; use one of %s",
-					state, strings.Join(store.HostStates, ", "))
-			}
-			return farms[i].ID, state, strings.TrimSpace(note), nil
-		}
-		return farmStateForm(farms[i], note)
-	}
-	if !isTerminal() {
-		return "", "", "", fmt.Errorf("a deployment is required when there is no terminal to pick at")
-	}
-	i, err := pickIndex(farmPickLabels(farms), nil, "Declare a deployment's state")
+	f, err := pickFarm(farms, id, "Declare a deployment's state")
 	if err != nil {
 		return "", "", "", err
 	}
-	return farmStateForm(farms[i], note)
+	if state != "" {
+		if !store.ValidState(state) {
+			return "", "", "", fmt.Errorf("%q is not a state; use one of %s",
+				state, strings.Join(store.HostStates, ", "))
+		}
+		return f.ID, state, strings.TrimSpace(note), nil
+	}
+	return farmStateForm(f, note)
 }
 
 func farmStateForm(f farmChoice, note string) (string, string, string, error) {
@@ -395,10 +411,7 @@ func farmStateForm(f farmChoice, note string) (string, string, string, error) {
 	if state == "" {
 		state = store.StateActive
 	}
-	desc := f.ID
-	if n := len(f.Hosts); n > 0 {
-		desc = fmt.Sprintf("%s · %d hosts · %s", f.ID, n, farmShape(f.Hosts, false))
-	}
+	desc := farmFormDesc(f)
 	form := huh.NewForm(huh.NewGroup(
 		// A Select, not free text: the database constrains the column, and
 		// typing "down" into a field that takes only these four should fail at
