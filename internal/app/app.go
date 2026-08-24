@@ -34,6 +34,15 @@ type App struct {
 	// decides whether the configured login method outranks the unattended ones.
 	// Optional; nil asks the terminal.
 	Interactive func() bool
+
+	// loginMu serializes EnsureLogin. pgxpool opens connections concurrently
+	// and each new connection's credential callback ensures login first, so a
+	// lapsed token met a burst of connects with one login per connection —
+	// four AppRole logins where one would do, or, on the interactive path, a
+	// second password prompt racing the first. The check-then-authenticate
+	// sequence has to be one critical section; the goroutine that loses the
+	// race finds a valid token and returns.
+	loginMu sync.Mutex
 }
 
 func New() (*App, error) {
@@ -72,6 +81,8 @@ func New() (*App, error) {
 // past that statement — so it still goes first whenever there is no terminal,
 // which is every pod, timer and CI job.
 func (a *App) EnsureLogin(ctx context.Context) error {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
 	if a.Vault.HasValidToken() {
 		return nil
 	}
