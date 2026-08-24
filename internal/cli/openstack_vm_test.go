@@ -121,10 +121,10 @@ func TestProjectLabelFallsBackToTheID(t *testing.T) {
 // endpoint is a real answer to "which deployment is this".
 func TestFarmLabelFallsBackToTheEndpoint(t *testing.T) {
 	names := map[string]string{"a": "lab-a"}
-	if got := vmFarmLabel("a", names); got != "lab-a" {
+	if got := farmLabelOf("a", names); got != "lab-a" {
 		t.Errorf("named farm: got %q", got)
 	}
-	if got := vmFarmLabel("172.29.0.100:5000", names); got != "172.29.0.100:5000" {
+	if got := farmLabelOf("172.29.0.100:5000", names); got != "172.29.0.100:5000" {
 		t.Errorf("unnamed farm: got %q, want the endpoint", got)
 	}
 }

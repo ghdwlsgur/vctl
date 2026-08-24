@@ -431,14 +431,13 @@ func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, opera
 	// By what is printed, not by the id behind it — sorting on the endpoint
 	// while showing the name produces an order that looks like no order at all.
 	sort.Slice(ids, func(i, j int) bool {
-		return vmFarmLabel(ids[i], farms) < vmFarmLabel(ids[j], farms)
+		return farmLabelOf(ids[i], farms) < farmLabelOf(ids[j], farms)
 	})
 
-	// The same header the host listing uses, so one farm reads the same in both.
+	// The same heading the host listing uses, so one farm reads the same in both.
 	for _, id := range ids {
 		group := byFarm[id]
-		fmt.Fprintf(w, "\n%s %s\n", farmHeading(vmFarmLabel(id, farms)),
-			ui.Muted(fmt.Sprintf("· %d VMs", len(group))))
+		fmt.Fprintf(w, "\n%s\n", ui.GroupHeading(farmLabelOf(id, farms), fmt.Sprintf("%d VMs", len(group))))
 		cells := make([][]string, 0, len(group)+1)
 		cells = append(cells, headerRow(wide))
 		for _, v := range group {
@@ -456,27 +455,10 @@ func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, opera
 		}
 		widths := ui.ColumnWidths(cells)
 		for i := range cells {
-			var line strings.Builder
-			line.WriteString("  ")
-			for j, c := range cells[i] {
-				if j > 0 {
-					line.WriteString("  ")
-				}
-				line.WriteString(ui.PadRight(c, widths[j]))
-			}
-			fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
+			fmt.Fprintln(w, "  "+ui.GridRow(cells[i], widths))
 		}
 	}
 	fmt.Fprintln(w, ui.Muted(fmt.Sprintf("\n%d VMs · %d farms", len(vms), len(byFarm))))
-}
-
-// vmFarmLabel is the name if the farm has one, the endpoint otherwise. Nothing
-// claims the farm is unnamed — an endpoint is a real answer to "which one".
-func vmFarmLabel(id string, farms map[string]string) string {
-	if n := farms[id]; n != "" {
-		return n
-	}
-	return id
 }
 
 // vmProjectLabel prefers the name and falls back to the id.
@@ -679,7 +661,7 @@ func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets [
 	ui.Section(w, nameOrID(v))
 	rows := []ui.KV{
 		{Key: "UUID", Value: v.InstanceID},
-		{Key: "Farm", Value: vmFarmLabel(v.DeploymentID, farms)},
+		{Key: "Farm", Value: farmLabelOf(v.DeploymentID, farms)},
 		{Key: "Project", Value: vmProjectLabel(v)},
 		{Key: "State", Value: vmStateCell(v)},
 		{Key: "Hypervisor", Value: v.HypervisorHostname},
