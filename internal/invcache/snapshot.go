@@ -33,15 +33,10 @@ type GrantRecord struct {
 	CapturedAt time.Time
 }
 
-// Has reports whether the record grants a command, honouring the "*" wildcard.
-func (g GrantRecord) Has(command string) bool {
-	for _, c := range g.Commands {
-		if c == "*" || c == command {
-			return true
-		}
-	}
-	return false
-}
+// GrantRecord deliberately has no Has method. Deciding whether a cached grant
+// covers a command — the "*" wildcard included — belongs to authz.CachedGrant,
+// the single owner of that rule; a second copy here is how the two drifted
+// apart the first time.
 
 // Snapshot is the whole local cache: inventory with its last known runtime
 // status, plus per-identity command grants.

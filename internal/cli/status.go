@@ -206,13 +206,3 @@ func cacheStatusRow(a *app.App) ui.KV {
 	}
 	return ui.KV{Key: "Local cache", Value: fmt.Sprintf("%d hosts · %s old", len(snap.Servers), age), State: ui.StateOK}
 }
-
-func agentCoverageState(total, reporting int) ui.State {
-	if total == 0 || reporting == 0 {
-		return ui.StateWarn
-	}
-	if reporting == total {
-		return ui.StateOK
-	}
-	return ui.StateWarn
-}

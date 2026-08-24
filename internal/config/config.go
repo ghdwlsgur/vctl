@@ -267,7 +267,13 @@ func (c *Config) CacheRefreshInterval() time.Duration {
 // CacheOfflineWindow bounds how long cached command grants may authorize a
 // command while Postgres is unreachable. Past it, offline mutate commands fail
 // closed: a grant revoked during a long outage must not stay usable forever.
+// An explicit "0" disables offline authorization entirely — authz treats a
+// zero window as off, and nothing else may produce one: a malformed value
+// falls back to the default, never to disabled or to wider.
 func (c *Config) CacheOfflineWindow() time.Duration {
+	if strings.TrimSpace(c.CacheOfflineTTL) == "0" {
+		return 0
+	}
 	return parseDurationOr(c.CacheOfflineTTL, 24*time.Hour)
 }
 

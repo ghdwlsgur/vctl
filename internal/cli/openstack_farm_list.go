@@ -116,13 +116,6 @@ func summarize(cat fleet.Catalog) []farmSummary {
 	return out
 }
 
-func farmSortKey(f farmSummary) string {
-	if f.Name != "" {
-		return f.Name
-	}
-	return f.ID
-}
-
 func renderFarmList(w io.Writer, rows []farmSummary, now time.Time) error {
 	return renderFarmListWidth(w, rows, now, 0)
 }

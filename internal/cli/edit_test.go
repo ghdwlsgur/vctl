@@ -134,18 +134,3 @@ func TestJumpDependentsFindsHostsThatWouldBeStranded(t *testing.T) {
 		t.Errorf("jumpDependents(web-03) = %v, want none", none)
 	}
 }
-
-func TestSameStringsComparesOrderAndLength(t *testing.T) {
-	if !sameStrings(nil, nil) || !sameStrings([]string{"a", "b"}, []string{"a", "b"}) {
-		t.Error("sameStrings reported equal slices as different")
-	}
-	for _, tc := range [][2][]string{
-		{{"a"}, {"a", "b"}},
-		{{"a", "b"}, {"b", "a"}},
-		{{"a"}, nil},
-	} {
-		if sameStrings(tc[0], tc[1]) {
-			t.Errorf("sameStrings(%v, %v) = true", tc[0], tc[1])
-		}
-	}
-}

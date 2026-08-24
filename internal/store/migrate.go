@@ -18,6 +18,15 @@ import (
 // never been created.
 const pgerrcodeUndefinedTable = "42P01"
 
+// isUndefinedTable reports whether err is Postgres saying a table does not
+// exist. Matched on the SQLSTATE, never on the message text: "42P01" can show
+// up in a table name or a quoted query, and an error matched by its prose is
+// an error matched by accident.
+func isUndefinedTable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgerrcodeUndefinedTable
+}
+
 //go:embed migrations/*.sql
 var migrations embed.FS
 
@@ -213,8 +222,7 @@ func (s *Store) PendingMigrations(ctx context.Context) ([]string, error) {
 		// Only that one error. Reporting "all pending" for, say, a permission
 		// failure would turn a credentials problem into a plausible-looking
 		// schema answer, and send the operator looking in the wrong place.
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == pgerrcodeUndefinedTable {
+		if isUndefinedTable(err) {
 			return names(files), nil
 		}
 		return nil, err

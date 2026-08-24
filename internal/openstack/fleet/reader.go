@@ -172,7 +172,12 @@ func (r *Reader) Read(ctx context.Context, req ReadRequest) (Reading, error) {
 		}
 		return Reading{Catalog: From(snap), Source: FromDatabase}, nil
 	}
-	if !req.Live {
+	// The fallback widens how old an answer may be, never who may receive
+	// one: a purpose that may not read stored readings gets the error, not a
+	// stale reading relabelled ForFallback. Without this guard the Purpose on
+	// the request only held while the database answered — exactly when it
+	// mattered least.
+	if !req.Live && req.Purpose.MayReadStored() {
 		if rd, ok := r.Stored(req.Shape, ForFallback); ok {
 			rd.Source, rd.Err = FromFallback, err
 			return rd, nil

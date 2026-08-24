@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
-	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 func TestRenderInventoryOmitsRuntimeStatus(t *testing.T) {
@@ -185,11 +184,5 @@ func TestAgentCoverageCountsOnlyLiveAgents(t *testing.T) {
 	}
 	if live != 1 {
 		t.Fatalf("counted %d live agents, want 1 (two are two days stale)", live)
-	}
-	if agentCoverageState(len(servers), live) == ui.StateOK {
-		t.Error("1 of 3 reporting should not read as OK")
-	}
-	if agentCoverageState(len(servers), 0) != ui.StateWarn {
-		t.Error("zero reporting must warn")
 	}
 }

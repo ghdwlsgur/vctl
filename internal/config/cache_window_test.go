@@ -42,6 +42,31 @@ func TestCacheStaleLimitZeroDisables(t *testing.T) {
 	}
 }
 
+// "0" turns offline authorization off — authz treats a zero window as
+// disabled. It used to fall through parseDurationOr and come back as the 24h
+// default, so an operator hardening a machine got the widest window instead
+// of none.
+func TestCacheOfflineWindowZeroDisables(t *testing.T) {
+	if got := (&Config{CacheOfflineTTL: "0"}).CacheOfflineWindow(); got != 0 {
+		t.Fatalf(`CacheOfflineTTL="0" gave %v, want 0 (disabled)`, got)
+	}
+	if got := (&Config{CacheOfflineTTL: " 0 "}).CacheOfflineWindow(); got != 0 {
+		t.Fatalf(`padded "0" gave %v, want 0 (disabled)`, got)
+	}
+}
+
+// A malformed override must not move the window in either direction — junk in
+// a config file must not widen an authorization window, and must not silently
+// disable offline access either.
+func TestCacheOfflineWindowIgnoresJunkOverride(t *testing.T) {
+	for _, bad := range []string{"", "forever", "-1h", "0h"} {
+		c := &Config{CacheOfflineTTL: bad}
+		if got := c.CacheOfflineWindow(); got != 24*time.Hour {
+			t.Errorf("CacheOfflineTTL=%q gave %v, want the 24h default", bad, got)
+		}
+	}
+}
+
 // The stale limit must not fall below the offline authorization window, or
 // shortening it would start refusing lookups that offline authz would still have
 // allowed — a behavior change nobody asked for hiding inside a cache setting.

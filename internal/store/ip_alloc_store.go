@@ -32,19 +32,13 @@ type IPAllocation struct {
 	OwnerPublicKey string
 }
 
-// scanIPAllocation reads one row; it takes the minimal Scan interface so both
-// pgx.Row (QueryRow) and pgx.Rows (Query) satisfy it, mirroring scanServer.
-func scanIPAllocation(row interface {
-	Scan(dest ...any) error
-}) (IPAllocation, error) {
+func scanIPAllocation(r pgx.Rows) (IPAllocation, error) {
 	var a IPAllocation
-	err := row.Scan(&a.IP, &a.Owner, &a.Kind, &a.Label, &a.Hostname, &a.OS, &a.Project,
+	err := r.Scan(&a.IP, &a.Owner, &a.Kind, &a.Label, &a.Hostname, &a.OS, &a.Project,
 		&a.Farm, &a.FarmVIP, &a.Rack, &a.Location, &a.WGTunnel, &a.Status, &a.Note,
 		&a.OwnerPublicKey)
 	return a, err
 }
-
-func scanIPAllocRow(r pgx.Rows) (IPAllocation, error) { return scanIPAllocation(r) }
 
 // ipAllocCols selects every column with nullable text/inet coalesced to an
 // empty string so a row scans straight into IPAllocation without null handling.
@@ -61,17 +55,7 @@ func (s *Store) IPAllocList(ctx context.Context, kind, owner, filter string) ([]
 		  AND ($2='' OR owner ILIKE '%'||$2||'%')
 		  AND ($3='' OR owner||' '||label||' '||coalesce(project,'')||' '||note ILIKE '%'||$3||'%')
 		ORDER BY ip`
-	return queryAndCollect(ctx, s.pool, q, []any{kind, owner, filter}, scanIPAllocRow)
-}
-
-// IPAllocGet returns one allocation by exact address, or pgx.ErrNoRows.
-func (s *Store) IPAllocGet(ctx context.Context, ip string) (*IPAllocation, error) {
-	row := s.pool.QueryRow(ctx, `SELECT `+ipAllocCols+` FROM ip_allocations WHERE ip=$1`, ip)
-	a, err := scanIPAllocation(row)
-	if err != nil {
-		return nil, err
-	}
-	return &a, nil
+	return queryAndCollect(ctx, s.pool, q, []any{kind, owner, filter}, scanIPAllocation)
 }
 
 // IPAllocUpsert creates or replaces one allocation keyed by IP. Requires write
