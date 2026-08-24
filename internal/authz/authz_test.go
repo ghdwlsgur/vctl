@@ -37,9 +37,13 @@ func newAuthorizer(p PolicySource, g GrantSource) (*Authorizer, *int) {
 	az := New(p, func(context.Context) (GrantSource, func(), error) {
 		opens++
 		return g, nil, nil
-	})
+	}).WithAdminPolicies(testAdmins)
 	return az, &opens
 }
+
+// testAdmins mirrors the compiled default (config defaults_sre.go). The names
+// are injected now, so the tests inject them the way production wiring does.
+var testAdmins = []string{"vctl-admin", "sre-admin"}
 
 func TestCheckUngatedCommandAllowed(t *testing.T) {
 	az, opens := newAuthorizer(fakePolicies{}, &fakeGrants{})
@@ -220,7 +224,15 @@ func TestCatalog(t *testing.T) {
 	if c, ok := ClassOf("edit"); !ok || c != ClassMutate {
 		t.Error("edit is not a mutate catalog entry — its gate demands a grant nobody can give")
 	}
-	if !HasAdminPolicy([]string{"x", "vctl-admin"}) || HasAdminPolicy([]string{"x"}) {
+	if !HasAdminPolicy([]string{"x", "vctl-admin"}, testAdmins) || HasAdminPolicy([]string{"x"}, testAdmins) {
 		t.Fatal("HasAdminPolicy wrong")
+	}
+	// The names are configuration, not constants: a fork's own admin policy
+	// works, and naming no admins admits nobody — the bypass fails closed.
+	if !HasAdminPolicy([]string{"acme-root"}, []string{"acme-root"}) {
+		t.Fatal("a configured admin policy was not honoured")
+	}
+	if HasAdminPolicy([]string{"vctl-admin"}, nil) {
+		t.Fatal("an empty admin list still admitted an admin")
 	}
 }

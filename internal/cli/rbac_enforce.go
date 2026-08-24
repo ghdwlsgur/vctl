@@ -102,7 +102,7 @@ func newAuthorizer(a *app.App) *authz.Authorizer {
 			return nil, nil, err
 		}
 		return st, func() { st.Close() }, nil
-	}).WithOffline(offlineConfig(a))
+	}).WithOffline(offlineConfig(a)).WithAdminPolicies(a.Cfg.AdminPolicies)
 }
 
 // cachedGrant translates a stored grant into the authorization layer's view of

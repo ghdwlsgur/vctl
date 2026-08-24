@@ -134,7 +134,8 @@ func TestOfflineReadCommandsUnaffected(t *testing.T) {
 // comes from Vault, which is a live lookup.
 func TestOfflineAdminPolicyStillBypasses(t *testing.T) {
 	a := New(stubPolicies{pols: []string{"vctl-admin"}, identity: "albert"},
-		func(context.Context) (GrantSource, func(), error) { return nil, nil, errDBDown })
+		func(context.Context) (GrantSource, func(), error) { return nil, nil, errDBDown },
+	).WithAdminPolicies(testAdmins)
 	if err := a.Check(context.Background(), Command{Name: "sync", Class: ClassMutate}); err != nil {
 		t.Fatalf("admin denied during an outage: %v", err)
 	}

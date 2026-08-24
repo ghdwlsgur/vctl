@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -109,10 +110,20 @@ func Grantable() []string {
 	return append([]string{"*"}, GrantableCommands()...)
 }
 
-// HasAdminPolicy reports whether the caller holds an admin Vault policy that
-// bypasses command RBAC entirely.
-func HasAdminPolicy(pols []string) bool {
-	return slices.Contains(pols, "vctl-admin") || slices.Contains(pols, "sre-admin")
+// HasAdminPolicy reports whether the caller holds one of the admin Vault
+// policies that bypass command RBAC entirely. The names are the caller's to
+// supply — they are organization-specific surface (config admin_policies,
+// compiled defaults in defaults_sre.go) and hard-coding them here made the
+// one bypass in the system unrenameable without editing this package. An
+// empty admins list admits nobody, which is the failing-closed reading of a
+// configuration that names no admins.
+func HasAdminPolicy(pols, admins []string) bool {
+	for _, a := range admins {
+		if slices.Contains(pols, a) {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrUninitialized reports that the RBAC schema has never been migrated.
@@ -260,6 +271,7 @@ type Authorizer struct {
 	policies   PolicySource
 	openGrants func(context.Context) (GrantSource, func(), error)
 	offline    *Offline
+	admins     []string
 }
 
 // WithOffline attaches degraded-mode behaviour and returns the authorizer, so
@@ -267,6 +279,22 @@ type Authorizer struct {
 func (a *Authorizer) WithOffline(o *Offline) *Authorizer {
 	a.offline = o
 	return a
+}
+
+// WithAdminPolicies names the Vault policies that bypass command RBAC. An
+// authorizer given none admits no admins — see HasAdminPolicy.
+func (a *Authorizer) WithAdminPolicies(admins []string) *Authorizer {
+	a.admins = admins
+	return a
+}
+
+// adminsLabel renders the configured admin policies for denial messages, so
+// the message names the policies this installation actually uses.
+func (a *Authorizer) adminsLabel() string {
+	if len(a.admins) == 0 {
+		return "an admin policy, and none are configured"
+	}
+	return strings.Join(a.admins, " or ")
 }
 
 // New builds an Authorizer whose grant source is opened lazily — only when a
@@ -294,7 +322,7 @@ func (a *Authorizer) Snapshot(ctx context.Context) (Authorization, error) {
 	if err != nil {
 		return Authorization{}, fmt.Errorf("rbac: token lookup: %w", err)
 	}
-	az := Authorization{Identity: identity, Policies: pols, Admin: HasAdminPolicy(pols)}
+	az := Authorization{Identity: identity, Policies: pols, Admin: HasAdminPolicy(pols, a.admins)}
 	if az.Admin {
 		return az, nil
 	}
@@ -321,14 +349,14 @@ func (a *Authorizer) Check(ctx context.Context, cmd Command) error {
 	if err != nil {
 		return fmt.Errorf("rbac: token lookup: %w", err)
 	}
-	if HasAdminPolicy(pols) {
+	if HasAdminPolicy(pols, a.admins) {
 		return nil
 	}
 	switch cmd.Class {
 	case ClassRead:
 		return nil
 	case ClassAdmin:
-		return fmt.Errorf("rbac: '%s' is admin-only (needs vctl-admin or sre-admin)", cmd.Name)
+		return fmt.Errorf("rbac: '%s' is admin-only (needs %s)", cmd.Name, a.adminsLabel())
 	}
 	if identity == "" {
 		return fmt.Errorf("rbac: cannot determine your identity — run 'vctl login'")
