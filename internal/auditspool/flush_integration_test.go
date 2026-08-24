@@ -50,9 +50,9 @@ func TestSpoolFlushesIntoPostgres(t *testing.T) {
 		t.Fatalf("pending = %d, want 3", n)
 	}
 
-	sent, err := s.Drain(ctx, st)
-	if err != nil || sent != 3 {
-		t.Fatalf("Drain = %d, %v", sent, err)
+	res, err := s.Drain(ctx, st)
+	if err != nil || res.Sent != 3 {
+		t.Fatalf("Drain = %d, %v", res.Sent, err)
 	}
 	if n, _ := s.Pending(); n != 0 {
 		t.Fatalf("%d records left after a clean flush", n)

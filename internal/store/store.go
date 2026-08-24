@@ -521,6 +521,25 @@ type AccessEntry struct {
 	Error      string
 }
 
+// insertAccessSQL is shared by the single and batched insert paths, so the two
+// cannot drift apart on columns or null handling.
+const insertAccessSQL = `
+	INSERT INTO access_log
+		(vault_user, hostname, cert_serial, ok, source_ip, source_addr, client_host, client_user, target_addr, jump_via, error, signed_at)
+	VALUES ($1,$2,$3,$4,NULLIF($5,'')::inet,$6,$7,$8,$9,$10,$11, coalesce($12::timestamptz, now()))`
+
+func accessArgs(e AccessEntry) []any {
+	var signedAt any
+	if !e.SignedAt.IsZero() {
+		signedAt = e.SignedAt
+	}
+	return []any{
+		nullIfEmpty(e.VaultUser), nullIfEmpty(e.Hostname), nullIfEmpty(e.CertSerial), e.OK, e.SourceIP,
+		nullIfEmpty(e.SourceAddr), nullIfEmpty(e.ClientHost), nullIfEmpty(e.ClientUser), nullIfEmpty(e.TargetAddr),
+		nullIfEmpty(e.JumpVia), nullIfEmpty(e.Error), signedAt,
+	}
+}
+
 // LogAccess appends one SSH access record to access_log. It requires write
 // credentials and is meant to be called best-effort after a connection attempt.
 //
@@ -530,18 +549,33 @@ type AccessEntry struct {
 // happened, so the audit trail does not compress an outage's worth of access
 // into the moment connectivity returned.
 func (s *Store) LogAccess(ctx context.Context, e AccessEntry) error {
-	var signedAt any
-	if !e.SignedAt.IsZero() {
-		signedAt = e.SignedAt
-	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO access_log
-			(vault_user, hostname, cert_serial, ok, source_ip, source_addr, client_host, client_user, target_addr, jump_via, error, signed_at)
-		VALUES ($1,$2,$3,$4,NULLIF($5,'')::inet,$6,$7,$8,$9,$10,$11, coalesce($12::timestamptz, now()))`,
-		nullIfEmpty(e.VaultUser), nullIfEmpty(e.Hostname), nullIfEmpty(e.CertSerial), e.OK, e.SourceIP,
-		nullIfEmpty(e.SourceAddr), nullIfEmpty(e.ClientHost), nullIfEmpty(e.ClientUser), nullIfEmpty(e.TargetAddr),
-		nullIfEmpty(e.JumpVia), nullIfEmpty(e.Error), signedAt)
+	_, err := s.pool.Exec(ctx, insertAccessSQL, accessArgs(e)...)
 	return err
+}
+
+// LogAccessBatch lands many access records in one network round trip, for the
+// audit spool's replay — a full spool replayed one insert per round trip added
+// most of a minute to the ssh that happened to run first after an outage.
+//
+// All-or-nothing: pgx sends the batch under a single Sync, so the statements
+// share one implicit transaction and an error means nothing landed. The spool
+// relies on that to requeue a failed chunk without duplicating rows.
+func (s *Store) LogAccessBatch(ctx context.Context, entries []AccessEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for _, e := range entries {
+		batch.Queue(insertAccessSQL, accessArgs(e)...)
+	}
+	results := s.pool.SendBatch(ctx, batch)
+	for range entries {
+		if _, err := results.Exec(); err != nil {
+			_ = results.Close()
+			return err
+		}
+	}
+	return results.Close()
 }
 
 // AccessLog returns recent access_log rows, newest first, optionally filtered by

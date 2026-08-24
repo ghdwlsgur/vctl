@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/ghdwlsgur/vctl/internal/auditspool"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/dbcreds"
 	"github.com/ghdwlsgur/vctl/internal/securefile"
@@ -27,8 +28,10 @@ type App struct {
 	Vault *vaultc.Client
 
 	// OnSpoolFlush reports the result of replaying access records that were
-	// queued while Postgres was unreachable. Optional; nil flushes silently.
-	OnSpoolFlush func(sent int, err error)
+	// queued while Postgres was unreachable — including the ones the spool had
+	// to drop as unreadable, which a bare sent count would hide. Optional; nil
+	// flushes silently.
+	OnSpoolFlush func(res auditspool.Result, err error)
 
 	// Interactive reports whether somebody is present to answer a prompt, and
 	// decides whether the configured login method outranks the unattended ones.

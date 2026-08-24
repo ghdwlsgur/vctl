@@ -13,6 +13,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/audit"
+	"github.com/ghdwlsgur/vctl/internal/auditspool"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/timing"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -202,14 +203,19 @@ func warnIfCached(inv *app.Inventory) {
 }
 
 // reportSpoolFlush surfaces the replay of access records that were queued while
-// Postgres was unreachable.
-func reportSpoolFlush(sent int, err error) {
+// Postgres was unreachable. Dropped records are warned about first and always:
+// they are the part of the trail that is gone, and a success line alone would
+// read as a complete recovery.
+func reportSpoolFlush(res auditspool.Result, err error) {
+	if res.Skipped > 0 {
+		ui.Warnf(os.Stderr, "dropped %d unreadable queued access record(s) — the audit trail is missing them", res.Skipped)
+	}
 	if err != nil {
 		ui.Warnf(os.Stderr, "queued access records: %v", err)
 		return
 	}
-	if sent > 0 {
-		ui.Infof(os.Stderr, "flushed %d queued access record(s) to the audit log", sent)
+	if res.Sent > 0 {
+		ui.Infof(os.Stderr, "flushed %d queued access record(s) to the audit log", res.Sent)
 	}
 }
 
