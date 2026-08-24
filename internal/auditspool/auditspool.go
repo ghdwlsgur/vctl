@@ -47,10 +47,129 @@ type Sink interface {
 	LogAccess(ctx context.Context, e store.AccessEntry) error
 }
 
+// BatchSink is a Sink that can land many records in one network round trip.
+// Optional: the drain uses it when the sink offers it. The spool replays
+// inside whatever interactive command first gets a working audit connection —
+// the ssh that happens to run right after an outage pays for the backlog —
+// and a record-per-round-trip drain of a full spool costs most of a minute;
+// chunks cost round trips in the tens.
+//
+// All-or-nothing per call: an error means nothing in that call landed, so the
+// caller may requeue the whole chunk without duplicating rows. *store.Store
+// satisfies this with a single-Sync pgx batch.
+type BatchSink interface {
+	LogAccessBatch(ctx context.Context, entries []store.AccessEntry) error
+}
+
+// Result is what one Drain accomplished.
+type Result struct {
+	// Sent is how many records landed in the sink.
+	Sent int
+
+	// Skipped is how many lines were dropped as unreadable: a write torn by a
+	// crash, or a spool version this binary does not know. They are gone —
+	// and saying so is the point, because a bare Sent count reads as a
+	// complete recovery when it may not be one.
+	Skipped int
+}
+
+const (
+	// replayChunk is how many records one BatchSink round trip carries. Large
+	// enough that even a full spool is tens of round trips, small enough that
+	// a failed chunk requeues without a gap anyone notices.
+	replayChunk = 500
+
+	// maxDrainPerCall bounds what one Drain attempts, so the command that
+	// happens to run first after an outage pays a bounded slice of the
+	// backlog. What is left stays claimed on disk and the next command
+	// continues from there — the claim files already carry retries across
+	// processes, so the cap rides the same mechanism.
+	maxDrainPerCall = 10_000
+)
+
 // Spool is an append-only JSONL file of pending access records.
 type Spool struct {
 	Path     string
 	MaxBytes int64
+
+	// maxPerDrain overrides maxDrainPerCall when positive. Tests only — the
+	// production cap would need ten thousand fsynced appends to exercise.
+	maxPerDrain int
+}
+
+// spoolVersion stamps every line written from here on, so a future format
+// change is detected instead of guessed at.
+const spoolVersion = 1
+
+// spoolLine is the on-disk schema, owned by this package. Marshaling
+// store.AccessEntry directly bound the disk format to that struct's Go field
+// names — it carries no json tags — so renaming a field would have silently
+// zeroed that column in every record still queued from an outage. The
+// explicit tags here are the contract; the store struct stays free to change.
+type spoolLine struct {
+	V          int       `json:"v"`
+	VaultUser  string    `json:"vault_user"`
+	Hostname   string    `json:"hostname"`
+	CertSerial string    `json:"cert_serial"`
+	SignedAt   time.Time `json:"signed_at"`
+	OK         bool      `json:"ok"`
+	SourceIP   string    `json:"source_ip"`
+	SourceAddr string    `json:"source_addr"`
+	ClientHost string    `json:"client_host"`
+	ClientUser string    `json:"client_user"`
+	TargetAddr string    `json:"target_addr"`
+	JumpVia    string    `json:"jump_via"`
+	Error      string    `json:"error"`
+}
+
+func toLine(e store.AccessEntry) spoolLine {
+	return spoolLine{
+		V:         spoolVersion,
+		VaultUser: e.VaultUser, Hostname: e.Hostname, CertSerial: e.CertSerial,
+		SignedAt: e.SignedAt, OK: e.OK, SourceIP: e.SourceIP, SourceAddr: e.SourceAddr,
+		ClientHost: e.ClientHost, ClientUser: e.ClientUser, TargetAddr: e.TargetAddr,
+		JumpVia: e.JumpVia, Error: e.Error,
+	}
+}
+
+func (l spoolLine) entry() store.AccessEntry {
+	return store.AccessEntry{
+		VaultUser: l.VaultUser, Hostname: l.Hostname, CertSerial: l.CertSerial,
+		SignedAt: l.SignedAt, OK: l.OK, SourceIP: l.SourceIP, SourceAddr: l.SourceAddr,
+		ClientHost: l.ClientHost, ClientUser: l.ClientUser, TargetAddr: l.TargetAddr,
+		JumpVia: l.JumpVia, Error: l.Error,
+	}
+}
+
+// decodeLine reads one spool line of any known format. ok is false for a line
+// this binary cannot read: torn json, or a version stamp it does not know.
+func decodeLine(line []byte) (store.AccessEntry, bool) {
+	var probe struct {
+		V int `json:"v"`
+	}
+	if err := json.Unmarshal(line, &probe); err != nil {
+		return store.AccessEntry{}, false
+	}
+	switch probe.V {
+	case 0:
+		// Written before the version stamp existed: store.AccessEntry under
+		// its Go field names. Read until the last of them flushes.
+		var e store.AccessEntry
+		if err := json.Unmarshal(line, &e); err != nil {
+			return store.AccessEntry{}, false
+		}
+		return e, true
+	case spoolVersion:
+		var l spoolLine
+		if err := json.Unmarshal(line, &l); err != nil {
+			return store.AccessEntry{}, false
+		}
+		return l.entry(), true
+	default:
+		// A future binary's format. Guessing at its fields could write a
+		// wrong audit row, which is worse than an honestly counted loss.
+		return store.AccessEntry{}, false
+	}
 }
 
 // New locates the spool under a state directory.
@@ -80,7 +199,7 @@ func (s *Spool) Append(e store.AccessEntry) error {
 		return fmt.Errorf("%w (%s) — the trail is incomplete until it is flushed", ErrFull, s.Path)
 	}
 
-	line, err := json.Marshal(e)
+	line, err := json.Marshal(toLine(e))
 	if err != nil {
 		return err
 	}
@@ -121,8 +240,9 @@ func (s *Spool) atCap() (bool, error) {
 	return total >= max, nil
 }
 
-// Pending reports how many records are waiting, counting both the live spool and
-// any batches a previous drain claimed but did not finish.
+// Pending reports how many replayable records are waiting, counting both the
+// live spool and any batches a previous drain claimed but did not finish.
+// Unreadable lines are not counted here — Drain reports them as Skipped.
 func (s *Spool) Pending() (int, error) {
 	total := 0
 	batches, err := s.batches()
@@ -130,7 +250,7 @@ func (s *Spool) Pending() (int, error) {
 		return 0, err
 	}
 	for _, path := range append(batches, s.Path) {
-		entries, err := s.load(path)
+		entries, _, err := s.load(path)
 		if err != nil {
 			return total, err
 		}
@@ -139,7 +259,31 @@ func (s *Spool) Pending() (int, error) {
 	return total, nil
 }
 
-// Drain replays every pending record into sink and returns how many landed.
+// HasBacklog reports whether anything is on disk at all — including files
+// holding only unreadable lines, which a replayable-record count would never
+// surface while they kept counting against the size cap. It stats rather than
+// parses, because callers gate every successful audit write on it.
+func (s *Spool) HasBacklog() (bool, error) {
+	batches, err := s.batches()
+	if err != nil {
+		return false, err
+	}
+	for _, path := range append(batches, s.Path) {
+		fi, err := os.Stat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if fi.Size() > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Drain replays pending records into sink and reports what happened.
 //
 // It claims work by renaming the spool aside before reading it. That rename is
 // atomic, so a concurrent `vctl ssh` in another terminal appends to a fresh file
@@ -150,27 +294,36 @@ func (s *Spool) Pending() (int, error) {
 //
 // A partially flushed batch stays on disk under its claim name and is retried
 // first by the next drain, so a database that disappears mid-flush costs
-// nothing.
-func (s *Spool) Drain(ctx context.Context, sink Sink) (int, error) {
+// nothing. The same applies past the per-call cap: what this call did not
+// attempt stays claimed for the next one.
+func (s *Spool) Drain(ctx context.Context, sink Sink) (Result, error) {
+	var res Result
 	batches, err := s.batches()
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	if claimed, err := s.claim(); err != nil {
-		return 0, err
+		return res, err
 	} else if claimed != "" {
 		batches = append(batches, claimed)
 	}
 
-	sent := 0
+	budget := maxDrainPerCall
+	if s.maxPerDrain > 0 {
+		budget = s.maxPerDrain
+	}
 	for _, path := range batches {
-		n, err := s.drainBatch(ctx, sink, path)
-		sent += n
+		if budget <= res.Sent {
+			break // the rest stays claimed for the next drain
+		}
+		r, err := s.drainBatch(ctx, sink, path, budget-res.Sent)
+		res.Sent += r.Sent
+		res.Skipped += r.Skipped
 		if err != nil {
-			return sent, err
+			return res, err
 		}
 	}
-	return sent, nil
+	return res, nil
 }
 
 // claim renames the live spool aside so appends racing this drain land in a new
@@ -221,46 +374,78 @@ func (s *Spool) batches() ([]string, error) {
 	return matches, nil
 }
 
-// drainBatch replays one claimed file, rewriting it with the unsent remainder if
-// the sink fails partway and removing it once empty.
-func (s *Spool) drainBatch(ctx context.Context, sink Sink, path string) (int, error) {
-	entries, err := s.load(path)
+// drainBatch replays one claimed file, at most budget records of it. The file
+// is rewritten with whatever was not sent — a sink failure or the budget —
+// and removed once nothing replayable remains.
+func (s *Spool) drainBatch(ctx context.Context, sink Sink, path string, budget int) (Result, error) {
+	entries, skipped, err := s.load(path)
+	res := Result{Skipped: skipped}
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	if len(entries) == 0 {
-		return 0, remove(path)
+		return res, remove(path)
 	}
-	sent := 0
-	for _, e := range entries {
-		if err := sink.LogAccess(ctx, e); err != nil {
-			if rewriteErr := securefile.WriteAtomic(path, encode(entries[sent:]), 0o600); rewriteErr != nil {
-				return sent, fmt.Errorf("flush stopped after %d: %w (and re-queueing the remainder failed: %v)", sent, err, rewriteErr)
-			}
-			return sent, fmt.Errorf("flush stopped after %d of %d: %w", sent, len(entries), err)
+	toSend := entries
+	if len(toSend) > budget {
+		toSend = toSend[:budget]
+	}
+	for res.Sent < len(toSend) {
+		chunk := toSend[res.Sent:]
+		if len(chunk) > replayChunk {
+			chunk = chunk[:replayChunk]
 		}
-		sent++
+		n, err := sendChunk(ctx, sink, chunk)
+		res.Sent += n
+		if err != nil {
+			if rewriteErr := securefile.WriteAtomic(path, encode(entries[res.Sent:]), 0o600); rewriteErr != nil {
+				return res, fmt.Errorf("flush stopped after %d: %w (and re-queueing the remainder failed: %v)", res.Sent, err, rewriteErr)
+			}
+			return res, fmt.Errorf("flush stopped after %d of %d: %w", res.Sent, len(entries), err)
+		}
 	}
-	return sent, remove(path)
+	if res.Sent < len(entries) {
+		// The budget stopped this call; the remainder waits under the claim
+		// name, ahead of newer records, exactly like a mid-flush failure.
+		return res, securefile.WriteAtomic(path, encode(entries[res.Sent:]), 0o600)
+	}
+	return res, remove(path)
 }
 
-// load parses one spool file. A truncated or corrupt final line — a crash
-// mid-append — is skipped rather than failing the whole flush: losing one record
-// beats losing every record behind it.
-func (s *Spool) load(path string) ([]store.AccessEntry, error) {
+// sendChunk lands one chunk, in a single round trip when the sink can, and
+// reports how many records the sink accepted before any error.
+func sendChunk(ctx context.Context, sink Sink, chunk []store.AccessEntry) (int, error) {
+	if bs, ok := sink.(BatchSink); ok && len(chunk) > 1 {
+		if err := bs.LogAccessBatch(ctx, chunk); err != nil {
+			return 0, err // all-or-nothing: see BatchSink
+		}
+		return len(chunk), nil
+	}
+	for i, e := range chunk {
+		if err := sink.LogAccess(ctx, e); err != nil {
+			return i, err
+		}
+	}
+	return len(chunk), nil
+}
+
+// load parses one spool file. A line this binary cannot read — truncated by a
+// crash mid-append, or stamped with a version it does not know — is counted
+// and skipped rather than failing the whole flush: losing one record beats
+// losing every record behind it, and the count is how the loss stays visible.
+func (s *Spool) load(path string) (entries []store.AccessEntry, skipped int, err error) {
 	if s == nil || path == "" {
-		return nil, nil
+		return nil, 0, nil
 	}
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 
-	var out []store.AccessEntry
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
@@ -268,23 +453,25 @@ func (s *Spool) load(path string) ([]store.AccessEntry, error) {
 		if len(line) == 0 {
 			continue
 		}
-		var e store.AccessEntry
-		if err := json.Unmarshal(line, &e); err != nil {
+		e, ok := decodeLine(line)
+		if !ok {
+			skipped++
 			continue
 		}
-		out = append(out, e)
+		entries = append(entries, e)
 	}
 	if err := sc.Err(); err != nil {
-		return out, err
+		return entries, skipped, err
 	}
-	return out, nil
+	return entries, skipped, nil
 }
 
-// encode renders entries back to JSONL.
+// encode renders entries back to JSONL, in the current spool format whatever
+// format they were read in.
 func encode(entries []store.AccessEntry) []byte {
 	var buf []byte
 	for _, e := range entries {
-		line, err := json.Marshal(e)
+		line, err := json.Marshal(toLine(e))
 		if err != nil {
 			continue
 		}

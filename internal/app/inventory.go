@@ -316,13 +316,19 @@ func (a *App) spoolAccess(entry store.AccessEntry, cause error) error {
 // Reported through OnSpoolFlush rather than returned: the caller's own audit
 // write already succeeded, and a catch-up failure must not turn that into an
 // error.
+//
+// The gate is a stat, not a parse: this runs after every successful audit
+// write, and it used to fully parse every spool file just to learn there was
+// nothing in them. The stat also drains a file holding only unreadable lines,
+// which a replayable-record count would skip forever while the file kept
+// counting against the spool's size cap.
 func (a *App) drainSpool(ctx context.Context, sink auditspool.Sink) {
 	sp := a.Spool()
-	if n, err := sp.Pending(); err != nil || n == 0 {
+	if has, err := sp.HasBacklog(); err != nil || !has {
 		return
 	}
-	sent, err := sp.Drain(ctx, sink)
-	if a.OnSpoolFlush != nil && (sent > 0 || err != nil) {
-		a.OnSpoolFlush(sent, err)
+	res, err := sp.Drain(ctx, sink)
+	if a.OnSpoolFlush != nil && (res.Sent > 0 || res.Skipped > 0 || err != nil) {
+		a.OnSpoolFlush(res, err)
 	}
 }

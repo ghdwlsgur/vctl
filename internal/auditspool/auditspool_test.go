@@ -44,9 +44,9 @@ func TestAppendThenDrain(t *testing.T) {
 	}
 
 	sink := &recordingSink{}
-	sent, err := s.Drain(context.Background(), sink)
-	if err != nil || sent != 2 {
-		t.Fatalf("Drain = %d, %v", sent, err)
+	res, err := s.Drain(context.Background(), sink)
+	if err != nil || res.Sent != 2 {
+		t.Fatalf("Drain = %d, %v", res.Sent, err)
 	}
 	if n, _ := s.Pending(); n != 0 {
 		t.Fatalf("%d records left after a full drain", n)
@@ -106,12 +106,12 @@ func TestDrainResumesAfterMidFlushFailure(t *testing.T) {
 	}
 
 	sink := &recordingSink{failAt: 2}
-	sent, err := s.Drain(context.Background(), sink)
+	res, err := s.Drain(context.Background(), sink)
 	if err == nil {
 		t.Fatal("a mid-flush failure was not reported")
 	}
-	if sent != 1 {
-		t.Fatalf("sent = %d, want 1 before the failure", sent)
+	if res.Sent != 1 {
+		t.Fatalf("sent = %d, want 1 before the failure", res.Sent)
 	}
 	if n, _ := s.Pending(); n != 2 {
 		t.Fatalf("pending = %d, want the 2 unflushed records to remain", n)
@@ -119,9 +119,9 @@ func TestDrainResumesAfterMidFlushFailure(t *testing.T) {
 
 	// Second attempt against a working sink drains the remainder in order.
 	good := &recordingSink{}
-	sent, err = s.Drain(context.Background(), good)
-	if err != nil || sent != 2 {
-		t.Fatalf("resumed Drain = %d, %v", sent, err)
+	res, err = s.Drain(context.Background(), good)
+	if err != nil || res.Sent != 2 {
+		t.Fatalf("resumed Drain = %d, %v", res.Sent, err)
 	}
 	if good.got[0].Hostname != "b" || good.got[1].Hostname != "c" {
 		t.Fatalf("resumed order = %+v", good.got)
@@ -147,12 +147,12 @@ func TestLoadSkipsCorruptLine(t *testing.T) {
 	}
 
 	sink := &recordingSink{}
-	sent, err := s.Drain(context.Background(), sink)
+	res, err := s.Drain(context.Background(), sink)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sent != 2 {
-		t.Fatalf("sent = %d, want the 2 intact records", sent)
+	if res.Sent != 2 {
+		t.Fatalf("sent = %d, want the 2 intact records", res.Sent)
 	}
 }
 
@@ -203,9 +203,9 @@ func TestConcurrentAppendSurvivesDrain(t *testing.T) {
 		return sink.LogAccess(ctx, e)
 	})
 
-	sent, err := s.Drain(context.Background(), racing)
-	if err != nil || sent != 2 {
-		t.Fatalf("Drain = %d, %v", sent, err)
+	res, err := s.Drain(context.Background(), racing)
+	if err != nil || res.Sent != 2 {
+		t.Fatalf("Drain = %d, %v", res.Sent, err)
 	}
 	if n, _ := s.Pending(); n != 1 {
 		t.Fatalf("pending = %d, want the record queued mid-flush to survive", n)
@@ -240,9 +240,9 @@ func TestFailedBatchIsRetriedFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	good := &recordingSink{}
-	sent, err := s.Drain(context.Background(), good)
-	if err != nil || sent != 3 {
-		t.Fatalf("Drain = %d, %v", sent, err)
+	res, err := s.Drain(context.Background(), good)
+	if err != nil || res.Sent != 3 {
+		t.Fatalf("Drain = %d, %v", res.Sent, err)
 	}
 	got := []string{good.got[0].Hostname, good.got[1].Hostname, good.got[2].Hostname}
 	if got[0] != "a" || got[1] != "b" || got[2] != "c" {
@@ -263,8 +263,164 @@ func TestPendingAndDrainOnMissingSpool(t *testing.T) {
 		t.Fatalf("Pending on a missing spool = %d, %v", n, err)
 	}
 	sink := &recordingSink{}
-	if sent, err := s.Drain(context.Background(), sink); err != nil || sent != 0 {
-		t.Fatalf("Drain on a missing spool = %d, %v", sent, err)
+	if res, err := s.Drain(context.Background(), sink); err != nil || res.Sent != 0 {
+		t.Fatalf("Drain on a missing spool = %d, %v", res.Sent, err)
+	}
+}
+
+// Records queued by a binary from before the version stamp — store.AccessEntry
+// under its Go field names — must keep replaying until the last of them has
+// flushed. An upgrade mid-outage must not zero the backlog's fields.
+func TestLegacyUnversionedLinesStillReplay(t *testing.T) {
+	s := newSpool(t)
+	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"VaultUser":"albert","Hostname":"host-a","CertSerial":"c1","SignedAt":"2026-07-19T03:14:00Z","OK":true,"SourceIP":"","SourceAddr":"","ClientHost":"","ClientUser":"","TargetAddr":"","JumpVia":"","Error":""}` + "\n"
+	if err := os.WriteFile(s.Path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sink := &recordingSink{}
+	res, err := s.Drain(context.Background(), sink)
+	if err != nil || res.Sent != 1 || res.Skipped != 0 {
+		t.Fatalf("Drain = %+v, %v", res, err)
+	}
+	got := sink.got[0]
+	if got.VaultUser != "albert" || got.Hostname != "host-a" || !got.OK {
+		t.Fatalf("legacy record lost its fields: %+v", got)
+	}
+	if got.SignedAt.IsZero() {
+		t.Fatal("legacy record lost its connection time")
+	}
+}
+
+// A line stamped with a version this binary does not know is counted, not
+// guessed at — decoding a future format by luck could write a wrong audit row.
+func TestUnknownVersionIsCountedNotGuessed(t *testing.T) {
+	s := newSpool(t)
+	if err := s.Append(store.AccessEntry{Hostname: "good"}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(s.Path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"v":99,"hostname":"future"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	sink := &recordingSink{}
+	res, err := s.Drain(context.Background(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Sent != 1 || res.Skipped != 1 {
+		t.Fatalf("Drain = %+v, want 1 sent and 1 skipped", res)
+	}
+}
+
+// batchRecordingSink records chunk-level calls, optionally refusing the first.
+type batchRecordingSink struct {
+	recordingSink
+	chunks   []int
+	failOnce bool
+}
+
+func (b *batchRecordingSink) LogAccessBatch(_ context.Context, entries []store.AccessEntry) error {
+	if b.failOnce {
+		b.failOnce = false
+		return errors.New("postgres gone mid-batch")
+	}
+	b.chunks = append(b.chunks, len(entries))
+	b.got = append(b.got, entries...)
+	return nil
+}
+
+// A sink that can take a batch gets one round trip per chunk, not one per
+// record — the replay runs inside somebody's ssh.
+func TestDrainUsesBatchesWhenTheSinkOffersThem(t *testing.T) {
+	s := newSpool(t)
+	for _, host := range []string{"a", "b", "c"} {
+		if err := s.Append(store.AccessEntry{Hostname: host}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sink := &batchRecordingSink{}
+	res, err := s.Drain(context.Background(), sink)
+	if err != nil || res.Sent != 3 {
+		t.Fatalf("Drain = %+v, %v", res, err)
+	}
+	if len(sink.chunks) != 1 || sink.chunks[0] != 3 {
+		t.Fatalf("chunk calls = %v, want one call carrying all 3", sink.chunks)
+	}
+	if sink.callNum != 0 {
+		t.Fatalf("%d per-record calls made despite the batch path", sink.callNum)
+	}
+}
+
+// A failed batch landed nothing (single-Sync pgx semantics), so every record
+// must still be queued — a requeue that assumed partial success would drop
+// the prefix, and one that assumed nothing landed after a partial commit
+// would duplicate it.
+func TestFailedBatchRequeuesEverything(t *testing.T) {
+	s := newSpool(t)
+	for _, host := range []string{"a", "b", "c"} {
+		if err := s.Append(store.AccessEntry{Hostname: host}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sink := &batchRecordingSink{failOnce: true}
+	res, err := s.Drain(context.Background(), sink)
+	if err == nil {
+		t.Fatal("a failed batch did not report an error")
+	}
+	if res.Sent != 0 {
+		t.Fatalf("sent = %d after an all-or-nothing failure, want 0", res.Sent)
+	}
+	if n, _ := s.Pending(); n != 3 {
+		t.Fatalf("pending = %d, want all 3 requeued", n)
+	}
+
+	res, err = s.Drain(context.Background(), sink)
+	if err != nil || res.Sent != 3 {
+		t.Fatalf("retry Drain = %+v, %v", res, err)
+	}
+	got := []string{sink.got[0].Hostname, sink.got[1].Hostname, sink.got[2].Hostname}
+	if got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Fatalf("retry order = %v", got)
+	}
+}
+
+// One Drain pays a bounded slice of the backlog; the remainder stays queued,
+// in order, for the next command instead of holding this one hostage.
+func TestDrainStopsAtItsBudgetAndTheRestWaits(t *testing.T) {
+	s := newSpool(t)
+	s.maxPerDrain = 2
+	for _, host := range []string{"a", "b", "c", "d", "e"} {
+		if err := s.Append(store.AccessEntry{Hostname: host}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sink := &recordingSink{}
+	res, err := s.Drain(context.Background(), sink)
+	if err != nil || res.Sent != 2 {
+		t.Fatalf("Drain = %+v, %v", res, err)
+	}
+	if n, _ := s.Pending(); n != 3 {
+		t.Fatalf("pending = %d, want the 3 over-budget records to wait", n)
+	}
+
+	// The next command drains under the production cap and clears the rest.
+	s.maxPerDrain = 0
+	final := &recordingSink{}
+	res, err = s.Drain(context.Background(), final)
+	if err != nil || res.Sent != 3 {
+		t.Fatalf("second Drain = %+v, %v", res, err)
+	}
+	if final.got[0].Hostname != "c" || final.got[2].Hostname != "e" {
+		t.Fatalf("second drain order = %+v", final.got)
 	}
 }
 
