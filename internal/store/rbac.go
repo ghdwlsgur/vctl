@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -161,7 +160,7 @@ func (s *Store) RBACCandidateUsers(ctx context.Context) ([]string, error) {
 	for _, q := range sources {
 		users, err := queryAndCollect(ctx, s.pool, q, nil, scanString)
 		if err != nil {
-			if strings.Contains(err.Error(), "42P01") { // table not migrated yet
+			if isUndefinedTable(err) { // table not migrated yet
 				continue
 			}
 			return nil, err
