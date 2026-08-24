@@ -3,7 +3,10 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -38,12 +41,33 @@ func (d Dependencies) withDefaults() Dependencies {
 
 // Execute builds the production command tree and runs it.
 //
+// The context carries interrupt handling. Without it, ^C killed the process
+// wherever it happened to be — nothing cancelled a query stuck behind a lock
+// or a Vault round trip against a wedged server, and cobra handed commands a
+// context nothing could cancel. Now the first signal cancels in-flight work
+// through cmd.Context(); the goroutine below then restores the default
+// disposition, so a second ^C kills a command stuck in cleanup instead of
+// being swallowed. Commands that manage signals themselves keep doing so:
+// exec ignores SIGINT while the remote command runs (Ignore also unregisters
+// this handler), and the agent daemon installs its own shutdown context.
+//
 // The timing report is printed here rather than in a post-run hook because a
 // command that failed is exactly the one worth measuring, and PersistentPostRun
 // does not run for those.
 func Execute() error {
-	err := NewRoot(Dependencies{}).Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	err := NewRoot(Dependencies{}).ExecuteContext(ctx)
 	timing.Report(os.Stderr)
+	if err != nil && ctx.Err() != nil && errors.Is(err, context.Canceled) {
+		// The operator interrupted; the cancellation is the message, and
+		// "context canceled" would report the mechanism instead.
+		return fmt.Errorf("interrupted")
+	}
 	return err
 }
 

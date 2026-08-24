@@ -107,6 +107,24 @@ const (
 	// largest at 5m). An idle timeout at or under this is a reaper racing the
 	// next write.
 	maxDaemonInterval = 5 * time.Minute
+
+	// interactiveStatementTimeout bounds one statement on an interactive
+	// command's pool, enforced by the server. The offline fallback
+	// (internal/invcache) triggers on a TCP probe, so it covers "unreachable" —
+	// but a server that accepts connections and then cannot answer (the ENOSPC
+	// CrashLoop that package records) left every query, and the command behind
+	// it, waiting with no message. No interactive query here is legitimately
+	// slow: the widest listing measures in tens of milliseconds, so anything
+	// approaching this ceiling is a lock queue or a wedged server, and an error
+	// the operator can read beats a prompt that never returns.
+	interactiveStatementTimeout = "30s"
+
+	// serialStatementTimeout is wider because the serial workloads are batch
+	// writers: retention prune deletes in LIMIT-bounded batches that may
+	// legitimately take seconds apiece on a table that has grown for a year.
+	// Migrations lift the ceiling entirely for their own transaction — see
+	// MigrateAsOwner.
+	serialStatementTimeout = "5min"
 )
 
 // tunePool sets the pool's connection recycling policy.
@@ -151,8 +169,10 @@ func tunePool(cfg *pgxpool.Config) {
 
 func tunePoolFor(cfg *pgxpool.Config, workload Workload) {
 	cfg.MaxConns = 4
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = interactiveStatementTimeout
 	if workload == WorkloadSerial {
 		cfg.MaxConns = 1
+		cfg.ConnConfig.RuntimeParams["statement_timeout"] = serialStatementTimeout
 	}
 	// Recycling a connection no longer implies issuing a credential — see
 	// internal/dbcreds — so the lifetime is set for connection hygiene rather
@@ -189,7 +209,11 @@ func OpenFor(ctx context.Context, host string, port int, dbname string, getCreds
 	// primary. The result was a connection that downgraded to cleartext exactly
 	// when verification failed, i.e. against the attacker the verification is
 	// there to stop, while pg_stat_ssl reported ssl=false and nothing surfaced.
-	dsn := fmt.Sprintf("postgres://%s:%d/%s?sslmode=verify-full", host, port, dbname)
+	//
+	// connect_timeout bounds the dial. Without it a host that blackholes SYNs
+	// holds the connect at the OS default (minutes), which is longer than any
+	// operator waits before assuming the tool hung.
+	dsn := fmt.Sprintf("postgres://%s:%d/%s?sslmode=verify-full&connect_timeout=10", host, port, dbname)
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
