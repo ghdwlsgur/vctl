@@ -15,16 +15,29 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// Generic string-list picker (single- and multi-select), mirroring the server
-// picker in picker.go: scrollable, type-to-filter viewport with a non-TTY
-// numbered fallback. Used by `vctl rbac assign` to pick a group then users.
+// The one string-list picker (single- and multi-select): scrollable,
+// type-to-filter viewport with group tabs and a non-TTY numbered fallback.
+// Every selection in the tool runs on it — rbac's pickers, the host picker,
+// and the `vctl ssh` server picker — so the selections cannot drift into
+// looking like different tools. They did: the server picker was a second
+// ~250-line model whose only real differences were its row labels and its
+// query matcher, both of which are the caller's to supply.
 //
-// Keys: ↑/↓ move, type to filter, enter confirm, esc cancel. In multi mode,
-// space toggles the row under the cursor (so type-to-filter uses letters only).
+// Keys: ↑/↓ move, ←/→ group tab, type to filter, enter confirm, esc cancel.
+// In multi mode, space toggles the row under the cursor (so type-to-filter
+// uses letters only).
+
+const pickerViewport = 10 // visible rows in the scrolling area
+
+var (
+	pickCursorStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	pickSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	pickDimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+)
 
 // pickOne returns the chosen value, or "" if cancelled.
 func pickOne(items []string, title string) (string, error) {
-	idx, _, err := runListPicker(items, nil, title, false)
+	idx, _, err := runListPicker(items, nil, nil, title, false)
 	if err != nil {
 		return "", err
 	}
@@ -47,7 +60,16 @@ type listGroups struct {
 // pickIndex is single-select for callers that need the row's position rather
 // than its text. g may be nil, which means no tabs.
 func pickIndex(items []string, g *listGroups, title string) (int, error) {
-	idxs, cancelled, err := runListPicker(items, g, title, false)
+	return pickIndexMatch(items, g, nil, title)
+}
+
+// pickIndexMatch is pickIndex with a caller-supplied query matcher, for lists
+// whose rows are richer than their labels. The server picker matches the
+// underlying fields — whole-word state and port, so "a" does not select every
+// active host — and matching the rendered label would undo exactly that.
+// match receives the row index and the lowered, trimmed query.
+func pickIndexMatch(items []string, g *listGroups, match func(i int, q string) bool, title string) (int, error) {
+	idxs, cancelled, err := runListPicker(items, g, match, title, false)
 	if err != nil {
 		return -1, err
 	}
@@ -59,7 +81,7 @@ func pickIndex(items []string, g *listGroups, title string) (int, error) {
 
 // pickMany returns the chosen values (possibly empty if nothing toggled).
 func pickMany(items []string, title string) ([]string, error) {
-	idxs, cancelled, err := runListPicker(items, nil, title, true)
+	idxs, cancelled, err := runListPicker(items, nil, nil, title, true)
 	if err != nil {
 		return nil, err
 	}
@@ -73,14 +95,14 @@ func pickMany(items []string, title string) ([]string, error) {
 	return out, nil
 }
 
-func runListPicker(items []string, g *listGroups, title string, multi bool) (chosen []int, cancelled bool, err error) {
+func runListPicker(items []string, g *listGroups, match func(i int, q string) bool, title string, multi bool) (chosen []int, cancelled bool, err error) {
 	if len(items) == 0 {
 		return nil, false, fmt.Errorf("nothing to choose from")
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return numberListPick(items, title, multi)
 	}
-	m := newListModel(items, g, title, multi)
+	m := newListModel(items, g, match, title, multi)
 	prog := tea.NewProgram(m, tea.WithOutput(os.Stderr), tea.WithInput(os.Stdin))
 	res, err := prog.Run()
 	if err != nil {
@@ -108,9 +130,10 @@ func runListPicker(items []string, g *listGroups, title string, multi bool) (cho
 type listModel struct {
 	title     string
 	cands     []string
-	groups    *listGroups // nil when the caller passed no grouping
-	tabs      []string    // distinct groups; index 0 is "" = all
-	tabIdx    int         // selected tab (←/→)
+	groups    *listGroups                // nil when the caller passed no grouping
+	match     func(i int, q string) bool // nil means label-contains
+	tabs      []string                   // distinct groups; index 0 is "" = all
+	tabIdx    int                        // selected tab (←/→)
 	filtered  []int
 	query     string
 	cursor    int
@@ -123,11 +146,12 @@ type listModel struct {
 	cancelled bool
 }
 
-func newListModel(items []string, g *listGroups, title string, multi bool) listModel {
+func newListModel(items []string, g *listGroups, match func(i int, q string) bool, title string, multi bool) listModel {
 	m := listModel{
 		title:    title,
 		cands:    items,
 		groups:   g,
+		match:    match,
 		tabs:     distinctGroups(g),
 		height:   pickerViewport,
 		width:    100,
@@ -185,16 +209,25 @@ func (m *listModel) refilter() {
 	q := strings.ToLower(strings.TrimSpace(m.query))
 	tab := m.tabs[m.tabIdx] // "" = all groups
 	m.filtered = m.filtered[:0]
-	for i, c := range m.cands {
+	for i := range m.cands {
 		if tab != "" && m.groupOf(i) != tab {
 			continue
 		}
-		if q == "" || strings.Contains(strings.ToLower(c), q) {
+		if q == "" || m.matches(i, q) {
 			m.filtered = append(m.filtered, i)
 		}
 	}
 	m.cursor = 0
 	m.offset = 0
+}
+
+// matches applies the caller's matcher when one was supplied, and plain
+// label-contains otherwise.
+func (m *listModel) matches(i int, q string) bool {
+	if m.match != nil {
+		return m.match(i, q)
+	}
+	return strings.Contains(strings.ToLower(m.cands[i]), q)
 }
 
 func (m *listModel) clampScroll() {

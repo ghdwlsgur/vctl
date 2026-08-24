@@ -29,7 +29,7 @@ func visibleLabels(m listModel) []string {
 func TestListPickerFiltersByGroupWithLeftAndRight(t *testing.T) {
 	items := []string{"seoul-a", "seoul-b", "incheon-a"}
 	g := &listGroups{name: "DC", of: []string{"seoul", "seoul", "incheon"}}
-	m := newListModel(items, g, "pick", false)
+	m := newListModel(items, g, nil, "pick", false)
 	m.width = 80
 
 	if got := len(m.filtered); got != 3 {
@@ -72,7 +72,7 @@ func TestListPickerHidesTheTabRowWithoutGroups(t *testing.T) {
 		"one":  {name: "DC", of: []string{"seoul", "seoul"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			m := newListModel([]string{"a", "b"}, g, "pick", false)
+			m := newListModel([]string{"a", "b"}, g, nil, "pick", false)
 			m.width = 80
 			if view := m.View(); strings.Contains(view, "‹") {
 				t.Errorf("a tab row was drawn:\n%s", view)
@@ -90,7 +90,7 @@ func TestListPickerHidesTheTabRowWithoutGroups(t *testing.T) {
 // different tools, and nobody chose that; it is just what happens when the two
 // pickers are written separately.
 func TestListPickerMarksTheCursorLikeTheServerPicker(t *testing.T) {
-	m := newListModel([]string{"web-01", "web-02"}, nil, "pick", false)
+	m := newListModel([]string{"web-01", "web-02"}, nil, nil, "pick", false)
 	m.width = 80
 	view := m.View()
 	if !strings.Contains(view, "› ● web-01") {
@@ -104,7 +104,7 @@ func TestListPickerMarksTheCursorLikeTheServerPicker(t *testing.T) {
 // Multi-select keeps checkboxes: the question there is "which of these", and a
 // row can be on without the cursor sitting on it, which a radio dot cannot say.
 func TestListPickerKeepsCheckboxesInMultiSelect(t *testing.T) {
-	m := newListModel([]string{"alice", "bob"}, nil, "pick", true)
+	m := newListModel([]string{"alice", "bob"}, nil, nil, "pick", true)
 	m.width = 80
 	if view := m.View(); !strings.Contains(view, "[ ] alice") {
 		t.Errorf("unchecked row is not a checkbox:\n%s", view)
@@ -120,7 +120,7 @@ func TestListPickerKeepsCheckboxesInMultiSelect(t *testing.T) {
 func TestListPickerMarksShareAWidth(t *testing.T) {
 	for name, multi := range map[string]bool{"single": false, "multi": true} {
 		t.Run(name, func(t *testing.T) {
-			m := newListModel([]string{"aaa", "bbb", "ccc"}, nil, "pick", multi)
+			m := newListModel([]string{"aaa", "bbb", "ccc"}, nil, nil, "pick", multi)
 			m.width = 80
 			if multi {
 				m.selected[1] = true

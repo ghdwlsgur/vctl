@@ -70,23 +70,35 @@ func TestPickerFilterMatchesThePort(t *testing.T) {
 	}
 }
 
-// The column only grows for the lists that need it. A fleet entirely on 22 must
-// render exactly as it did before ports were shown.
-func TestAddrColumnWidthGrowsOnlyForLongerAddresses(t *testing.T) {
+// The address column only grows for the lists that need it: the picker
+// measures its grid across every row, so a fleet entirely on 22 shows no port
+// anywhere, and one host on 2032 is what widens the column — aligned across
+// every label, or the grid stops being a grid.
+func TestServerPickLabelsGrowTheAddressColumnOnlyWhenNeeded(t *testing.T) {
 	plain := []store.ServerWithStatus{
-		{Server: store.Server{IP: "192.168.10.35", Port: 22}},
-		{Server: store.Server{IP: "172.18.0.11", Port: 22}},
+		{Server: store.Server{Hostname: "web-01", IP: "192.168.10.35", Port: 22, DC: "seoul"}},
+		{Server: store.Server{Hostname: "web-02", IP: "172.18.0.11", Port: 22, DC: "seoul"}},
 	}
-	if got := addrColumnWidth(plain); got != addrColumnMin {
-		t.Errorf("addrColumnWidth(all 22) = %d, want the previous width %d", got, addrColumnMin)
+	for _, l := range serverPickLabels(plain, false) {
+		if strings.Contains(l, ":22") {
+			t.Errorf("label %q spells out the default port", l)
+		}
 	}
 
 	long := append(plain, store.ServerWithStatus{
-		Server: store.Server{IP: "211.172.228.230", Port: 2032},
+		Server: store.Server{Hostname: "gw-01", IP: "211.172.228.230", Port: 2032, DC: "seoul"},
 	})
-	want := len("211.172.228.230:2032")
-	if got := addrColumnWidth(long); got != want {
-		t.Errorf("addrColumnWidth(mixed) = %d, want %d to fit the widest row", got, want)
+	labels := serverPickLabels(long, false)
+	if !strings.Contains(labels[2], "211.172.228.230:2032") {
+		t.Errorf("label %q lost the non-default port", labels[2])
+	}
+	// Every label must place the DC cell at the same column, whichever row
+	// forced the width.
+	col := strings.Index(stripANSI(labels[0]), " seoul")
+	for _, l := range labels[1:] {
+		if got := strings.Index(stripANSI(l), " seoul"); got != col {
+			t.Errorf("DC column drifted: %d vs %d in %q", got, col, l)
+		}
 	}
 }
 
