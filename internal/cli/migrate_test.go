@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 func appliedRows(names ...string) []store.AppliedMigration {
@@ -29,7 +30,7 @@ func TestMigrationStatusNamesPendingFilesAndTheCommandThatRunsThem(t *testing.T)
 	renderMigrationStatus(&buf,
 		appliedRows("001_init.sql", "002_kernel_audit.sql"),
 		[]string{"013_server_state.sql"})
-	out := stripANSI(buf.String())
+	out := ui.StripANSI(buf.String())
 
 	for _, want := range []string{"001_init.sql", "002_kernel_audit.sql", "013_server_state.sql", "1 pending", "vctl migrate"} {
 		if !strings.Contains(out, want) {
@@ -47,7 +48,7 @@ func TestMigrationStatusNamesPendingFilesAndTheCommandThatRunsThem(t *testing.T)
 func TestMigrationStatusSaysUpToDateWhenNothingIsPending(t *testing.T) {
 	var buf bytes.Buffer
 	renderMigrationStatus(&buf, appliedRows("001_init.sql"), nil)
-	out := stripANSI(buf.String())
+	out := ui.StripANSI(buf.String())
 
 	if !strings.Contains(out, "up to date") {
 		t.Errorf("output does not say the schema is current:\n%s", out)
@@ -67,7 +68,7 @@ func TestMigrationStatusSaysUpToDateWhenNothingIsPending(t *testing.T) {
 func TestMigrationStatusExplainsAnEmptyLedger(t *testing.T) {
 	var buf bytes.Buffer
 	renderMigrationStatus(&buf, nil, []string{"001_init.sql", "002_kernel_audit.sql"})
-	out := stripANSI(buf.String())
+	out := ui.StripANSI(buf.String())
 
 	if !strings.Contains(out, "nothing recorded") {
 		t.Errorf("output does not explain the empty ledger:\n%s", out)

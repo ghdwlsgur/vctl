@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -139,6 +140,14 @@ func Dot(state State) string {
 		return " "
 	}
 }
+
+// ansiRE matches SGR color/style sequences — the only escapes this package's
+// styles emit.
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// StripANSI removes the styling this package put in, for output that is data
+// rather than a screen — JSON a machine reads, or a test asserting on text.
+func StripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
 // OrDash returns s, or a muted "-" when s is empty, for table cells where a
 // blank would read as missing data rather than "not set".

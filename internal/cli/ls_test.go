@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 func TestRenderInventoryOmitsRuntimeStatus(t *testing.T) {
@@ -41,7 +42,7 @@ func TestRenderInventoryHasCompactAndWideColumnContracts(t *testing.T) {
 
 	var compact strings.Builder
 	renderInventory(&compact, servers, false, false)
-	compactText := stripANSI(compact.String())
+	compactText := ui.StripANSI(compact.String())
 	for _, want := range []string{"HOST", "STATUS", "ADDRESS", "VIA", "up maint"} {
 		if !strings.Contains(compactText, want) {
 			t.Errorf("compact inventory missing %q:\n%s", want, compactText)
@@ -53,7 +54,7 @@ func TestRenderInventoryHasCompactAndWideColumnContracts(t *testing.T) {
 
 	var wide strings.Builder
 	renderInventoryMode(&wide, servers, false, false, true)
-	wideText := stripANSI(wide.String())
+	wideText := ui.StripANSI(wide.String())
 	for _, want := range []string{"AGENT", "STATE", "USER", "sre-admin"} {
 		if !strings.Contains(wideText, want) {
 			t.Errorf("wide inventory missing %q:\n%s", want, wideText)
@@ -74,7 +75,7 @@ func TestRenderInventoryFromCacheSuppressesLiveness(t *testing.T) {
 
 	var out strings.Builder
 	renderInventory(&out, servers, true, false)
-	got := stripANSI(out.String())
+	got := ui.StripANSI(out.String())
 
 	for _, unwanted := range []string{"up", "down", "stale", "no-agent"} {
 		if strings.Contains(got, unwanted) {
@@ -94,7 +95,7 @@ func TestIPCellCompactsExtraAddressesToACount(t *testing.T) {
 		Server:    store.Server{IP: "10.0.0.1"},
 		Addresses: []string{"10.0.0.1", "10.0.0.2", "192.168.1.5"},
 	}
-	got := stripANSI(ipCell(row, false))
+	got := ui.StripANSI(ipCell(row, false))
 	if !strings.Contains(got, "10.0.0.1") {
 		t.Errorf("ipCell = %q, want the primary address", got)
 	}
@@ -118,7 +119,7 @@ func TestIPCellAllIPsListsEveryAddress(t *testing.T) {
 		Server:    store.Server{IP: "10.0.0.1"},
 		Addresses: []string{"10.0.0.1", "10.0.0.2", "192.168.1.5"},
 	}
-	got := stripANSI(ipCell(row, true))
+	got := ui.StripANSI(ipCell(row, true))
 	for _, want := range []string{"10.0.0.1", "+10.0.0.2", "+192.168.1.5"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("ipCell(all) = %q, want to contain %q", got, want)
@@ -131,7 +132,7 @@ func TestIPCellAllIPsListsEveryAddress(t *testing.T) {
 func TestIPCellSingleAddressHasNoMarker(t *testing.T) {
 	solo := store.InventoryRow{Server: store.Server{IP: "10.0.0.9"}, Addresses: []string{"10.0.0.9"}}
 	for _, all := range []bool{false, true} {
-		if got := stripANSI(ipCell(solo, all)); strings.ContainsAny(got, "+()") {
+		if got := ui.StripANSI(ipCell(solo, all)); strings.ContainsAny(got, "+()") {
 			t.Fatalf("ipCell(single, all=%v) = %q, want no extras marker", all, got)
 		}
 	}
