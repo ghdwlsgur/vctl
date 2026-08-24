@@ -282,7 +282,16 @@ func (c *Cache) Save(s Shape, snap store.Fleet) error {
 // Used after anything that makes the stored picture wrong — a reconcile, a farm
 // rename — rather than leaving a screen to show what somebody just changed away
 // from.
-func (c *Cache) Clear() error {
+//
+// at is when the change happened, on the database's clock — the clock every
+// reading's ReadAt carries. Save refuses anything captured before this
+// moment, and the refusal is only meaningful when both sides are on one
+// clock: stamped with this machine's time instead, a workstation running
+// ahead of the database refused every post-change reading for the length of
+// the skew, and the cache sat silently empty after each mutation. Zero means
+// the caller had no database to ask; the local clock is the fallback, and a
+// skewed marker beats none.
+func (c *Cache) Clear(at time.Time) error {
 	if c == nil || c.Dir == "" {
 		return nil
 	}
@@ -297,5 +306,8 @@ func (c *Cache) Clear() error {
 	if err := securefile.EnsurePrivateDir(c.Dir, 0o700); err != nil {
 		return err
 	}
-	return securefile.WriteAtomic(c.clearedPath(), []byte(time.Now().Format(time.RFC3339Nano)), 0o600)
+	if at.IsZero() {
+		at = time.Now()
+	}
+	return securefile.WriteAtomic(c.clearedPath(), []byte(at.Format(time.RFC3339Nano)), 0o600)
 }

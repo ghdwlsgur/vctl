@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -33,18 +34,25 @@ import (
 
 // forgetReadings drops the stored picture after something changed it.
 //
-// A rename, a state change or a reconcile makes what is on disk wrong in the
-// one way a cache must never be: it shows somebody what they just changed away
-// from. Dropping is deliberate rather than rewriting — the command that changed
-// one field has not read the rest, and writing a partly-known picture back is
-// how a cache starts inventing.
-func forgetReadings(a *app.App) {
+// at comes from the database when a store is at hand — the same clock every
+// reading's ReadAt uses, so Cache.Clear's ordering marker compares like with
+// like. Best-effort: a caller that cannot ask falls back to the local clock
+// inside Clear.
+func forgetReadings(ctx context.Context, a *app.App, st *store.Store) {
 	if a == nil {
 		return
 	}
-	if c := a.FleetCache(); c != nil {
-		_ = c.Clear()
+	c := a.FleetCache()
+	if c == nil {
+		return
 	}
+	var at time.Time
+	if st != nil {
+		if t, err := st.Now(ctx); err == nil {
+			at = t
+		}
+	}
+	_ = c.Clear(at)
 }
 
 // keepReading stores what was just read, for the next screen.

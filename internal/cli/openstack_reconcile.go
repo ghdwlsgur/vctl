@@ -150,7 +150,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 				// even on a partial run, because "some of it changed" is not a
 				// picture worth keeping.
 				if !dryRun {
-					forgetReadings(a)
+					forgetReadings(ctx, a, st)
 				}
 				if format != outputTable {
 					if err := writeStructured(format, reconcileReportJSON(rep, startedAt, took, dryRun)); err != nil {

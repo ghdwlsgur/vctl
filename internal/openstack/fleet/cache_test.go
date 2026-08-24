@@ -185,7 +185,7 @@ func TestClearRemovesBothShapesAndToleratesAbsence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := c.Clear(); err != nil {
+	if err := c.Clear(time.Now()); err != nil {
 		t.Fatalf("Clear: %v", err)
 	}
 	for _, s := range []Shape{ShapeFarms, ShapeVMs} {
@@ -193,7 +193,7 @@ func TestClearRemovesBothShapesAndToleratesAbsence(t *testing.T) {
 			t.Errorf("%s survived the clear", s)
 		}
 	}
-	if err := c.Clear(); err != nil {
+	if err := c.Clear(time.Now()); err != nil {
 		t.Errorf("clearing an empty cache is an error: %v", err)
 	}
 }
@@ -378,7 +378,7 @@ func TestAReadingFromBeforeAChangeCannotComeBack(t *testing.T) {
 	c := NewCache(t.TempDir())
 	inFlight := snapshotAt(time.Now().Add(-2 * time.Second)) // read before the change
 
-	if err := c.Clear(); err != nil { // the rename
+	if err := c.Clear(time.Now()); err != nil { // the rename
 		t.Fatalf("Clear: %v", err)
 	}
 	if err := c.Save(ShapeFarms, inFlight); err != nil { // the late write
@@ -393,6 +393,25 @@ func TestAReadingFromBeforeAChangeCannotComeBack(t *testing.T) {
 	}
 	if _, err := c.Load(ShapeFarms, time.Now()); err != nil {
 		t.Errorf("a reading from after the change was refused: %v", err)
+	}
+}
+
+// The cleared-at marker lives on the database's clock — the clock every
+// reading's ReadAt carries. Stamped with this machine's clock instead, a
+// workstation running five minutes ahead refused every post-change reading
+// for five minutes, and the cache sat silently empty after each mutation.
+func TestClearedAtLivesOnTheDatabaseClock(t *testing.T) {
+	c := NewCache(t.TempDir())
+	dbNow := time.Now().Add(-5 * time.Minute) // the database, behind this machine
+
+	if err := c.Clear(dbNow); err != nil { // the change, stamped on the db clock
+		t.Fatalf("Clear: %v", err)
+	}
+	if err := c.Save(ShapeFarms, snapshotAt(dbNow.Add(time.Second))); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := c.Load(ShapeFarms, time.Now()); err != nil {
+		t.Errorf("a reading captured after the change was refused: %v", err)
 	}
 }
 

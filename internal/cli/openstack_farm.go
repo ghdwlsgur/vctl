@@ -98,7 +98,7 @@ func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 				// completion offers, so a stored reading kept past this one
 				// would go on offering the old name — to the person who just
 				// changed it.
-				forgetReadings(a)
+				forgetReadings(ctx, a, st)
 				ui.Successf(os.Stdout, "%s is now %q", id, name)
 				return nil
 			})
@@ -377,7 +377,7 @@ func openstackFarmStateCmd(env CommandEnv) *cobra.Command {
 				// and hides a retired deployment altogether. Keeping the old
 				// reading would mean the farm somebody just retired stays in the
 				// list they retired it out of.
-				forgetReadings(a)
+				forgetReadings(ctx, a, st)
 				ui.Successf(os.Stdout, "%s is now %s", id, state)
 				return nil
 			})
