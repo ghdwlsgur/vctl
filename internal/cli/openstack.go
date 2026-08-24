@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
@@ -252,14 +251,6 @@ func containsFold(list []string, want string) bool {
 	return false
 }
 
-// farmHeading is how a deployment's name is printed wherever one heads a
-// block. Three renderers drew it and two of them had their own copy of the
-// style; a farm that reads differently between two screens of the same tool
-// reads as two different farms.
-func farmHeading(label string) string {
-	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")).Render("▌ " + label)
-}
-
 // Column positions in a listing row. Named because the renderer now leaves some
 // of them out per farm, and index arithmetic on a bare 2 is how the wrong column
 // goes missing.
@@ -363,27 +354,22 @@ func renderOpenStack(w io.Writer, hosts []store.OpenStackHost, cov store.OpenSta
 			end++
 		}
 		shared := sharedColumns(hosts[i:end], cells[i:end], now, wide)
-		fmt.Fprintf(w, "%s %s\n", farmHeading(farmLabel(hosts[i])),
-			ui.Muted(farmSuffix(hosts[i], end-i, shared)))
+		fmt.Fprintln(w, ui.GroupHeading(farmLabel(hosts[i]), farmSuffix(hosts[i], end-i, shared)))
 		if shape := farmShape(hosts[i:end], wide); shape != "" {
 			fmt.Fprintf(w, "  %s\n", ui.Muted(shape))
 		}
 		fmt.Fprintln(w)
 		for ; i < end; i++ {
-			var line strings.Builder
-			line.WriteString("  ")
-			first := true
+			visible := make([]string, 0, len(cells[i]))
+			vw := make([]int, 0, len(cells[i]))
 			for j, c := range cells[i] {
 				if shared.hides(j) {
 					continue
 				}
-				if !first {
-					line.WriteString("  ")
-				}
-				first = false
-				line.WriteString(ui.PadRight(c, widths[j]))
+				visible = append(visible, c)
+				vw = append(vw, widths[j])
 			}
-			fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
+			fmt.Fprintln(w, "  "+ui.GridRow(visible, vw))
 		}
 		fmt.Fprintln(w)
 	}
@@ -488,7 +474,8 @@ func farmLabel(h store.OpenStackHost) string {
 
 // farmSuffix carries the count, whatever every host in the farm agrees on, and
 // — for anything weaker than a statement — what the grouping rests on. A
-// confirmed farm needs no annotation; a guess does.
+// confirmed farm needs no annotation; a guess does. Returned bare: it is the
+// meta half of a ui.GroupHeading, which supplies the mute and the leading "·".
 func farmSuffix(h store.OpenStackHost, n int, shared sharedCols) string {
 	parts := make([]string, 0, 4)
 	if h.FarmRegion != "" {
@@ -503,7 +490,7 @@ func farmSuffix(h store.OpenStackHost, n int, shared sharedCols) string {
 	if shared.age != "" {
 		parts = append(parts, shared.age)
 	}
-	s := "· " + strings.Join(parts, " · ")
+	s := strings.Join(parts, " · ")
 	if h.Farm == "" {
 		return s + " · nothing has claimed these"
 	}

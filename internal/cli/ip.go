@@ -184,10 +184,10 @@ func renderIPAllocations(w io.Writer, rows []store.IPAllocation) {
 			}
 			c := []string{
 				a.IP,
-				orDashMuted(a.Owner),
+				ui.OrDash(a.Owner),
 				label,
 				ui.Muted(ui.Truncate(strutil.FirstNonEmpty(a.Project, a.Rack, a.OS), 30)),
-				orDashMuted(a.Farm),
+				ui.OrDash(a.Farm),
 				ipWGCell(a.WGTunnel),
 			}
 			dot[pos] = ui.Dot(ipStatusState(a.Status))
@@ -199,7 +199,6 @@ func renderIPAllocations(w io.Writer, rows []store.IPAllocation) {
 	}
 	widths := ui.ColumnWidths(cells)
 
-	groupStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	for _, kind := range order {
 		grp := byKind[kind]
 		if len(grp) == 0 {
@@ -209,7 +208,7 @@ func renderIPAllocations(w io.Writer, rows []store.IPAllocation) {
 		if name == "" {
 			name = kind
 		}
-		fmt.Fprintf(w, "%s %s\n", groupStyle.Render("▌ "+name), ui.Muted(fmt.Sprintf("· %d", len(grp))))
+		fmt.Fprintln(w, ui.GroupHeading(name, fmt.Sprintf("%d", len(grp))))
 		for _, a := range grp {
 			i := idx[a.IP]
 			var line strings.Builder
@@ -231,14 +230,6 @@ func renderIPAllocations(w io.Writer, rows []store.IPAllocation) {
 		fmt.Fprintln(w)
 	}
 	fmt.Fprintln(w, ui.Muted(fmt.Sprintf("%d addresses", len(rows))))
-}
-
-// orDashMuted renders a muted '-' for an empty cell, otherwise the value.
-func orDashMuted(s string) string {
-	if s == "" {
-		return ui.Muted("-")
-	}
-	return s
 }
 
 // ipWGCell renders the WireGuard tunnel tag, or a muted dash when none.

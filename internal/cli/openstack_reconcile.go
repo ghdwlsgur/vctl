@@ -279,7 +279,7 @@ func reportReconcile(id string, r membership.Outcome, dry bool) {
 			State: ui.StateFail,
 		})
 	}
-	fmt.Fprintf(os.Stdout, "\n%s\n", ui.Title("▌ "+head))
+	fmt.Fprintf(os.Stdout, "\n%s\n", ui.GroupHeading(head, ""))
 	ui.KVs(os.Stdout, rows)
 }
 

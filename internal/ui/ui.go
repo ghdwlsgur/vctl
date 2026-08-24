@@ -90,6 +90,35 @@ func Title(s string) string { return titleStyle.Render(s) }
 func Muted(s string) string { return mutedStyle.Render(s) }
 func Value(s string) string { return valueStyle.Render(s) }
 
+// GroupHeading is the accented "▌ label · meta" line every grouped listing
+// heads its blocks with — farms, IP kinds, WireGuard gateways. One owner on
+// purpose: three renderers drew it and two carried their own copy of the
+// style, and a group that reads differently between two screens of the same
+// tool reads as two different groups. meta is muted behind a "·"; empty adds
+// nothing.
+func GroupHeading(label, meta string) string {
+	h := titleStyle.Render("▌ " + label)
+	if meta != "" {
+		h += " " + mutedStyle.Render("· "+meta)
+	}
+	return h
+}
+
+// GridRow joins cells padded to widths with the two-space gutter every grid
+// listing uses, trimmed of trailing padding so no row ends in spaces. The
+// caller owns the widths — usually ColumnWidths across every row, so the grid
+// stays a grid.
+func GridRow(cells []string, widths []int) string {
+	var b strings.Builder
+	for j, c := range cells {
+		if j > 0 {
+			b.WriteString("  ")
+		}
+		b.WriteString(PadRight(c, widths[j]))
+	}
+	return strings.TrimRight(b.String(), " ")
+}
+
 func OK(s string) string   { return okStyle.Render(s) }
 func Warn(s string) string { return warnStyle.Render(s) }
 func Fail(s string) string { return failStyle.Render(s) }
@@ -149,7 +178,7 @@ func Ago(t time.Time) string {
 // "▌ title ────" rule filling the line; when the writer is not a terminal
 // (pipes, logs, CI) it prints just "▌ title" so redirected output stays clean.
 func Section(w io.Writer, title string) {
-	head := titleStyle.Render("▌ " + title)
+	head := GroupHeading(title, "")
 	if cols := terminalWidth(w); cols > 0 {
 		if rule := cols - lipgloss.Width(head) - 1; rule > 0 {
 			fmt.Fprintln(w, head+" "+mutedStyle.Render(strings.Repeat("─", rule)))

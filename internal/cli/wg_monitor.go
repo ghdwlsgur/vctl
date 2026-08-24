@@ -9,7 +9,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
@@ -319,9 +318,12 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// monRowFmt lays out one monitor row. The header prints through the same
+// format string, so a width change cannot quietly desynchronize the two.
+const monRowFmt = "  %-22s %-6s %-10s %10s %10s   %s"
+
 func (m monitorModel) View() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")).
-		Render("WireGuard monitor")
+	title := ui.Title("WireGuard monitor")
 	status := ui.Muted(fmt.Sprintf("· %d gateways · every %s · q quit · p %s",
 		len(m.targets), m.interval, map[bool]string{true: "resume", false: "pause"}[m.paused]))
 	head := title + " " + status + "\n\n"
@@ -352,12 +354,12 @@ func (m monitorModel) View() string {
 		return rows[i].key.Iface < rows[j].key.Iface
 	})
 
-	hdr := ui.Muted(fmt.Sprintf("  %-22s %-6s %-10s %10s %10s   %s",
+	hdr := ui.Muted(fmt.Sprintf(monRowFmt,
 		"gateway", "iface", "peer", "↓ rx/s", "↑ tx/s", "handshake"))
 	var sb []string
 	sb = append(sb, head+hdr)
 	for _, r := range rows {
-		line := fmt.Sprintf("  %-22s %-6s %-10s %10s %10s   %s",
+		line := fmt.Sprintf(monRowFmt,
 			ui.Truncate(r.key.Host, 22), r.key.Iface, wireguard.ShortKey(r.key.Peer),
 			humanRate(r.rxps), humanRate(r.txps), wgHandshakeCell(r.s.HS))
 		sb = append(sb, line)

@@ -69,11 +69,7 @@ func GroupedTable(w io.Writer, columns []Column, groups []TableGroup, options Ta
 				return err
 			}
 		}
-		heading := titleStyle.Render("▌ " + group.Title)
-		if group.Meta != "" {
-			heading += " " + mutedStyle.Render("· "+group.Meta)
-		}
-		if _, err := fmt.Fprintln(w, heading); err != nil {
+		if _, err := fmt.Fprintln(w, GroupHeading(group.Title, group.Meta)); err != nil {
 			return err
 		}
 		if err := renderTableLayout(w, columns, group.Rows, layout, options.Indent); err != nil {

@@ -392,6 +392,10 @@ func projectCompletions(projects []store.Project, farms map[string]string, toCom
 	return out
 }
 
+// farmLabelOf is the name if the farm has one, the endpoint otherwise.
+// Nothing claims the farm is unnamed — an endpoint is a real answer to
+// "which one". Shared with the VM listing, which carried a byte-identical
+// copy under another name.
 func farmLabelOf(id string, farms map[string]string) string {
 	if n := farms[id]; n != "" {
 		return n

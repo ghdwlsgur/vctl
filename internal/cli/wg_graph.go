@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
@@ -106,21 +105,10 @@ func renderWGTerminal(w io.Writer, ifaces []store.WGInterfaceRow, peers []store.
 		peersByIface[k] = append(peersByIface[k], p)
 	}
 
-	hosts := map[string][]store.WGInterfaceRow{}
-	var order []string
-	for _, i := range ifaces {
-		if _, ok := hosts[i.Host]; !ok {
-			order = append(order, i.Host)
-		}
-		hosts[i.Host] = append(hosts[i.Host], i)
-	}
-	sort.Strings(order)
-	groupStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-
+	order, hosts := groupIfacesByHost(ifaces)
 	for _, host := range order {
 		his := hosts[host]
-		sort.Slice(his, func(a, b int) bool { return his[a].Iface < his[b].Iface })
-		fmt.Fprintf(w, "%s %s\n", groupStyle.Render("▌ "+host), ui.Muted(fmt.Sprintf("· %d iface", len(his))))
+		fmt.Fprintln(w, ui.GroupHeading(host, fmt.Sprintf("%d iface", len(his))))
 		for _, i := range his {
 			port := ui.Muted("(no listen)")
 			if i.ListenPort > 0 {
@@ -157,6 +145,25 @@ func renderWGTerminal(w io.Writer, ifaces []store.WGInterfaceRow, peers []store.
 	fmt.Fprintln(w, ui.Muted(fmt.Sprintf("%d interfaces, %d peers", len(ifaces), len(peers))))
 }
 
+// groupIfacesByHost buckets interfaces by gateway — hosts sorted by name,
+// each bucket sorted by interface. Shared by the terminal and mermaid
+// renderers, whose copies of this block were already identical byte for byte.
+func groupIfacesByHost(ifaces []store.WGInterfaceRow) ([]string, map[string][]store.WGInterfaceRow) {
+	hosts := map[string][]store.WGInterfaceRow{}
+	var order []string
+	for _, i := range ifaces {
+		if _, ok := hosts[i.Host]; !ok {
+			order = append(order, i.Host)
+		}
+		hosts[i.Host] = append(hosts[i.Host], i)
+	}
+	sort.Strings(order)
+	for _, his := range hosts {
+		sort.Slice(his, func(a, b int) bool { return his[a].Iface < his[b].Iface })
+	}
+	return order, hosts
+}
+
 // wgMermaid renders the topology as a mermaid graph. Each gateway is a subgraph
 // of its interfaces; each peer is an edge to the far-end interface (resolved by
 // public key) or to an external node (endpoint/allowed-ips) when the far end was
@@ -168,18 +175,9 @@ func wgMermaid(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow) string {
 	b.WriteString("graph LR\n")
 
 	// Subgraph per host, interfaces as nodes.
-	hosts := map[string][]store.WGInterfaceRow{}
-	var order []string
-	for _, i := range ifaces {
-		if _, ok := hosts[i.Host]; !ok {
-			order = append(order, i.Host)
-		}
-		hosts[i.Host] = append(hosts[i.Host], i)
-	}
-	sort.Strings(order)
+	order, hosts := groupIfacesByHost(ifaces)
 	for _, host := range order {
 		his := hosts[host]
-		sort.Slice(his, func(a, b int) bool { return his[a].Iface < his[b].Iface })
 		fmt.Fprintf(&b, "  subgraph %s[\"%s\"]\n", mermaidID(host), mermaidLabel(host))
 		for _, i := range his {
 			label := i.Iface
