@@ -122,11 +122,13 @@ func IsUninitializedRBAC(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "42P01")
 }
 
-// PolicySource reports the caller's Vault identity and token policies. Satisfied
+// PolicySource reports the caller's Vault identity and effective token
+// policies — one answer, because they come from one token lookup and the gate
+// needs both. As two methods, every gated command paid two Vault round trips,
+// and the identity's lookup errors were silently collapsed into "". Satisfied
 // by *vaultc.Client.
 type PolicySource interface {
-	TokenPolicies(ctx context.Context) ([]string, error)
-	Identity(ctx context.Context) string
+	TokenIdentity(ctx context.Context) (identity string, policies []string, err error)
 }
 
 // GrantSource reads a user's app-RBAC command grants. Satisfied by *store.Store.
@@ -275,16 +277,16 @@ func NewWithGrants(policies PolicySource, grants GrantSource) *Authorizer {
 	})
 }
 
-// Snapshot reads the caller's policies and, for non-admins, their command
-// grants. It fails closed: a policy-lookup error is returned rather than
-// silently treated as "no admin". An uninitialized RBAC schema is not an error —
-// the caller is reported as having no grants.
+// Snapshot reads the caller's identity and policies and, for non-admins,
+// their command grants. It fails closed: a token-lookup error is returned
+// rather than silently treated as "no admin, no name". An uninitialized RBAC
+// schema is not an error — the caller is reported as having no grants.
 func (a *Authorizer) Snapshot(ctx context.Context) (Authorization, error) {
-	pols, err := a.policies.TokenPolicies(ctx)
+	identity, pols, err := a.policies.TokenIdentity(ctx)
 	if err != nil {
 		return Authorization{}, fmt.Errorf("rbac: token lookup: %w", err)
 	}
-	az := Authorization{Identity: a.policies.Identity(ctx), Policies: pols, Admin: HasAdminPolicy(pols)}
+	az := Authorization{Identity: identity, Policies: pols, Admin: HasAdminPolicy(pols)}
 	if az.Admin {
 		return az, nil
 	}
@@ -307,7 +309,7 @@ func (a *Authorizer) Check(ctx context.Context, cmd Command) error {
 	if cmd.Name == "" {
 		return nil // ungated command
 	}
-	pols, err := a.policies.TokenPolicies(ctx)
+	identity, pols, err := a.policies.TokenIdentity(ctx)
 	if err != nil {
 		return fmt.Errorf("rbac: token lookup: %w", err)
 	}
@@ -320,7 +322,6 @@ func (a *Authorizer) Check(ctx context.Context, cmd Command) error {
 	case ClassAdmin:
 		return fmt.Errorf("rbac: '%s' is admin-only (needs vctl-admin or sre-admin)", cmd.Name)
 	}
-	identity := a.policies.Identity(ctx)
 	if identity == "" {
 		return fmt.Errorf("rbac: cannot determine your identity — run 'vctl login'")
 	}

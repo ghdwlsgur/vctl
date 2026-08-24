@@ -158,50 +158,68 @@ func (c *Client) Renew(ctx context.Context) error {
 	return c.applyAuth(sec)
 }
 
-// Identity returns a human-readable per-person identity for the current token,
-// used for access audit logging. It prefers the username from token metadata
-// (userpass sets meta.username; OIDC sets it via the role's claim_mappings), so
-// SSO logins record the actual person rather than the role-based display_name
-// (e.g. "oidc-vctl"). Falls back to display_name, then "".
-func (c *Client) Identity(ctx context.Context) string {
-	if c.api.Token() == "" {
-		return ""
-	}
-	sec, err := c.api.Auth().Token().LookupSelfWithContext(ctx)
-	if err != nil || sec == nil || sec.Data == nil {
-		return ""
-	}
-	if meta, ok := sec.Data["meta"].(map[string]interface{}); ok {
-		for _, k := range []string{"username", "preferred_username", "email"} {
-			if v, ok := meta[k].(string); ok && v != "" {
-				return v
-			}
-		}
-	}
-	if dn, ok := sec.Data["display_name"].(string); ok && dn != "" {
-		return dn
-	}
-	return ""
+// TokenInfo is one LookupSelf's worth of answers about the current token.
+// Identity, policies and auth method were three separate methods, each paying
+// its own Vault round trip — and the RBAC gate asked for two of them back to
+// back on every gated command.
+type TokenInfo struct {
+	// Identity is the human-readable per-person identity, used to attribute
+	// audit rows. It prefers the username from token metadata (userpass sets
+	// meta.username; OIDC sets it via the role's claim_mappings), so SSO
+	// logins record the actual person rather than the role-based display_name
+	// (e.g. "oidc-vctl"). Falls back to display_name, then "" — a token can
+	// legitimately carry no name.
+	Identity string
+
+	// Policies is the effective policy set: token policies plus identity
+	// (group-derived) policies. The app-layer RBAC uses it to detect
+	// vctl-admin (bypass) — group membership grants vctl-admin via
+	// identity_policies, so both keys are unioned.
+	Policies []string
+
+	// AuthMethod names the auth method that issued the token, read from
+	// display_name ("approle", "userpass-albert" → "userpass").
+	AuthMethod string
 }
 
-// TokenPolicies returns the effective policy set on the current token: token
-// policies plus identity (group-derived) policies. The app-layer RBAC uses it
-// to detect vctl-admin (bypass) — group membership grants vctl-admin via
-// identity_policies, so both keys must be unioned.
-func (c *Client) TokenPolicies(ctx context.Context) ([]string, error) {
+// LookupToken reads the current token's info in one round trip.
+//
+// A missing token and a failed lookup are both errors, distinct from a token
+// that legitimately carries no name. Identity used to collapse all three
+// states into "", and that "" went straight into audit rows — an SSH whose
+// attribution failed was indistinguishable from one made by a nameless token.
+func (c *Client) LookupToken(ctx context.Context) (TokenInfo, error) {
 	if c.api.Token() == "" {
-		return nil, nil
+		return TokenInfo{}, fmt.Errorf("vault: not logged in")
 	}
 	sec, err := c.api.Auth().Token().LookupSelfWithContext(ctx)
 	if err != nil {
-		return nil, err
+		return TokenInfo{}, fmt.Errorf("vault: token lookup: %w", err)
 	}
 	if sec == nil || sec.Data == nil {
-		return nil, nil
+		return TokenInfo{}, fmt.Errorf("vault: token lookup returned no data")
+	}
+	var info TokenInfo
+	if meta, ok := sec.Data["meta"].(map[string]any); ok {
+		for _, k := range []string{"username", "preferred_username", "email"} {
+			if v, ok := meta[k].(string); ok && v != "" {
+				info.Identity = v
+				break
+			}
+		}
+	}
+	dn, _ := sec.Data["display_name"].(string)
+	if info.Identity == "" {
+		info.Identity = dn
+	}
+	if i := strings.IndexByte(dn, '-'); i > 0 {
+		info.AuthMethod = dn[:i]
+	} else {
+		info.AuthMethod = dn
 	}
 	set := map[string]struct{}{}
 	for _, key := range []string{"policies", "identity_policies"} {
-		raw, ok := sec.Data[key].([]interface{})
+		raw, ok := sec.Data[key].([]any)
 		if !ok {
 			continue
 		}
@@ -211,11 +229,40 @@ func (c *Client) TokenPolicies(ctx context.Context) ([]string, error) {
 			}
 		}
 	}
-	out := make([]string, 0, len(set))
+	info.Policies = make([]string, 0, len(set))
 	for p := range set {
-		out = append(out, p)
+		info.Policies = append(info.Policies, p)
 	}
-	return out, nil
+	return info, nil
+}
+
+// TokenIdentity is the RBAC gate's view: identity and policies from the one
+// lookup, errors propagated. Satisfies authz.PolicySource.
+func (c *Client) TokenIdentity(ctx context.Context) (string, []string, error) {
+	info, err := c.LookupToken(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	return info.Identity, info.Policies, nil
+}
+
+// Identity returns the per-person identity for the current token, for audit
+// attribution. A lookup failure is an error, not an empty name.
+func (c *Client) Identity(ctx context.Context) (string, error) {
+	info, err := c.LookupToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	return info.Identity, nil
+}
+
+// TokenPolicies returns the effective policy set on the current token.
+func (c *Client) TokenPolicies(ctx context.Context) ([]string, error) {
+	info, err := c.LookupToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return info.Policies, nil
 }
 
 // Logout clears the cached token.
@@ -240,18 +287,12 @@ func (c *Client) Logout() error {
 // workstation with an AppRole credential on disk could authenticate as the
 // AppRole while its config named userpass, and nothing said so — the tool kept
 // working for reads and returned 403 for everything else. Comparing the two is
-// how that becomes visible instead of being diagnosed.
+// how that becomes visible instead of being diagnosed. Diagnostic, so a failed
+// lookup is "" rather than an error: the row it feeds renders either way.
 func (c *Client) TokenAuthMethod(ctx context.Context) string {
-	if c.api.Token() == "" {
+	info, err := c.LookupToken(ctx)
+	if err != nil {
 		return ""
 	}
-	sec, err := c.api.Auth().Token().LookupSelfWithContext(ctx)
-	if err != nil || sec == nil || sec.Data == nil {
-		return ""
-	}
-	dn, _ := sec.Data["display_name"].(string)
-	if i := strings.IndexByte(dn, '-'); i > 0 {
-		return dn[:i]
-	}
-	return dn
+	return info.AuthMethod
 }

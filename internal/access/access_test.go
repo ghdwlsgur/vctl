@@ -124,9 +124,12 @@ func (f fakeSigner) SignSSH(context.Context, string, string, []string, string, [
 	return "", f.err
 }
 
-type fakeID struct{ id string }
+type fakeID struct {
+	id  string
+	err error
+}
 
-func (f fakeID) Identity(context.Context) string { return f.id }
+func (f fakeID) Identity(context.Context) (string, error) { return f.id, f.err }
 
 type recordingAudit struct {
 	entries []store.AccessEntry
@@ -164,6 +167,32 @@ func TestConnectAuditsFailedConnection(t *testing.T) {
 	// Host-key policy must have been applied to the target.
 	if !tgt.ConfirmHostKey {
 		t.Fatal("HostKeyPrompt was not applied to the target")
+	}
+}
+
+// A failed identity lookup must not go quietly: the row is still written (a
+// connection happened), but the caller hears that its attribution is missing —
+// through the same channel a failed audit write uses, because both mean the
+// trail is incomplete. It used to collapse into "", indistinguishable from a
+// legitimately nameless token.
+func TestIdentityLookupFailureIsSurfacedAndStillAudited(t *testing.T) {
+	var surfaced error
+	audit := &recordingAudit{}
+	c := &Connector{
+		Signer:       fakeSigner{err: errors.New("sign refused")},
+		Identity:     fakeID{err: errors.New("vault: token lookup: 503")},
+		Audit:        audit,
+		SignTTL:      "30m",
+		OnAuditError: func(err error) { surfaced = err },
+	}
+	if err := c.Connect(context.Background(), Request{Target: &sshc.Target{Name: "h"}, HostKey: HostKeyStrict}); err == nil {
+		t.Fatal("Connect err = nil, want dial failure")
+	}
+	if surfaced == nil || !strings.Contains(surfaced.Error(), "identity lookup") {
+		t.Fatalf("OnAuditError surfaced = %v, want the identity-lookup failure", surfaced)
+	}
+	if len(audit.entries) != 1 || audit.entries[0].VaultUser != "" {
+		t.Fatalf("audit entries = %+v, want one unattributed row", audit.entries)
 	}
 }
 

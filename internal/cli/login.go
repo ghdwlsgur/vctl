@@ -46,7 +46,7 @@ so use it only for automation/bootstrap, never for day-to-day human access.`,
 			// neither belongs in a picker of people. Done before --register
 			// flips the cached token to the approle.
 			if m != "approle" && m != "kubernetes" {
-				if id := a.Vault.Identity(ctx); id != "" {
+				if id, err := a.Vault.Identity(ctx); err == nil && id != "" {
 					if st, err := a.OpenStore(ctx, app.PurposeIdentity); err == nil {
 						if err := st.RecordSeenUser(ctx, id, Version); err != nil {
 							ui.Warnf(os.Stderr, "rbac: could not register identity %q: %v", id, err)

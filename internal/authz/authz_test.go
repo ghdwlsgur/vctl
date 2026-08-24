@@ -14,8 +14,9 @@ type fakePolicies struct {
 	err      error
 }
 
-func (f fakePolicies) TokenPolicies(context.Context) ([]string, error) { return f.policies, f.err }
-func (f fakePolicies) Identity(context.Context) string                 { return f.identity }
+func (f fakePolicies) TokenIdentity(context.Context) (string, []string, error) {
+	return f.identity, f.policies, f.err
+}
 
 // fakeGrants is a scripted GrantSource that also counts calls, so tests can
 // assert that read/admin decisions never open the grant source.

@@ -95,8 +95,12 @@ func TestTokenPoliciesAndIdentity(t *testing.T) {
 		}
 	}
 
-	if want := testIdentity(t); c.Identity(ctx) != want {
-		t.Errorf("Identity = %q, want the authenticated user %q", c.Identity(ctx), want)
+	got, err := c.Identity(ctx)
+	if err != nil {
+		t.Fatalf("Identity: %v", err)
+	}
+	if want := testIdentity(t); got != want {
+		t.Errorf("Identity = %q, want the authenticated user %q", got, want)
 	}
 }
 
