@@ -17,6 +17,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // assertReadsOnly walks a file and fails on any call that records something.
@@ -401,7 +402,7 @@ func TestNarrowTerminalsDropColumnsInsteadOfSqueezingThem(t *testing.T) {
 		}
 	}
 	// Whatever survives is named.
-	head := stripANSI(vmColumns.header(50))
+	head := ui.StripANSI(vmColumns.header(50))
 	for _, title := range narrowT {
 		if !strings.Contains(head, title) {
 			t.Errorf("heading %q does not name the surviving column %q", head, title)
@@ -417,10 +418,10 @@ func TestVMRowsCarryTheProject(t *testing.T) {
 	if len(cells) == 0 {
 		t.Fatal("no rows")
 	}
-	if got := stripANSI(cells[0][1]); got != "platform" {
+	if got := ui.StripANSI(cells[0][1]); got != "platform" {
 		t.Errorf("second cell is %q, want the project", got)
 	}
-	line := stripANSI(cols.render(cells[0], 120))
+	line := ui.StripANSI(cols.render(cells[0], 120))
 	if i, j := strings.Index(line, "platform"), strings.Index(line, "ACTIVE"); i > j {
 		t.Errorf("the project comes after the state; it narrows the list and should lead: %q", line)
 	}
@@ -431,7 +432,7 @@ func TestVMRowsCarryTheProject(t *testing.T) {
 func TestTheTitleBarSaysHowOldTheReadingIs(t *testing.T) {
 	m := testExploreModel()
 	m.data.ReadAt = time.Now().Add(-3 * time.Minute)
-	got := stripANSI(m.titleBar())
+	got := ui.StripANSI(m.titleBar())
 	for _, want := range []string{"OPENSTACK", "2 farms", "3 hosts", "3 VMs", "read 3m ago"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("title %q does not carry %q", got, want)
@@ -441,7 +442,7 @@ func TestTheTitleBarSaysHowOldTheReadingIs(t *testing.T) {
 
 func TestAFreshReadingSaysJustNow(t *testing.T) {
 	m := testExploreModel()
-	got := stripANSI(m.titleBar())
+	got := ui.StripANSI(m.titleBar())
 	if !strings.Contains(got, "just now") || strings.Contains(got, "0s ago") {
 		t.Fatalf("fresh title = %q", got)
 	}
@@ -487,17 +488,17 @@ func TestFarmPickLabelsLeadWithTheName(t *testing.T) {
 		farmOf("172.16.0.10:5000", "incheon", "compute", "compute"),
 		farmOf("192.168.201.90:5000", "", "controller"),
 	})
-	if !strings.HasPrefix(strings.TrimSpace(stripANSI(labels[0])), "incheon") {
-		t.Errorf("named farm does not lead with its name: %q", stripANSI(labels[0]))
+	if !strings.HasPrefix(strings.TrimSpace(ui.StripANSI(labels[0])), "incheon") {
+		t.Errorf("named farm does not lead with its name: %q", ui.StripANSI(labels[0]))
 	}
 	if !strings.Contains(labels[0], "172.16.0.10:5000") {
-		t.Errorf("the endpoint is gone entirely: %q", stripANSI(labels[0]))
+		t.Errorf("the endpoint is gone entirely: %q", ui.StripANSI(labels[0]))
 	}
-	if !strings.HasPrefix(strings.TrimSpace(stripANSI(labels[1])), "192.168.201.90:5000") {
-		t.Errorf("unnamed farm does not lead with its endpoint: %q", stripANSI(labels[1]))
+	if !strings.HasPrefix(strings.TrimSpace(ui.StripANSI(labels[1])), "192.168.201.90:5000") {
+		t.Errorf("unnamed farm does not lead with its endpoint: %q", ui.StripANSI(labels[1]))
 	}
-	if strings.Contains(stripANSI(labels[1]), "1 hosts") {
-		t.Errorf("label says %q", stripANSI(labels[1]))
+	if strings.Contains(ui.StripANSI(labels[1]), "1 hosts") {
+		t.Errorf("label says %q", ui.StripANSI(labels[1]))
 	}
 }
 
@@ -615,7 +616,7 @@ func TestAStoredReadingSaysItIsStoredUntilTheRefreshLands(t *testing.T) {
 	m.data.ReadAt = time.Now().Add(-4 * time.Minute)
 	m.refreshing = true
 
-	got := stripANSI(m.titleBar())
+	got := ui.StripANSI(m.titleBar())
 	for _, want := range []string{"cached", "4m old", "reading…"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("title %q does not carry %q", got, want)
@@ -624,7 +625,7 @@ func TestAStoredReadingSaysItIsStoredUntilTheRefreshLands(t *testing.T) {
 
 	fresh := testExploreModel().data
 	fresh.ReadAt = time.Now()
-	got = stripANSI(m.onRefreshed(exploreRefreshed{data: fresh}).titleBar())
+	got = ui.StripANSI(m.onRefreshed(exploreRefreshed{data: fresh}).titleBar())
 	if strings.Contains(got, "cached") || strings.Contains(got, "reading…") {
 		t.Errorf("title still claims a stored reading after a live one landed: %q", got)
 	}
@@ -646,7 +647,7 @@ func TestARefreshThatFailsKeepsWhatIsOnScreen(t *testing.T) {
 	if m.refreshing {
 		t.Error("still marked as reading after the read came back")
 	}
-	if got := stripANSI(m.titleBar()); !strings.Contains(got, "refresh failed") ||
+	if got := ui.StripANSI(m.titleBar()); !strings.Contains(got, "refresh failed") ||
 		!strings.Contains(got, "timeout") {
 		t.Errorf("title does not report the failure: %q", got)
 	}
@@ -739,7 +740,7 @@ func TestNoRenderedLineOverflowsTheTerminal(t *testing.T) {
 			for i, line := range strings.Split(m.View(), "\n") {
 				if w := lipgloss.Width(line); w > size.w {
 					t.Errorf("%dx%d %s: line %d is %d columns wide: %q",
-						size.w, size.h, view, i, w, stripANSI(line))
+						size.w, size.h, view, i, w, ui.StripANSI(line))
 				}
 			}
 		}
@@ -749,7 +750,7 @@ func TestNoRenderedLineOverflowsTheTerminal(t *testing.T) {
 // The frame is both panes at once — that is the whole point of it, and a
 // regression that drops one would still render something plausible.
 func TestTheFrameShowsBothPanesAndTheKeys(t *testing.T) {
-	got := stripANSI(testExploreModel().View())
+	got := ui.StripANSI(testExploreModel().View())
 	for _, want := range []string{
 		"FARMS", "seoul-a", "2H 2V", "seoul-b", "1H 1V", // left
 		"NAME", "PROJECT", "bastion", "platform", // right
@@ -762,7 +763,7 @@ func TestTheFrameShowsBothPanesAndTheKeys(t *testing.T) {
 }
 
 func TestTheSummaryHasBreathingRoomBeforeTheBrowserPanes(t *testing.T) {
-	lines := strings.Split(stripANSI(testExploreModel().View()), "\n")
+	lines := strings.Split(ui.StripANSI(testExploreModel().View()), "\n")
 	if len(lines) < 3 || lines[1] != "" || !strings.Contains(lines[2], "FARMS") {
 		t.Fatalf("expected summary, blank line, then panes; first lines are %q", lines[:min(3, len(lines))])
 	}
@@ -778,7 +779,7 @@ func TestALongDetailScrollsAndSaysWhereItIs(t *testing.T) {
 	if len(m.detail) <= m.bodyHeight() {
 		t.Skip("fixture detail is shorter than the window")
 	}
-	first := stripANSI(m.View())
+	first := ui.StripANSI(m.View())
 	if !strings.Contains(first, "of "+itoaTest(len(m.detail))) {
 		t.Errorf("no position indicator in a scrolled detail:\n%s", first)
 	}

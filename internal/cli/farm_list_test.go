@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // The last successful reconcile is what makes every other number on the row
@@ -44,7 +46,7 @@ func TestFarmListAdaptsToANarrowTerminal(t *testing.T) {
 		State: "active", Hosts: 7, VMs: 65, Reconciled: &recent,
 	}}, now, 72)
 
-	out := stripANSI(buf.String())
+	out := ui.StripANSI(buf.String())
 	for _, want := range []string{"NAME", "STATE", "HOSTS", "VMS", "RECONCILED"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("narrow farm list dropped essential column %q:\n%s", want, out)

@@ -8,18 +8,19 @@ import (
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // active is the overwhelming majority, so labelling it would bury the rows that
 // are not. The column exists to be blank unless somebody has something to say.
 func TestStateCellIsBlankForActive(t *testing.T) {
 	for _, s := range []string{store.StateActive, ""} {
-		if got := stripANSI(stateCell(s)); got != "" {
+		if got := ui.StripANSI(stateCell(s)); got != "" {
 			t.Errorf("stateCell(%q) = %q, want blank", s, got)
 		}
 	}
 	for _, s := range []string{store.StateBroken, store.StateMaintenance, store.StateRetired} {
-		if got := stripANSI(stateCell(s)); got == "" {
+		if got := ui.StripANSI(stateCell(s)); got == "" {
 			t.Errorf("stateCell(%q) rendered nothing", s)
 		}
 	}
@@ -48,7 +49,7 @@ func TestRenderInventoryShowsStateBesideObservedLiveness(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	renderInventory(&buf, rows, false, false)
-	out := stripANSI(buf.String())
+	out := ui.StripANSI(buf.String())
 
 	var broken, unlabelled string
 	for _, line := range strings.Split(out, "\n") {

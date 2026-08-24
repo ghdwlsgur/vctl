@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // The port belongs on screen because it varies: in the inventory this was
@@ -42,7 +43,7 @@ func TestIPCellCarriesThePortAlongsideTheExtrasMarker(t *testing.T) {
 		Server:    store.Server{IP: "172.21.0.11", Port: 10022},
 		Addresses: []string{"172.21.0.11", "10.88.0.1", "172.17.0.1"},
 	}
-	got := stripANSI(ipCell(row, false))
+	got := ui.StripANSI(ipCell(row, false))
 	if !strings.HasPrefix(got, "172.21.0.11:10022") {
 		t.Errorf("ipCell = %q, want it to start with the address and port", got)
 	}
@@ -94,9 +95,9 @@ func TestServerPickLabelsGrowTheAddressColumnOnlyWhenNeeded(t *testing.T) {
 	}
 	// Every label must place the DC cell at the same column, whichever row
 	// forced the width.
-	col := strings.Index(stripANSI(labels[0]), " seoul")
+	col := strings.Index(ui.StripANSI(labels[0]), " seoul")
 	for _, l := range labels[1:] {
-		if got := strings.Index(stripANSI(l), " seoul"); got != col {
+		if got := strings.Index(ui.StripANSI(l), " seoul"); got != col {
 			t.Errorf("DC column drifted: %d vs %d in %q", got, col, l)
 		}
 	}

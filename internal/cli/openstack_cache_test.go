@@ -17,6 +17,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // appWithStoredReading is an app whose cache holds one reading and whose
@@ -423,7 +424,7 @@ func TestTheDetailSaysHowOldTheRowsBehindItAre(t *testing.T) {
 	m.focus = paneRows
 	m.openDetail()
 
-	got := stripANSI(m.detailView())
+	got := ui.StripANSI(m.detailView())
 	first := strings.SplitN(got, "\n", 2)[0]
 	for _, want := range []string{"cached", "7m old"} {
 		if !strings.Contains(first, want) {
@@ -451,7 +452,7 @@ func TestAFreshReadingDoesNotMakeAStaleVMLookCurrent(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	renderVMShow(&buf, v, map[string]string{"10.0.0.1:5000": "seoul-a"}, nil, time.Now())
-	if got := stripANSI(buf.String()); !strings.Contains(got, "may not be current") {
+	if got := ui.StripANSI(buf.String()); !strings.Contains(got, "may not be current") {
 		t.Errorf("a VM nobody has collected in over a window reads as current:\n%s", got)
 	}
 
@@ -463,7 +464,7 @@ func TestAFreshReadingDoesNotMakeAStaleVMLookCurrent(t *testing.T) {
 		m.data.VMs["10.0.0.1:5000"] = []store.Instance{v}
 		m.focus = paneRows
 		m.openDetail()
-		if got := stripANSI(strings.Join(m.detail, "\n")); !strings.Contains(got, "may not be current") {
+		if got := ui.StripANSI(strings.Join(m.detail, "\n")); !strings.Contains(got, "may not be current") {
 			t.Errorf("cached=%v: the browser's detail does not warn:\n%s", cached, got)
 		}
 	}
@@ -490,7 +491,7 @@ func TestAScreenThatNeedsALoginSaysSoAndDoesNotRefresh(t *testing.T) {
 		return exploreData{}, nil
 	}
 
-	if got := stripANSI(m.titleBar()); !strings.Contains(got, "vctl login") {
+	if got := ui.StripANSI(m.titleBar()); !strings.Contains(got, "vctl login") {
 		t.Errorf("title does not say why it will not refresh: %q", got)
 	}
 	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})

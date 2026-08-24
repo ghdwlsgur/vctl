@@ -11,14 +11,14 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/authz"
 	"github.com/ghdwlsgur/vctl/internal/invcache"
-	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // The RBAC decision logic lives in internal/authz. This file holds only the
 // cobra wiring: tagging commands with their class (gate), the persistent gate
-// hook (enforceRBAC), and the two constructors that adapt an *app.App into an
-// authz.Authorizer for the CLI (lazy store) and the MCP server (open store).
+// hook (enforceRBAC), and the constructor that adapts an *app.App into an
+// authz.Authorizer for the CLI (lazy store). The MCP server wires its own in
+// internal/mcp, over the store a tool call already holds.
 
 // Class aliases keep this file readable while the canonical class values live
 // in authz.
@@ -135,10 +135,4 @@ func offlineConfig(a *app.App) *authz.Offline {
 				command, ui.CompactDuration(age))
 		},
 	}
-}
-
-// mcpAuthorizer wires an authorizer over a store the MCP handler already holds,
-// so a tool call reuses its open connection instead of opening another.
-func mcpAuthorizer(a *app.App, st *store.Store) *authz.Authorizer {
-	return authz.NewWithGrants(a.Vault, st)
 }
