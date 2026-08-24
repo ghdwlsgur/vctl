@@ -412,6 +412,31 @@ func TestSerialWorkloadCannotFanOutDatabaseConnections(t *testing.T) {
 	}
 }
 
+// Every pool carries a server-enforced statement ceiling. The offline fallback
+// triggers on a TCP probe, so "accepts connections but cannot answer" — the
+// state an ENOSPC CrashLoop produces — previously left every query waiting
+// forever with the fallback never engaging. The ceiling turns that into an
+// error the operator can read. The serial (batch-writer) ceiling must be the
+// wider of the two, or a retention prune batch dies mid-run.
+func TestEveryWorkloadCarriesAStatementCeiling(t *testing.T) {
+	for _, tc := range []struct {
+		workload Workload
+		want     string
+	}{
+		{WorkloadInteractive, interactiveStatementTimeout},
+		{WorkloadSerial, serialStatementTimeout},
+	} {
+		cfg, err := pgxpool.ParseConfig("postgres://localhost:5432/vctl")
+		if err != nil {
+			t.Fatalf("parse config: %v", err)
+		}
+		tunePoolFor(cfg, tc.workload)
+		if got := cfg.ConnConfig.RuntimeParams["statement_timeout"]; got != tc.want {
+			t.Errorf("workload %v statement_timeout = %q, want %q", tc.workload, got, tc.want)
+		}
+	}
+}
+
 // Caching a credential only pays off if there is a usable window between the
 // moment it is issued and the moment it can no longer cover a new connection's
 // full life. That window is credentialTTL - MaxConnAge - the holder's margin.

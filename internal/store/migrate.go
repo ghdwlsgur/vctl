@@ -142,6 +142,14 @@ func (s *Store) MigrateAsOwner(ctx context.Context, owner string) ([]string, err
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", migrateLockTimeout.Milliseconds())); err != nil {
 		return nil, fmt.Errorf("set lock timeout: %w", err)
 	}
+	// Migrations own their duration. An index build on a table that has grown
+	// for a year may legitimately outlast the pool's interactive statement
+	// ceiling, and dying midway would leave DDL applied that the ledger never
+	// recorded. Lifted for this transaction only; lock_timeout above still
+	// bounds the wait to start.
+	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = 0"); err != nil {
+		return nil, fmt.Errorf("lift statement timeout: %w", err)
+	}
 	// Transaction-scoped: released on commit, on rollback, and on a dropped
 	// connection. A session-scoped lock would survive a crashed migrator and
 	// block every later one until somebody found it by hand.
