@@ -594,6 +594,35 @@ func vmSeenCell(v store.Instance, now time.Time) string {
 // reasoning, and the same number, as the capability probe's freshness window.
 const vmStaleWindow = 3 * time.Hour
 
+// oneVM fetches the single VM an id names, missing ones included — the
+// caller decides what a missing VM means. deploymentID narrows when --farm
+// was given; without it, an id two deployments share is refused rather than
+// resolved by sort order. A uuid is the identity within a deployment, not
+// across the fleet: the table is keyed (deployment, instance) and the two
+// farms' VMs are different machines. The ssh path and `vm show` carried this
+// sequence as separate copies, identical down to both error strings — the
+// state a copy drifts out of.
+func oneVM(ctx context.Context, st *store.Store, id, deploymentID string) (store.Instance, error) {
+	vms, err := st.Instances(ctx, store.InstanceFilter{
+		InstanceID: id, DeploymentID: deploymentID, IncludeMissing: true,
+	})
+	if err != nil {
+		return store.Instance{}, err
+	}
+	if len(vms) == 0 {
+		return store.Instance{}, fmt.Errorf("no VM %s; run 'vctl openstack reconcile' if it is new", id)
+	}
+	if len(vms) > 1 {
+		farms := make([]string, 0, len(vms))
+		for _, c := range vms {
+			farms = append(farms, c.DeploymentID)
+		}
+		return store.Instance{}, fmt.Errorf("%s is in %d deployments (%s); add --farm to say which",
+			id, len(vms), strings.Join(farms, ", "))
+	}
+	return vms[0], nil
+}
+
 // openstackVMShowCmd is one VM, in full, with the command to reach it.
 //
 // The listing is a table and a table has to leave things out. What somebody
@@ -616,7 +645,6 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 			}
 			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				f := store.InstanceFilter{InstanceID: id, IncludeMissing: true}
 				// One reading answers both questions this command asks about
 				// deployments: which one --farm means, and what to call the one
 				// the VM turns out to be in.
@@ -624,30 +652,19 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				deployment := ""
 				if farm != "" {
 					resolved, err := cat.Resolve(farm)
 					if err != nil {
 						return err
 					}
-					f.DeploymentID = resolved.ID
+					deployment = resolved.ID
 				}
-				vms, err := st.Instances(ctx, f)
+				v, err := oneVM(ctx, st, id, deployment)
 				if err != nil {
 					return err
 				}
-				if len(vms) == 0 {
-					return fmt.Errorf("no VM %s; run 'vctl openstack reconcile' if it is new", id)
-				}
-				if len(vms) > 1 {
-					farms := make([]string, 0, len(vms))
-					for _, c := range vms {
-						farms = append(farms, c.DeploymentID)
-					}
-					return fmt.Errorf("%s is in %d deployments (%s); add --farm to say which",
-						id, len(vms), strings.Join(farms, ", "))
-				}
-				nets := operatorNetworks()
-				renderVMShow(os.Stdout, vms[0], cat.Names(), nets, time.Now())
+				renderVMShow(os.Stdout, v, cat.Names(), operatorNetworks(), time.Now())
 				return nil
 			})
 		},

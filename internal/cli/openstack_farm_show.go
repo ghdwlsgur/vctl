@@ -38,33 +38,13 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 			}
 			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				farms, err := farmChoices(ctx, a, st)
-				if err != nil {
+				farms, ok, err := farmChoicesForPick(ctx, a, st)
+				if err != nil || !ok {
 					return err
 				}
-				if len(farms) == 0 {
-					ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
-					return nil
-				}
-				var pick farmChoice
-				if len(args) > 0 {
-					// resolveFarm rather than a position lookup, so a name two
-					// deployments share is reported as such instead of as "no
-					// deployment %q" — which is what a -1 index reads as.
-					f, err := resolveFarm(farms, args[0])
-					if err != nil {
-						return err
-					}
-					pick = f
-				} else {
-					if !isTerminal() {
-						return fmt.Errorf("a deployment is required when there is no terminal to pick at")
-					}
-					i, err := pickIndex(farmPickLabels(farms), nil, "Show a deployment")
-					if err != nil {
-						return err
-					}
-					pick = farms[i]
+				pick, err := pickFarm(farms, firstArg(args), "Show a deployment")
+				if err != nil {
+					return err
 				}
 				now := time.Now()
 				assessment, err := collectAssessment(ctx, st, pick.ID, now)

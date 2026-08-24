@@ -42,28 +42,13 @@ func openstackFarmDoctorCmd(env CommandEnv) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				farms, err := farmChoices(ctx, a, st)
-				if err != nil {
+				farms, ok, err := farmChoicesForPick(ctx, a, st)
+				if err != nil || !ok {
 					return err
 				}
-				if len(farms) == 0 {
-					ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
-					return nil
-				}
-				var pick farmChoice
-				if len(args) > 0 {
-					if pick, err = resolveFarm(farms, args[0]); err != nil {
-						return err
-					}
-				} else {
-					if !isTerminal() {
-						return fmt.Errorf("a deployment is required when there is no terminal to pick at")
-					}
-					i, err := pickIndex(farmPickLabels(farms), nil, "Check a deployment")
-					if err != nil {
-						return err
-					}
-					pick = farms[i]
+				pick, err := pickFarm(farms, firstArg(args), "Check a deployment")
+				if err != nil {
+					return err
 				}
 				checks := diagnoseFarm(ctx, a, st, pick.ID, insecure)
 				renderFarmDoctor(os.Stdout, pick, checks)

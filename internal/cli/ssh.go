@@ -286,34 +286,18 @@ func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string, all
 			"run 'vctl openstack vm' to find it", selector)
 	}
 	return env.withStore(ctx, false, func(a *app.App, st *store.Store) error {
-		f := store.InstanceFilter{InstanceID: id, IncludeMissing: true}
+		deployment := ""
 		if farm != "" {
 			resolved, err := resolveFarmID(ctx, a, st, farm)
 			if err != nil {
 				return err
 			}
-			f.DeploymentID = resolved
+			deployment = resolved
 		}
-		vms, err := st.Instances(ctx, f)
+		v, err := oneVM(ctx, st, id, deployment)
 		if err != nil {
 			return err
 		}
-		if len(vms) == 0 {
-			return fmt.Errorf("no VM %s; run 'vctl openstack reconcile' if it is new", id)
-		}
-		// A uuid is the identity within a deployment, not across the fleet — the
-		// table is keyed (deployment, instance) and says so. Taking the first row
-		// would pick a farm by sort order, and the two farms' VMs are different
-		// machines.
-		if len(vms) > 1 {
-			farms := make([]string, 0, len(vms))
-			for _, c := range vms {
-				farms = append(farms, c.DeploymentID)
-			}
-			return fmt.Errorf("%s is in %d deployments (%s); add --farm to say which",
-				id, len(vms), strings.Join(farms, ", "))
-		}
-		v := vms[0]
 		if v.MissingSince != nil {
 			// The control plane stopped listing it. Connecting anyway would be
 			// reaching for an address that belonged to something else by now.

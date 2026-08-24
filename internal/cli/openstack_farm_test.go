@@ -48,18 +48,19 @@ func TestFarmPickerShowsWhatEachDeploymentContains(t *testing.T) {
 }
 
 // Naming by the name it already has must work, or renaming means looking up an
-// endpoint the listing no longer shows.
+// endpoint the listing no longer shows. Every selector path now runs through
+// pickFarm, so this is where the lookup rules are asserted.
 func TestFarmIsFoundByIDOrByExistingName(t *testing.T) {
 	farms := farmChoicesFixture()
 
-	if i := indexOfFarm(farms, "172.16.0.10:5000"); i != 1 {
-		t.Errorf("lookup by id = %d", i)
+	if f, err := pickFarm(farms, "172.16.0.10:5000", "t"); err != nil || f.ID != "172.16.0.10:5000" {
+		t.Errorf("lookup by id = %+v, %v", f, err)
 	}
-	if i := indexOfFarm(farms, "incheon"); i != 1 {
-		t.Errorf("lookup by existing name = %d", i)
+	if f, err := pickFarm(farms, "incheon", "t"); err != nil || f.ID != "172.16.0.10:5000" {
+		t.Errorf("lookup by existing name = %+v, %v", f, err)
 	}
-	if i := indexOfFarm(farms, "nope"); i != -1 {
-		t.Errorf("unknown deployment resolved to %d", i)
+	if _, err := pickFarm(farms, "nope", "t"); err == nil {
+		t.Error("unknown deployment resolved anyway")
 	}
 }
 
