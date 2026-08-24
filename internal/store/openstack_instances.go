@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -231,7 +232,7 @@ func instancesOn(ctx context.Context, db rowQuerier, f InstanceFilter) ([]Instan
 	var args []any
 	add := func(clause string, v any) {
 		args = append(args, v)
-		q += clause + "$" + itoa(len(args))
+		q += clause + "$" + strconv.Itoa(len(args))
 	}
 	if f.DeploymentID != "" {
 		add(" AND deployment_id=", f.DeploymentID)
@@ -243,7 +244,7 @@ func instancesOn(ctx context.Context, db rowQuerier, f InstanceFilter) ([]Instan
 		// Not through add: ANY takes its parameter in parentheses, and add
 		// appends the placeholder at the end of what it is given.
 		args = append(args, f.ProjectIDs)
-		q += ` AND project_id = ANY($` + itoa(len(args)) + `)`
+		q += ` AND project_id = ANY($` + strconv.Itoa(len(args)) + `)`
 	}
 	if f.InstanceID != "" {
 		add(" AND instance_id=", f.InstanceID)
@@ -253,14 +254,14 @@ func instancesOn(ctx context.Context, db rowQuerier, f InstanceFilter) ([]Instan
 		q += ` AND EXISTS (SELECT 1 FROM openstack_instance_addresses a
 			WHERE a.deployment_id = openstack_instances.deployment_id
 			  AND a.instance_id = openstack_instances.instance_id
-			  AND a.address = $` + itoa(len(args)) + `)`
+			  AND a.address = $` + strconv.Itoa(len(args)) + `)`
 	}
 	if f.Search != "" {
 		// Name or address, because somebody searching does not yet know which
 		// one they have. ILIKE on the name so case does not have to be guessed;
 		// the address is matched as text so "201.207" and "10.3.1" both work.
 		args = append(args, "%"+f.Search+"%")
-		n := itoa(len(args))
+		n := strconv.Itoa(len(args))
 		q += ` AND (name ILIKE $` + n + ` OR EXISTS (
 			SELECT 1 FROM openstack_instance_addresses a
 			WHERE a.deployment_id = openstack_instances.deployment_id
@@ -336,13 +337,6 @@ func scanInstance(r pgx.Rows) (Instance, error) {
 		&i.AvailabilityZone, &i.HypervisorHostname, &i.FlavorID, &i.ImageID,
 		&i.CreatedAt, &i.UpdatedAt, &i.ObservedAt, &i.MissingSince)
 	return i, err
-}
-
-func itoa(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return itoa(n/10) + string(rune('0'+n%10))
 }
 
 // Project is one tenant, as far as the collected VMs know it.

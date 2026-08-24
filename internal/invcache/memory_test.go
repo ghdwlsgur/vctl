@@ -3,6 +3,7 @@ package invcache
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -184,7 +185,7 @@ func TestFileStoreRoundTrip(t *testing.T) {
 		t.Fatalf("round-tripped %d hosts, want 3", len(got.Servers))
 	}
 	g, ok := got.Grant("test-user")
-	if !ok || !g.Has("ssh") || g.Has("trust-ca") {
+	if !ok || !slices.Equal(g.Commands, []string{"ssh", "sync"}) {
 		t.Fatalf("round-tripped grants = %+v (ok=%v)", g, ok)
 	}
 	// Status must survive: dropping it would make every cached host look

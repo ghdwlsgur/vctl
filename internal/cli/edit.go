@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -309,7 +310,7 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 		e.JumpVia = jump
 	}
 	got := splitIPList(extra)
-	if !sameStrings(got, cur.ExtraIPs) {
+	if !slices.Equal(got, cur.ExtraIPs) {
 		if len(got) == 0 {
 			e.clearIPs = true
 		} else {
@@ -354,16 +355,4 @@ func stateMeanings() string {
 		"maintenance: planned window, down is expected and temporary\n" +
 		"broken: known faulty, somebody diagnosed it\n" +
 		"retired: decommissioned, kept for its history"
-}
-
-func sameStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
