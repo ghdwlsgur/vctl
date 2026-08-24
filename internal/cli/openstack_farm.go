@@ -34,11 +34,11 @@ func openstackFarmCmd(env CommandEnv) *cobra.Command {
 	// deployed is allowed to any authenticated user, and only the two that write
 	// are mutations. Same grant name as before, so grants already issued still
 	// apply.
-	cmd.AddCommand(gate(openstackFarmNameCmd(env), "openstack-farm", classMutate))
+	cmd.AddCommand(gate(openstackFarmNameCmd(env), "openstack-farm"))
 	cmd.AddCommand(openstackFarmDoctorCmd(env))
 	cmd.AddCommand(openstackFarmListCmd(env))
 	cmd.AddCommand(openstackFarmShowCmd(env))
-	cmd.AddCommand(gate(openstackFarmStateCmd(env), "openstack-farm", classMutate))
+	cmd.AddCommand(gate(openstackFarmStateCmd(env), "openstack-farm"))
 	return cmd
 }
 

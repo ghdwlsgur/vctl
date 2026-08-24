@@ -79,7 +79,7 @@ repointing them silently would leave them unreachable.`,
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
-	return gate(cmd, "delete", classMutate)
+	return gate(cmd, "delete")
 }
 
 // jumpDependents lists the hosts that reach the network through this one.

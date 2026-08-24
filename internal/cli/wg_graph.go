@@ -66,7 +66,7 @@ gateway by public key when both ends were collected.`,
 	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal|mermaid")
 	cmd.Flags().StringVar(&hostFilter, "host", "", "restrict to one gateway host")
 	registerCompletion(cmd, "host", completeInventoryHost(env))
-	return gate(cmd, "wg", classRead)
+	return gate(cmd, "wg")
 }
 
 func filterWGByHost(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, host string) ([]store.WGInterfaceRow, []store.WGPeerRow) {

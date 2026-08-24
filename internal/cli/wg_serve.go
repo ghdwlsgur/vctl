@@ -115,7 +115,7 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8420", "listen address")
 	cmd.Flags().IntVar(&intervalSec, "interval", 2, "poll interval (seconds)")
 	cmd.Flags().IntVar(&timeoutSec, "timeout", 10, "per-poll SSH timeout (seconds)")
-	return gate(cmd, "wg", classRead)
+	return gate(cmd, "wg")
 }
 
 // displayAddr turns a bind address into a clickable one (":8420" → "127.0.0.1:8420").

@@ -133,7 +133,7 @@ WireGuard are skipped. --dry-run parses and prints without writing.`,
 	f.BoolVar(&dryRun, "dry-run", false, "parse and report without writing to the DB")
 	f.IntVar(&timeoutSec, "timeout", 20, "per-host SSH command timeout (seconds)")
 	f.IntVar(&concurrency, "concurrency", 6, "max concurrent gateway probes")
-	return gate(cmd, "wg-sync", classMutate)
+	return gate(cmd, "wg-sync")
 }
 
 // wgTargetHosts resolves the set of gateways to probe: explicit args, else the

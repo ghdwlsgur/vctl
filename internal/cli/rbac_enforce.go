@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -19,18 +20,44 @@ import (
 // hook (enforceRBAC), and the two constructors that adapt an *app.App into an
 // authz.Authorizer for the CLI (lazy store) and the MCP server (open store).
 
-// Class aliases keep the command tree readable (gate(cmd, "ssh", classMutate))
-// while the canonical class values live in authz.
+// Class aliases keep this file readable while the canonical class values live
+// in authz.
 const (
 	classRead   = authz.ClassRead
 	classMutate = authz.ClassMutate
 	classAdmin  = authz.ClassAdmin
 )
 
-// gate tags a command with its RBAC name and class so the persistent pre-run
-// hook can enforce it. The class round-trips through cobra annotations as a
-// string.
-func gate(cmd *cobra.Command, name string, class authz.Class) *cobra.Command {
+// gate tags a command with its RBAC name so the persistent pre-run hook can
+// enforce it. The class comes from the authz catalog rather than the call
+// site: when the two were stated separately, gates accumulated names the
+// catalog had never heard of, and those commands could not be granted except
+// through "*" or an admin policy.
+//
+// An unknown name panics. The tree is wired on every invocation and under
+// root_test, so a typo dies in CI, never in a release — the same contract as
+// regexp.MustCompile.
+func gate(cmd *cobra.Command, name string) *cobra.Command {
+	class, ok := authz.ClassOf(name)
+	if !ok {
+		panic(fmt.Sprintf("rbac: gate %q is not in the authz catalog", name))
+	}
+	return tagRBAC(cmd, name, class)
+}
+
+// gateReadView tags a read-only view of a resource whose grant name is
+// mutate-classed — `vctl ip` lists the ledger that a granted `ip set` writes.
+// The gate still requires login; past that, read is default-allowed.
+func gateReadView(cmd *cobra.Command, name string) *cobra.Command {
+	if _, ok := authz.ClassOf(name); !ok {
+		panic(fmt.Sprintf("rbac: gate %q is not in the authz catalog", name))
+	}
+	return tagRBAC(cmd, name, classRead)
+}
+
+// tagRBAC records the decision on the command. The class round-trips through
+// cobra annotations as a string.
+func tagRBAC(cmd *cobra.Command, name string, class authz.Class) *cobra.Command {
 	if cmd.Annotations == nil {
 		cmd.Annotations = map[string]string{}
 	}
