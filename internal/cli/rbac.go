@@ -23,9 +23,10 @@ func rbacCmd(env CommandEnv) *cobra.Command {
 		Long: `rbac manages the fine-grained, admin-managed command permissions (layer 2).
 
 Vault policies are the authoritative capability boundary. On top of that,
-admins group users and grant them specific CLI commands here. Non-admins may
-run read commands (list/status/audit/session/retention) by default; mutate/connect
-commands (ssh/exec/sync/trust-ca) need a group grant. Admins (vctl-admin) bypass.`,
+admins group users and grant them specific CLI commands here. Read commands
+are allowed to any authenticated user by default; mutate commands (ssh, exec,
+sync, add/edit/delete, ip, wg-sync, openstack-farm, trust-ca) need a group
+grant. Admins (vctl-admin) bypass.`,
 	}
 	cmd.AddCommand(rbacAssignCmd(env), rbacGroupCmd(env), rbacMemberCmd(env), rbacGrantCmd(env), rbacRevokeCmd(env), rbacUsersCmd(env), rbacWhoamiCmd(env), rbacCheckCmd(env))
 	return cmd
@@ -63,7 +64,7 @@ func rbacUsersCmd(env CommandEnv) *cobra.Command {
 				return ui.Table(os.Stdout, []string{"user", "vctl version", "last login"}, rows)
 			})
 		},
-	}, "users", classRead)
+	}, "users")
 }
 
 // rbacAssignCmd is the convenient interactive assigner: pick a group, then
@@ -146,16 +147,16 @@ func rbacAssignCmd(env CommandEnv) *cobra.Command {
 				return nil
 			})
 		},
-	}, "admin", classAdmin)
+	}, "admin")
 }
 
 func rbacGroupCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{Use: "group", Short: "Manage RBAC groups"}
 	cmd.AddCommand(
-		gate(rbacGroupListCmd(env), "list", classRead),
-		gate(rbacGroupShowCmd(env), "list", classRead),
-		gate(rbacGroupCreateCmd(env), "admin", classAdmin),
-		gate(rbacGroupDeleteCmd(env), "admin", classAdmin),
+		gate(rbacGroupListCmd(env), "list"),
+		gate(rbacGroupShowCmd(env), "list"),
+		gate(rbacGroupCreateCmd(env), "admin"),
+		gate(rbacGroupDeleteCmd(env), "admin"),
 	)
 	return cmd
 }
@@ -257,8 +258,8 @@ func rbacGroupDeleteCmd(env CommandEnv) *cobra.Command {
 func rbacMemberCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{Use: "member", Short: "Manage group membership"}
 	cmd.AddCommand(
-		gate(rbacMemberAddCmd(env), "admin", classAdmin),
-		gate(rbacMemberRemoveCmd(env), "admin", classAdmin),
+		gate(rbacMemberAddCmd(env), "admin"),
+		gate(rbacMemberRemoveCmd(env), "admin"),
 	)
 	return cmd
 }
@@ -304,8 +305,8 @@ func rbacMemberRemoveCmd(env CommandEnv) *cobra.Command {
 	}
 }
 
-// grantableList is the multi-select menu for command grants: every gated
-// command plus "*" (all), sorted.
+// grantableList is the multi-select menu for command grants: every grantable
+// (mutate) command plus "*" (all), sorted.
 func grantableList() []string {
 	return authz.Grantable()
 }
@@ -351,8 +352,12 @@ func rbacGrantCmd(env CommandEnv) *cobra.Command {
 				if len(args) == 2 {
 					c := args[1]
 					if c != "*" {
-						if _, known := authz.ClassOf(c); !known {
-							return fmt.Errorf("unknown command %q. Grantable: %s, or '*'", c, knownCommands())
+						// Only mutate commands take grants: read is default-allowed
+						// to any authenticated user and admin follows the Vault
+						// policy, so granting either records a row that changes
+						// nothing — and reads as if it had.
+						if class, known := authz.ClassOf(c); !known || class != classMutate {
+							return fmt.Errorf("cannot grant %q. Grantable: %s, or '*'", c, knownCommands())
 						}
 					}
 					commands = []string{c}
@@ -377,7 +382,7 @@ func rbacGrantCmd(env CommandEnv) *cobra.Command {
 				return nil
 			})
 		},
-	}, "admin", classAdmin)
+	}, "admin")
 }
 
 func rbacRevokeCmd(env CommandEnv) *cobra.Command {
@@ -394,7 +399,7 @@ func rbacRevokeCmd(env CommandEnv) *cobra.Command {
 				return nil
 			})
 		},
-	}, "admin", classAdmin)
+	}, "admin")
 }
 
 func rbacWhoamiCmd(env CommandEnv) *cobra.Command {
@@ -428,7 +433,7 @@ func rbacWhoamiCmd(env CommandEnv) *cobra.Command {
 				return nil
 			})
 		},
-	}, "whoami", classRead)
+	}, "whoami")
 }
 
 func rbacCheckCmd(env CommandEnv) *cobra.Command {
@@ -445,8 +450,21 @@ func rbacCheckCmd(env CommandEnv) *cobra.Command {
 					fmt.Fprintf(os.Stdout, "%s %q (admin bypass)\n", ui.OK("allow"), want)
 					return nil
 				}
-				if c, _ := authz.ClassOf(want); c == classRead {
+				// The class decides the answer, so it must come from the catalog,
+				// not from guessing. An unknown name used to fall through to the
+				// grant lookup and report "deny" for commands that were never
+				// gated at all.
+				class, isGated := authz.ClassOf(want)
+				if !isGated {
+					fmt.Fprintf(os.Stdout, "%s %q (not RBAC-gated)\n", ui.OK("allow"), want)
+					return nil
+				}
+				switch class {
+				case classRead:
 					fmt.Fprintf(os.Stdout, "%s %q (read — default allow)\n", ui.OK("allow"), want)
+					return nil
+				case classAdmin:
+					fmt.Fprintf(os.Stdout, "%s %q (admin-only — needs vctl-admin or sre-admin)\n", ui.Fail("deny"), want)
 					return nil
 				}
 				cmds, err := st.RBACCommandsForUser(ctx, a.Vault.Identity(ctx))
@@ -461,11 +479,11 @@ func rbacCheckCmd(env CommandEnv) *cobra.Command {
 				return nil
 			})
 		},
-	}, "check", classRead)
+	}, "check")
 }
 
 func knownCommands() string {
-	return strings.Join(authz.GatedCommands(), ", ")
+	return strings.Join(authz.GrantableCommands(), ", ")
 }
 
 func joinOrDash(ss []string) string {

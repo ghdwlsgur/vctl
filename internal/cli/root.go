@@ -89,9 +89,11 @@ Start here:
 	root.PersistentFlags().StringP("output", "o", string(outputTable),
 		"output format for supported commands: table|json|yaml")
 
-	// Only mutate/connect commands are gated (default-deny without a grant).
-	// Read commands (list/status/audit/session) are ungated = allowed to any
-	// authenticated user. The `vctl rbac` mutations gate themselves (classAdmin).
+	// Mutate/connect commands are gated (default-deny without a grant); the
+	// gate's class comes from the authz catalog, which is the one list `vctl
+	// rbac grant` validates against. Ungated commands (list/status/audit/
+	// session) are allowed to any authenticated user. The `vctl rbac`
+	// mutations gate themselves as admin-only.
 	root.AddGroup(
 		&cobra.Group{ID: "access", Title: "Access Commands:"},
 		&cobra.Group{ID: "infrastructure", Title: "Infrastructure Commands:"},
@@ -101,17 +103,17 @@ Start here:
 	)
 	addCommandGroup(root, "access",
 		loginCmd(env), logoutCmd(env), tokenCmd(env),
-		gate(execCmd(env), "exec", classMutate),
-		gate(sshCmd(env), "ssh", classMutate),
-		gate(trustCACmd(env), "trust-ca", classMutate), caCmd(env), sessionCmd(env),
+		gate(execCmd(env), "exec"),
+		gate(sshCmd(env), "ssh"),
+		gate(trustCACmd(env), "trust-ca"), caCmd(env), sessionCmd(env),
 	)
 	addCommandGroup(root, "infrastructure",
 		lsCmd(env), ipCmd(env), wgCmd(env), openstackCmd(env), statusCmd(env),
 	)
 	addCommandGroup(root, "operations",
-		gate(syncCmd(env), "sync", classMutate),
+		gate(syncCmd(env), "sync"),
 		addCmd(env), editCmd(env), deleteCmd(env), auditCmd(env), cacheCmd(env),
-		gate(retentionCmd(env), "retention", classRead),
+		gate(retentionCmd(env), "retention"),
 	)
 	addCommandGroup(root, "administration", migrateCmd(env), rbacCmd(env))
 	addCommandGroup(root, "automation",

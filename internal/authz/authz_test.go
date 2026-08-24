@@ -194,6 +194,17 @@ func TestCatalog(t *testing.T) {
 	if g := Grantable(); len(g) == 0 || g[0] != "*" {
 		t.Fatalf("Grantable() = %v, want leading *", g)
 	}
+	// A grant only ever changes a mutate decision — read is default-allowed
+	// and admin follows the Vault policy — so the menu offers exactly the
+	// mutate names. A read or admin name in the menu is a grant that lies.
+	for _, name := range GrantableCommands() {
+		if c, ok := ClassOf(name); !ok || c != ClassMutate {
+			t.Errorf("grantable %q has class %v, want mutate", name, c)
+		}
+	}
+	if c, ok := ClassOf("edit"); !ok || c != ClassMutate {
+		t.Error("edit is not a mutate catalog entry — its gate demands a grant nobody can give")
+	}
 	if !HasAdminPolicy([]string{"x", "vctl-admin"}) || HasAdminPolicy([]string{"x"}) {
 		t.Fatal("HasAdminPolicy wrong")
 	}

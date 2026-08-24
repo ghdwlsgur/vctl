@@ -53,7 +53,7 @@ func wgEndpointListCmd(env CommandEnv) *cobra.Command {
 			})
 		},
 	}
-	return gate(cmd, "wg", classRead)
+	return gate(cmd, "wg")
 }
 
 func wgEndpointSetCmd(env CommandEnv) *cobra.Command {
@@ -91,7 +91,7 @@ func wgEndpointSetCmd(env CommandEnv) *cobra.Command {
 	f.StringVar(&a.InventoryHost, "inventory-host", "", "linked servers.hostname for the endpoint")
 	f.StringVar(&a.ParentHostname, "parent", "", "physical servers.hostname that runs this VM")
 	f.StringVar(&a.Note, "note", "", "operator note")
-	return gate(cmd, "wg-sync", classMutate)
+	return gate(cmd, "wg-sync")
 }
 
 func wgEndpointRmCmd(env CommandEnv) *cobra.Command {
@@ -110,5 +110,5 @@ func wgEndpointRmCmd(env CommandEnv) *cobra.Command {
 			})
 		},
 	}
-	return gate(cmd, "wg-sync", classMutate)
+	return gate(cmd, "wg-sync")
 }

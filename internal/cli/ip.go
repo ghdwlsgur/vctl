@@ -65,7 +65,7 @@ func ipListCmd(env CommandEnv) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&kind, "kind", "", "filter by kind ("+joinKinds()+")")
 	cmd.Flags().StringVar(&owner, "owner", "", "filter by owner substring")
-	return gate(cmd, "ip", classRead)
+	return gateReadView(cmd, "ip")
 }
 
 // ipSetCmd creates or updates one allocation. Mutate (default-deny w/o grant).
@@ -114,7 +114,7 @@ func ipSetCmd(env CommandEnv) *cobra.Command {
 	f.StringVar(&a.WGTunnel, "wg", "", "WireGuard tunnel (wg0/wg1/wg2/wg3)")
 	f.StringVar(&a.Status, "status", "", "active | broken | reserved (default active)")
 	f.StringVar(&a.Note, "note", "", "free-form note")
-	return gate(cmd, "ip", classMutate)
+	return gate(cmd, "ip")
 }
 
 // ipRmCmd deletes one allocation. Mutate (default-deny w/o grant).
@@ -138,7 +138,7 @@ func ipRmCmd(env CommandEnv) *cobra.Command {
 			})
 		},
 	}
-	return gate(cmd, "ip", classMutate)
+	return gate(cmd, "ip")
 }
 
 func joinKinds() string { return strings.Join(ipKinds, "|") }
@@ -328,7 +328,7 @@ is stored as that interface's public key.
 	}
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "owning endpoint as host/interface, e.g. sre-lb/wg1")
 	cmd.Flags().BoolVar(&clear, "clear", false, "remove the binding and go back to guessing from labels")
-	return gate(cmd, "ip", classMutate)
+	return gate(cmd, "ip")
 }
 
 // resolveWGEndpointKey turns "host/iface" into that interface's public key.

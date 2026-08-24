@@ -79,7 +79,7 @@ are written; with none, the fields are asked for interactively.`,
 	f.StringVar(&e.State, "state", "", "operator-declared state: "+strings.Join(store.HostStates, "|"))
 	f.StringSliceVar(&e.ExtraIPs, "extra-ip", nil, "replace the extra addresses (repeatable; pass none to clear)")
 	f.BoolVar(&e.clearIPs, "clear-extra-ips", false, "remove every extra address")
-	return gate(cmd, "edit", classMutate)
+	return gate(cmd, "edit")
 }
 
 // hostEdits is the set of changes a caller asked for. A field left zero was not

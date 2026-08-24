@@ -30,18 +30,41 @@ const (
 )
 
 // gated is the canonical catalog of RBAC-gated commands and their class. It is
-// the one place the command→class mapping lives; the grant picker, the
-// `rbac check` command, and grant validation all read it through the accessors
-// below so a new gated command is described in exactly one spot.
+// the one place the command→class mapping lives; the CLI gate derives a
+// command's class from it, and the grant picker, the `rbac check` command, and
+// grant validation all read it through the accessors below so a new gated
+// command is described in exactly one spot.
+//
+// The catalog and the command tree must agree in both directions: a gate whose
+// name is missing here is a mutate command nobody can grant except through "*"
+// or an admin policy, and an entry no gate carries describes a gate that does
+// not exist. Both happened — `vctl openstack farm state` once mutated with no
+// grant path, and status/audit/session sat here for commands that had long
+// been ungated. internal/cli's TestEveryGateMatchesTheCatalog walks the tree
+// so neither drift can come back.
 var gated = map[string]Class{
+	// Access.
 	"ssh":      ClassMutate,
 	"exec":     ClassMutate,
-	"sync":     ClassMutate,
 	"trust-ca": ClassMutate,
-	"list":     ClassRead,
-	"status":   ClassRead,
-	"audit":    ClassRead,
-	"session":  ClassRead,
+	// Inventory writes.
+	"add":    ClassMutate,
+	"delete": ClassMutate,
+	"edit":   ClassMutate,
+	"sync":   ClassMutate,
+	// Ledgers and topology. A grant of "ip" authorizes the subcommands that
+	// write the address ledger; listing it is a read view, default-allowed.
+	"ip":             ClassMutate,
+	"wg":             ClassRead,
+	"wg-sync":        ClassMutate,
+	"openstack-farm": ClassMutate,
+	// The rbac surface itself: reads are default-allowed, mutations are
+	// admin-only — a grant must not be able to mint further grants.
+	"users":  ClassRead,
+	"list":   ClassRead,
+	"whoami": ClassRead,
+	"check":  ClassRead,
+	"admin":  ClassAdmin,
 	// retention reports what is past its horizon and what it costs on disk; it
 	// deletes nothing. The hidden prune automation command is intentionally not
 	// in this human RBAC catalog; its delete-only Vault role is the authorization.
@@ -65,10 +88,25 @@ func GatedCommands() []string {
 	return out
 }
 
-// Grantable returns "*" (all commands) followed by the sorted gated command
-// names — the menu of things a grant can target.
+// GrantableCommands returns the sorted names a grant can meaningfully target:
+// the mutate class only. Read commands are allowed to any authenticated user
+// and admin commands follow the Vault policy, so granting either changes
+// nothing — offering them in the menu would let an admin believe it had.
+func GrantableCommands() []string {
+	out := make([]string, 0, len(gated))
+	for c, class := range gated {
+		if class == ClassMutate {
+			out = append(out, c)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Grantable returns "*" (all commands) followed by the sorted grantable
+// command names — the menu of things a grant can target.
 func Grantable() []string {
-	return append([]string{"*"}, GatedCommands()...)
+	return append([]string{"*"}, GrantableCommands()...)
 }
 
 // HasAdminPolicy reports whether the caller holds an admin Vault policy that

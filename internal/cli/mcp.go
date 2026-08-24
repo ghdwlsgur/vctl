@@ -16,6 +16,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/authz"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -228,15 +229,15 @@ func mcpToolSSHExec(ctx context.Context, host, command string, timeout int) (str
 	}
 	var out map[string]any
 	err := withMCPStore(ctx, false, func(a *app.App, st *store.Store) error {
-		// app-RBAC ssh gate (Layer 2), mirroring enforceRBAC; Vault cert signing
-		// is the Layer-1 gate enforced when the connector signs below. Snapshot
-		// fails closed on a Vault policy-lookup error (no silent admin-misclassification).
-		az, err := mcpAuthorizer(a, st).Snapshot(ctx)
-		if err != nil {
+		// app-RBAC ssh gate (Layer 2) — the same Check the CLI gate runs, with
+		// the class read from the catalog, so the two cannot drift; Vault cert
+		// signing is the Layer-1 gate enforced when the connector signs below.
+		// Check fails closed on a Vault policy-lookup error and reports an
+		// unmigrated RBAC schema as such, where the hand-rolled mirror of this
+		// decision used to misreport it as a missing grant.
+		sshClass, _ := authz.ClassOf("ssh")
+		if err := mcpAuthorizer(a, st).Check(ctx, authz.Command{Name: "ssh", Class: sshClass}); err != nil {
 			return err
-		}
-		if !az.Allows("ssh") {
-			return fmt.Errorf("rbac: 'ssh' not permitted for %q (needs vctl-ssh-users/admin + an rbac grant; the read-only AppRole cannot ssh)", az.Identity)
 		}
 
 		target, err := access.ResolveServer(ctx, st, host)

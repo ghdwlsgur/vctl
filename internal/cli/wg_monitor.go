@@ -102,7 +102,7 @@ has data). Because that writes, it additionally requires the 'wg-sync' grant.`,
 	cmd.Flags().IntVar(&timeoutSec, "timeout", 10, "per-poll SSH timeout (seconds)")
 	cmd.Flags().BoolVar(&syncFirst, "sync", false, "collect into the DB once before monitoring (needs the wg-sync grant)")
 	cmd.Flags().BoolVar(&all, "all", false, "with no host args, target every inventory host")
-	return gate(cmd, "wg", classRead)
+	return gate(cmd, "wg")
 }
 
 // wgSyncBeforeMonitor runs one collection of the monitor targets into the DB,

@@ -94,7 +94,7 @@ leaves ssh_user, dc and jump_via as entered here.`,
 	// shells complete and quote on their own.
 	f.StringSliceVar(&sv.ExtraIPs, "extra-ip", nil, "additional address the host answers on (repeatable)")
 	f.BoolVar(&force, "force", false, "if the hostname exists, refresh it instead of failing")
-	return gate(cmd, "add", classMutate)
+	return gate(cmd, "add")
 }
 
 // inventoryLister is the slice of *store.Store that add reads.
