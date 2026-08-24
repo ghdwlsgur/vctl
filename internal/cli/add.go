@@ -9,7 +9,6 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -114,7 +113,7 @@ func completeServer(ctx context.Context, st inventoryLister, sv *store.Server) e
 	if sv.Hostname != "" && sv.IP != "" && sv.User != "" && sv.DC != "" {
 		return nil
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
+	if !isTerminal() {
 		return fmt.Errorf("--host, --ip, --user and --dc are required when there is no terminal to prompt at")
 	}
 

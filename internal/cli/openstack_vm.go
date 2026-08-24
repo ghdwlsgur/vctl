@@ -632,12 +632,17 @@ func oneVM(ctx context.Context, st *store.Store, id, deploymentID string) (store
 // rather than describing it is the difference between one step and three.
 func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 	var farm string
+	var asJSON bool
 	cmd := &cobra.Command{
 		Use:               "show <nova-uuid>",
 		Short:             "One VM in full, and how to reach it",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeVM(env),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, err := commandOutput(cmd, asJSON)
+			if err != nil {
+				return err
+			}
 			id, ok := access.NovaID(args[0])
 			if !ok {
 				return fmt.Errorf("show takes a Nova instance id or openstack:///<id>, not %q; "+
@@ -664,14 +669,21 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				// The sibling `openstack host <name>` exports; a VM described in
+				// full is the same contract, and store.Instance already carries
+				// its wire tags.
+				if format != outputTable {
+					return writeStructured(format, v)
+				}
 				renderVMShow(os.Stdout, v, cat.Names(), operatorNetworks(), time.Now())
 				return nil
 			})
 		},
 	}
 	cmd.Flags().StringVar(&farm, "farm", "", "deployment holding the VM, when its id is in more than one")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	registerCompletion(cmd, "farm", completeFarm(env))
-	return cmd
+	return supportsStructuredOutput(cmd)
 }
 
 func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets []string, now time.Time) {

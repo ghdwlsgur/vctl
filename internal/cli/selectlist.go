@@ -99,7 +99,7 @@ func runListPicker(items []string, g *listGroups, match func(i int, q string) bo
 	if len(items) == 0 {
 		return nil, false, fmt.Errorf("nothing to choose from")
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
+	if !isTerminal() {
 		return numberListPick(items, title, multi)
 	}
 	m := newListModel(items, g, match, title, multi)
