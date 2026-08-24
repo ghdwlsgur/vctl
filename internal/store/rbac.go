@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/ghdwlsgur/vctl/internal/authz"
 )
 
 func scanRBACGroup(r pgx.Rows) (RBACGroup, error) {
@@ -108,7 +111,7 @@ func (s *Store) RBACCommandsForUser(ctx context.Context, user string) (map[strin
 		JOIN rbac_members m ON m.group_name = r.group_name
 		WHERE m.username = $1`, []any{user}, scanString)
 	if err != nil {
-		return nil, err
+		return nil, rbacReadErr(err)
 	}
 	out := make(map[string]bool, len(cmds))
 	for _, c := range cmds {
@@ -141,9 +144,10 @@ func (s *Store) RecordSeenUser(ctx context.Context, username, version string) er
 
 // SeenUsers lists everyone recorded at login, with version and last-seen time.
 func (s *Store) SeenUsers(ctx context.Context) ([]SeenUser, error) {
-	return queryAndCollect(ctx, s.pool,
+	users, err := queryAndCollect(ctx, s.pool,
 		`SELECT username, coalesce(vctl_version, ''), last_seen FROM seen_users ORDER BY username`,
 		nil, scanSeenUser)
+	return users, rbacReadErr(err)
 }
 
 // RBACCandidateUsers returns known usernames to offer in the interactive
@@ -180,5 +184,18 @@ func (s *Store) RBACCandidateUsers(ctx context.Context) ([]string, error) {
 }
 
 func (s *Store) rbacStrings(ctx context.Context, q, arg string) ([]string, error) {
-	return queryAndCollect(ctx, s.pool, q, []any{arg}, scanString)
+	out, err := queryAndCollect(ctx, s.pool, q, []any{arg}, scanString)
+	return out, rbacReadErr(err)
+}
+
+// rbacReadErr classifies a grant-schema read failure. A table that has never
+// been created means the RBAC schema is not migrated, which callers treat as
+// "no grants yet" — the contract authz.IsUninitializedRBAC checks for, stated
+// here as a wrapped sentinel instead of leaving consumers to sniff SQLSTATE
+// text out of the message. Anything else passes through unchanged.
+func rbacReadErr(err error) error {
+	if isUndefinedTable(err) {
+		return fmt.Errorf("%w: %v", authz.ErrUninitialized, err)
+	}
+	return err
 }

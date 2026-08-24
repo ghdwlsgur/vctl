@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -128,7 +129,7 @@ func TestCheckFailsClosedOnPolicyLookupError(t *testing.T) {
 
 func TestCheckUninitializedRBACGivesMigrateHint(t *testing.T) {
 	p := fakePolicies{identity: "bob", policies: []string{"vctl-ssh-users"}}
-	g := &fakeGrants{err: errors.New(`ERROR: relation "rbac_grants" does not exist (SQLSTATE 42P01)`)}
+	g := &fakeGrants{err: fmt.Errorf("%w: %s", ErrUninitialized, `ERROR: relation "rbac_grants" does not exist (SQLSTATE 42P01)`)}
 	az, _ := newAuthorizer(p, g)
 	err := az.Check(context.Background(), Command{Name: "ssh", Class: ClassMutate})
 	if err == nil || !strings.Contains(err.Error(), "not initialized") {
@@ -173,7 +174,7 @@ func TestSnapshotNonAdminLoadsGrants(t *testing.T) {
 
 func TestSnapshotUninitializedIsNotAnError(t *testing.T) {
 	p := fakePolicies{identity: "bob", policies: []string{"vctl-users"}}
-	g := &fakeGrants{err: errors.New("SQLSTATE 42P01")}
+	g := &fakeGrants{err: fmt.Errorf("grant read: %w", ErrUninitialized)}
 	az, _ := newAuthorizer(p, g)
 	snap, err := az.Snapshot(context.Background())
 	if err != nil {
@@ -181,6 +182,19 @@ func TestSnapshotUninitializedIsNotAnError(t *testing.T) {
 	}
 	if snap.Commands != nil || snap.Allows("ssh") {
 		t.Fatalf("uninitialized snapshot should have no grants, got %+v", snap.Commands)
+	}
+}
+
+// Classification is by the wrapped sentinel, never by message text. An error
+// that merely mentions the SQLSTATE — a table named after it, a quoted query,
+// a nested error — used to read as "no grants yet" and skip the grant lookup
+// on the path that builds authorization answers.
+func TestUninitializedIsClassifiedBySentinelNotByText(t *testing.T) {
+	if IsUninitializedRBAC(errors.New(`permission denied for table "audit_42P01_shadow"`)) {
+		t.Fatal("an error mentioning 42P01 in prose was classified as uninitialized")
+	}
+	if !IsUninitializedRBAC(fmt.Errorf("outer: %w", ErrUninitialized)) {
+		t.Fatal("a wrapped sentinel was not classified")
 	}
 }
 

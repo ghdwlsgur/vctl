@@ -11,10 +11,10 @@ package authz
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -115,11 +115,19 @@ func HasAdminPolicy(pols []string) bool {
 	return slices.Contains(pols, "vctl-admin") || slices.Contains(pols, "sre-admin")
 }
 
-// IsUninitializedRBAC reports whether err is Postgres "undefined table" (42P01),
-// meaning the RBAC schema has not been migrated yet. Callers treat this as
-// "no grants" rather than a hard failure.
+// ErrUninitialized reports that the RBAC schema has never been migrated.
+// Grant sources wrap it around their "table does not exist" failures, so this
+// package — which deliberately depends on nothing but the standard library —
+// can classify the condition without sniffing SQLSTATE text out of an error
+// string. The sniff was how any failure whose message happened to carry
+// "42P01" (a table name, a quoted query, a nested error) read as "no grants
+// yet" on the path that builds authorization answers.
+var ErrUninitialized = errors.New("rbac schema not initialized")
+
+// IsUninitializedRBAC reports whether err means the RBAC schema has not been
+// migrated yet. Callers treat this as "no grants" rather than a hard failure.
 func IsUninitializedRBAC(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "42P01")
+	return errors.Is(err, ErrUninitialized)
 }
 
 // PolicySource reports the caller's Vault identity and token policies. Satisfied
