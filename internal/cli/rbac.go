@@ -26,7 +26,7 @@ Vault policies are the authoritative capability boundary. On top of that,
 admins group users and grant them specific CLI commands here. Read commands
 are allowed to any authenticated user by default; mutate commands (ssh, exec,
 sync, add/edit/delete, ip, wg-sync, openstack-farm, trust-ca) need a group
-grant. Admins (vctl-admin) bypass.`,
+grant. Admins (the configured admin_policies) bypass.`,
 	}
 	cmd.AddCommand(rbacAssignCmd(env), rbacGroupCmd(env), rbacMemberCmd(env), rbacGrantCmd(env), rbacRevokeCmd(env), rbacUsersCmd(env), rbacWhoamiCmd(env), rbacCheckCmd(env))
 	return cmd
@@ -415,7 +415,7 @@ func rbacWhoamiCmd(env CommandEnv) *cobra.Command {
 					return err
 				}
 				user := info.Identity
-				isAdmin := authz.HasAdminPolicy(info.Policies)
+				isAdmin := authz.HasAdminPolicy(info.Policies, a.Cfg.AdminPolicies)
 				groups, err := st.RBACGroupsForUser(ctx, user)
 				if err != nil && !authz.IsUninitializedRBAC(err) {
 					return err
@@ -427,7 +427,8 @@ func rbacWhoamiCmd(env CommandEnv) *cobra.Command {
 				ui.Section(os.Stdout, "rbac whoami")
 				fmt.Fprintf(os.Stdout, "identity: %s\n", ui.OrDash(user))
 				if isAdmin {
-					fmt.Fprintf(os.Stdout, "admin:    %s (vctl-admin/sre-admin — bypasses command RBAC)\n", ui.OK("yes"))
+					fmt.Fprintf(os.Stdout, "admin:    %s (%s — bypasses command RBAC)\n",
+						ui.OK("yes"), strings.Join(a.Cfg.AdminPolicies, "/"))
 				} else {
 					fmt.Fprintf(os.Stdout, "admin:    no\n")
 				}
@@ -452,7 +453,7 @@ func rbacCheckCmd(env CommandEnv) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if authz.HasAdminPolicy(info.Policies) {
+				if authz.HasAdminPolicy(info.Policies, a.Cfg.AdminPolicies) {
 					fmt.Fprintf(os.Stdout, "%s %q (admin bypass)\n", ui.OK("allow"), want)
 					return nil
 				}
@@ -470,7 +471,8 @@ func rbacCheckCmd(env CommandEnv) *cobra.Command {
 					fmt.Fprintf(os.Stdout, "%s %q (read — default allow)\n", ui.OK("allow"), want)
 					return nil
 				case classAdmin:
-					fmt.Fprintf(os.Stdout, "%s %q (admin-only — needs vctl-admin or sre-admin)\n", ui.Fail("deny"), want)
+					fmt.Fprintf(os.Stdout, "%s %q (admin-only — needs %s)\n",
+						ui.Fail("deny"), want, strings.Join(a.Cfg.AdminPolicies, " or "))
 					return nil
 				}
 				cmds, err := st.RBACCommandsForUser(ctx, info.Identity)

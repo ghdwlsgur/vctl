@@ -36,10 +36,16 @@ type Config struct {
 	// it. Empty leaves resolution exactly as it was.
 	DNSServer string `yaml:"dns_server"`
 
-	VaultAddr  string `yaml:"vault_addr"`
-	AuthMethod string `yaml:"auth_method"` // userpass | oidc | approle | kubernetes
-	OIDCRole   string `yaml:"oidc_role"`   // Vault OIDC role (phase 2)
-	OIDCMount  string `yaml:"oidc_mount"`  // Vault OIDC auth mount path
+	VaultAddr string `yaml:"vault_addr"`
+	// AdminPolicies are the Vault policy names that bypass app-layer command
+	// RBAC entirely (see internal/authz.HasAdminPolicy). Organization-specific
+	// surface: a fork renames its admin policies here instead of editing authz.
+	// An explicit empty list turns the bypass off — nobody is admin, which
+	// fails closed.
+	AdminPolicies []string `yaml:"admin_policies"`
+	AuthMethod    string   `yaml:"auth_method"` // userpass | oidc | approle | kubernetes
+	OIDCRole      string   `yaml:"oidc_role"`   // Vault OIDC role (phase 2)
+	OIDCMount     string   `yaml:"oidc_mount"`  // Vault OIDC auth mount path
 
 	DBHost               string `yaml:"db_host"`
 	DBServerName         string `yaml:"db_server_name"` // TLS SNI override; defaults to DBHost. Use for port-forward/proxy where dial host != cert name.

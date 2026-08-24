@@ -433,7 +433,7 @@ func (s *server) withStore(ctx context.Context, p app.Purpose, fn func(*app.App,
 // authorizer wires an authz.Authorizer over the store a tool call already
 // holds, so a check reuses its open connection instead of opening another.
 func authorizer(a *app.App, st *store.Store) *authz.Authorizer {
-	return authz.NewWithGrants(a.Vault, st)
+	return authz.NewWithGrants(a.Vault, st).WithAdminPolicies(a.Cfg.AdminPolicies)
 }
 
 func toJSON(v any) (string, error) {
