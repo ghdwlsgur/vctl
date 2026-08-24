@@ -10,7 +10,6 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -49,7 +48,7 @@ are written; with none, the fields are asked for interactively.`,
 				}
 				host := cur.Hostname
 				if e.empty() {
-					if !term.IsTerminal(int(os.Stdin.Fd())) {
+					if !isTerminal() {
 						return fmt.Errorf("nothing to change: pass at least one of --dc, --user, --jump, --extra-ip, --name, --state")
 					}
 					if err := e.prompt(cur); err != nil {

@@ -17,9 +17,11 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/strutil"
 )
 
+// Probe bounds are this package's own concern; the values people and hosts
+// get (default user, CA role) are the organization's, and they arrive in
+// BuildOptions from config — a second copy here shadowed defaults_sre.go and
+// answered for it whenever a caller passed an empty field.
 const (
-	defaultUser             = "ubuntu"
-	defaultCARole           = "sre-core"
 	defaultProbeTimeout     = 3 * time.Second
 	defaultProbeConcurrency = 32
 	maxProbeConcurrency     = 128
@@ -227,12 +229,6 @@ func resolveJumpAlias(proxyJump string, byAlias map[string]hostBlock) string {
 }
 
 func (o BuildOptions) withDefaults() BuildOptions {
-	if o.DefaultUser == "" {
-		o.DefaultUser = defaultUser
-	}
-	if o.CARole == "" {
-		o.CARole = defaultCARole
-	}
 	if o.ProbeTimeout <= 0 {
 		o.ProbeTimeout = defaultProbeTimeout
 	}

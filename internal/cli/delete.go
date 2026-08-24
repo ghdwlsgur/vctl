@@ -8,7 +8,6 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -101,7 +100,7 @@ func jumpDependents(ctx context.Context, st inventoryLister, host string) ([]str
 // A delete that proceeds unattended because there was no terminal is the same
 // mistake as one that proceeds because nobody read the prompt.
 func confirmDelete(cur store.InventoryRow) (bool, error) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
+	if !isTerminal() {
 		return false, fmt.Errorf("refusing to delete without confirmation: pass --yes to proceed non-interactively")
 	}
 	desc := fmt.Sprintf("%s in %s, reached as %s@%s", cur.IP, cur.DC, cur.User, cur.Hostname)

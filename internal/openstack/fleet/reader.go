@@ -108,9 +108,6 @@ type Reading struct {
 	Err error
 }
 
-// Stale reports whether this answer is one the operator should be told about.
-func (r Reading) Stale() bool { return r.Source != FromDatabase }
-
 func (r *Reader) clock() time.Time {
 	if r.now != nil {
 		return r.now()

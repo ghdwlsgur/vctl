@@ -213,10 +213,6 @@ func (c Catalog) Find(id string) (Farm, bool) {
 // a farm cannot hold them.
 func (c Catalog) Hosts() []store.OpenStackHost { return c.snap.Hosts }
 
-// Instances is every VM, including the ones the control plane has stopped
-// listing — Farm.VMs is the filtered view.
-func (c Catalog) Instances() []store.Instance { return c.snap.Instances }
-
 // Deployments is the declared rows as they are stored.
 func (c Catalog) Deployments() []store.Deployment { return c.snap.Deployments }
 

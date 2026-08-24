@@ -10,6 +10,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/invcache"
+	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -125,13 +126,7 @@ func cacheRefreshCmd(env CommandEnv) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			return env.withApp(func(a *app.App) error {
-				st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
-				if err != nil {
-					return err
-				}
-				defer st.Close()
-
+			return env.withPurposeStore(ctx, app.PurposeInventoryRead, func(a *app.App, st *store.Store) error {
 				snap, err := a.CaptureSnapshot(ctx, st)
 				if err != nil {
 					return err

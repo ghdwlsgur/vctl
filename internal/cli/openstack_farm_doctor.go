@@ -62,6 +62,10 @@ func openstackFarmDoctorCmd(env CommandEnv) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification, to tell a certificate problem from a reachability one")
+	// No structured output yet, on purpose: the checks are typed with the
+	// renderer's ui.State, and freezing that into a wire contract would fix
+	// the wrong shape. When the diagnosis moves into internal/openstack with
+	// its own severity type, -o json follows it.
 	return cmd
 }
 
