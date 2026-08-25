@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/openstack/farmcreds"
 	"github.com/ghdwlsgur/vctl/internal/openstackapi"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -95,7 +96,7 @@ func diagnoseFarm(ctx context.Context, a *app.App, st *store.Store, id string, i
 		out = append(out, farmCheck{Name: name, State: state, Detail: oneLine(fmt.Sprintf(format, args...))})
 	}
 
-	creds, err := vaultCredentials{app: a}.ForFarm(ctx, id)
+	creds, err := farmcreds.Store{KV: a.Vault, Prefix: a.Cfg.VaultFarmPrefix}.ForFarm(ctx, id)
 	if err != nil {
 		add("Credentials", ui.StateFail, "%v", err)
 		add("Keystone", ui.StateWarn, "not attempted — there is nothing to authenticate with")

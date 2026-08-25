@@ -13,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
-	"github.com/ghdwlsgur/vctl/internal/hoststatus/probes"
+	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 	"github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -205,9 +205,9 @@ func caTrustLine(c openstack.CATrust) string {
 		svc = " · " + strconv.Itoa(len(c.Hosts)) + " metadata host(s)"
 	}
 	switch c.State {
-	case probes.VendordataOn:
+	case hoststatus.VendordataOn:
 		return ui.OK("on") + ui.Muted(" · new VMs trust the SSH CA"+svc)
-	case probes.VendordataOff:
+	case hoststatus.VendordataOff:
 		return ui.Muted("off · new VMs will not trust the SSH CA" + svc)
 	}
 	return ui.Warn(c.State) + ui.Muted(" · "+strings.Join(caTrustOdd(c), ", "))
@@ -217,7 +217,7 @@ func caTrustLine(c openstack.CATrust) string {
 func caTrustOdd(c openstack.CATrust) []string {
 	out := make([]string, 0, len(c.Hosts))
 	for host, state := range c.Hosts {
-		if state != probes.VendordataOn {
+		if state != hoststatus.VendordataOn {
 			out = append(out, host+"="+state)
 		}
 	}

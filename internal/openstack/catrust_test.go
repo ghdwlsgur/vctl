@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ghdwlsgur/vctl/internal/hoststatus/probes"
+	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -20,14 +20,14 @@ func metadataHost(name, vendordata string) store.OpenStackHost {
 // would call a coin toss "on".
 func TestAFarmIsAsOnboardedAsItsWeakestMetadataHost(t *testing.T) {
 	a := Assess(Input{ID: "f", Hosts: []store.OpenStackHost{
-		metadataHost("c1", probes.VendordataOn),
-		metadataHost("c2", probes.VendordataOn),
-		metadataHost("c3", probes.VendordataOff),
+		metadataHost("c1", hoststatus.VendordataOn),
+		metadataHost("c2", hoststatus.VendordataOn),
+		metadataHost("c3", hoststatus.VendordataOff),
 	}})
-	if a.CATrust.State != probes.VendordataOff {
-		t.Fatalf("state = %q, want %q — two of three is not on", a.CATrust.State, probes.VendordataOff)
+	if a.CATrust.State != hoststatus.VendordataOff {
+		t.Fatalf("state = %q, want %q — two of three is not on", a.CATrust.State, hoststatus.VendordataOff)
 	}
-	if got := a.CATrust.Hosts["c3"]; got != probes.VendordataOff {
+	if got := a.CATrust.Hosts["c3"]; got != hoststatus.VendordataOff {
 		t.Errorf("the odd host out is not named: %v", a.CATrust.Hosts)
 	}
 }
@@ -37,9 +37,9 @@ func TestAFarmIsAsOnboardedAsItsWeakestMetadataHost(t *testing.T) {
 func TestOnlyMetadataHostsCount(t *testing.T) {
 	compute := host("cmp", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed)
 	a := Assess(Input{ID: "f", Hosts: []store.OpenStackHost{
-		metadataHost("c1", probes.VendordataOn), compute,
+		metadataHost("c1", hoststatus.VendordataOn), compute,
 	}})
-	if a.CATrust.State != probes.VendordataOn {
+	if a.CATrust.State != hoststatus.VendordataOn {
 		t.Fatalf("state = %q, want on", a.CATrust.State)
 	}
 	if _, ok := a.CATrust.Hosts["cmp"]; ok {
@@ -50,7 +50,7 @@ func TestOnlyMetadataHostsCount(t *testing.T) {
 // A farm nobody has onboarded yet is a backlog item, not a fault. Reporting it
 // would put a permanent red line under every farm somebody has not got to.
 func TestOffIsNotAnAnomaly(t *testing.T) {
-	a := Assess(Input{ID: "f", Hosts: []store.OpenStackHost{metadataHost("c1", probes.VendordataOff)}})
+	a := Assess(Input{ID: "f", Hosts: []store.OpenStackHost{metadataHost("c1", hoststatus.VendordataOff)}})
 	if slices.Contains(kinds(a), AnomalyCATrust) {
 		t.Fatalf("off raised an anomaly: %v", kinds(a))
 	}
@@ -60,8 +60,8 @@ func TestOffIsNotAnAnomaly(t *testing.T) {
 // that this fleet has actually made, and each has a consequence worth naming.
 func TestHalfInstalledIsAnAnomaly(t *testing.T) {
 	for _, tc := range []struct{ state, mustSay string }{
-		{probes.VendordataNoFile, "fail to start"},
-		{probes.VendordataNoConfig, "empty vendor_data.json"},
+		{hoststatus.VendordataNoFile, "fail to start"},
+		{hoststatus.VendordataNoConfig, "empty vendor_data.json"},
 	} {
 		a := Assess(Input{ID: "f", Hosts: []store.OpenStackHost{metadataHost("c1", tc.state)}})
 		if !slices.Contains(kinds(a), AnomalyCATrust) {
@@ -84,12 +84,12 @@ func TestHalfInstalledIsAnAnomaly(t *testing.T) {
 // it rather than with the merely-unconfigured host.
 func TestTheContainerBreakingStateWins(t *testing.T) {
 	a := Assess(Input{ID: "f", Hosts: []store.OpenStackHost{
-		metadataHost("c1", probes.VendordataOff),
-		metadataHost("c2", probes.VendordataNoFile),
-		metadataHost("c3", probes.VendordataOn),
+		metadataHost("c1", hoststatus.VendordataOff),
+		metadataHost("c2", hoststatus.VendordataNoFile),
+		metadataHost("c3", hoststatus.VendordataOn),
 	}})
-	if a.CATrust.State != probes.VendordataNoFile {
-		t.Fatalf("state = %q, want %q", a.CATrust.State, probes.VendordataNoFile)
+	if a.CATrust.State != hoststatus.VendordataNoFile {
+		t.Fatalf("state = %q, want %q", a.CATrust.State, hoststatus.VendordataNoFile)
 	}
 }
 
