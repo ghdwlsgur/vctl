@@ -10,6 +10,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -122,10 +123,10 @@ func storedReader(a *app.App) *fleet.Reader {
 func announce(r fleet.Reading) {
 	switch r.Source {
 	case fleet.FromStored:
-		ui.Infof(os.Stderr, "cached · read %s ago · --fresh to re-read", ui.CompactDuration(r.Age))
+		ui.Infof(os.Stderr, "cached · read %s ago · --fresh to re-read", strutil.CompactDuration(r.Age))
 	case fleet.FromFallback:
 		ui.Warnf(os.Stderr, "database unreachable (%v) — showing the reading from %s ago",
-			r.Err, ui.CompactDuration(r.Age))
+			r.Err, strutil.CompactDuration(r.Age))
 	}
 }
 

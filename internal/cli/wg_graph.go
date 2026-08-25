@@ -12,6 +12,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
@@ -92,7 +93,7 @@ func wgHandshakeCell(hs *time.Time) string {
 	if age <= wgHandshakeWindow {
 		return ui.OK("up")
 	}
-	return ui.Warn("idle " + ui.CompactDuration(age))
+	return ui.Warn("idle " + strutil.CompactDuration(age))
 }
 
 // renderWGTerminal prints the topology grouped by gateway host, each interface

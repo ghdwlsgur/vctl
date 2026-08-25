@@ -11,6 +11,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/invcache"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -68,7 +69,7 @@ func cacheStatusCmd(env CommandEnv) *cobra.Command {
 						state = "  " + ui.Fail("expired — will not be served")
 					}
 					fmt.Fprintf(os.Stdout, "  captured        %s ago (%s)%s\n",
-						ui.CompactDuration(age), snap.CapturedAt.Local().Format(time.RFC3339), state)
+						strutil.CompactDuration(age), snap.CapturedAt.Local().Format(time.RFC3339), state)
 					fmt.Fprintf(os.Stdout, "  hosts           %d\n", len(snap.Servers))
 					fmt.Fprintf(os.Stdout, "  refresh after   %s\n", a.Cfg.CacheRefreshInterval())
 					if limit := a.Cfg.CacheStaleLimit(); limit > 0 {
@@ -115,7 +116,7 @@ func renderCachedGrants(a *app.App, snap *invcache.Snapshot) {
 			state = ui.Fail("expired")
 		}
 		fmt.Fprintf(os.Stdout, "  grants          %s  %v  (confirmed %s ago, %s)\n",
-			identity, g.Commands, ui.CompactDuration(g.Age(now)), state)
+			identity, g.Commands, strutil.CompactDuration(g.Age(now)), state)
 	}
 }
 

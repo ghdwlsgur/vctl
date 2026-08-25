@@ -11,6 +11,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -176,13 +177,13 @@ func machineIdentity(method string) bool {
 // status command.
 func tokenStatus(ctx context.Context, a *app.App) (ui.KV, bool) {
 	if a.Vault.HasValidToken() {
-		return ui.KV{Key: "Token", Value: fmt.Sprintf("valid · %s left", ui.CompactDuration(a.Vault.TTL())), State: ui.StateOK}, true
+		return ui.KV{Key: "Token", Value: fmt.Sprintf("valid · %s left", strutil.CompactDuration(a.Vault.TTL())), State: ui.StateOK}, true
 	}
 	if _, _, haveAppRole := a.AppRoleCreds(); haveAppRole {
 		if err := a.ReAuthNonInteractive(ctx); err != nil {
 			return ui.KV{Key: "Token", Value: "AppRole authentication failed (" + err.Error() + ")", State: ui.StateFail}, false
 		}
-		return ui.KV{Key: "Token", Value: fmt.Sprintf("valid · %s left (AppRole)", ui.CompactDuration(a.Vault.TTL())), State: ui.StateOK}, true
+		return ui.KV{Key: "Token", Value: fmt.Sprintf("valid · %s left (AppRole)", strutil.CompactDuration(a.Vault.TTL())), State: ui.StateOK}, true
 	}
 	// Only now is a login genuinely required. status never prompts for one —
 	// it reports.
@@ -203,7 +204,7 @@ func cacheStatusRow(a *app.App) ui.KV {
 		return ui.KV{Key: "Local cache", Value: "empty — run 'vctl cache refresh', or Postgres going down takes host lookup with it", State: ui.StateWarn}
 	}
 	now := time.Now()
-	age := ui.CompactDuration(snap.Age(now))
+	age := strutil.CompactDuration(snap.Age(now))
 	if snap.Expired(now, a.Cfg.CacheStaleLimit()) {
 		return ui.KV{Key: "Local cache", Value: fmt.Sprintf("%d hosts · %s old — too stale to serve", len(snap.Servers), age), State: ui.StateFail}
 	}

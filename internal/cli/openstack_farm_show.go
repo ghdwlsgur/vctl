@@ -16,6 +16,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 	"github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -259,7 +260,7 @@ func declaredStateLine(a openstack.Assessment, now time.Time) string {
 	}
 	s := stateCell(a.State)
 	if a.StateSince != nil {
-		s += ui.Muted(" for " + ui.CompactDuration(now.Sub(*a.StateSince)))
+		s += ui.Muted(" for " + strutil.CompactDuration(now.Sub(*a.StateSince)))
 	}
 	if a.StateNote != "" {
 		s += ui.Muted(" — " + a.StateNote)
@@ -287,9 +288,9 @@ func reconcileLine(f openstack.Freshness, now time.Time) string {
 	}
 	if f.LastSuccess == nil {
 		return ui.Fail("never succeeded") + " · " +
-			ui.Muted("last tried "+ui.CompactDuration(now.Sub(*f.LastAttempt))+" ago: "+ui.Truncate(f.Error, 60))
+			ui.Muted("last tried "+strutil.CompactDuration(now.Sub(*f.LastAttempt))+" ago: "+ui.Truncate(f.Error, 60))
 	}
-	s := ui.CompactDuration(now.Sub(*f.LastSuccess)) + " ago"
+	s := strutil.CompactDuration(now.Sub(*f.LastSuccess)) + " ago"
 	if f.Stale {
 		s = ui.Warn(s)
 	}
@@ -297,7 +298,7 @@ func reconcileLine(f openstack.Freshness, now time.Time) string {
 		s += " " + ui.Warn("(partial answer — nothing was demoted)")
 	}
 	if f.Error != "" {
-		s += " · " + ui.Fail("failing since "+ui.CompactDuration(now.Sub(*f.LastAttempt))+" ago: "+ui.Truncate(f.Error, 50))
+		s += " · " + ui.Fail("failing since "+strutil.CompactDuration(now.Sub(*f.LastAttempt))+" ago: "+ui.Truncate(f.Error, 50))
 	}
 	return s
 }

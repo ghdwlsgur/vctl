@@ -13,6 +13,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -142,7 +143,7 @@ func agentCell(r store.InventoryRow, cached bool) string {
 	if time.Since(*r.AgentSeen) <= statusFreshnessWindow {
 		return ui.OK("up")
 	}
-	return ui.Warn("stale " + ui.CompactDuration(time.Since(*r.AgentSeen)))
+	return ui.Warn("stale " + strutil.CompactDuration(time.Since(*r.AgentSeen)))
 }
 
 // renderInventory prints the inventory grouped by DC, with a node-agent liveness

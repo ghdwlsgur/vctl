@@ -13,6 +13,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/authz"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -58,7 +59,7 @@ func rbacUsersCmd(env CommandEnv) *cobra.Command {
 					if ver == "" {
 						ver = ui.Muted("-")
 					}
-					rows = append(rows, []string{u.Username, ver, "seen " + ui.CompactDuration(time.Since(u.LastSeen))})
+					rows = append(rows, []string{u.Username, ver, "seen " + strutil.CompactDuration(time.Since(u.LastSeen))})
 				}
 				ui.Section(os.Stdout, "rbac users")
 				return ui.Table(os.Stdout, []string{"user", "vctl version", "last login"}, rows)
