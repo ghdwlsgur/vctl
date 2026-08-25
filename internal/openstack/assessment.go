@@ -22,6 +22,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 )
 
 // Assessment is everything known about one deployment, judged.
@@ -293,7 +294,7 @@ func Assess(in Input) Assessment {
 				Hostname: h.Hostname, Release: ReleaseOf(h), Roles: len(h.Roles),
 				VMs: vmsByHypervisor[h.Hostname],
 			}
-			if !containsFold(h.ActiveRoles, role) {
+			if !strutil.ContainsFold(h.ActiveRoles, role) {
 				m.Down = true
 				sec.Down++
 				a.Health.RolesDown++
@@ -535,13 +536,4 @@ func releaseSummary(byRelease map[string]int) string {
 		parts = append(parts, r)
 	}
 	return strings.Join(parts, ", ")
-}
-
-func containsFold(list []string, want string) bool {
-	for _, s := range list {
-		if strings.EqualFold(s, want) {
-			return true
-		}
-	}
-	return false
 }

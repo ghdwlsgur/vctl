@@ -444,7 +444,7 @@ func TestTheDetailSaysHowOldTheRowsBehindItAre(t *testing.T) {
 // Which is why `vctl ssh --vm` checks the second and not the first, and why a
 // stored reading cannot quiet the warning.
 func TestAFreshReadingDoesNotMakeAStaleVMLookCurrent(t *testing.T) {
-	stale := time.Now().Add(-vmStaleWindow - time.Hour)
+	stale := time.Now().Add(-staleProbeWindow - time.Hour)
 	v := store.Instance{
 		DeploymentID: "10.0.0.1:5000", InstanceID: "u-1", Name: "bastion",
 		Status: "ACTIVE", ObservedAt: stale,

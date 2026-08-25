@@ -46,3 +46,14 @@ func FirstNonEmpty(vals ...string) string {
 	}
 	return ""
 }
+
+// ContainsFold reports whether list holds want, compared case-insensitively.
+// Two packages grew byte-identical private copies of this loop.
+func ContainsFold(list []string, want string) bool {
+	for _, s := range list {
+		if strings.EqualFold(s, want) {
+			return true
+		}
+	}
+	return false
+}

@@ -581,19 +581,11 @@ func vmSeenCell(v store.Instance, now time.Time) string {
 	}
 	age := now.Sub(v.ObservedAt)
 	s := strutil.CompactDuration(age)
-	if age > vmStaleWindow {
+	if age > staleProbeWindow {
 		return ui.Warn(s)
 	}
 	return ui.Muted(s)
 }
-
-// vmStaleWindow is when a VM's recorded address stops being something to act
-// on.
-//
-// The reconciler runs hourly. Three missed passes is the point where the
-// silence is more likely to be the collector than the schedule — the same
-// reasoning, and the same number, as the capability probe's freshness window.
-const vmStaleWindow = 3 * time.Hour
 
 // oneVM fetches the single VM an id names, missing ones included — the
 // caller decides what a missing VM means. deploymentID narrows when --farm
@@ -753,7 +745,7 @@ func vmSeenLine(v store.Instance, now time.Time) string {
 	}
 	age := now.Sub(v.ObservedAt)
 	s := strutil.CompactDuration(age) + " ago"
-	if age > vmStaleWindow {
+	if age > staleProbeWindow {
 		return s + " — older than the collector's schedule, so the address may not be current"
 	}
 	return s
