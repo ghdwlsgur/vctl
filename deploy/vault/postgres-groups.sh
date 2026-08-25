@@ -68,6 +68,10 @@ GRANT SELECT,INSERT,UPDATE,DELETE ON servers, server_status, rbac_groups, rbac_m
 -- status: node-agent — servers read, server_status upsert.
 GRANT SELECT ON servers TO vctl_status;
 GRANT SELECT,INSERT,UPDATE ON server_status TO vctl_status;
+-- MOTD 렌더용 팜 토폴로지 읽기 (vctl PR #235). 함대의 모든 호스트가 전 팜의
+-- 토폴로지(비밀 아님·행 단위 축소는 호스트별 롤이 필요해 과함)를 읽게 된다는
+-- 트레이드오프를 알고 넣은 것. 이 grant 의 명세는 nodeagent.Sink 인터페이스다.
+GRANT SELECT ON openstack_deployments, openstack_memberships, openstack_control_hosts TO vctl_status;
 
 -- identity: login-time seen_users upsert only.
 GRANT SELECT,INSERT,UPDATE ON seen_users TO vctl_identity;
