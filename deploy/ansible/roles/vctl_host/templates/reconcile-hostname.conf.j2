@@ -3,4 +3,4 @@
 # incheon-aio01) — without this the reconciler finds no farm and exits.
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/vctl openstack reconcile --self --hostname '{{ vctl_host_node_hostname }}' --insecure
+ExecStart={{ vctl_host_bin_dest }} openstack reconcile --self --hostname '{{ vctl_host_node_hostname }}' --insecure

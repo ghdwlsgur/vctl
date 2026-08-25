@@ -7,4 +7,4 @@
 # leaves ended sessions marked live. Same reason as the node-agent drop-in.
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/vctl watch-sessions /run/vctl/sessions --hostname '{{ vctl_host_node_hostname }}' --interval 10s
+ExecStart={{ vctl_host_bin_dest }} watch-sessions /run/vctl/sessions --hostname '{{ vctl_host_node_hostname }}' --interval 10s
