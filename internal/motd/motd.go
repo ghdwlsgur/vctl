@@ -199,7 +199,13 @@ func Sync(path, content string) (changed bool, err error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".motd-*")
 	if err != nil {
-		return false, err
+		// Under ProtectSystem=strict only the file itself is bind-mounted
+		// writable (ReadWritePaths=/etc/motd) — the directory stays read-only,
+		// so a sibling temp file cannot exist and the rename dance is not
+		// available. Truncate-and-write in place instead: not atomic, but the
+		// banner is one small write, a torn read costs a cosmetic prompt, and
+		// the next pass rewrites it.
+		return true, os.WriteFile(path, []byte(content), 0o644)
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(content); err != nil {
