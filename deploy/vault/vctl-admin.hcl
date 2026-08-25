@@ -16,6 +16,11 @@
 path "database/creds/vctl-ro" {
   capabilities = ["read"]
 }
+# Reconcile run from a workstation uses the same dedicated role the farm
+# controllers hold — vctl-rw is not what that command needs.
+path "database/creds/vctl-reconcile" {
+  capabilities = ["read"]
+}
 path "database/creds/vctl-rw" {
   capabilities = ["read"]
 }
