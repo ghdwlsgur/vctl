@@ -414,7 +414,9 @@ jump-only 환경에서는 `.vctl/config.yaml`에 `ssh_direct_first: false`를 �
 상태만 `server_status`에 보고하며, 인벤토리 row를 새로 만들지 않습니다.
 서버에 설치할 때는 `deploy/vault/`의 별도 `vctl-node` Vault policy와
 `vctl-status` DB role을 사용하세요. 저리소스 systemd unit은 `deploy/node/`에
-있습니다.
+있습니다. 함대 host에는 별도 `vctl-agent` 바이너리가 배포됩니다. host
+에이전트(node-agent·collect·watch-sessions·farm reconcile)만 담고 있고
+운영자 명령은 들어 있지 않습니다.
 
 ## Admin Bootstrap
 

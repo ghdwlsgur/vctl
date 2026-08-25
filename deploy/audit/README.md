@@ -21,12 +21,12 @@ ssh login ──▶ sshd (ExposeAuthInfo) ──▶ $SSH_USER_AUTH file (cert of
 
 Tetragon (eBPF) ──exec/exit──▶ JSON stream
                      │
-        vctl-collect.service:  tetra getevents -o json | vctl collect
+        vctl-collect.service:  tetra getevents -o json | vctl-agent collect
                      │  (privileged: holds Vault AppRole creds)
                      ▼
         central Postgres: audit_session + kernel_event
                      ▲
-        the same daemon reads markers and calls `vctl session-start`
+        vctl-agent watch-sessions reads markers and registers the session
         so events attribute to the human via cert serial / cgroup.
 ```
 
@@ -125,6 +125,6 @@ file/network probes.
 - Session linking uses cgroup id when present, else cert serial. Populating
   `cgroup_id` from Tetragon (and into the marker) makes linking exact under
   concurrent sessions from the same user.
-- The marker→session loop is `vctl watch-sessions` (vctl-watch-sessions.service);
+- The marker→session loop is `vctl-agent watch-sessions` (vctl-watch-sessions.service);
   it derives the cgroup id from `/proc/<pid>/cgroup` so Tetragon events link by
   cgroup, falling back to cert serial.

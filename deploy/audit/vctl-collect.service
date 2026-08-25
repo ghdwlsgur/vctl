@@ -24,7 +24,7 @@ Environment=HOME=/var/lib/vctl
 Environment=VCTL_COLLECT_BATCH=500
 Environment=VCTL_COLLECT_FLUSH_INTERVAL=10s
 # Stream Tetragon JSON into vctl collect. Restart keeps the pipe alive.
-ExecStart=/bin/sh -c 'tetra getevents -o json | /usr/local/bin/vctl collect --batch "$VCTL_COLLECT_BATCH" --flush-interval "$VCTL_COLLECT_FLUSH_INTERVAL"'
+ExecStart=/bin/sh -c 'tetra getevents -o json | /usr/local/bin/vctl-agent collect --batch "$VCTL_COLLECT_BATCH" --flush-interval "$VCTL_COLLECT_FLUSH_INTERVAL"'
 Restart=always
 RestartSec=10
 DynamicUser=no

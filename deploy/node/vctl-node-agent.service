@@ -27,7 +27,7 @@ Environment=HOME=/var/lib/vctl
 # here — and builds a thread pool for a share of CPU it will never get. Two is
 # already generous against CPUQuota=2%.
 Environment=GOMAXPROCS=2
-ExecStart=/usr/local/bin/vctl node-agent --interval 5m
+ExecStart=/usr/local/bin/vctl-agent node-agent --interval 5m
 Restart=always
 RestartSec=30
 # Restart the agent when its loop stops going round.

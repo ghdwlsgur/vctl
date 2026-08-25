@@ -3,6 +3,9 @@ BINARY      := vctl
 PKG         := ./cmd/vctl
 BIN_DIR     := bin
 BIN         := $(BIN_DIR)/$(BINARY)
+# The fleet-host slice: daemons and login hooks only, no operator commands.
+AGENT_PKG   := ./cmd/vctl-agent
+AGENT_BIN   := $(BIN_DIR)/$(BINARY)-agent
 VERSION     ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS     := -s -w -X main.version=$(VERSION)
 GOFILES     := $(shell find . -name '*.go' -not -path './vendor/*')
@@ -19,12 +22,17 @@ help: ## Show available targets
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: build
-build: $(BIN) ## Build binary to bin/vctl
+build: $(BIN) $(AGENT_BIN) ## Build binaries to bin/vctl and bin/vctl-agent
 
 $(BIN): $(GOFILES) $(EMBED_FILES) go.mod
 	@mkdir -p $(BIN_DIR)
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) $(PKG)
 	@echo "built $(BIN)"
+
+$(AGENT_BIN): $(GOFILES) $(EMBED_FILES) go.mod
+	@mkdir -p $(BIN_DIR)
+	go build -trimpath -ldflags '$(LDFLAGS)' -o $(AGENT_BIN) $(AGENT_PKG)
+	@echo "built $(AGENT_BIN)"
 
 .PHONY: install
 install: ## Install to $GOBIN with go install

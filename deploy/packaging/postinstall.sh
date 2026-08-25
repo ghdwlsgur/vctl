@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs after the vctl package is installed or upgraded (deb: configure, rpm: 1/2).
+# Runs after the vctl-agent package is installed or upgraded (deb: configure, rpm: 1/2).
 # Deliberately does NOT enable the host agents: they need AppRole credentials and
 # *.sre.local name resolution first, so enabling is an explicit operator step.
 set -e
@@ -20,7 +20,7 @@ if command -v sshd >/dev/null 2>&1 && sshd -t >/dev/null 2>&1; then
 fi
 
 cat <<'EOF'
-vctl installed. The host audit/status agents are NOT enabled automatically.
+vctl-agent installed. The host audit/status agents are NOT enabled automatically.
 To turn them on for this host:
   1) Place AppRole credentials:  /etc/vctl/role-id  and  /etc/vctl/secret-id
   2) Ensure *.sre.local resolves (vault.sre.local, vctl-postgres.sre.local)

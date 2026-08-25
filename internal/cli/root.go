@@ -57,13 +57,18 @@ func (d Dependencies) withDefaults() Dependencies {
 // command that failed is exactly the one worth measuring, and PersistentPostRun
 // does not run for those.
 func Execute() error {
+	return run(NewRoot(Dependencies{}))
+}
+
+// run executes a built tree under the interrupt handling both binaries share.
+func run(root *cobra.Command) error {
 	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 	go func() {
 		<-ctx.Done()
 		stop()
 	}()
-	err := NewRoot(Dependencies{}).ExecuteContext(ctx)
+	err := root.ExecuteContext(ctx)
 	timing.Report(os.Stderr)
 	if err != nil && ctx.Err() != nil && errors.Is(err, context.Canceled) {
 		// The operator interrupted; the cancellation is the message, and
