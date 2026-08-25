@@ -57,7 +57,14 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return env.withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
+			// The dedicated reconcile role, not the operator rw role. This
+			// command's credential lives on farm controllers (vctl-reconciler
+			// AppRole) and in the CronJob's policy — vctl-rw there meant every
+			// controller's root could write the whole operator surface
+			// (servers, rbac, ipam, wg). The reconcile role can touch exactly
+			// what a reconcile writes: memberships, run history, control
+			// hosts, and the VM snapshot.
+			return env.withPurposeStore(cmd.Context(), app.PurposeOpenStackReconcile, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				farms, err := st.LocalOnlyFarms(ctx)
 				if err != nil {

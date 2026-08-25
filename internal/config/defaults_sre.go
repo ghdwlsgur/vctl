@@ -31,6 +31,7 @@ func Defaults() *Config {
 		DBRoleAuditIngest:             "vctl-audit-ingest",
 		DBRoleAuditPrune:              "vctl-pruner",
 		DBRoleOpenStackPrune:          "vctl-openstack-pruner",
+		DBRoleReconcile:               "vctl-reconcile",
 		DBRoleStatus:                  "vctl-status",
 		DBRoleMigrate:                 "vctl-migrator",
 		DBMigrationOwner:              "vctl_owner",

@@ -340,6 +340,7 @@ const (
 	PurposeAuditIngest
 	PurposeAuditPrune
 	PurposeOpenStackPrune
+	PurposeOpenStackReconcile
 	PurposeMigrate
 	purposeCount
 )
@@ -367,6 +368,8 @@ func (a *App) roleFor(p Purpose) (string, error) {
 		return a.Cfg.DBRoleAuditPrune, nil
 	case PurposeOpenStackPrune:
 		return a.Cfg.DBRoleOpenStackPrune, nil
+	case PurposeOpenStackReconcile:
+		return a.Cfg.DBRoleReconcile, nil
 	case PurposeMigrate:
 		return a.Cfg.DBRoleMigrate, nil
 	default:
@@ -398,7 +401,7 @@ func (a *App) OpenStore(ctx context.Context, p Purpose) (*store.Store, error) {
 	}
 	workload := store.WorkloadInteractive
 	switch p {
-	case PurposeStatus, PurposeAuditIngest, PurposeAuditPrune, PurposeOpenStackPrune:
+	case PurposeStatus, PurposeAuditIngest, PurposeAuditPrune, PurposeOpenStackPrune, PurposeOpenStackReconcile:
 		workload = store.WorkloadSerial
 	}
 	return a.openRole(ctx, role, workload)

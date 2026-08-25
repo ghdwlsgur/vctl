@@ -39,7 +39,7 @@ BEGIN
   FOREACH g IN ARRAY ARRAY[
     'vctl_ro','vctl_rw','vctl_status','vctl_identity',
     'vctl_audit_ro','vctl_audit_writer','vctl_audit_ingest','vctl_pruner',
-    'vctl_openstack_pruner','vctl_backup'
+    'vctl_openstack_pruner','vctl_backup','vctl_reconcile'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = g) THEN
       EXECUTE format('CREATE ROLE %I NOLOGIN', g);
@@ -51,11 +51,11 @@ END $$;
 GRANT CONNECT ON DATABASE vctl TO
   vctl_ro, vctl_rw, vctl_status, vctl_identity,
   vctl_audit_ro, vctl_audit_writer, vctl_audit_ingest, vctl_pruner,
-  vctl_openstack_pruner, vctl_backup;
+  vctl_openstack_pruner, vctl_backup, vctl_reconcile;
 GRANT USAGE ON SCHEMA public TO
   vctl_ro, vctl_rw, vctl_status, vctl_identity,
   vctl_audit_ro, vctl_audit_writer, vctl_audit_ingest, vctl_pruner,
-  vctl_openstack_pruner, vctl_backup;
+  vctl_openstack_pruner, vctl_backup, vctl_reconcile;
 
 -- ro: inventory + app-RBAC + IPAM/WireGuard reads. Audit payloads deliberately excluded.
 GRANT SELECT ON servers, server_status, rbac_groups, rbac_members, rbac_grants, seen_users,
@@ -87,6 +87,17 @@ GRANT USAGE,SELECT ON SEQUENCE audit_session_id_seq, kernel_event_id_seq TO vctl
 -- pruner: retention — count/delete audit rows, no rewrite.
 GRANT SELECT,DELETE ON access_log, audit_session, kernel_event TO vctl_pruner;
 
+-- reconcile: 팜 컨트롤러의 reconciler / 클러스터 CronJob — reconcile 이 쓰는
+-- 표면만. vctl_rw 를 주면 컨트롤러의 root 가 운영자 쓰기 표면 전체(servers·
+-- rbac·ipam·wg)를 갖는다 — rbac_grants 자가 부여와 jump_via 변조까지. 이
+-- 그룹은 membership 확정·run 기록·control host·VM 스냅샷에 닿고, 그 판단에
+-- 필요한 인벤토리 읽기(servers, server_capabilities)만 얹는다.
+GRANT SELECT ON servers, server_capabilities TO vctl_reconcile;
+GRANT SELECT,INSERT,UPDATE ON openstack_deployments, openstack_reconcile_runs,
+  openstack_instances TO vctl_reconcile;
+GRANT SELECT,INSERT,UPDATE,DELETE ON openstack_memberships, openstack_control_hosts,
+  openstack_instance_addresses TO vctl_reconcile;
+
 -- OpenStack history pruner: deleted-instance records only. Address rows cascade.
 GRANT SELECT,DELETE ON openstack_instances TO vctl_openstack_pruner;
 
@@ -99,10 +110,12 @@ GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO vctl_backup;
 -- Blanket-grant current sequences and default-privilege future ones so new
 -- migrations don't reintroduce the gap.
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO
-  vctl_rw, vctl_status, vctl_identity, vctl_audit_writer, vctl_audit_ingest;
+  vctl_rw, vctl_status, vctl_identity, vctl_audit_writer, vctl_audit_ingest,
+  vctl_reconcile;
 ALTER DEFAULT PRIVILEGES FOR ROLE vctl_owner IN SCHEMA public
   GRANT USAGE,SELECT ON SEQUENCES TO
-  vctl_rw, vctl_status, vctl_identity, vctl_audit_writer, vctl_audit_ingest;
+  vctl_rw, vctl_status, vctl_identity, vctl_audit_writer, vctl_audit_ingest,
+  vctl_reconcile;
 ALTER DEFAULT PRIVILEGES FOR ROLE vctl_owner IN SCHEMA public
   GRANT SELECT ON TABLES TO vctl_backup;
 ALTER DEFAULT PRIVILEGES FOR ROLE vctl_owner IN SCHEMA public
@@ -125,5 +138,5 @@ ${GROUPS_SQL}
 SQL
 fi
 
-echo "group roles ensured (vctl_ro/rw/status/identity/audit_ro/audit_writer/audit_ingest/pruner)."
+echo "group roles ensured (vctl_ro/rw/status/identity/audit_ro/audit_writer/audit_ingest/pruner/openstack_pruner/backup/reconcile)."
 echo "Next: terraform apply (group-model database.tf). Any legacy v-% orphan cleanup: see the incident runbook."

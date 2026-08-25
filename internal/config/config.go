@@ -63,6 +63,7 @@ type Config struct {
 	DBRoleAuditIngest    string `yaml:"db_role_audit_ingest"`    // host collector/session lifecycle
 	DBRoleAuditPrune     string `yaml:"db_role_audit_prune"`     // retention job: audit deletes only
 	DBRoleOpenStackPrune string `yaml:"db_role_openstack_prune"` // deleted-VM history retention only
+	DBRoleReconcile      string `yaml:"db_role_reconcile"`       // farm membership + VM snapshot writes only
 	DBRoleStatus         string `yaml:"db_role_status"`          // database/creds/<status> for node-agent status updates
 	DBRoleMigrate        string `yaml:"db_role_migrate"`         // database/creds/<migrator> for schema changes
 	DBMigrationOwner     string `yaml:"db_migration_owner"`      // stable owner role for migration objects
