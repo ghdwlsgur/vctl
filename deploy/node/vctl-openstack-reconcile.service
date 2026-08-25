@@ -47,7 +47,7 @@ Environment=GOMAXPROCS=2
 #         옮겨가거나 VIP 가 바뀌어도 아무도 보지 않는 파일에 낡은 값이 남지 않는다.
 # --insecure: 이 팜들의 Keystone 은 IP 에 자체 서명 인증서를 달고 있어 어떤 CA 로도
 #         검증할 수 없다. 팜마다 CA 를 심기 전까지 이 플래그가 사실을 그대로 말한다.
-ExecStart=/usr/local/bin/vctl openstack reconcile --self --insecure
+ExecStart=/usr/local/bin/vctl-agent openstack reconcile --self --insecure
 User=root
 StateDirectory=vctl-reconcile
 StateDirectoryMode=0700

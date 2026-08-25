@@ -16,7 +16,7 @@ Environment=VCTL_AUTH_METHOD=approle
 Environment=VCTL_ROLE_ID_FILE=/etc/vctl/role-id
 Environment=VCTL_SECRET_ID_FILE=/etc/vctl/secret-id
 Environment=HOME=/var/lib/vctl
-ExecStart=/usr/local/bin/vctl watch-sessions /run/vctl/sessions --interval 10s
+ExecStart=/usr/local/bin/vctl-agent watch-sessions /run/vctl/sessions --interval 10s
 Restart=always
 RestartSec=10
 User=root

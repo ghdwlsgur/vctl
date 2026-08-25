@@ -9,6 +9,15 @@
     mode: "0755"
   notify: Restart vctl services # new binary only applies after a restart
 
+# The mono-binary era installed the full CLI here. Remove it: the units now
+# name vctl-agent, and an operator binary left on the fleet is exactly the
+# surface the split exists to retire.
+- name: Remove the mono-binary era operator CLI
+  ansible.builtin.file:
+    path: /usr/local/bin/vctl
+    state: absent
+  when: vctl_host_bin_dest != '/usr/local/bin/vctl'
+
 - name: Verify installed vctl binary checksum
   when: vctl_host_require_binary_checksum | bool
   ansible.builtin.stat:

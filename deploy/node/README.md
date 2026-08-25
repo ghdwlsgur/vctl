@@ -1,6 +1,7 @@
 # vctl node-agent
 
-`vctl node-agent` reports lightweight runtime state for hosts already registered
+`vctl-agent node-agent` (the fleet binary; the same command exists on the full
+CLI as `vctl node-agent`) reports lightweight runtime state for hosts already registered
 in the central `servers` inventory. It does not create inventory rows. This keeps
 the authority split clear:
 
@@ -47,5 +48,5 @@ The service is intentionally small:
 - `MemoryMax=48M`
 - per-unit journal burst: `200/30s`
 
-Use `vctl node-agent --once --hostname <inventory-hostname>` for one-shot
+Use `vctl-agent node-agent --once --hostname <inventory-hostname>` for one-shot
 testing before enabling the daemon.

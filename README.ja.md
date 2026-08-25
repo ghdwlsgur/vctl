@@ -442,7 +442,7 @@ dc_rules:
 
 踏み台のみの環境では `ssh_direct_first: false` を設定すると、直接 SSH 接続の試行をスキップし、設定された踏み台チェーンを使う前に直接接続のタイムアウトを待たずに済みます。
 
-`vctl node-agent` は任意です。すでに `servers` に存在するホストについて観測したホスト状態を `server_status` に報告し、インベントリ行を作成することは決してありません。サーバーにインストールする際は、`deploy/vault/` の専用の `vctl-node` Vault ポリシーと `vctl-status` DB ロールを使ってください。低リソースの systemd ユニットが `deploy/node/` の下に用意されています。
+`vctl node-agent` は任意です。すでに `servers` に存在するホストについて観測したホスト状態を `server_status` に報告し、インベントリ行を作成することは決してありません。サーバーにインストールする際は、`deploy/vault/` の専用の `vctl-node` Vault ポリシーと `vctl-status` DB ロールを使ってください。低リソースの systemd ユニットが `deploy/node/` の下に用意されています。フリートのホストには専用の `vctl-agent` バイナリを配布します。ホストエージェント(node-agent・collect・watch-sessions・farm reconcile)のみを含み、オペレーターコマンドは含みません。
 
 ## Admin Bootstrap
 

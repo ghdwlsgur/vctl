@@ -525,7 +525,9 @@ Set `ssh_direct_first: false` in jump-only environments to skip direct SSH conne
 for hosts already present in `servers`; it never creates inventory rows. Use the
 separate `vctl-node` Vault policy and `vctl-status` DB role from `deploy/vault/`
 when installing it on servers. A low-resource systemd unit is provided under
-`deploy/node/`.
+`deploy/node/`. Fleet hosts ship the separate `vctl-agent` binary, which carries
+only the host agents (node-agent, collect, watch-sessions, farm reconcile) and
+none of the operator commands.
 
 ## Admin Bootstrap
 

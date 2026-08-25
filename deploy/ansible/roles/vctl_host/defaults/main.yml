@@ -6,9 +6,13 @@ vctl_host_state: "{{ state | default('present') }}"
 vctl_host_sshd_service: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
 
 # Release binary (linux/amd64), placed under the playbook's files/ (gitignored).
-#   gh release download vX.Y.Z -p 'vctl_*_linux_amd64.tar.gz' && tar -xzf … -C files/
-vctl_host_bin_src: "{{ vctl_bin_src | default(playbook_dir + '/files/vctl') }}"
-vctl_host_bin_dest: "{{ vctl_bin_dest | default('/usr/local/bin/vctl') }}"
+# Hosts get vctl-agent — the fleet slice (daemons and login hooks) without the
+# operator commands. The full CLI never worked on the fleet anyway (the host
+# AppRole cannot mint what ssh/list need); shipping only the agent makes that
+# a property of the artifact instead of a Vault policy a reviewer has to read.
+#   gh release download vX.Y.Z -p 'vctl-agent_*_linux_amd64.tar.gz' && tar -xzf … -C files/
+vctl_host_bin_src: "{{ vctl_bin_src | default(playbook_dir + '/files/vctl-agent') }}"
+vctl_host_bin_dest: "{{ vctl_bin_dest | default('/usr/local/bin/vctl-agent') }}"
 # SHA-256 of the extracted release binary after its archive has been verified
 # against checksums.txt. A compromised control-node staging file must not
 # silently replace the fleet binary.

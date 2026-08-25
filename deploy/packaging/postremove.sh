@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs after the vctl package is removed. Only tear down on a real removal, never
+# Runs after the vctl-agent package is removed. Only tear down on a real removal, never
 # on an upgrade: deb passes "upgrade" and rpm passes "1" while upgrading, and we
 # must leave running agents alone in that case.
 set -e

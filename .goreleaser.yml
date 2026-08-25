@@ -21,6 +21,20 @@ builds:
       - arm64
     ldflags:
       - -s -w -X main.version={{ .Version }}
+  # The fleet-host slice: daemons and login hooks, no operator commands.
+  # Linux only — it exists to be installed on servers.
+  - id: vctl-agent
+    main: ./cmd/vctl-agent
+    binary: vctl-agent
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
 
 archives:
   - id: vctl
@@ -37,26 +51,39 @@ archives:
       {{- .Version }}_
       {{- .Os }}_
       {{- .Arch }}
+  - id: vctl-agent
+    ids:
+      - vctl-agent
+    formats:
+      - tar.gz
+    name_template: >-
+      vctl-agent_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
 
 nfpms:
-  - id: vctl
-    package_name: vctl
+  # The host package ships the agent slice, not the operator CLI. Every unit
+  # and hook it installs invokes vctl-agent; the full CLI is for
+  # workstations (archives/brew) and never belonged on the fleet.
+  - id: vctl-agent
+    package_name: vctl-agent
     ids:
-      - vctl
+      - vctl-agent
     vendor: Innogrid SRE Team
     homepage: https://github.com/ghdwlsgur/vctl
     maintainer: Innogrid SRE Team <albert@innogrid.com>
     description: |
-      Vault-backed infrastructure access CLI and host audit/status agents.
-      Includes the kernel-audit collector, SSH session registrar, and node
-      status agent as systemd units (disabled until an operator supplies
-      AppRole credentials).
+      vctl fleet host agents: the kernel-audit collector, SSH session
+      registrar, node status agent and farm reconciler as systemd units
+      (disabled until an operator supplies AppRole credentials). Contains no
+      operator commands.
     license: Apache-2.0
     formats:
       - deb
       - rpm
-    # Units reference /usr/local/bin/vctl; install the binary there so the
-    # packaged units and the existing canary layout stay consistent.
+    # Units reference /usr/local/bin/vctl-agent; install the binary there so
+    # the packaged units and the existing canary layout stay consistent.
     bindir: /usr/local/bin
     contents:
       - src: ./deploy/audit/vctl-collect.service
