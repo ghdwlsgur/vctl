@@ -40,7 +40,7 @@ repointing them silently would leave them unreachable.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return env.withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+			return withStorePort(env, ctx, true, func(_ *app.App, st deleteStore) error {
 				cur, err := resolveHost(ctx, st, args, "Delete which host?")
 				if err != nil {
 					return err
@@ -80,6 +80,15 @@ repointing them silently would leave them unreachable.`,
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
 	return gate(cmd, "delete")
 }
+
+// deleteStore is what `vctl delete` may do: read the inventory to resolve
+// the host and find its dependents, and remove that one row.
+type deleteStore interface {
+	inventoryLister
+	Delete(ctx context.Context, hostname string) (bool, error)
+}
+
+var _ deleteStore = (*store.Store)(nil)
 
 // jumpDependents lists the hosts that reach the network through this one.
 func jumpDependents(ctx context.Context, st inventoryLister, host string) ([]string, error) {

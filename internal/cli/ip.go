@@ -36,6 +36,20 @@ so the ledger survives sync and covers non-SSH addresses too.`,
 	return cmd
 }
 
+// ipStore is what `vctl ip` may touch: its own address ledger, and the
+// WireGuard interface table it resolves an endpoint against when binding.
+// One port for the file rather than one per verb — the boundary being drawn
+// is "the ip commands own the ledger and nothing else", not a verb apiece.
+type ipStore interface {
+	IPAllocList(ctx context.Context, kind, owner, filter string) ([]store.IPAllocation, error)
+	IPAllocUpsert(ctx context.Context, a store.IPAllocation) error
+	IPAllocDelete(ctx context.Context, ip string) error
+	IPAllocSetOwnerKey(ctx context.Context, ip, publicKey string) (bool, error)
+	WGInterfaces(ctx context.Context) ([]store.WGInterfaceRow, error)
+}
+
+var _ ipStore = (*store.Store)(nil)
+
 // ipListCmd prints the ledger, optionally filtered. Read (default-allow).
 func ipListCmd(env CommandEnv) *cobra.Command {
 	var kind, owner string
@@ -49,7 +63,7 @@ func ipListCmd(env CommandEnv) *cobra.Command {
 			if len(args) == 1 {
 				filter = args[0]
 			}
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return withStorePort(env, cmd.Context(), false, func(_ *app.App, st ipStore) error {
 				rows, err := st.IPAllocList(cmd.Context(), kind, owner, filter)
 				if err != nil {
 					return err
@@ -87,7 +101,7 @@ func ipSetCmd(env CommandEnv) *cobra.Command {
 				return fmt.Errorf("invalid --farm-vip: %q", a.FarmVIP)
 			}
 			a.IP = ip
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return withStorePort(env, cmd.Context(), true, func(_ *app.App, st ipStore) error {
 				if err := st.IPAllocUpsert(cmd.Context(), a); err != nil {
 					return err
 				}
@@ -129,7 +143,7 @@ func ipRmCmd(env CommandEnv) *cobra.Command {
 			if net.ParseIP(ip) == nil {
 				return fmt.Errorf("invalid IP: %q", ip)
 			}
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return withStorePort(env, cmd.Context(), true, func(_ *app.App, st ipStore) error {
 				if err := st.IPAllocDelete(cmd.Context(), ip); err != nil {
 					return err
 				}
@@ -293,7 +307,7 @@ is stored as that interface's public key.
 			if clear == (endpoint != "") {
 				return fmt.Errorf("pass exactly one of --endpoint or --clear")
 			}
-			return env.withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+			return withStorePort(env, ctx, true, func(_ *app.App, st ipStore) error {
 				key := ""
 				if !clear {
 					var err error
@@ -327,7 +341,7 @@ is stored as that interface's public key.
 // It refuses an ambiguous or unknown pair rather than storing something that
 // will never match: a binding that points at no collected interface is worse
 // than no binding, because the dashboard would show it as recorded fact.
-func resolveWGEndpointKey(ctx context.Context, st *store.Store, endpoint string) (string, error) {
+func resolveWGEndpointKey(ctx context.Context, st ipStore, endpoint string) (string, error) {
 	host, iface, ok := strings.Cut(strings.TrimSpace(endpoint), "/")
 	if !ok || host == "" || iface == "" {
 		return "", fmt.Errorf("--endpoint must be host/interface, e.g. sre-lb/wg1 (got %q)", endpoint)

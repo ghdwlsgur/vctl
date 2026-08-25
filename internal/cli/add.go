@@ -48,7 +48,7 @@ A later sync will not undo this: sync refreshes probe-derived columns only and
 leaves ssh_user, dc and jump_via as entered here.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return env.withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+			return withStorePort(env, ctx, true, func(_ *app.App, st addStore) error {
 				if err := completeServer(ctx, st, &sv); err != nil {
 					return err
 				}
@@ -106,6 +106,17 @@ leaves ssh_user, dc and jump_via as entered here.`,
 type inventoryLister interface {
 	ListInventory(ctx context.Context, dc string) ([]store.InventoryRow, error)
 }
+
+// addStore is what `vctl add` may do to the inventory: read it to validate
+// the new host, and write that one host. The command used to receive the
+// whole store, with every other write along for the ride.
+type addStore interface {
+	inventoryLister
+	Insert(ctx context.Context, sv store.Server) (bool, error)
+	Upsert(ctx context.Context, sv store.Server) error
+}
+
+var _ addStore = (*store.Store)(nil)
 
 // completeServer fills whatever the flags left empty, asking only when there is
 // a terminal to ask at.
