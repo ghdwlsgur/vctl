@@ -129,6 +129,13 @@ type Config struct {
 	// SinkPath is where agent mode writes a valid token for other tools.
 	SinkPath string `yaml:"sink_path"`
 
+	// MOTDHeader and MOTDManagedBy are the fixed lines of the login banner the
+	// node-agent renders when --motd is set: the masthead above the computed
+	// topology, and the attribution line under the role line. Org-specific, so
+	// the defaults live in defaults_sre.go with the rest of that surface.
+	MOTDHeader    string `yaml:"motd_header"`
+	MOTDManagedBy string `yaml:"motd_managed_by"`
+
 	// Runtime-only fields.
 	StateDir   string `yaml:"-"`
 	ConfigPath string `yaml:"-"`
@@ -230,6 +237,8 @@ func (c *Config) applyEnv() {
 	envStrPair(&c.AppRoleSecretIDFile, "SECRET_ID_FILE")
 	envStr(&c.AppRoleSelfRole, "VCTL_APPROLE_SELF_ROLE") // VCTL-only
 	envStrPair(&c.SinkPath, "SINK")
+	envStr(&c.MOTDHeader, "VCTL_MOTD_HEADER")        // VCTL-only
+	envStr(&c.MOTDManagedBy, "VCTL_MOTD_MANAGED_BY") // VCTL-only
 }
 
 func (c *Config) setDerivedDefaults() {

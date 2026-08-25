@@ -25,6 +25,13 @@ vctl_host_require_binary_checksum: "{{ require_binary_checksum | default(true) }
 vctl_host_install_collect: "{{ install_collect | default(true) }}"
 vctl_host_enable_services: "{{ enable_services | default(true) }}"
 
+# Login banner rendered by node-agent from the inventory's farm topology
+# (replaces the hand-maintained /etc/motd, which went stale). Opt-in per group;
+# hosts that belong to no OpenStack farm are left untouched even when enabled,
+# so turning it on for a whole site cannot claim an unrelated banner.
+vctl_host_motd: "{{ motd_banner | default(false) }}"
+vctl_host_motd_path: "{{ motd_path | default('/etc/motd') }}"
+
 # vctl_host_audit_stack=true (explicit opt-in): full stack — collector/watch-sessions (DB write) +
 #   node-agent -> uses the vctl-host AppRole (audit ingest + vctl-status).
 # vctl_host_audit_stack=false: node-agent ONLY (status heartbeat, no DB write) → uses the
