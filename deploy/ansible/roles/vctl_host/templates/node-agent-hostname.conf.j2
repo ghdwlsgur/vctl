@@ -3,4 +3,10 @@
 # names (e.g. sre-srv-0023) and UpsertServerStatus drops unregistered reports.
 [Service]
 ExecStart=
-ExecStart={{ vctl_host_bin_dest }} node-agent --hostname '{{ vctl_host_node_hostname }}' --interval 5m{% if vctl_host_motd | bool %} --motd {{ vctl_host_motd_path }}{% endif %}
+ExecStart={{ vctl_host_bin_dest }} node-agent --hostname '{{ vctl_host_node_hostname }}' --interval 5m{{ ' --motd ' ~ vctl_host_motd_path if vctl_host_motd | bool else '' }}
+{% if vctl_host_motd | bool %}
+# The unit runs under ProtectSystem=strict; this appends the banner file (and
+# only the file — the rest of /etc stays read-only) to the writable set. The
+# role guarantees the file exists: a bind mount cannot attach to a missing path.
+ReadWritePaths={{ vctl_host_motd_path }}
+{% endif %}

@@ -323,6 +323,20 @@
     state: directory
     mode: "0755"
 
+# The drop-in adds ReadWritePaths for the banner file, and a bind mount cannot
+# attach to a path that does not exist — so the file must exist before the
+# unit (re)starts. force:false keeps whatever is already there: on farm hosts
+# the agent replaces the content, on farm-less hosts nothing ever touches it.
+- name: Ensure the motd file exists for the banner bind mount
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ vctl_host_motd_path }}"
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+  when: vctl_host_motd | bool
+
 - name: Pin node-agent to the inventory hostname (drop-in)
   ansible.builtin.template:
     src: node-agent-hostname.conf.j2

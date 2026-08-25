@@ -115,6 +115,36 @@ func TestBrokenFarmSaysSo(t *testing.T) {
 	}
 }
 
+// Under ProtectSystem=strict the directory is read-only and only the banner
+// file itself is writable (ReadWritePaths) — CreateTemp fails, and Sync must
+// fall back to writing the file in place instead of giving up.
+func TestSyncFallsBackWhenTheDirectoryIsReadOnly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not bind root")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "motd")
+	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	changed, err := Sync(path, "new banner\n")
+	if err != nil || !changed {
+		t.Fatalf("fallback write: changed=%v err=%v", changed, err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "new banner\n" {
+		t.Fatalf("content = %q", b)
+	}
+}
+
 func TestSyncWritesOnceAndOnlyOnChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "motd")
 
