@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/timing"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -111,7 +112,7 @@ func (m exploreModel) titleBar() string {
 		len(m.data.Farms), hosts, vms, m.freshness())
 	line := head + "  " + ui.Muted(detail)
 	if m.refreshErr != nil {
-		line += "  " + exploreWarnStyle.Render("refresh failed: "+oneLine(m.refreshErr.Error()))
+		line += "  " + exploreWarnStyle.Render("refresh failed: "+strutil.OneLine(m.refreshErr.Error()))
 	}
 	return line
 }
@@ -126,7 +127,7 @@ func (m exploreModel) freshness() string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	age := ui.CompactDuration(elapsed)
+	age := strutil.CompactDuration(elapsed)
 	when := age + " ago"
 	if elapsed < time.Minute {
 		when = "just now"
@@ -305,7 +306,7 @@ func (m exploreModel) farmNote(f farmChoice) string {
 	if !ok || run.SucceededAt == nil {
 		return "never reconciled"
 	}
-	return "reconciled " + ui.CompactDuration(time.Since(*run.SucceededAt)) + " ago"
+	return "reconciled " + strutil.CompactDuration(time.Since(*run.SucceededAt)) + " ago"
 }
 
 func (m exploreModel) rowCells() (exploreColumns, [][]string) {

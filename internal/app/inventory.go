@@ -12,7 +12,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/invcache"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
-	"github.com/ghdwlsgur/vctl/internal/ui"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 )
 
 // Inventory is an open read handle over the host inventory. It reads from
@@ -220,7 +220,7 @@ func (a *App) snapshotUsable(snap *invcache.Snapshot) error {
 	now := time.Now()
 	if maxAge := a.Cfg.CacheStaleLimit(); snap.Expired(now, maxAge) {
 		return fmt.Errorf("captured %s ago, past the %s limit — reconnect to refresh it, or set cache_max_age",
-			ui.CompactDuration(snap.Age(now)), ui.CompactDuration(maxAge))
+			strutil.CompactDuration(snap.Age(now)), strutil.CompactDuration(maxAge))
 	}
 	return nil
 }

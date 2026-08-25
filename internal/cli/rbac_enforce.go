@@ -11,6 +11,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/authz"
 	"github.com/ghdwlsgur/vctl/internal/invcache"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -132,7 +133,7 @@ func offlineConfig(a *app.App) *authz.Offline {
 		Window: a.Cfg.CacheOfflineWindow(),
 		OnDegraded: func(command string, age time.Duration) {
 			ui.Warnf(os.Stderr, "inventory database unreachable — '%s' authorized from cached grants confirmed %s ago",
-				command, ui.CompactDuration(age))
+				command, strutil.CompactDuration(age))
 		},
 	}
 }

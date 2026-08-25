@@ -12,6 +12,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -162,7 +163,7 @@ func farmReconciledCell(f farmSummary, now time.Time) string {
 		return ui.Warn("never")
 	}
 	age := now.Sub(*f.Reconciled)
-	s := ui.CompactDuration(age) + " ago"
+	s := strutil.CompactDuration(age) + " ago"
 	if age > farmStaleWindow {
 		return ui.Warn(s)
 	}

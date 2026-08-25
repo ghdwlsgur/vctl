@@ -10,31 +10,15 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
+
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"golang.org/x/term"
 )
 
 // TimeLayout is the local timestamp layout shared by audit/session output.
 const TimeLayout = "2006-01-02 15:04:05"
-
-// CompactDuration renders d as a single largest-unit value (e.g. "5s", "3m",
-// "2h", "4d") for at-a-glance "last seen" columns.
-func CompactDuration(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	}
-}
 
 // TruncateTail shortens s to at most max columns by dropping the tail and adding
 // "…" as "...". Unlike Truncate (which elides the middle), it keeps the leading
@@ -180,7 +164,7 @@ func Ago(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	return mutedStyle.Render("(" + CompactDuration(time.Since(t)) + " ago)")
+	return mutedStyle.Render("(" + strutil.CompactDuration(time.Since(t)) + " ago)")
 }
 
 // Section prints a section header. On a terminal it renders the picker-style

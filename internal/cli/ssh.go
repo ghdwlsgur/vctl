@@ -18,6 +18,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/invcache"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -313,7 +314,7 @@ func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string, all
 		if age := time.Since(v.ObservedAt); age > vmStaleWindow && !allowStale {
 			when := "never collected"
 			if !v.ObservedAt.IsZero() {
-				when = ui.CompactDuration(age) + " ago"
+				when = strutil.CompactDuration(age) + " ago"
 			}
 			if !isTerminal() {
 				return fmt.Errorf("%s was last collected %s, older than the collector's schedule; "+

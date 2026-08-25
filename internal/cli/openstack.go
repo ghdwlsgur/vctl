@@ -14,6 +14,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -316,7 +317,7 @@ func sharedColumns(hosts []store.OpenStackHost, cells [][]string, now time.Time,
 		}
 	}
 	if !oldest.IsZero() {
-		out.age = ui.Muted(ui.CompactDuration(now.Sub(oldest)))
+		out.age = ui.Muted(strutil.CompactDuration(now.Sub(oldest)))
 	}
 	return out
 }
@@ -669,7 +670,7 @@ func ageCell(h store.OpenStackHost, now time.Time) string {
 	if h.ObservedAt.IsZero() {
 		return ui.Muted("-")
 	}
-	age := ui.CompactDuration(now.Sub(h.ObservedAt))
+	age := strutil.CompactDuration(now.Sub(h.ObservedAt))
 	if now.Sub(h.ObservedAt) > capabilityFreshWindow {
 		return ui.Warn(age)
 	}
@@ -690,7 +691,7 @@ func openStackNoteCell(h store.OpenStackHost, now time.Time) string {
 	// dropped a role is a change that happened; an old one is a question about
 	// whether anything is reporting at all.
 	if len(h.Dropped) > 0 && now.Sub(h.ObservedAt) > capabilityFreshWindow {
-		notes = append(notes, ui.Muted("roles last seen "+ui.CompactDuration(now.Sub(h.Dropped[0].LastSeen))+" ago"))
+		notes = append(notes, ui.Muted("roles last seen "+strutil.CompactDuration(now.Sub(h.Dropped[0].LastSeen))+" ago"))
 	}
 	return strings.Join(notes, ui.Muted(" · "))
 }
@@ -774,7 +775,7 @@ func renderOpenStackHost(w io.Writer, h store.OpenStackHost, now time.Time) {
 	if len(h.Dropped) > 0 {
 		parts := make([]string, 0, len(h.Dropped))
 		for _, d := range h.Dropped {
-			parts = append(parts, fmt.Sprintf("%s (last seen %s ago)", d.Role, ui.CompactDuration(now.Sub(d.LastSeen))))
+			parts = append(parts, fmt.Sprintf("%s (last seen %s ago)", d.Role, strutil.CompactDuration(now.Sub(d.LastSeen))))
 		}
 		rows = append(rows, ui.KV{Key: "No longer", Value: strings.Join(parts, ", "), State: ui.StateWarn})
 	}
@@ -786,7 +787,7 @@ func renderOpenStackHost(w io.Writer, h store.OpenStackHost, now time.Time) {
 		if now.Sub(h.ObservedAt) > capabilityFreshWindow {
 			st = ui.StateWarn
 		}
-		rows = append(rows, ui.KV{Key: "Probed", Value: ui.CompactDuration(now.Sub(h.ObservedAt)) + " ago", State: st})
+		rows = append(rows, ui.KV{Key: "Probed", Value: strutil.CompactDuration(now.Sub(h.ObservedAt)) + " ago", State: st})
 	}
 	if h.LastError != "" {
 		rows = append(rows, ui.KV{Key: "Last error", Value: h.LastError, State: ui.StateFail})

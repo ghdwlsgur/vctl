@@ -15,6 +15,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/audit"
 	"github.com/ghdwlsgur/vctl/internal/auditspool"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/timing"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -199,7 +200,7 @@ func warnIfCached(inv *app.Inventory) {
 		return
 	}
 	ui.Warnf(os.Stderr, "inventory database unreachable — using the local snapshot from %s ago (run 'vctl cache status' for detail)",
-		ui.CompactDuration(inv.Age(time.Now())))
+		strutil.CompactDuration(inv.Age(time.Now())))
 }
 
 // reportSpoolFlush surfaces the replay of access records that were queued while

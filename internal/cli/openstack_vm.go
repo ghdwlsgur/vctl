@@ -18,6 +18,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -534,7 +535,7 @@ func vmMissingCell(v store.Instance, now time.Time) string {
 	if v.MissingSince == nil {
 		return ""
 	}
-	return ui.Fail("gone " + ui.CompactDuration(now.Sub(*v.MissingSince)))
+	return ui.Fail("gone " + strutil.CompactDuration(now.Sub(*v.MissingSince)))
 }
 
 // headerRow labels the columns, muted so the data stays the thing being read.
@@ -579,7 +580,7 @@ func vmSeenCell(v store.Instance, now time.Time) string {
 		return ui.Muted("-")
 	}
 	age := now.Sub(v.ObservedAt)
-	s := ui.CompactDuration(age)
+	s := strutil.CompactDuration(age)
 	if age > vmStaleWindow {
 		return ui.Warn(s)
 	}
@@ -728,7 +729,7 @@ func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets [
 	if v.MissingSince != nil {
 		rows = append(rows, ui.KV{
 			Key:   "Missing",
-			Value: "since " + ui.CompactDuration(now.Sub(*v.MissingSince)) + " ago — the control plane stopped listing it",
+			Value: "since " + strutil.CompactDuration(now.Sub(*v.MissingSince)) + " ago — the control plane stopped listing it",
 			State: ui.StateFail,
 		})
 	}
@@ -751,7 +752,7 @@ func vmSeenLine(v store.Instance, now time.Time) string {
 		return "never"
 	}
 	age := now.Sub(v.ObservedAt)
-	s := ui.CompactDuration(age) + " ago"
+	s := strutil.CompactDuration(age) + " ago"
 	if age > vmStaleWindow {
 		return s + " — older than the collector's schedule, so the address may not be current"
 	}
