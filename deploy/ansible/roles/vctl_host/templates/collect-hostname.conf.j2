@@ -12,4 +12,4 @@
 # double quotes handle inside sh.
 [Service]
 ExecStart=
-ExecStart=/bin/sh -c 'tetra getevents -o json | /usr/local/bin/vctl collect --host "{{ vctl_host_node_hostname }}" --batch "$VCTL_COLLECT_BATCH" --flush-interval "$VCTL_COLLECT_FLUSH_INTERVAL"'
+ExecStart=/bin/sh -c 'tetra getevents -o json | {{ vctl_host_bin_dest }} collect --host "{{ vctl_host_node_hostname }}" --batch "$VCTL_COLLECT_BATCH" --flush-interval "$VCTL_COLLECT_FLUSH_INTERVAL"'
