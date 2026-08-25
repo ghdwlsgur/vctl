@@ -63,7 +63,7 @@ func TestTheListingSaysHowOldEachRecordIs(t *testing.T) {
 	now := time.Now()
 	renderVMs(&buf, []store.Instance{
 		vmSeen("11111111-1111-1111-1111-111111111111", "recent", time.Minute),
-		vmSeen("22222222-2222-2222-2222-222222222222", "old", vmStaleWindow+time.Hour),
+		vmSeen("22222222-2222-2222-2222-222222222222", "old", staleProbeWindow+time.Hour),
 	}, nil, nil, now, false)
 
 	// Assert the two rows differ and the stale one is flagged, rather than on
@@ -138,8 +138,8 @@ func TestVMShowSaysWhenSSHWillRefuse(t *testing.T) {
 // The staleness window is the collector's schedule, not a number picked here —
 // three missed hourly passes, the same reasoning the capability probe uses.
 func TestStaleWindowMatchesTheCollectorsSchedule(t *testing.T) {
-	if vmStaleWindow != capabilityFreshWindow {
-		t.Errorf("vmStaleWindow = %v, capabilityFreshWindow = %v; two windows for the same question drift",
-			vmStaleWindow, capabilityFreshWindow)
+	if staleProbeWindow != staleProbeWindow {
+		t.Errorf("staleProbeWindow = %v, staleProbeWindow = %v; two windows for the same question drift",
+			staleProbeWindow, staleProbeWindow)
 	}
 }

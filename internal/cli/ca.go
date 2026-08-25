@@ -96,11 +96,9 @@ func caPrintCmd(env CommandEnv) *cobra.Command {
 	}
 }
 
-const caBasename = "innogrid-sre-root-ca.crt"
-
 // writeTempCA materializes the embedded CA to a temp file for the OS tools.
 func writeTempCA() (path string, cleanup func(), err error) {
-	f, err := os.CreateTemp("", "vctl-*-"+caBasename)
+	f, err := os.CreateTemp("", "vctl-*-"+config.SRERootCAName)
 	if err != nil {
 		return "", nil, err
 	}
@@ -129,7 +127,7 @@ func linuxInstallCA(certPath string) error {
 	}
 	switch {
 	case haveCmd("update-ca-certificates"): // Debian/Ubuntu
-		dst := "/usr/local/share/ca-certificates/" + caBasename
+		dst := "/usr/local/share/ca-certificates/" + config.SRERootCAName
 		if err := copyFile(certPath, dst, 0o644); err != nil {
 			return err
 		}
@@ -137,7 +135,7 @@ func linuxInstallCA(certPath string) error {
 			return err
 		}
 	case haveCmd("update-ca-trust"): // RHEL/Fedora
-		dst := "/etc/pki/ca-trust/source/anchors/" + caBasename
+		dst := "/etc/pki/ca-trust/source/anchors/" + config.SRERootCAName
 		if err := copyFile(certPath, dst, 0o644); err != nil {
 			return err
 		}
@@ -157,10 +155,10 @@ func linuxRemoveCA() error {
 	}
 	switch {
 	case haveCmd("update-ca-certificates"):
-		_ = os.Remove("/usr/local/share/ca-certificates/" + caBasename)
+		_ = os.Remove("/usr/local/share/ca-certificates/" + config.SRERootCAName)
 		return runVisible("update-ca-certificates", "--fresh")
 	case haveCmd("update-ca-trust"):
-		_ = os.Remove("/etc/pki/ca-trust/source/anchors/" + caBasename)
+		_ = os.Remove("/etc/pki/ca-trust/source/anchors/" + config.SRERootCAName)
 		return runVisible("update-ca-trust", "extract")
 	default:
 		return fmt.Errorf("no supported trust tool found (update-ca-certificates or update-ca-trust)")

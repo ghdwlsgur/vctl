@@ -311,7 +311,7 @@ func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string, all
 		// for days sets nothing: the rows keep their addresses, look exactly
 		// like fresh ones, and the address in them is where some VM used to be.
 		// On a tenant range that gets reused, that is somebody else's machine.
-		if age := time.Since(v.ObservedAt); age > vmStaleWindow && !allowStale {
+		if age := time.Since(v.ObservedAt); age > staleProbeWindow && !allowStale {
 			when := "never collected"
 			if !v.ObservedAt.IsZero() {
 				when = strutil.CompactDuration(age) + " ago"

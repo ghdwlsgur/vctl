@@ -18,14 +18,18 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// capabilityFreshWindow is how old a probe result may be before the listing
+// staleProbeWindow is how old a collector's answer may be before the listing
 // stops presenting it as current.
 //
-// The node agent probes hourly — much less often than the five-minute
+// Both collectors run hourly — the node agent's capability probe and the
+// reconciler that records VMs — much less often than the five-minute
 // heartbeat, because what a host runs changes on the timescale of deployments
-// rather than of processes. Three missed passes is the point where the silence
-// is more likely to be the agent than the schedule.
-const capabilityFreshWindow = 3 * time.Hour
+// rather than of processes. Three missed passes is the point where the
+// silence is more likely to be the collector than the schedule. One constant
+// on purpose: the host and VM windows carried the same number for the same
+// reasoning as prose cross-references, which is how one gets changed without
+// the other.
+const staleProbeWindow = 3 * time.Hour
 
 func openstackCmd(env CommandEnv) *cobra.Command {
 	var legacy openStackListOptions
@@ -217,7 +221,7 @@ func filterOpenStack(hosts []store.OpenStackHost, farm, role string, all bool) [
 		// Only current roles match. A host that stopped being a compute node
 		// still carries the old row, and answering `--role compute` with it
 		// would send someone to a machine that has not run nova in weeks.
-		if role != "" && !containsFold(h.Roles, role) {
+		if role != "" && !strutil.ContainsFold(h.Roles, role) {
 			continue
 		}
 		out = append(out, h)
@@ -237,15 +241,6 @@ func farmMatches(h store.OpenStackHost, farm string) bool {
 	// would be visible only in the unfiltered listing.
 	for _, m := range h.Memberships {
 		if strings.EqualFold(m.DeploymentID, farm) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsFold(list []string, want string) bool {
-	for _, s := range list {
-		if strings.EqualFold(s, want) {
 			return true
 		}
 	}
@@ -309,7 +304,7 @@ func sharedColumns(hosts []store.OpenStackHost, cells [][]string, now time.Time,
 	// folding can never make a farm look fresher than its worst host.
 	var oldest time.Time
 	for _, h := range hosts {
-		if h.ObservedAt.IsZero() || now.Sub(h.ObservedAt) > capabilityFreshWindow {
+		if h.ObservedAt.IsZero() || now.Sub(h.ObservedAt) > staleProbeWindow {
 			return out
 		}
 		if oldest.IsZero() || h.ObservedAt.Before(oldest) {
@@ -671,7 +666,7 @@ func ageCell(h store.OpenStackHost, now time.Time) string {
 		return ui.Muted("-")
 	}
 	age := strutil.CompactDuration(now.Sub(h.ObservedAt))
-	if now.Sub(h.ObservedAt) > capabilityFreshWindow {
+	if now.Sub(h.ObservedAt) > staleProbeWindow {
 		return ui.Warn(age)
 	}
 	return ui.Muted(age)
@@ -690,7 +685,7 @@ func openStackNoteCell(h store.OpenStackHost, now time.Time) string {
 	// Only worth saying once the reading is stale anyway. A fresh probe that
 	// dropped a role is a change that happened; an old one is a question about
 	// whether anything is reporting at all.
-	if len(h.Dropped) > 0 && now.Sub(h.ObservedAt) > capabilityFreshWindow {
+	if len(h.Dropped) > 0 && now.Sub(h.ObservedAt) > staleProbeWindow {
 		notes = append(notes, ui.Muted("roles last seen "+strutil.CompactDuration(now.Sub(h.Dropped[0].LastSeen))+" ago"))
 	}
 	return strings.Join(notes, ui.Muted(" · "))
@@ -784,7 +779,7 @@ func renderOpenStackHost(w io.Writer, h store.OpenStackHost, now time.Time) {
 		rows = append(rows, ui.KV{Key: "Probed", Value: "never"})
 	} else {
 		st := ui.StateOK
-		if now.Sub(h.ObservedAt) > capabilityFreshWindow {
+		if now.Sub(h.ObservedAt) > staleProbeWindow {
 			st = ui.StateWarn
 		}
 		rows = append(rows, ui.KV{Key: "Probed", Value: strutil.CompactDuration(now.Sub(h.ObservedAt)) + " ago", State: st})
