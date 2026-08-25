@@ -46,6 +46,10 @@ func (f *fakeStatusSink) RecordCapabilityError(_ context.Context, _, kind, msg s
 	return f.err
 }
 
+func (f *fakeStatusSink) FarmTopologies(context.Context, string) ([]store.FarmTopology, error) {
+	return nil, f.err
+}
+
 func (f *fakeStatusSink) Close() { f.closed = true }
 
 // opener hands out sinks in order and counts how many times it was asked.
@@ -190,6 +194,11 @@ func (u *unregisteredSink) ReplaceCapabilities(context.Context, string, string, 
 
 func (u *unregisteredSink) RecordCapabilityError(context.Context, string, string, string) error {
 	return nil
+}
+
+// An unregistered host is in no farm either.
+func (u *unregisteredSink) FarmTopologies(context.Context, string) ([]store.FarmTopology, error) {
+	return nil, nil
 }
 
 func (u *unregisteredSink) Close() { u.closed = true }
@@ -493,6 +502,10 @@ func (h *hangingSink) RecordCapabilityError(ctx context.Context, _, _, _ string)
 	return h.block(ctx, "caperror")
 }
 
+func (h *hangingSink) FarmTopologies(ctx context.Context, _ string) ([]store.FarmTopology, error) {
+	return nil, h.block(ctx, "motd")
+}
+
 func (h *hangingSink) Close() {}
 
 // The deadline has to cover the writes, not just the open. An established
@@ -607,6 +620,10 @@ func (s *runSink) RecordCapabilityError(_ context.Context, _, _, _ string) error
 	defer s.mu.Unlock()
 	s.capsWrote++
 	return nil
+}
+
+func (s *runSink) FarmTopologies(context.Context, string) ([]store.FarmTopology, error) {
+	return nil, nil
 }
 
 func (s *runSink) Close() {}

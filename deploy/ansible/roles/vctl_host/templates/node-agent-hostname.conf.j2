@@ -3,4 +3,4 @@
 # names (e.g. sre-srv-0023) and UpsertServerStatus drops unregistered reports.
 [Service]
 ExecStart=
-ExecStart={{ vctl_host_bin_dest }} node-agent --hostname '{{ vctl_host_node_hostname }}' --interval 5m
+ExecStart={{ vctl_host_bin_dest }} node-agent --hostname '{{ vctl_host_node_hostname }}' --interval 5m{% if vctl_host_motd | bool %} --motd {{ vctl_host_motd_path }}{% endif %}

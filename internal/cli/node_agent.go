@@ -40,6 +40,10 @@ database role for low-risk, low-resource status reporting.`,
 			if agent.Hostname == "" {
 				return fmt.Errorf("hostname is required")
 			}
+			// The banner's fixed lines are org identity, which is config's
+			// domain — the flag only says where the file goes.
+			agent.MOTDHeader = a.Cfg.MOTDHeader
+			agent.MOTDManagedBy = a.Cfg.MOTDManagedBy
 			// Opened on demand and reopened after a failure, so the whole path
 			// — AppRole login, then a fresh dynamic credential — runs again.
 			agent.OpenSink = func(ctx context.Context) (nodeagent.Sink, error) {
@@ -58,5 +62,7 @@ database role for low-risk, low-resource status reporting.`,
 	cmd.Flags().DurationVar(&agent.ProbeInterval, "probe-interval", time.Hour,
 		"how often to run platform capability probes (OpenStack, ...); 0 disables them")
 	cmd.Flags().BoolVar(&agent.Once, "once", false, "report once and exit")
+	cmd.Flags().StringVar(&agent.MOTDPath, "motd", "",
+		"keep this file rendered as a login banner from the host's OpenStack farm topology (empty disables; hosts in no farm are left untouched)")
 	return cmd
 }

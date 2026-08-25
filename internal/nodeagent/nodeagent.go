@@ -36,11 +36,14 @@ import (
 //
 // Keeping it this narrow is what makes the reconnect behaviour testable without
 // a database — and it is the whole surface a status credential should be able
-// to reach.
+// to reach. FarmTopologies is the one read in it, added for the MOTD pass;
+// widening it here is deliberate, because this interface is also the honest
+// statement of what the vctl-status database role must be granted.
 type Sink interface {
 	UpsertServerStatus(context.Context, store.ServerStatus) (bool, error)
 	ReplaceCapabilities(ctx context.Context, hostname, kind string, caps []store.Capability) (bool, error)
 	RecordCapabilityError(ctx context.Context, hostname, kind, message string) error
+	FarmTopologies(ctx context.Context, hostname string) ([]store.FarmTopology, error)
 	Close()
 }
 
@@ -64,6 +67,14 @@ type Agent struct {
 	// smoke test use, and the ordering it implies is the reason the capability
 	// pass is not always a goroutine — see Run.
 	Once bool
+
+	// MOTDPath, when set, keeps that file rendered from the inventory's view
+	// of this host's OpenStack farm. Empty disables the pass entirely. Header
+	// and ManagedBy are the fixed org lines above the computed ones; they come
+	// from config because the art is org-specific and this package is not.
+	MOTDPath      string
+	MOTDHeader    string
+	MOTDManagedBy string
 
 	// OpenSink dials the database. Called again whenever a failure drops the
 	// handle, so it must run the whole path — credential included.
@@ -112,6 +123,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.ProbeInterval > 0 && !a.Once {
 		go a.capabilityLoop(ctx, c)
 	}
+	if a.MOTDPath != "" && !a.Once {
+		go a.motdLoop(ctx, c)
+	}
 
 	// Spread the fleet's first heartbeat. Every agent is installed and
 	// restarted in the same pass, so without this they all reach Vault in the
@@ -126,6 +140,11 @@ func (a *Agent) Run(ctx context.Context) error {
 	err := a.heartbeatLoop(ctx, c)
 	if a.ProbeInterval > 0 && a.Once {
 		a.capabilityPass(ctx, c)
+	}
+	// Same reasoning as the capability pass: under --once every enabled pass
+	// runs inline exactly once, so the smoke test exercises the whole agent.
+	if a.MOTDPath != "" && a.Once {
+		a.motdPass(ctx, c)
 	}
 	return err
 }

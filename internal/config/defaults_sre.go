@@ -58,5 +58,16 @@ func Defaults() *Config {
 		AppRoleMount:         "approle",
 		KubernetesMount:      "kubernetes",
 		AppRoleSelfRole:      "vctl-user",
+		MOTDHeader:           sreMOTDHeader,
+		MOTDManagedBy:        "Managed by Innogrid SRE Team.",
 	}
 }
+
+// The masthead node-agent puts above the rendered farm topology (--motd).
+// Figlet "Innogrid SRE" — kept verbatim from the banner it replaces.
+const sreMOTDHeader = ` ___                              _     _   ____  ____  _____
+|_ _|_ __  _ __   ___   __ _ _ __(_) __| | / ___||  _ \| ____|
+ | || '_ \| '_ \ / _ \ / _` + "`" + ` | '__| |/ _` + "`" + ` | \___ \| |_) |  _|
+ | || | | | | | | (_) | (_| | |  | | (_| |  ___) |  _ <| |___
+|___|_| |_|_| |_|\___/ \__, |_|  |_|\__,_| |____/|_| \_\_____|
+                       |___/`
