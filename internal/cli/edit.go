@@ -41,7 +41,7 @@ are written; with none, the fields are asked for interactively.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return env.withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+			return withStorePort(env, ctx, true, func(_ *app.App, st editStore) error {
 				cur, err := resolveHost(ctx, st, args, "Edit which host?")
 				if err != nil {
 					return err
@@ -81,6 +81,20 @@ are written; with none, the fields are asked for interactively.`,
 	return gate(cmd, "edit")
 }
 
+// editStore is what `vctl edit` may do: read the inventory to resolve and
+// validate, and write the operator-managed columns of one host.
+type editStore interface {
+	inventoryLister
+	SetDC(ctx context.Context, hostname, dc string) (bool, error)
+	SetUser(ctx context.Context, hostname, user string) (bool, error)
+	SetJumpVia(ctx context.Context, hostname, jump string) (bool, error)
+	SetExtraIPs(ctx context.Context, hostname string, ips []string) (bool, error)
+	SetState(ctx context.Context, hostname, state string) (bool, error)
+	Rename(ctx context.Context, oldHost, newHost string) (bool, error)
+}
+
+var _ editStore = (*store.Store)(nil)
+
 // hostEdits is the set of changes a caller asked for. A field left zero was not
 // mentioned and is not written — the distinction between "set this to empty"
 // and "do not touch this" is the whole contract, so clearing has explicit
@@ -102,7 +116,7 @@ func (e hostEdits) empty() bool {
 
 // apply writes each requested change, reporting what actually landed. A rename
 // goes last: everything before it is keyed by the old hostname.
-func (e hostEdits) apply(ctx context.Context, st *store.Store, host string) error {
+func (e hostEdits) apply(ctx context.Context, st editStore, host string) error {
 	type step struct {
 		label string
 		run   func() (bool, error)

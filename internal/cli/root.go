@@ -224,6 +224,21 @@ func reportSpoolFlush(res auditspool.Result, err error) {
 // and runs fn with both — closing the store afterward. It collapses the
 // new-app + open-store + defer-close preamble repeated by every store-backed
 // command into one call.
+// withStorePort opens the store the way withStore does and hands fn only the
+// port the command declared — its three-to-five methods, not the store's
+// eighty-seven. The compiler then owns the rule that `vctl add` cannot delete
+// a host: reaching for a method outside the port is a build error, where
+// before it was a diff nobody was asked about. Vault's per-purpose DB roles
+// still bound what the credential can do; this bounds what the code can ask.
+//
+// The assertion cannot fire: every port carries a
+// `var _ port = (*store.Store)(nil)` proof next to its declaration.
+func withStorePort[S any](env CommandEnv, ctx context.Context, rw bool, fn func(*app.App, S) error) error {
+	return env.withStore(ctx, rw, func(a *app.App, st *store.Store) error {
+		return fn(a, any(st).(S))
+	})
+}
+
 // withStoreFrom is withPurposeStore with the app constructor left open.
 //
 // The MCP server needs the same open/run/close discipline but a different app:

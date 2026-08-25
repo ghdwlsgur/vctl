@@ -39,7 +39,13 @@ import (
 // reading's ReadAt uses, so Cache.Clear's ordering marker compares like with
 // like. Best-effort: a caller that cannot ask falls back to the local clock
 // inside Clear.
-func forgetReadings(ctx context.Context, a *app.App, st *store.Store) {
+// dbClock is the one thing forgetReadings needs from a store: the database's
+// idea of now, for the cleared-at marker.
+type dbClock interface {
+	Now(ctx context.Context) (time.Time, error)
+}
+
+func forgetReadings(ctx context.Context, a *app.App, st dbClock) {
 	if a == nil {
 		return
 	}

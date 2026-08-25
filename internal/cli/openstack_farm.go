@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
@@ -42,6 +43,18 @@ func openstackFarmCmd(env CommandEnv) *cobra.Command {
 	return cmd
 }
 
+// farmDeclareStore is what `farm name` and `farm state` may do: read the
+// deployments to pick one, write the one declared fact, and read the
+// database's clock for the cache's cleared-at marker.
+type farmDeclareStore interface {
+	farmsReader
+	SetDeploymentName(ctx context.Context, id, name string, region *string) error
+	SetDeploymentState(ctx context.Context, id, state, note string) error
+	Now(ctx context.Context) (time.Time, error)
+}
+
+var _ farmDeclareStore = (*store.Store)(nil)
+
 func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 	var region string
 	var clearRegion bool
@@ -58,7 +71,7 @@ func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 		// it yet, which is the whole point of the command.
 		ValidArgsFunction: byPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
+			return withStorePort(env, cmd.Context(), true, func(a *app.App, st farmDeclareStore) error {
 				ctx := cmd.Context()
 				farms, ok, err := farmChoicesForPick(ctx, a, st)
 				if err != nil || !ok {
@@ -175,7 +188,13 @@ func loadVMCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Cata
 // Most screens print how many VMs a deployment has and never which ones, and
 // carrying the rows to print a number is most of what those commands cost —
 // measured at 60–135ms per listing.
-func loadFarmCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Catalog, error) {
+// farmsReader is the one read loadFarmCatalog needs. Callers hand it a
+// *store.Store or their own port; either satisfies it implicitly.
+type farmsReader interface {
+	FleetFarms(ctx context.Context) (store.Fleet, error)
+}
+
+func loadFarmCatalog(ctx context.Context, a *app.App, st farmsReader) (fleet.Catalog, error) {
 	defer timing.Start("fleet-query-light")()
 	snap, err := st.FleetFarms(ctx)
 	if err != nil {
@@ -196,7 +215,7 @@ func loadFarmCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Ca
 // Resolving a typed word and labelling a picker do not need instances, and
 // shell completion pays for what it reads on every Tab — so this is two
 // statements where loadCatalog is eight.
-func farmChoices(ctx context.Context, a *app.App, st *store.Store) ([]farmChoice, error) {
+func farmChoices(ctx context.Context, a *app.App, st farmsReader) ([]farmChoice, error) {
 	cat, err := loadFarmCatalog(ctx, a, st)
 	if err != nil {
 		return nil, err
@@ -207,7 +226,7 @@ func farmChoices(ctx context.Context, a *app.App, st *store.Store) ([]farmChoice
 // farmChoicesForPick loads the light catalog and tells the operator when
 // there is nothing to pick from. ok=false with a nil error means the command
 // is done: the warning has been printed and there is nothing to act on.
-func farmChoicesForPick(ctx context.Context, a *app.App, st *store.Store) ([]farmChoice, bool, error) {
+func farmChoicesForPick(ctx context.Context, a *app.App, st farmsReader) ([]farmChoice, bool, error) {
 	farms, err := farmChoices(ctx, a, st)
 	if err != nil {
 		return nil, false, err
@@ -353,7 +372,7 @@ func openstackFarmStateCmd(env CommandEnv) *cobra.Command {
 		Args:              cobra.MaximumNArgs(2),
 		ValidArgsFunction: byPosition(completeFarm(env), staticCompletions(store.HostStates...)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
+			return withStorePort(env, cmd.Context(), true, func(a *app.App, st farmDeclareStore) error {
 				ctx := cmd.Context()
 				farms, ok, err := farmChoicesForPick(ctx, a, st)
 				if err != nil || !ok {
