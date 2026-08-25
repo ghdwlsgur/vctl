@@ -10,7 +10,6 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/nodeagent"
-	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // The daemon itself is internal/nodeagent. What is here is what a command is
@@ -46,8 +45,10 @@ database role for low-risk, low-resource status reporting.`,
 			agent.OpenSink = func(ctx context.Context) (nodeagent.Sink, error) {
 				return a.OpenStore(ctx, app.PurposeStatus)
 			}
-			agent.Warnf = func(format string, args ...any) { ui.Warnf(os.Stderr, format, args...) }
-			agent.Infof = func(format string, args ...any) { ui.Infof(os.Stderr, format, args...) }
+			// Logging stays on the agent's defaults: sdlog, which speaks
+			// journald priorities when systemd owns the stream. Injecting the
+			// terminal styles here is how the daemon's warnings used to reach
+			// the journal unfilterable.
 			return agent.Run(cmd.Context())
 		},
 	}

@@ -28,8 +28,8 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 	"github.com/ghdwlsgur/vctl/internal/hoststatus/probes"
+	"github.com/ghdwlsgur/vctl/internal/sdlog"
 	"github.com/ghdwlsgur/vctl/internal/store"
-	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // Sink is the slice of the store the agent actually uses.
@@ -73,7 +73,8 @@ type Agent struct {
 	Probes func() []hoststatus.Probe
 
 	// Warnf and Infof are where the few lines worth printing go. Default to
-	// stderr.
+	// stderr through sdlog, so under systemd the lines carry the journald
+	// priorities `journalctl -p` filters on.
 	Warnf func(format string, args ...any)
 	Infof func(format string, args ...any)
 
@@ -224,7 +225,7 @@ func (a *Agent) warnf(format string, args ...any) {
 		a.Warnf(format, args...)
 		return
 	}
-	ui.Warnf(os.Stderr, format, args...)
+	stderrLogger.Warnf(format, args...)
 }
 
 func (a *Agent) infof(format string, args ...any) {
@@ -232,8 +233,14 @@ func (a *Agent) infof(format string, args ...any) {
 		a.Infof(format, args...)
 		return
 	}
-	ui.Infof(os.Stderr, format, args...)
+	stderrLogger.Infof(format, args...)
 }
+
+// stderrLogger is where lines go when nothing was injected: the journal, with
+// priorities, when systemd owns the stream — plain stderr otherwise. This
+// daemon used to print through internal/ui, which meant a kernel-adjacent
+// systemd service linked a terminal styling library for two printf helpers.
+var stderrLogger = sdlog.New(os.Stderr)
 
 // probeTimeout bounds one probe. These shell out to commands this code does not
 // own, on hosts that may be under load; a probe that never returns must not
@@ -490,8 +497,8 @@ func (c *conn) logger() logger {
 
 type stderrLog struct{}
 
-func (stderrLog) warnf(format string, args ...any) { ui.Warnf(os.Stderr, format, args...) }
-func (stderrLog) infof(format string, args ...any) { ui.Infof(os.Stderr, format, args...) }
+func (stderrLog) warnf(format string, args ...any) { stderrLogger.Warnf(format, args...) }
+func (stderrLog) infof(format string, args ...any) { stderrLogger.Infof(format, args...) }
 
 func (c *conn) close() {
 	c.mu.Lock()
