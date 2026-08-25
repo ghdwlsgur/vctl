@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/config"
+	"github.com/ghdwlsgur/vctl/internal/openstack/farmcreds"
 	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"github.com/ghdwlsgur/vctl/internal/openstack/reconcile"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -23,14 +25,6 @@ const reconcileTimeout = 60 * time.Second
 // instanceTimeout bounds the VM listing, which pages and so takes longer than
 // the two membership calls put together.
 const instanceTimeout = 180 * time.Second
-
-// vaultFarmPrefix is where a deployment's admin credentials live.
-//
-// Read from Vault at use time and never written anywhere: the whole reason this
-// runs centrally rather than on each host is that a status agent should not be
-// able to read an OpenStack admin credential. Putting it in a file here would
-// give that back.
-const vaultFarmPrefix = "kv/teams/sre"
 
 func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 	var (
@@ -54,7 +48,10 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 			"look identical from a host, so that inference is recorded as local-only.\n\n" +
 			"This asks nova which compute hosts each deployment actually owns and promotes the\n" +
 			"hosts both sides agree on to confirmed. Disagreements are reported, not resolved.\n\n" +
-			"Credentials are read from Vault under " + vaultFarmPrefix + "/vctl-<host_port>, at use time.",
+			// The compiled default: help is rendered before any config is
+			// loaded, and the path it teaches is the one an unconfigured
+			// install uses. vault_farm_prefix moves the runtime read.
+			"Credentials are read from Vault under " + config.Defaults().VaultFarmPrefix + "/vctl-<host_port>, at use time.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := commandOutput(cmd, asJSON)
 			if err != nil {
@@ -131,7 +128,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 					req.Farms = append(req.Farms, reconcile.Farm{ID: id, LocalHosts: hosts})
 				}
 				svc := &reconcile.Service{
-					Creds: vaultCredentials{app: a},
+					Creds: farmcreds.Store{KV: a.Vault, Prefix: a.Cfg.VaultFarmPrefix},
 					Cloud: novaCloud{},
 					Repo:  storeRepo{st: st},
 				}
@@ -222,19 +219,6 @@ func farmOfHost(farms map[string][]string, hostname string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s is not a member of any deployment the probe has reported; nothing to reconcile", hostname)
-}
-
-// vaultFarmKey turns a deployment id into a path segment.
-//
-// The vctl- prefix is what keeps these apart from everything else the team
-// stores under kv/teams/sre, which is a shared space.
-//
-// The id is a host:port, and a colon in a Vault path is legal but awkward
-// everywhere it is then typed — it needs quoting, and it reads like a typo. The
-// port matters (two deployments can share an address), so it is kept and only
-// the separator changes.
-func vaultFarmKey(id string) string {
-	return "vctl-" + strings.ReplaceAll(id, ":", "_")
 }
 
 func reportReconcile(id string, r membership.Outcome, dry bool) {

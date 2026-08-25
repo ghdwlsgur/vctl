@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 )
 
 // kollaService lays out one Kolla service directory under a test root.
@@ -39,7 +41,7 @@ func TestTheMetadataServiceIsDerivedNotAssumed(t *testing.T) {
 		if service != "nova-metadata" {
 			t.Fatalf("service = %q, want nova-metadata", service)
 		}
-		if state != VendordataOff {
+		if state != hoststatus.VendordataOff {
 			t.Errorf("state = %q, want off — nova-api being configured is not the answer", state)
 		}
 	})
@@ -48,7 +50,7 @@ func TestTheMetadataServiceIsDerivedNotAssumed(t *testing.T) {
 		root := t.TempDir()
 		kollaService(t, root, "nova-api", true, true)
 		state, service := (&OpenStack{root: root}).vendordataState()
-		if service != "nova-api" || state != VendordataOn {
+		if service != "nova-api" || state != hoststatus.VendordataOn {
 			t.Fatalf("got %q/%q, want nova-api/on", service, state)
 		}
 	})
@@ -62,10 +64,10 @@ func TestHalfInstalledStatesAreDistinct(t *testing.T) {
 		configured, present bool
 		want                string
 	}{
-		{"both", true, true, VendordataOn},
-		{"neither", false, false, VendordataOff},
-		{"config only", true, false, VendordataNoFile},
-		{"file only", false, true, VendordataNoConfig},
+		{"both", true, true, hoststatus.VendordataOn},
+		{"neither", false, false, hoststatus.VendordataOff},
+		{"config only", true, false, hoststatus.VendordataNoFile},
+		{"file only", false, true, hoststatus.VendordataNoConfig},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -86,8 +88,8 @@ func TestAnEmptyPayloadIsNotOn(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "vendordata.json"), nil, 0o660); err != nil {
 		t.Fatal(err)
 	}
-	if state, _ := (&OpenStack{root: root}).vendordataState(); state != VendordataNoFile {
-		t.Errorf("state = %q, want %q for a zero-byte payload", state, VendordataNoFile)
+	if state, _ := (&OpenStack{root: root}).vendordataState(); state != hoststatus.VendordataNoFile {
+		t.Errorf("state = %q, want %q for a zero-byte payload", state, hoststatus.VendordataNoFile)
 	}
 }
 

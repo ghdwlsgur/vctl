@@ -24,25 +24,6 @@ func TestCountAndNamesAFewAndCountsTheRest(t *testing.T) {
 	}
 }
 
-// A colon in a Vault path is legal but awkward everywhere it is then typed.
-// The port still has to survive: two deployments can share an address.
-func TestVaultFarmKeyIsTypeableAndKeepsThePort(t *testing.T) {
-	got := vaultFarmKey("172.16.0.245:5000")
-	// kv/teams/sre is shared with everything else the team stores there.
-	if !strings.HasPrefix(got, "vctl-") {
-		t.Errorf("key = %q, want the vctl- prefix that keeps these apart", got)
-	}
-	if strings.Contains(got, ":") {
-		t.Errorf("key = %q, still carries a colon", got)
-	}
-	if !strings.Contains(got, "5000") {
-		t.Errorf("key = %q, lost the port — two deployments can share an address", got)
-	}
-	if vaultFarmKey("10.0.0.1:5000") == vaultFarmKey("10.0.0.1:5001") {
-		t.Error("two ports on one address collapsed into one key")
-	}
-}
-
 // reconcile must not be app-gated. A CronJob authenticating with kubernetes
 // auth has no per-person identity, and the gate opened the inventory with
 // vctl-ro — a role this workload has no reason to hold. It failed before the

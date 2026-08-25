@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"os"
 	"strings"
+
+	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 )
 
 // Whether a farm hands the vctl SSH CA to the VMs it creates.
@@ -24,29 +26,6 @@ import (
 // a time, keeps only vendordata_jsonfile_path, never holds the file whole, and
 // stats the payload rather than reading it — the CA public key is not a secret,
 // but there is no reason for a status probe to carry it around.
-
-// Vendordata states, as filed in capability details.
-const (
-	// VendordataOn — the serving service is configured and the file it names is
-	// there. New VMs get the cloud-config.
-	VendordataOn = "on"
-	// VendordataOff — neither. The farm has never been onboarded.
-	VendordataOff = "off"
-	// VendordataNoFile — the config names a file that is not there.
-	//
-	// Worse than off. Kolla declares the mount as non-optional, so
-	// kolla_set_configs raises MissingRequiredSource and the container will not
-	// start the next time anything restarts it. Measured on kolla-ansible
-	// 20.2.0, which declares the mount for nova-metadata but only ever copies
-	// the file to nova-api.
-	VendordataNoFile = "config-without-file"
-	// VendordataNoConfig — the file is there and nothing reads it.
-	//
-	// This is what a month of silent failure looks like from the host: somebody
-	// put the file in place, the service that answers metadata was never told
-	// about it, and the only symptom is an empty vendor_data.json.
-	VendordataNoConfig = "file-without-config"
-)
 
 // vendordataKey is the config key that decides whether nova serves any of this.
 const vendordataKey = "vendordata_jsonfile_path"
@@ -94,13 +73,13 @@ func (p *OpenStack) vendordataState() (state, service string) {
 
 	switch {
 	case configured && present:
-		return VendordataOn, service
+		return hoststatus.VendordataOn, service
 	case configured:
-		return VendordataNoFile, service
+		return hoststatus.VendordataNoFile, service
 	case present:
-		return VendordataNoConfig, service
+		return hoststatus.VendordataNoConfig, service
 	default:
-		return VendordataOff, service
+		return hoststatus.VendordataOff, service
 	}
 }
 

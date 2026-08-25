@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ghdwlsgur/vctl/internal/hoststatus/probes"
+	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
@@ -388,13 +388,13 @@ func Assess(in Input) Assessment {
 // stages on the way to "on", they are mistakes that look like progress.
 func caTrustRank(state string) int {
 	switch state {
-	case probes.VendordataOn:
+	case hoststatus.VendordataOn:
 		return 1
-	case probes.VendordataOff:
+	case hoststatus.VendordataOff:
 		return 2
-	case probes.VendordataNoConfig:
+	case hoststatus.VendordataNoConfig:
 		return 3
-	case probes.VendordataNoFile:
+	case hoststatus.VendordataNoFile:
 		return 4
 	}
 	return 0
@@ -408,10 +408,10 @@ func caTrustRank(state string) int {
 // are different: each is a specific mistake with a specific consequence.
 func caTrustAnomaly(c CATrust) string {
 	switch c.State {
-	case probes.VendordataNoFile:
+	case hoststatus.VendordataNoFile:
 		return "the metadata service is configured for vendordata but the file is not there — " +
 			"the mount is not optional, so it will fail to start when anything restarts it"
-	case probes.VendordataNoConfig:
+	case hoststatus.VendordataNoConfig:
 		return "the vendordata file is in place and the service that answers instance metadata " +
 			"does not read it — new VMs get an empty vendor_data.json and will not trust the SSH CA"
 	}

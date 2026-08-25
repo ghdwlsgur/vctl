@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"github.com/ghdwlsgur/vctl/internal/openstack/reconcile"
 	"github.com/ghdwlsgur/vctl/internal/openstackapi"
@@ -17,35 +16,12 @@ import (
 
 // The adapters between this CLI and the reconcile service.
 //
-// Each one is the thinnest possible translation — Vault to credentials, the
-// OpenStack client to two questions, the store to four writes. Nothing here
+// Each one is the thinnest possible translation — the OpenStack client to two
+// questions, the store to four writes (credentials moved to their own home,
+// internal/openstack/farmcreds, when the doctor became their second consumer).
+// Nothing here
 // decides anything; the decisions are in internal/openstack/reconcile, where
 // they can be tested without a terminal, a Vault and a live control plane.
-
-// vaultCredentials reads a deployment's admin credentials at use time.
-type vaultCredentials struct{ app *app.App }
-
-func (v vaultCredentials) ForFarm(ctx context.Context, id string) (openstackapi.Credentials, error) {
-	path := vaultFarmPrefix + "/" + vaultFarmKey(id)
-	secret, err := v.app.Vault.ReadKV(ctx, path)
-	if err != nil {
-		return openstackapi.Credentials{}, fmt.Errorf("no credentials at %s (%w)", path, err)
-	}
-	c := openstackapi.Credentials{
-		AuthURL:     secret["auth_url"],
-		Username:    secret["username"],
-		Password:    secret["password"],
-		ProjectName: secret["project_name"],
-		UserDomain:  secret["user_domain"],
-		ProjectDom:  secret["project_domain"],
-	}
-	if c.AuthURL == "" {
-		// The deployment id is the endpoint's host; the scheme is not part of
-		// it, so a stored auth_url is what says which one to use.
-		return c, fmt.Errorf("credentials at %s carry no auth_url", path)
-	}
-	return c, nil
-}
 
 // novaCloud asks one control plane. Each call gets its own deadline because the
 // two questions take very different amounts of time.

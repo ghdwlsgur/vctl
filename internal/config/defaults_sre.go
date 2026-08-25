@@ -16,6 +16,7 @@ func Defaults() *Config {
 		OperatorNetworks:              []string{"192.168."},
 		VaultAddr:                     "https://vault.sre.local",
 		AdminPolicies:                 []string{"vctl-admin", "sre-admin"},
+		VaultFarmPrefix:               "kv/teams/sre",
 		AuthMethod:                    "oidc", // people: GitLab SSO by default; --method userpass for bootstrap
 		OIDCRole:                      "vctl",
 		OIDCMount:                     "oidc",
