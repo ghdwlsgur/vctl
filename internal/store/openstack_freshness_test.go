@@ -84,20 +84,20 @@ func TestControlHostKeepsWhenItWasFirstSeen(t *testing.T) {
 	const farm = "fresh-farm-c"
 	seedInstanceFarm(t, st, farm)
 	t.Cleanup(func() {
-		_, _ = st.pool.Exec(ctx, `DELETE FROM openstack_control_hosts WHERE deployment_id=$1`, farm)
+		_, _ = st.pool.Exec(ctx, `DELETE FROM openstack_ghost_hosts WHERE deployment_id=$1`, farm)
 	})
 
 	first := time.Now().Add(-72 * time.Hour).Truncate(time.Second)
-	if err := st.RecordControlHosts(ctx, farm, []string{"ghost-1"}, first); err != nil {
+	if err := st.RecordGhostHosts(ctx, farm, []string{"ghost-1"}, first); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if err := st.RecordControlHosts(ctx, farm, []string{"ghost-1"}, time.Now()); err != nil {
+	if err := st.RecordGhostHosts(ctx, farm, []string{"ghost-1"}, time.Now()); err != nil {
 		t.Fatalf("second: %v", err)
 	}
 
-	got, err := st.ControlHosts(ctx, farm)
+	got, err := st.GhostHosts(ctx, farm)
 	if err != nil || len(got) != 1 {
-		t.Fatalf("ControlHosts: %v (%d rows)", err, len(got))
+		t.Fatalf("GhostHosts: %v (%d rows)", err, len(got))
 	}
 	if !got[0].FirstSeenAt.Equal(first) {
 		t.Errorf("first_seen_at = %v, want %v — the age is the whole signal", got[0].FirstSeenAt, first)
@@ -113,18 +113,18 @@ func TestControlHostDisappearsOnceItMatches(t *testing.T) {
 	const farm = "fresh-farm-d"
 	seedInstanceFarm(t, st, farm)
 	t.Cleanup(func() {
-		_, _ = st.pool.Exec(ctx, `DELETE FROM openstack_control_hosts WHERE deployment_id=$1`, farm)
+		_, _ = st.pool.Exec(ctx, `DELETE FROM openstack_ghost_hosts WHERE deployment_id=$1`, farm)
 	})
 
-	if err := st.RecordControlHosts(ctx, farm, []string{"ghost-2", "ghost-3"}, time.Now().Add(-time.Hour)); err != nil {
+	if err := st.RecordGhostHosts(ctx, farm, []string{"ghost-2", "ghost-3"}, time.Now().Add(-time.Hour)); err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	// ghost-3 was registered, so the next run does not name it.
-	if err := st.RecordControlHosts(ctx, farm, []string{"ghost-2"}, time.Now()); err != nil {
+	if err := st.RecordGhostHosts(ctx, farm, []string{"ghost-2"}, time.Now()); err != nil {
 		t.Fatalf("second: %v", err)
 	}
 
-	got, _ := st.ControlHosts(ctx, farm)
+	got, _ := st.GhostHosts(ctx, farm)
 	if len(got) != 1 || got[0].NovaHostname != "ghost-2" {
 		t.Errorf("control hosts = %+v, want only the one still unmatched", got)
 	}

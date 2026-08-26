@@ -211,7 +211,7 @@ type FarmSnapshot struct {
 	DeploymentKnown bool
 	Hosts           []OpenStackHost
 	Instances       []Instance
-	Ghosts          []ControlHost
+	Ghosts          []GhostHost
 	Run             *ReconcileRun
 }
 
@@ -248,7 +248,7 @@ func (s *Store) FarmSnapshot(ctx context.Context, id string) (FarmSnapshot, erro
 	}); err != nil {
 		return out, err
 	}
-	if out.Ghosts, err = controlHostsOn(ctx, tx, id); err != nil {
+	if out.Ghosts, err = ghostHostsOn(ctx, tx, id); err != nil {
 		return out, err
 	}
 	runs, err := reconcileRunsOn(ctx, tx)

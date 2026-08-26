@@ -101,8 +101,8 @@ type row struct {
 // names that could be attached to no member at all.
 //
 // Controller identity comes from the capability probe (FarmMember.Controller),
-// not from openstack_control_hosts — that table holds the opposite: names the
-// control plane reports that matched NO inventory host. Each of those is first
+// never from the ghost names — those are the opposite: names the control
+// plane reports that matched NO inventory host. Each of those is first
 // pinned to a member when only one member's name is a near miss (the farm that
 // prompted this has a compute whose nova.conf says "sre-svr-…" for a machine
 // the inventory calls "sre-srv-…"); the pinned row then shows the member's real
@@ -116,13 +116,13 @@ func topologyRows(self string, f store.FarmTopology) (rows []row, selfIsControll
 	for _, m := range f.Members {
 		local = append(local, m.Hostname)
 	}
-	pairs, _ := membership.MatchHosts(local, f.UnmatchedNames)
+	pairs, _ := membership.MatchHosts(local, f.GhostNames)
 	claimed := map[string]bool{}
 	for host, c := range pairs {
 		novaName[host] = c
 		claimed[c] = true
 	}
-	for _, c := range f.UnmatchedNames {
+	for _, c := range f.GhostNames {
 		if claimed[c] {
 			continue
 		}

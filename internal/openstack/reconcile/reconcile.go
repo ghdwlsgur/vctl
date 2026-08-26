@@ -126,7 +126,7 @@ type Repository interface {
 	// with nothing written.
 	Apply(ctx context.Context, d membership.Decision) error
 	RecordRun(ctx context.Context, id string, r membership.Outcome, at time.Time, runErr error) error
-	RecordControlHosts(ctx context.Context, id string, hosts []string, at time.Time) error
+	RecordGhostHosts(ctx context.Context, id string, hosts []string, at time.Time) error
 	ReplaceInstances(ctx context.Context, id string, rows []store.Instance, at time.Time, complete bool) (int, error)
 }
 
@@ -222,7 +222,7 @@ func (s *Service) Run(ctx context.Context, req Request) (Report, error) {
 		// a nova service on a machine nobody has registered is either a
 		// forgotten host, a name that drifted, or something that should not be
 		// running — and none of those survives being said once.
-		if e := s.Repo.RecordControlHosts(ctx, f.ID, decision.Outcome.ControlOnly, s.now()); e != nil {
+		if e := s.Repo.RecordGhostHosts(ctx, f.ID, decision.Outcome.ControlOnly, s.now()); e != nil {
 			out.Warnings = append(out.Warnings, fmt.Errorf("recording control-only hosts: %w", e))
 		}
 		rep.Outcomes = append(rep.Outcomes, out)

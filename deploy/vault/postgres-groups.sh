@@ -40,6 +40,7 @@ PG_KUBE_CONTEXT="${PG_KUBE_CONTEXT:-}"
 #        + openstack_deployments/memberships  -> vctl_ro(R)
 #   017  openstack_instances(+addresses)      -> vctl_ro(R), vctl_rw(RW)
 #   018  openstack_reconcile_runs/control_hosts -> vctl_ro(R), vctl_rw(RW)
+#        (control_hosts 는 027 에서 openstack_ghost_hosts 로 개명 — grant 승계)
 #   023  access_log                           -> vctl_pruner(SELECT,DELETE)
 #   024  openstack_instances                  -> vctl_openstack_pruner(SELECT,DELETE)
 #   025  ALL TABLES/SEQUENCES (+defaults)     -> vctl_backup(R)
@@ -86,7 +87,7 @@ GRANT SELECT,INSERT,UPDATE ON server_status TO vctl_status;
 -- MOTD 렌더용 팜 토폴로지 읽기 (vctl PR #235). 함대의 모든 호스트가 전 팜의
 -- 토폴로지(비밀 아님·행 단위 축소는 호스트별 롤이 필요해 과함)를 읽게 된다는
 -- 트레이드오프를 알고 넣은 것. 이 grant 의 명세는 nodeagent.Sink 인터페이스다.
-GRANT SELECT ON openstack_deployments, openstack_memberships, openstack_control_hosts TO vctl_status;
+GRANT SELECT ON openstack_deployments, openstack_memberships, openstack_ghost_hosts TO vctl_status;
 
 -- identity: login-time seen_users upsert only.
 GRANT SELECT,INSERT,UPDATE ON seen_users TO vctl_identity;
@@ -114,7 +115,7 @@ GRANT SELECT,DELETE ON access_log, audit_session, kernel_event TO vctl_pruner;
 GRANT SELECT ON servers, server_capabilities TO vctl_reconcile;
 GRANT SELECT,INSERT,UPDATE ON openstack_deployments, openstack_reconcile_runs,
   openstack_instances TO vctl_reconcile;
-GRANT SELECT,INSERT,UPDATE,DELETE ON openstack_memberships, openstack_control_hosts,
+GRANT SELECT,INSERT,UPDATE,DELETE ON openstack_memberships, openstack_ghost_hosts,
   openstack_instance_addresses TO vctl_reconcile;
 
 -- OpenStack history pruner: deleted-instance records only. Address rows cascade.
