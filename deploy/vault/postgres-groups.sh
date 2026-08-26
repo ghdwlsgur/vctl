@@ -32,6 +32,21 @@ PG_KUBE_CONTEXT="${PG_KUBE_CONTEXT:-}"
 
 # Group -> privileges. Mirrors the per-user grants that database.tf USED to embed,
 # now applied to shared groups exactly once. Keep in sync with database.tf grants.
+#
+# THIS FILE IS NOT THE WHOLE GRANT PICTURE. vctl migrations also grant, for the
+# tables they themselves create (grep GRANT in vctl internal/store/migrations/):
+#   012  wg_endpoint_annotations              -> vctl_ro(R), vctl_rw(RW)
+#   015  server_capabilities                  -> vctl_ro(R), vctl_status(RW), vctl_rw(RW)
+#        + openstack_deployments/memberships  -> vctl_ro(R)
+#   017  openstack_instances(+addresses)      -> vctl_ro(R), vctl_rw(RW)
+#   018  openstack_reconcile_runs/control_hosts -> vctl_ro(R), vctl_rw(RW)
+#   023  access_log                           -> vctl_pruner(SELECT,DELETE)
+#   024  openstack_instances                  -> vctl_openstack_pruner(SELECT,DELETE)
+#   025  ALL TABLES/SEQUENCES (+defaults)     -> vctl_backup(R)
+# Auditing "what can role X reach" means reading BOTH places. Ownership rule of
+# thumb: a migration grants on tables it creates; this script owns bootstrap
+# (role creation), blankets (sequences, backup), and additions to tables that
+# already existed (e.g. vctl_status's openstack topology reads for the MOTD).
 read -r -d '' GROUPS_SQL <<'SQL' || true
 DO $$
 DECLARE g text;
