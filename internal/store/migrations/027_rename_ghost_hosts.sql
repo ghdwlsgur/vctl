@@ -18,7 +18,17 @@
 -- warning (the banner file is left as-is). Both self-heal on upgrade; apply
 -- the migration and roll the fleet in the same maintenance window.
 
-ALTER TABLE openstack_control_hosts RENAME TO openstack_ghost_hosts;
-ALTER INDEX idx_openstack_control_hosts_seen RENAME TO idx_openstack_ghost_hosts_seen;
-ALTER TABLE openstack_ghost_hosts RENAME CONSTRAINT openstack_control_hosts_pkey TO openstack_ghost_hosts_pkey;
-ALTER TABLE openstack_ghost_hosts RENAME CONSTRAINT openstack_control_hosts_deployment_id_fkey TO openstack_ghost_hosts_deployment_id_fkey;
+-- Guarded like every other migration here: replay-safe. On a database where
+-- the rename already happened the old name is gone (or 018's IF NOT EXISTS
+-- has recreated an empty shell of it) — either way the rename must not run
+-- twice, so it only fires when the old table exists and the new one does not.
+DO $$
+BEGIN
+  IF to_regclass('public.openstack_control_hosts') IS NOT NULL
+     AND to_regclass('public.openstack_ghost_hosts') IS NULL THEN
+    ALTER TABLE openstack_control_hosts RENAME TO openstack_ghost_hosts;
+    ALTER INDEX idx_openstack_control_hosts_seen RENAME TO idx_openstack_ghost_hosts_seen;
+    ALTER TABLE openstack_ghost_hosts RENAME CONSTRAINT openstack_control_hosts_pkey TO openstack_ghost_hosts_pkey;
+    ALTER TABLE openstack_ghost_hosts RENAME CONSTRAINT openstack_control_hosts_deployment_id_fkey TO openstack_ghost_hosts_deployment_id_fkey;
+  END IF;
+END $$;
