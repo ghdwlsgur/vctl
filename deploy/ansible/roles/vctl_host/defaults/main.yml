@@ -10,7 +10,7 @@ vctl_host_sshd_service: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }
 # operator commands. The full CLI never worked on the fleet anyway (the host
 # AppRole cannot mint what ssh/list need); shipping only the agent makes that
 # a property of the artifact instead of a Vault policy a reviewer has to read.
-#   gh release download vX.Y.Z -p 'vctl-agent_*_linux_amd64.tar.gz' && tar -xzf … -C files/
+#   ./stage-release.sh vX.Y.Z   # (playbook dir) downloads, verifies, stages, prints the -e sha
 vctl_host_bin_src: "{{ vctl_bin_src | default(playbook_dir + '/files/vctl-agent') }}"
 vctl_host_bin_dest: "{{ vctl_bin_dest | default('/usr/local/bin/vctl-agent') }}"
 # SHA-256 of the extracted release binary after its archive has been verified
