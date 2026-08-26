@@ -51,12 +51,22 @@ type ConnectionInfo struct {
 }
 
 // Connect opens an interactive PTY shell and blocks until it exits.
-func Connect(ctx context.Context, t *Target, sign SignFunc) (ConnectionInfo, error) {
+//
+// afterDial, when non-nil, is called once the connection is established and
+// before the shell blocks. It exists so the caller can record the access the
+// instant it happens rather than after a session that may run for hours or end
+// with the process being killed — either of which would otherwise leave no
+// audit trail. It must not block for long: the shell does not start until it
+// returns.
+func Connect(ctx context.Context, t *Target, sign SignFunc, afterDial func(ConnectionInfo)) (ConnectionInfo, error) {
 	client, cleanup, info, err := dialTarget(ctx, t, sign)
 	if err != nil {
 		return info, err
 	}
 	defer cleanup()
+	if afterDial != nil {
+		afterDial(info)
+	}
 	return info, shell(client)
 }
 

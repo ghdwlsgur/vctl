@@ -87,6 +87,19 @@ func (h *attributionHold) hold(offered []store.KernelEvent, missed []int) {
 	h.trim()
 }
 
+// holdAll re-holds every event the last merge handed out. It is the database-error
+// path: a failed write must not drop the batch, so the whole thing is retried on
+// the next flush. Each event keeps its original first-attempt stamp (hold reads
+// h.offered), so an outage is bounded by the same grace and cap as attribution —
+// it retries, but not forever and not without limit.
+func (h *attributionHold) holdAll(offered []store.KernelEvent) {
+	all := make([]int, len(offered))
+	for i := range all {
+		all[i] = i
+	}
+	h.hold(offered, all)
+}
+
 // expire drops held events whose grace has run out.
 func (h *attributionHold) expire() {
 	if h.grace <= 0 {

@@ -20,11 +20,26 @@ var rules = []struct {
 	// Authorization headers passed to curl and similar clients.
 	{regexp.MustCompile(`(?i)((?:authorization|proxy-authorization):\s*(?:bearer|basic)\s+)\S+`),
 		"$1[REDACTED]"},
-	// Common secret-bearing environment assignments.
-	{regexp.MustCompile(`(?i)(\b(?:password|passwd|token|secret|client_secret|api_key|access_key)=)\S+`),
+	// Secret-bearing environment assignments. The variable name ends in a
+	// sensitive word but usually carries a prefix — VAULT_TOKEN, PGPASSWORD,
+	// AWS_SECRET_ACCESS_KEY, MYSQL_PWD — and the previous \b anchor never matched
+	// across the underscore, so every prefixed secret went to the audit log in
+	// the clear. Match a whole [A-Za-z0-9_] name that ends in the sensitive word,
+	// anchored to a word start so a substring inside another token is left alone.
+	{regexp.MustCompile(`(?i)((?:^|\s)[a-z0-9_]*(?:password|passwd|pwd|token|secret|api_key|access_key)=)\S+`),
 		"$1[REDACTED]"},
 	// Kubernetes secret literals contain the secret after the first equals sign.
 	{regexp.MustCompile(`(?i)(--from-literal(?:=|\s+)\S+=)\S+`),
+		"$1[REDACTED]"},
+	// `vault login <token>`: the token is the positional argument after `login`.
+	// Only a value that does not start with '-' is redacted, so `vault login
+	// -method=oidc` keeps its flag while `vault login hvs...` does not keep its
+	// token.
+	{regexp.MustCompile(`(?i)(\bvault\s+login\s+)([^\s-]\S*)`),
+		"$1[REDACTED]"},
+	// curl -u user:password (and --user). The username is kept, the password after
+	// the colon is not.
+	{regexp.MustCompile(`(?i)((?:-u|--user)\s+[^\s:]+:)\S+`),
 		"$1[REDACTED]"},
 	// URI userinfo: preserve scheme and username, redact only the password.
 	{regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+:)[^\s@]+(@)`),

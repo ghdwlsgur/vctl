@@ -12,6 +12,18 @@ func TestArguments(t *testing.T) {
 		{"long flag equals", `curl --token=abc123 /health`, `curl --token=[REDACTED] /health`},
 		{"authorization", `curl -H Authorization: Bearer abc123 https://api`, `curl -H Authorization: Bearer [REDACTED] https://api`},
 		{"environment", `env API_KEY=abc TOKEN=def command`, `env API_KEY=[REDACTED] TOKEN=[REDACTED] command`},
+		// Prefixed variable names are the common case and exactly what the old \b
+		// anchor let through — the boundary never held across the underscore.
+		{"prefixed env vault", `env VAULT_TOKEN=hvs.abc vault kv get x`, `env VAULT_TOKEN=[REDACTED] vault kv get x`},
+		{"prefixed env pg", `PGPASSWORD=s3cret psql -h db`, `PGPASSWORD=[REDACTED] psql -h db`},
+		{"prefixed env aws", `env AWS_SECRET_ACCESS_KEY=zzz aws s3 ls`, `env AWS_SECRET_ACCESS_KEY=[REDACTED] aws s3 ls`},
+		{"prefixed env mysql pwd", `MYSQL_PWD=hunter2 mysql`, `MYSQL_PWD=[REDACTED] mysql`},
+		// A name that only contains a sensitive word as a substring, not a suffix
+		// ending at '=', is not a credential and is left alone.
+		{"substring not suffix", `env TOKENIZER=on run`, `env TOKENIZER=on run`},
+		{"vault login token", `vault login hvs.CAESIabc`, `vault login [REDACTED]`},
+		{"vault login flag kept", `vault login -method=oidc`, `vault login -method=oidc`},
+		{"curl basic user pass", `curl -u admin:s3cret https://api`, `curl -u admin:[REDACTED] https://api`},
 		{"kubernetes literal", `kubectl create secret generic x --from-literal=password=abc`, `kubectl create secret generic x --from-literal=password=[REDACTED]`},
 		{"uri userinfo", `psql postgres://user:pass@db.internal/vctl`, `psql postgres://user:[REDACTED]@db.internal/vctl`},
 		// The "@" must survive whatever set of rules ran before the URI one —

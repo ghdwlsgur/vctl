@@ -25,13 +25,36 @@ func newTestHold(grace time.Duration, batch int) (*attributionHold, *clock) {
 }
 
 // holdAll is the flush where nothing attributed — the steady state on a host with
-// no logins, and the case the buffer has to survive without growing.
+// no logins, and the case the buffer has to survive without growing. It delegates
+// to the production method, which is also the database-error retry path.
 func holdAll(h *attributionHold, offered []store.KernelEvent) {
-	idx := make([]int, len(offered))
-	for i := range offered {
-		idx[i] = i
+	h.holdAll(offered)
+}
+
+// A failed database write must not drop the batch: holdAll re-holds every event
+// so the next flush retries it, and each keeps its original wait time so a long
+// outage still expires events on schedule instead of holding them forever.
+func TestHoldAllReholdsEveryEventForRetry(t *testing.T) {
+	h, c := newTestHold(30*time.Second, 200)
+
+	offered := h.merge([]store.KernelEvent{ev(1), ev(2), ev(3)}) // first flush hands them out
+	h.holdAll(offered)                                           // ...the write fails, re-hold all
+	if h.Held() != 3 {
+		t.Fatalf("held = %d after holdAll, want 3", h.Held())
 	}
-	h.hold(offered, idx)
+	again := h.merge(nil) // next flush pulls them back out
+	if len(again) != 3 {
+		t.Fatalf("retry flush offered %d, want the 3 re-held events", len(again))
+	}
+	h.holdAll(again) // still failing, still no session — re-hold what we pulled
+
+	c.add(31 * time.Second)
+	if out := h.merge(nil); len(out) != 0 {
+		t.Fatalf("after the grace elapsed the flush offered %d, want 0", len(out))
+	}
+	if h.Dropped() != 3 {
+		t.Fatalf("dropped = %d, want 3 once the grace ran out", h.Dropped())
+	}
 }
 
 // The whole reason the buffer exists: a login's first exec reaches collect before

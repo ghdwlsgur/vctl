@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,52 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
+
+// shutdownFlushTimeout bounds the final write when the process is asked to stop.
+// The signal context is already cancelled by then, so the last flush and drain
+// run on a fresh context with this deadline — long enough for one batch insert,
+// short enough not to hold up a restart.
+const shutdownFlushTimeout = 5 * time.Second
+
+// finalFlushOnShutdown makes one bounded attempt to write what is still buffered
+// and held when the collector is stopping. Without it the shutdown flush ran on
+// the already-cancelled signal context, failed instantly, and every restart lost
+// up to a full batch plus everything inside its attribution grace.
+func finalFlushOnShutdown(
+	flush func(context.Context) error,
+	held *attributionHold,
+	st audit.Ingestor,
+	requireSession bool,
+	total *int,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownFlushTimeout)
+	defer cancel()
+	if err := flush(ctx); err != nil {
+		ui.Warnf(os.Stderr, "final flush on shutdown: %v", err)
+	}
+	// Anything still held is not going to get its session now; write it under
+	// whichever mode is in force so a clean stop does not silently drop it.
+	rest := held.drain()
+	if len(rest) == 0 {
+		return
+	}
+	var (
+		n   int
+		err error
+	)
+	if requireSession {
+		// Held events with no session by now are host churn nobody will attribute
+		// (the same events the grace path drops); the attributed insert stores the
+		// ones that did get a session and skips the rest by design.
+		n, _, err = st.InsertKernelEventsAttributed(ctx, rest)
+	} else {
+		n, err = st.InsertKernelEvents(ctx, rest)
+	}
+	*total += n
+	if err != nil {
+		ui.Warnf(os.Stderr, "final drain on shutdown failed: %v", err)
+	}
+}
 
 // Tetragon JSON event subset (from `tetra getevents -o json`). Only the fields
 // needed for the SRE action timeline; unknown fields are ignored.
@@ -117,21 +164,37 @@ for full host capture.`,
 				buf := make([]store.KernelEvent, 0, batch)
 				total, skipped := 0, 0
 				held := newAttributionHold(grace, batch)
-				flush := func() error {
+				// flush writes the buffered batch (plus anything still held from
+				// earlier flushes). A write that fails must not throw the batch
+				// away: everything is re-held so the next flush retries it, bounded
+				// by the same cap and grace as an unattributed event. ctx is a
+				// parameter so the shutdown path can pass one that is not already
+				// cancelled.
+				flush := func(ctx context.Context) error {
 					pending := held.merge(buf)
 					buf = buf[:0]
 					if len(pending) == 0 {
 						return nil
 					}
-					if !requireSession {
-						n, err := st.InsertKernelEvents(ctx, pending)
-						total += n
+					var (
+						n      int
+						missed []int
+						err    error
+					)
+					if requireSession {
+						n, missed, err = st.InsertKernelEventsAttributed(ctx, pending)
+					} else {
+						n, err = st.InsertKernelEvents(ctx, pending)
+					}
+					total += n
+					if err != nil {
+						// The write failed — retry the whole batch on the next flush
+						// rather than dropping events the operator was told are captured.
+						held.holdAll(pending)
 						return err
 					}
-					n, missed, err := st.InsertKernelEventsAttributed(ctx, pending)
-					total += n
 					held.hold(pending, missed)
-					return err
+					return nil
 				}
 
 				ticker := time.NewTicker(flushInterval)
@@ -139,15 +202,19 @@ for full host capture.`,
 				for {
 					select {
 					case <-ctx.Done():
-						_ = flush()
+						// ctx is already cancelled (SIGTERM); a flush on it would fail
+						// instantly and throw the buffer away. Give the final write its
+						// own short deadline off a live context so a restart still lands
+						// what is buffered.
+						finalFlushOnShutdown(flush, held, st, requireSession, &total)
 						return ctx.Err()
 					case <-ticker.C:
-						if err := flush(); err != nil {
+						if err := flush(ctx); err != nil {
 							ui.Warnf(os.Stderr, "flush: %v", err)
 						}
 					case line, ok := <-lines:
 						if !ok {
-							if err := flush(); err != nil {
+							if err := flush(ctx); err != nil {
 								return err
 							}
 							// Don't report success if the input stream errored (read
@@ -184,7 +251,7 @@ for full host capture.`,
 						}
 						buf = append(buf, ev)
 						if len(buf) >= batch {
-							if err := flush(); err != nil {
+							if err := flush(ctx); err != nil {
 								ui.Warnf(os.Stderr, "flush: %v", err)
 							}
 						}

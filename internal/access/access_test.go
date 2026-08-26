@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -28,12 +29,16 @@ func TestAccessEntryIncludesConnectionMetadata(t *testing.T) {
 		TargetAddr: "10.0.0.10:22",
 		JumpHost:   "bastion",
 	}
-	entry := accessEntry("userpass-albert", tgt, info, "12345", errors.New("connect failed"))
+	signedAt := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	entry := accessEntry("userpass-albert", tgt, info, "12345", signedAt, errors.New("connect failed"))
 	if entry.OK {
 		t.Fatal("OK = true, want false")
 	}
 	if entry.VaultUser != "userpass-albert" || entry.Hostname != "app01" || entry.CertSerial != "12345" {
 		t.Fatalf("entry identity fields = %+v", entry)
+	}
+	if !entry.SignedAt.Equal(signedAt) {
+		t.Fatalf("SignedAt = %v, want %v", entry.SignedAt, signedAt)
 	}
 	if entry.SourceIP != "192.0.2.10" || entry.SourceAddr != "192.0.2.10:54321" || entry.TargetAddr != "10.0.0.10:22" || entry.JumpVia != "bastion" {
 		t.Fatalf("entry connection fields = %+v", entry)
