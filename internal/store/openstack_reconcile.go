@@ -296,15 +296,15 @@ func reconcileRunsOn(ctx context.Context, db rowQuerier) (map[string]ReconcileRu
 	return out, nil
 }
 
-// ControlHost is a machine the control plane knows and the inventory does not.
-type ControlHost struct {
+// GhostHost is a machine the control plane knows and the inventory does not.
+type GhostHost struct {
 	DeploymentID string    `json:"deployment_id"`
 	NovaHostname string    `json:"nova_hostname"`
 	FirstSeenAt  time.Time `json:"first_seen_at"`
 	LastSeenAt   time.Time `json:"last_seen_at"`
 }
 
-// RecordControlHosts keeps the hosts nova named that no inventory entry matched.
+// RecordGhostHosts keeps the hosts nova named that no inventory entry matched.
 //
 // first_seen_at is preserved across runs: "nova has been telling us about this
 // machine for three weeks" is a different statement from "this appeared today",
@@ -313,7 +313,7 @@ type ControlHost struct {
 // Rows are removed once they match an inventory host again — the caller passes
 // only the still-unmatched names, and anything else for this deployment is
 // deleted. Keeping them would leave a permanent list of problems already fixed.
-func (s *Store) RecordControlHosts(ctx context.Context, deployment string, names []string, at time.Time) error {
+func (s *Store) RecordGhostHosts(ctx context.Context, deployment string, names []string, at time.Time) error {
 	if at.IsZero() {
 		at = time.Now()
 	}
@@ -328,7 +328,7 @@ func (s *Store) RecordControlHosts(ctx context.Context, deployment string, names
 			continue
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO openstack_control_hosts (deployment_id, nova_hostname, first_seen_at, last_seen_at)
+			INSERT INTO openstack_ghost_hosts (deployment_id, nova_hostname, first_seen_at, last_seen_at)
 			VALUES ($1,$2,$3,$3)
 			ON CONFLICT (deployment_id, nova_hostname) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at`,
 			deployment, n, at); err != nil {
@@ -336,29 +336,29 @@ func (s *Store) RecordControlHosts(ctx context.Context, deployment string, names
 		}
 	}
 	if _, err := tx.Exec(ctx,
-		`DELETE FROM openstack_control_hosts WHERE deployment_id=$1 AND last_seen_at < $2`,
+		`DELETE FROM openstack_ghost_hosts WHERE deployment_id=$1 AND last_seen_at < $2`,
 		deployment, at); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-// ControlHosts lists the machines nova knows that the inventory does not.
-func (s *Store) ControlHosts(ctx context.Context, deployment string) ([]ControlHost, error) {
-	return controlHostsOn(ctx, s.pool, deployment)
+// GhostHosts lists the machines nova knows that the inventory does not.
+func (s *Store) GhostHosts(ctx context.Context, deployment string) ([]GhostHost, error) {
+	return ghostHostsOn(ctx, s.pool, deployment)
 }
 
-func controlHostsOn(ctx context.Context, db rowQuerier, deployment string) ([]ControlHost, error) {
+func ghostHostsOn(ctx context.Context, db rowQuerier, deployment string) ([]GhostHost, error) {
 	q := `SELECT deployment_id, nova_hostname, first_seen_at, last_seen_at
-		FROM openstack_control_hosts`
+		FROM openstack_ghost_hosts`
 	var args []any
 	if deployment != "" {
 		q += ` WHERE deployment_id=$1`
 		args = append(args, deployment)
 	}
 	return queryAndCollect(ctx, db, q+` ORDER BY deployment_id, nova_hostname`, args,
-		func(r pgx.Rows) (ControlHost, error) {
-			var c ControlHost
+		func(r pgx.Rows) (GhostHost, error) {
+			var c GhostHost
 			err := r.Scan(&c.DeploymentID, &c.NovaHostname, &c.FirstSeenAt, &c.LastSeenAt)
 			return c, err
 		})

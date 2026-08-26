@@ -17,9 +17,9 @@ type FarmMember struct {
 	Confidence   string // declared | confirmed | local-only | control-only
 
 	// Controller is whether the newest capability pass found the control
-	// plane on this machine. It comes from the probe, not from
-	// openstack_control_hosts — that table, despite the name, holds names the
-	// control plane reports that match NO inventory host.
+	// plane on this machine. The probe is the only source: ghost rows are the
+	// opposite of controllers (names matching no inventory host), and reading
+	// them as controllers is the misreading that once shipped a wrong banner.
 	Controller bool
 }
 
@@ -33,12 +33,12 @@ type FarmTopology struct {
 	StateNote    string
 	Team         string // metadata->>'team'; who the farm is run for, empty when unrecorded
 
-	// UnmatchedNames are machines the control plane names that the reconciler
-	// could pair with no inventory host (the openstack_control_hosts table —
-	// see store.ControlHost). One of them today is an inventory host whose
+	// GhostNames are machines the control plane names that the reconciler
+	// could pair with no inventory host (the openstack_ghost_hosts table —
+	// see store.GhostHost). One of them today is an inventory host whose
 	// nova.conf carries a typo'd name; the caller decides how visible to make
 	// each one, because a name nobody claims is worth showing, not dropping.
-	UnmatchedNames []string
+	GhostNames []string
 
 	// SyncedAt is the newest membership observation — the honest value for a
 	// "last synced" line, as opposed to "when this query ran".
@@ -120,12 +120,12 @@ func (s *Store) fillFarmTopology(ctx context.Context, f *FarmTopology) error {
 	f.Members = members
 
 	ctrl, err := s.pool.Query(ctx, `
-		SELECT nova_hostname FROM openstack_control_hosts
+		SELECT nova_hostname FROM openstack_ghost_hosts
 		WHERE deployment_id=$1 ORDER BY nova_hostname`, f.DeploymentID)
 	if err != nil {
 		return err
 	}
-	f.UnmatchedNames, err = collectRows(ctrl, func(r pgx.Rows) (string, error) {
+	f.GhostNames, err = collectRows(ctrl, func(r pgx.Rows) (string, error) {
 		var n string
 		err := r.Scan(&n)
 		return n, err

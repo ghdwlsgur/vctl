@@ -155,7 +155,7 @@ func TestZeroStaleWindowMarksNothingStale(t *testing.T) {
 func TestGhostsAndMissingVMsBecomeAnomalies(t *testing.T) {
 	gone := time.Now().Add(-time.Hour)
 	got := Assess(Input{
-		Ghosts:    []store.ControlHost{{NovaHostname: "sre-svr-0032", FirstSeenAt: gone}},
+		Ghosts:    []store.GhostHost{{NovaHostname: "sre-svr-0032", FirstSeenAt: gone}},
 		Instances: []store.Instance{{InstanceID: "u1", MissingSince: &gone}, {InstanceID: "u2"}},
 	})
 

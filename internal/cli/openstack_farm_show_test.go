@@ -111,7 +111,7 @@ func TestFarmShowGathersAnomalies(t *testing.T) {
 	a := assessed([]store.OpenStackHost{
 		aioHost("n1", []string{"compute"}, nil, "2025.1", store.ConfidenceLocalOnly),
 	}, openstack.Input{
-		Ghosts: []store.ControlHost{{NovaHostname: "sre-svr-0032", FirstSeenAt: gone}},
+		Ghosts: []store.GhostHost{{NovaHostname: "sre-svr-0032", FirstSeenAt: gone}},
 	})
 
 	var buf bytes.Buffer

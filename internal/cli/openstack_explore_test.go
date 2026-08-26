@@ -35,7 +35,7 @@ func assertReadsOnly(t *testing.T, filename, what string) {
 	}
 	banned := map[string]bool{
 		"ReconcileDeployment": true, "RecordReconcileRun": true,
-		"RecordControlHosts": true, "ReplaceInstances": true,
+		"RecordGhostHosts": true, "ReplaceInstances": true,
 		"SetDeploymentName": true, "SetDeploymentState": true,
 		"ReplaceCapabilities": true, "RecordCapabilityError": true,
 		"UpsertServerStatus": true,

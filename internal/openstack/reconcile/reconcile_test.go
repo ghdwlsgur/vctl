@@ -91,7 +91,7 @@ func (r *fakeRepo) RecordRun(_ context.Context, id string, _ membership.Outcome,
 	return r.fail("run", id)
 }
 
-func (r *fakeRepo) RecordControlHosts(_ context.Context, id string, _ []string, at time.Time) error {
+func (r *fakeRepo) RecordGhostHosts(_ context.Context, id string, _ []string, at time.Time) error {
 	r.writes = append(r.writes, write{kind: "control", id: id, at: at})
 	return r.fail("control", id)
 }

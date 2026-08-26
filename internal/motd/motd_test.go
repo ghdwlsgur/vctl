@@ -13,15 +13,15 @@ import (
 // seoulB mirrors the real farm that prompted the feature: the controller is
 // known from the capability probe, and one compute's nova.conf carries a typo
 // ("sre-svr-0032"), so the control plane's name for it matched no inventory
-// host and landed in UnmatchedNames.
+// host and landed in GhostNames.
 func seoulB() store.FarmTopology {
 	return store.FarmTopology{
-		DeploymentID:   "172.16.0.150:5000",
-		DisplayName:    "seoul-b",
-		State:          "active",
-		Team:           "AI Native Platform",
-		SyncedAt:       time.Date(2026, 8, 25, 5, 57, 47, 0, time.UTC),
-		UnmatchedNames: []string{"sre-svr-0032"},
+		DeploymentID: "172.16.0.150:5000",
+		DisplayName:  "seoul-b",
+		State:        "active",
+		Team:         "AI Native Platform",
+		SyncedAt:     time.Date(2026, 8, 25, 5, 57, 47, 0, time.UTC),
+		GhostNames:   []string{"sre-svr-0032"},
 		Members: []store.FarmMember{
 			{Hostname: "sre-srv-0025", IP: "192.168.201.52", NovaHostname: "sre-srv-0025", Confidence: "confirmed"},
 			{Hostname: "sre-srv-0030", IP: "192.168.201.58", NovaHostname: "sre-srv-0030", Confidence: "confirmed"},
@@ -84,7 +84,7 @@ func TestUnclaimableNovaNamesAreWarnedNotGuessed(t *testing.T) {
 		State:       "active",
 		SyncedAt:    time.Date(2026, 8, 25, 2, 12, 0, 0, time.UTC),
 		// cm-web is near nothing; sre-gpu03 is one keystroke from BOTH members.
-		UnmatchedNames: []string{"cm-web", "sre-gpu03"},
+		GhostNames: []string{"cm-web", "sre-gpu03"},
 		Members: []store.FarmMember{
 			{Hostname: "sre-gpu01", IP: "10.0.0.1"},
 			{Hostname: "sre-gpu02", IP: "10.0.0.2"},
@@ -104,10 +104,10 @@ func TestUnclaimableNovaNamesAreWarnedNotGuessed(t *testing.T) {
 // member is pinned to it.
 func TestNovaNamePinsThroughSitePrefix(t *testing.T) {
 	f := store.FarmTopology{
-		DisplayName:    "incheon-main-farm",
-		State:          "active",
-		SyncedAt:       time.Date(2026, 8, 25, 6, 24, 0, 0, time.UTC),
-		UnmatchedNames: []string{"aio01"},
+		DisplayName: "incheon-main-farm",
+		State:       "active",
+		SyncedAt:    time.Date(2026, 8, 25, 6, 24, 0, 0, time.UTC),
+		GhostNames:  []string{"aio01"},
 		Members: []store.FarmMember{
 			{Hostname: "incheon-aio01", IP: "192.168.10.11", Controller: true},
 			{Hostname: "incheon-gpu01", IP: "192.168.10.14"},

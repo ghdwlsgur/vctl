@@ -79,8 +79,8 @@ func (r storeRepo) RecordRun(ctx context.Context, id string, res membership.Outc
 	return r.st.RecordReconcileRun(ctx, id, res, at, runErr)
 }
 
-func (r storeRepo) RecordControlHosts(ctx context.Context, id string, hosts []string, at time.Time) error {
-	return r.st.RecordControlHosts(ctx, id, hosts, at)
+func (r storeRepo) RecordGhostHosts(ctx context.Context, id string, hosts []string, at time.Time) error {
+	return r.st.RecordGhostHosts(ctx, id, hosts, at)
 }
 
 func (r storeRepo) ReplaceInstances(ctx context.Context, id string, rows []store.Instance, at time.Time, complete bool) (int, error) {

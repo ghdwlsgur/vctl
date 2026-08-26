@@ -194,7 +194,7 @@ type Input struct {
 	// ones, so filtering them out beforehand would hide the number.
 	Instances []store.Instance
 	Run       *store.ReconcileRun
-	Ghosts    []store.ControlHost
+	Ghosts    []store.GhostHost
 
 	// StaleAfter is how old a successful reconcile may be before Freshness
 	// calls it stale. Zero disables the judgement rather than making everything
