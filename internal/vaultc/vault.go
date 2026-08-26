@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,14 +42,25 @@ type cachedToken struct {
 
 // New creates a Vault client configured with the embedded private CA.
 // Cached tokens are loaded immediately when present.
+//
+// The operator's environment does not get a say in where this client connects
+// or whether it verifies the server. vault.DefaultConfig reads VAULT_* variables,
+// and two of them would quietly undo what vctl is for: VAULT_SKIP_VERIFY turns
+// certificate verification off before the embedded CA is even installed (the
+// library's ConfigureTLS only ever sets InsecureSkipVerify to true, never back),
+// and VAULT_AGENT_ADDR redirects every request to another process. A stale
+// `export VAULT_SKIP_VERIFY=1` from a dev Vault must not send production tokens,
+// OIDC codes, DB credentials and SSH signing requests over an unverified channel.
 func New(addr string, caPEM []byte, stateDir string) (*Client, error) {
 	cfg := vault.DefaultConfig()
 	cfg.Address = addr
+	cfg.AgentAddress = ""
 	if len(caPEM) > 0 {
 		if err := cfg.ConfigureTLS(&vault.TLSConfig{CACertBytes: caPEM}); err != nil {
 			return nil, fmt.Errorf("configure TLS: %w", err)
 		}
 	}
+	pinTLSVerification(cfg)
 	api, err := vault.NewClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("new vault client: %w", err)
@@ -56,6 +68,20 @@ func New(addr string, caPEM []byte, stateDir string) (*Client, error) {
 	c := &Client{api: api, tokenPath: filepath.Join(stateDir, "token")}
 	c.loadToken()
 	return c, nil
+}
+
+// pinTLSVerification makes sure the transport verifies the server no matter
+// what the environment asked for. Only the flag is touched: the RootCAs that
+// ConfigureTLS installed from the embedded CA stay as they are.
+func pinTLSVerification(cfg *vault.Config) {
+	if cfg == nil || cfg.HttpClient == nil {
+		return
+	}
+	tr, ok := cfg.HttpClient.Transport.(*http.Transport)
+	if !ok || tr.TLSClientConfig == nil {
+		return
+	}
+	tr.TLSClientConfig.InsecureSkipVerify = false
 }
 
 // HasValidToken reports whether the cached token is valid with 60s of margin.

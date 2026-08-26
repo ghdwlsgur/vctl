@@ -117,9 +117,23 @@ func (e hostEdits) empty() bool {
 // apply writes each requested change, reporting what actually landed. A rename
 // goes last: everything before it is keyed by the old hostname.
 func (e hostEdits) apply(ctx context.Context, st editStore, host string) error {
+	// ssh_user is later handed to an external ssh by `vctl trust-ca`; refuse a
+	// value that would be read there as an option rather than a user.
+	if e.User != "" {
+		if err := validLoginUser(e.User); err != nil {
+			return fmt.Errorf("invalid --user: %w", err)
+		}
+	}
 	type step struct {
 		label string
 		run   func() (bool, error)
+	}
+	if e.User != "" {
+		// ssh_user reaches an external ssh argv via `vctl trust-ca`; a value that
+		// could be read as an option must not enter the inventory. See validLoginUser.
+		if err := validLoginUser(e.User); err != nil {
+			return fmt.Errorf("invalid --user: %w", err)
+		}
 	}
 	var steps []step
 	if e.DC != "" {
