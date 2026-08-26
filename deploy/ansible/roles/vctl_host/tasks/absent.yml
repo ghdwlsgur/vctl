@@ -41,6 +41,10 @@
     - vctl-node-agent
   failed_when: false
 
+# 팜 컨트롤러였던 호스트라면 reconciler 도 걷는다 (아니었다면 전부 no-op).
+- name: Remove the reconciler
+  ansible.builtin.include_tasks: reconciler_absent.yml
+
 - name: Remove installed files
   ansible.builtin.file:
     path: "{{ item }}"

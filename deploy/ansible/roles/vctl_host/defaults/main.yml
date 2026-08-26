@@ -119,6 +119,12 @@ vctl_host_services: >-
 
 # OpenStack 팜 membership reconciler. 팜당 컨트롤러 한 대에만 opt-in 으로 깐다.
 #
+# 플래그의 정본은 인벤토리다: hosts.ini 의 해당 호스트 줄에
+# openstack_reconciler=true 를 박는다. -e 로 주는 것은 일회성 실험에만 —
+# -e 에만 의존하면 플래그 없는 함대 런이 reconciler 를 스킵해서 stale 상태로
+# 남긴다 (2026-08-25 에 그렇게 두 번 깨졌다). 플래그가 꺼진 호스트에서 잔재가
+# 발견되면 present.yml 이 걷어낸다 (reconciler_absent.yml).
+#
 # 중앙에서 돌리는 것이 먼저였고 성립하지 않았다 — 각 팜의 Keystone VIP 는 그 팜
 # 안에서만 도달한다. node-agent 와 자격증명을 나누는 이유는 vctl-node AppRole 이
 # 함대 43대의 공유 자격이기 때문이다: 거기에 OpenStack admin 읽기를 얹으면 모든

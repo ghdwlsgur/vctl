@@ -1,0 +1,49 @@
+---
+# Reconciler teardown, shared by two callers:
+#   - present.yml: 인벤토리 플래그(openstack_reconciler)가 꺼진 호스트에서 과거
+#     opt-in 이 남긴 잔재를 걷는다.
+#   - absent.yml: state=absent 전체 롤백의 일부.
+# 모든 태스크는 잔재가 없어도 멱등 no-op 이다.
+
+# 발급 때 남긴 accessor 로 Vault 쪽 secret_id 를 지운다. accessor 파일이 없는
+# 호스트(과거 발급분)는 로컬 자격만 지워지고 Vault 쪽은 TTL 만료에 맡긴다.
+- name: Read reconciler secret_id accessor for revocation
+  ansible.builtin.slurp:
+    src: /etc/vctl/reconcile-secret-id-accessor
+  register: vctl_host_reconciler_absent_accessor
+  failed_when: false
+  changed_when: false
+
+- name: Revoke the reconciler secret_id
+  when: (vctl_host_reconciler_absent_accessor.content | default('') | length) > 0
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    argv:
+      - vault
+      - write
+      - -f
+      - "auth/approle/role/{{ vctl_host_reconciler_approle }}/secret-id-accessor/destroy"
+      - "secret_id_accessor={{ vctl_host_reconciler_absent_accessor.content | b64decode | trim }}"
+  changed_when: true
+  failed_when: false
+
+- name: Stop and disable the reconciler timer
+  ansible.builtin.systemd:
+    name: vctl-openstack-reconcile.timer
+    enabled: false
+    state: stopped
+  failed_when: false
+
+- name: Remove reconciler units and credentials
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/vctl-openstack-reconcile.timer
+    - /etc/systemd/system/vctl-openstack-reconcile.service
+    - /etc/systemd/system/vctl-openstack-reconcile.service.d
+    - /etc/vctl/reconcile-role-id
+    - /etc/vctl/reconcile-secret-id
+    - /etc/vctl/reconcile-secret-id-accessor
+  notify: Reload systemd
