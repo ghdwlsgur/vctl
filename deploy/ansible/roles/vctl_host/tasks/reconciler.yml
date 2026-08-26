@@ -30,7 +30,10 @@
   register: vctl_host_reconciler_secret_id
 
 # secret_id 는 제어 노드의 Vault 토큰으로 호스트마다 새로 발급한다. 이미지나
-# 저장소에 담기지 않는다.
+# 저장소에 담기지 않는다. accessor 도 함께 받아 호스트에 남긴다 — 철거할 때
+# 그것으로 revoke 한다 (node-agent 온보딩의 /etc/vctl/secret-id-accessor 와
+# 같은 패턴, absent.yml 참조). accessor 없이 걷어낸 호스트는 로컬 자격만
+# 지워지고 Vault 쪽 secret_id 는 TTL 만료를 기다리게 된다.
 - name: Mint a reconciler secret_id
   when: not vctl_host_reconciler_secret_id.stat.exists
   delegate_to: localhost
@@ -39,7 +42,7 @@
     argv:
       - vault
       - write
-      - -field=secret_id
+      - -format=json
       - -force
       - "auth/approle/role/{{ vctl_host_reconciler_approle }}/secret-id"
   register: vctl_host_reconciler_new_secret
@@ -49,8 +52,18 @@
 - name: Install the reconciler secret_id
   when: not vctl_host_reconciler_secret_id.stat.exists
   ansible.builtin.copy:
-    content: "{{ vctl_host_reconciler_new_secret.stdout }}"
+    content: "{{ (vctl_host_reconciler_new_secret.stdout | from_json).data.secret_id }}"
     dest: /etc/vctl/reconcile-secret-id
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the reconciler secret_id accessor (for teardown revocation)
+  when: not vctl_host_reconciler_secret_id.stat.exists
+  ansible.builtin.copy:
+    content: "{{ (vctl_host_reconciler_new_secret.stdout | from_json).data.secret_id_accessor }}"
+    dest: /etc/vctl/reconcile-secret-id-accessor
     owner: root
     group: root
     mode: "0600"
