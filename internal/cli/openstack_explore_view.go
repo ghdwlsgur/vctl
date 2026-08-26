@@ -51,7 +51,19 @@ func (m exploreModel) bodyHeight() int {
 	return h
 }
 
-func (m exploreModel) rowsHeight() int { return m.bodyHeight() }
+// rowsHeight is how many data rows the row pane can actually show, and it is the
+// one number both the renderer and the scroller must agree on. The pane gets
+// bodyHeight()+1 lines (see View); two go to the pane heading and column header
+// and one is reserved for the "N–M of Z" position line, so the rest are rows.
+// The renderer used bodyHeight()-1 while scrollRows used bodyHeight(): the row
+// at the very bottom of the window was inside what the scroller kept visible but
+// past what the renderer drew, so it vanished and enter opened an off-screen row.
+func (m exploreModel) rowsHeight() int {
+	if h := m.bodyHeight() - 2; h > 1 {
+		return h
+	}
+	return 1
+}
 
 func (m exploreModel) rowPaneWidth() int {
 	w := m.width - farmPaneWidth - 3
@@ -287,14 +299,15 @@ func (m exploreModel) rowPaneLines() []string {
 		out = append(out, ui.Muted("  nothing here"))
 		return out
 	}
-	end := min(m.rowTop+m.rowsHeight()-1, len(cells))
+	end := min(m.rowTop+m.rowsHeight(), len(cells))
 	for i := m.rowTop; i < end; i++ {
 		out = append(out, m.cursorLine(cols.render(cells[i], width-2),
 			i == clampIndex(m.rowCur, len(cells)), m.focus == paneRows))
 	}
 	// The count is in the heading, so a partial window is visible there; this
-	// says which part.
-	if len(cells) > m.rowsHeight()-1 {
+	// says which part. The slot for it is reserved in rowsHeight, so it never
+	// pushes a row off the bottom of the pane.
+	if len(cells) > m.rowsHeight() {
 		out = append(out, ui.Muted(fmt.Sprintf("  %d–%d of %d", m.rowTop+1, end, len(cells))))
 	}
 	return out

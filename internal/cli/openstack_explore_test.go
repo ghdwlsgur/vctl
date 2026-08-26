@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -845,5 +846,49 @@ func TestTheRendererCannotMoveTheCursor(t *testing.T) {
 	// instead of going quietly green.
 	if checked < 10 {
 		t.Errorf("only %d methods found in the view; this test is not reading the file it names", checked)
+	}
+}
+
+// A list taller than the pane must still show the row the cursor is on. The
+// renderer and the scroller compute the window separately; when they disagreed
+// by one, moving to the bottom of a long farm scrolled the selected row off the
+// screen and enter opened a VM nobody could see. Build a farm bigger than the
+// pane, walk to the last row, and require the cursor marker to be on screen.
+func TestTheCursorRowIsAlwaysRenderedInALongList(t *testing.T) {
+	const farmID = "10.0.0.1:5000"
+	vms := make([]store.Instance, 30)
+	for i := range vms {
+		vms[i] = store.Instance{
+			DeploymentID: farmID,
+			InstanceID:   fmt.Sprintf("u-%d", i),
+			Name:         fmt.Sprintf("vm-%02d", i),
+			Status:       "ACTIVE",
+			ProjectName:  "platform",
+		}
+	}
+	d := exploreData{
+		Farms:  []farmChoice{farmOf(farmID, "seoul-a", "compute")},
+		VMs:    map[string][]store.Instance{farmID: vms},
+		Names:  map[string]string{farmID: "seoul-a"},
+		ReadAt: time.Now(),
+	}
+	m := newExploreModel(d)
+	m.width, m.height = 120, 14 // a pane far shorter than 30 rows
+	m.focus = paneRows
+
+	for i := 0; i < len(vms)-1; i++ { // walk to the last row
+		m = key(m, "down")
+	}
+
+	if m.rowCur < m.rowTop || m.rowCur >= m.rowTop+m.rowsHeight() {
+		t.Fatalf("cursor %d outside the window [%d,%d)", m.rowCur, m.rowTop, m.rowTop+m.rowsHeight())
+	}
+	// The real proof: the cursor marker is in what the pane actually draws.
+	lines := m.rowPaneLines()
+	if len(lines) > m.bodyHeight()+1 {
+		t.Errorf("row pane emitted %d lines, more than the %d the view draws", len(lines), m.bodyHeight()+1)
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "›") {
+		t.Fatalf("the selected row is not rendered; the cursor scrolled off screen\n%s", strings.Join(lines, "\n"))
 	}
 }

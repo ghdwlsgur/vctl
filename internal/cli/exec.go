@@ -62,9 +62,16 @@ vctl renews or re-authenticates the token while the child process is alive.
 				"VAULT_ADDR="+a.Cfg.VaultAddr,
 				"VAULT_TOKEN="+a.Vault.Token(),
 			)
-			// Let the child process receive SIGINT.
-			signal.Ignore(os.Interrupt)
-			defer signal.Reset(os.Interrupt)
+			// Let the child process receive SIGINT (^C at the terminal goes to the
+			// whole foreground group). signal.Ignore sets SIG_IGN, which the child
+			// inherits across exec and keeps — so a plain `sh`/`sleep`/python child
+			// would ignore ^C too, the opposite of the intent. signal.Notify only
+			// detaches vctl's own handler: the child inherits the default
+			// disposition and terminates on ^C, while vctl swallows it here rather
+			// than dying and orphaning the child.
+			sigint := make(chan os.Signal, 1)
+			signal.Notify(sigint, os.Interrupt)
+			defer signal.Stop(sigint)
 
 			if err := child.Run(); err != nil {
 				if ee, ok := err.(*exec.ExitError); ok {
