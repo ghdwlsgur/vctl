@@ -193,23 +193,26 @@ func (s *Service) Run(ctx context.Context, req Request) (Report, error) {
 			out.Partial = PartialReason(list)
 		}
 
-		if req.DryRun {
-			out.Result = Preview(f.LocalHosts, list.Hosts)
-			out.Result.Complete = list.Complete
-			rep.Outcomes = append(rep.Outcomes, out)
-			continue
-		}
-
-		out.Instances, out.Warnings = s.collectInstances(ctx, f.ID, creds, req.Insecure, out.Warnings)
-
-		// Decided here, written below. The decision is the same function
-		// --dry-run calls, so what a preview showed is what a run does.
+		// Decide once, up front, from the real completeness of this listing. A
+		// dry run then reports exactly this and writes nothing; a real run applies
+		// it. Computing the decision after the dry-run branch (via Preview, which
+		// hardcoded Complete:true) let a preview show a demotion the run would not
+		// make on a partial answer.
 		decision := membership.Decide(membership.Observation{
 			DeploymentID: f.ID, KeystoneURL: f.ID,
 			LocalHosts: f.LocalHosts, ControlHosts: list.Hosts,
 			Complete: list.Complete,
 			At:       s.now(),
 		})
+
+		if req.DryRun {
+			out.Result = decision.Outcome
+			rep.Outcomes = append(rep.Outcomes, out)
+			continue
+		}
+
+		out.Instances, out.Warnings = s.collectInstances(ctx, f.ID, creds, req.Insecure, out.Warnings)
+
 		if err := s.Repo.Apply(ctx, decision); err != nil {
 			return rep, fmt.Errorf("%s: %w", f.ID, err)
 		}
@@ -222,8 +225,17 @@ func (s *Service) Run(ctx context.Context, req Request) (Report, error) {
 		// a nova service on a machine nobody has registered is either a
 		// forgotten host, a name that drifted, or something that should not be
 		// running — and none of those survives being said once.
-		if e := s.Repo.RecordGhostHosts(ctx, f.ID, decision.Outcome.ControlOnly, s.now()); e != nil {
-			out.Warnings = append(out.Warnings, fmt.Errorf("recording control-only hosts: %w", e))
+		//
+		// Only on a complete listing, though. RecordGhostHosts deletes the ghost
+		// rows this pass did not name, and a partial answer (os-services 403,
+		// say) drops controllers from ControlOnly without their having gone
+		// anywhere. Membership already guards demotion on Complete; the ghost
+		// table has to as well, or a transient error resets first_seen_at on
+		// every ghost the next full pass re-adds.
+		if list.Complete {
+			if e := s.Repo.RecordGhostHosts(ctx, f.ID, decision.Outcome.ControlOnly, s.now()); e != nil {
+				out.Warnings = append(out.Warnings, fmt.Errorf("recording control-only hosts: %w", e))
+			}
 		}
 		rep.Outcomes = append(rep.Outcomes, out)
 	}

@@ -254,6 +254,81 @@ func TestABookkeepingFailureDoesNotFailTheRun(t *testing.T) {
 	}
 }
 
+// A partial answer must not touch the ghost table. RecordGhostHosts deletes the
+// ghost rows a pass did not name, so on a partial listing (os-services down,
+// controllers missing from ControlOnly through no fault of their own) it would
+// delete real ghosts and reset their first_seen_at on the next full pass.
+// Membership already holds on a partial answer; the ghost write has to as well.
+func TestAPartialAnswerDoesNotTouchTheGhostTable(t *testing.T) {
+	creds := &fakeCreds{}
+	cloud := &fakeCloud{hosts: map[string]openstackapi.HostList{
+		"a": {Hosts: []string{"h1", "ghost"}, Complete: false, ServiceError: "503"},
+	}}
+	repo := &fakeRepo{}
+
+	rep, err := svc(creds, cloud, repo).Run(context.Background(), Request{
+		Farms: []Farm{{ID: "a", LocalHosts: []string{"h1"}}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if slices.Contains(repo.kinds(), "control") {
+		t.Errorf("a partial answer wrote the ghost table: %v", repo.kinds())
+	}
+	// The run still happened and was recorded — only the destructive ghost sweep
+	// is withheld.
+	if !slices.Contains(repo.kinds(), "reconcile") || !slices.Contains(repo.kinds(), "run") {
+		t.Errorf("a partial answer skipped the membership write too: %v", repo.kinds())
+	}
+	if rep.Outcomes[0].Partial == "" {
+		t.Error("a partial answer was not named as one")
+	}
+}
+
+// A complete answer still writes the ghost table — the guard is about partial
+// answers, not about turning the feature off.
+func TestACompleteAnswerWritesTheGhostTable(t *testing.T) {
+	creds := &fakeCreds{}
+	cloud := &fakeCloud{hosts: map[string]openstackapi.HostList{"a": complete("h1", "ghost")}}
+	repo := &fakeRepo{}
+
+	if _, err := svc(creds, cloud, repo).Run(context.Background(), Request{
+		Farms: []Farm{{ID: "a", LocalHosts: []string{"h1"}}},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !slices.Contains(repo.kinds(), "control") {
+		t.Errorf("a complete answer did not write the ghost table: %v", repo.kinds())
+	}
+}
+
+// A dry run must decide exactly what the real run decides — on a partial answer
+// too. The preview used to force Complete:true and so could show a demotion the
+// real run, holding on the partial answer, would never make.
+func TestADryRunOnAPartialAnswerMatchesTheRealRun(t *testing.T) {
+	partial := func() *fakeCloud {
+		return &fakeCloud{hosts: map[string]openstackapi.HostList{
+			"a": {Hosts: []string{"h1"}, Complete: false, ServiceError: "503"},
+		}}
+	}
+	farms := []Farm{{ID: "a", LocalHosts: []string{"h1", "h2"}}}
+
+	dry, err := svc(&fakeCreds{}, partial(), &fakeRepo{}).Run(context.Background(),
+		Request{DryRun: true, Farms: farms})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	real, err := svc(&fakeCreds{}, partial(), &fakeRepo{}).Run(context.Background(),
+		Request{Farms: farms})
+	if err != nil {
+		t.Fatalf("real run: %v", err)
+	}
+	if !slices.Equal(dry.Outcomes[0].Result.LocalOnly, real.Outcomes[0].Result.LocalOnly) {
+		t.Errorf("dry LocalOnly %v != real %v — the preview lied about a partial answer",
+			dry.Outcomes[0].Result.LocalOnly, real.Outcomes[0].Result.LocalOnly)
+	}
+}
+
 // The membership write is the exception. A database that will not take it is
 // not about this farm, and continuing would keep writing into something that is
 // not answering.
