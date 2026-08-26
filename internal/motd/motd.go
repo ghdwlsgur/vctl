@@ -53,14 +53,14 @@ func Render(b Banner, farms []store.FarmTopology) string {
 	var synced time.Time
 	sections := make([]string, 0, len(farms))
 	for _, f := range farms {
-		rows, isController := topologyRows(b.Self, f)
+		rows, isController, unclaimed := topologyRows(b.Self, f)
 		if isController {
 			role = "Controller"
 		}
 		if f.SyncedAt.After(synced) {
 			synced = f.SyncedAt
 		}
-		sections = append(sections, section(f, rows))
+		sections = append(sections, section(f, rows, unclaimed))
 	}
 
 	fmt.Fprintf(&out, "This server is an OpenStack %s Node.\n", role)
@@ -90,74 +90,126 @@ func Render(b Banner, farms []store.FarmTopology) string {
 // row is one line of the topology table, already classified.
 type row struct {
 	label    string // "Controller" or "Compute #n"
-	addr     string // IP, or a note when the machine is only a control-plane name
+	addr     string // the member's inventory IP
 	hostname string
+	novaName string // set when the control plane calls this machine something else
 	here     bool
 }
 
 // topologyRows classifies a farm's members into controller and compute lines,
-// and reports whether self is one of the controllers.
+// and reports whether self is one of the controllers, plus any control-plane
+// names that could be attached to no member at all.
 //
-// Controller identity comes from pairing the control plane's host list against
-// the members. The names differ (nova says aio01, the inventory says
-// incheon-aio01), so exact evidence is tried first and membership.MatchHosts
-// handles the rest. A control name that matches nothing still gets a line: on
-// the farm that prompted this, nova reports a name with a typo in it
-// ("sre-svr-…"), and showing the unmatched name at the login prompt is how a
-// human finds that out.
-func topologyRows(self string, f store.FarmTopology) (rows []row, selfIsController bool) {
-	controllers := map[string]bool{}
-	matched := map[string]bool{}
+// Controller identity comes from the capability probe (FarmMember.Controller),
+// not from openstack_control_hosts — that table holds the opposite: names the
+// control plane reports that matched NO inventory host. Each of those is first
+// pinned to a member when only one member's name is a near miss (the farm that
+// prompted this has a compute whose nova.conf says "sre-svr-…" for a machine
+// the inventory calls "sre-srv-…"); the pinned row then shows the member's real
+// IP with the control plane's spelling beside it. A name with zero or several
+// near misses stays unattached and is rendered as a warning line — guessing
+// would put the banner's arrow on the wrong machine.
+func topologyRows(self string, f store.FarmTopology) (rows []row, selfIsController bool, unclaimed []string) {
+	novaName := map[string]string{}
 
-	byNova := map[string]string{}
 	local := make([]string, 0, len(f.Members))
 	for _, m := range f.Members {
 		local = append(local, m.Hostname)
-		if m.NovaHostname != "" {
-			byNova[m.NovaHostname] = m.Hostname
-		}
 	}
-	var loose []string
-	for _, c := range f.ControlNames {
-		if host, ok := byNova[c]; ok {
-			controllers[host] = true
-			matched[c] = true
+	pairs, _ := membership.MatchHosts(local, f.UnmatchedNames)
+	claimed := map[string]bool{}
+	for host, c := range pairs {
+		novaName[host] = c
+		claimed[c] = true
+	}
+	for _, c := range f.UnmatchedNames {
+		if claimed[c] {
 			continue
 		}
-		loose = append(loose, c)
-	}
-	pairs, _ := membership.MatchHosts(local, loose)
-	for host, c := range pairs {
-		controllers[host] = true
-		matched[c] = true
+		var hits []string
+		for _, m := range f.Members {
+			if _, taken := novaName[m.Hostname]; !taken && nearlySame(m.Hostname, c) {
+				hits = append(hits, m.Hostname)
+			}
+		}
+		if len(hits) == 1 {
+			novaName[hits[0]] = c
+			continue
+		}
+		unclaimed = append(unclaimed, c)
 	}
 
 	for _, m := range f.Members {
-		if controllers[m.Hostname] {
-			rows = append(rows, row{label: "Controller", addr: m.IP, hostname: m.Hostname, here: m.Hostname == self})
+		if m.Controller {
+			rows = append(rows, row{label: "Controller", addr: m.IP, hostname: m.Hostname,
+				novaName: novaName[m.Hostname], here: m.Hostname == self})
 			if m.Hostname == self {
 				selfIsController = true
 			}
 		}
 	}
-	for _, c := range f.ControlNames {
-		if !matched[c] {
-			rows = append(rows, row{label: "Controller", addr: "?", hostname: c + " (control plane name, not in inventory)"})
-		}
-	}
 	n := 0
 	for _, m := range f.Members {
-		if controllers[m.Hostname] {
+		if m.Controller {
 			continue
 		}
 		n++
-		rows = append(rows, row{label: fmt.Sprintf("Compute #%d", n), addr: m.IP, hostname: m.Hostname, here: m.Hostname == self})
+		rows = append(rows, row{label: fmt.Sprintf("Compute #%d", n), addr: m.IP, hostname: m.Hostname,
+			novaName: novaName[m.Hostname], here: m.Hostname == self})
 	}
-	return rows, selfIsController
+	return rows, selfIsController, unclaimed
+}
+
+// nearlySame reports whether two host names differ by at most one typo — one
+// substituted, inserted, or deleted character, or one adjacent transposition
+// (Damerau-Levenshtein distance ≤ 1), ignoring case and domain suffixes.
+//
+// This deliberately does NOT live in membership.MatchHosts: pairing on a typo
+// is fine for putting an IP next to a name on a banner, and wrong for deciding
+// membership — the reconciler must keep reporting the mismatch until somebody
+// fixes the nova.conf that causes it.
+func nearlySame(a, b string) bool {
+	a = strings.ToLower(shortHost(a))
+	b = strings.ToLower(shortHost(b))
+	if a == b {
+		return true
+	}
+	if len(a) == len(b) {
+		i := 0
+		for a[i] == b[i] {
+			i++
+		}
+		if a[i+1:] == b[i+1:] { // one substitution
+			return true
+		}
+		// one adjacent transposition
+		return i+1 < len(a) && a[i] == b[i+1] && a[i+1] == b[i] && a[i+2:] == b[i+2:]
+	}
+	long, short := a, b
+	if len(b) > len(a) {
+		long, short = b, a
+	}
+	if len(long)-len(short) != 1 {
+		return false
+	}
+	i := 0
+	for i < len(short) && long[i] == short[i] {
+		i++
+	}
+	return long[i+1:] == short[i:] // one insertion
+}
+
+// shortHost drops a domain suffix; sre-srv-0059.internal and sre-srv-0059 are
+// one machine. (membership has the same helper, unexported.)
+func shortHost(h string) string {
+	if s, _, ok := strings.Cut(h, "."); ok {
+		return s
+	}
+	return h
 }
 
 // section renders one farm's topology block with aligned columns.
-func section(f store.FarmTopology, rows []row) string {
+func section(f store.FarmTopology, rows []row, unclaimed []string) string {
 	var out strings.Builder
 	title := "[ Cluster Topology ]"
 	if f.DisplayName != "" {
@@ -179,11 +231,19 @@ func section(f store.FarmTopology, rows []row) string {
 		addrW = max(addrW, len(r.addr))
 	}
 	for _, r := range rows {
-		fmt.Fprintf(&out, "  %-*s : %-*s  (%s)", labelW, r.label, addrW, r.addr, r.hostname)
+		name := r.hostname
+		if r.novaName != "" {
+			name += fmt.Sprintf(", nova calls it %q", r.novaName)
+		}
+		fmt.Fprintf(&out, "  %-*s : %-*s  (%s)", labelW, r.label, addrW, r.addr, name)
 		if r.here {
 			out.WriteString("  <- HERE")
 		}
 		out.WriteString("\n")
+	}
+	if len(unclaimed) > 0 {
+		fmt.Fprintf(&out, "  !! nova reports hosts the inventory does not know: %s\n",
+			strings.Join(unclaimed, ", "))
 	}
 	return out.String()
 }
