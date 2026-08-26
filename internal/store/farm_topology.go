@@ -9,12 +9,18 @@ import (
 
 // FarmMember is one host of a deployment as the MOTD renderer needs it: the
 // inventory identity, plus the name the control plane knows the machine by so
-// the caller can pair it against the control-host list.
+// the caller can pair it against the unmatched-name list.
 type FarmMember struct {
 	Hostname     string
 	IP           string
 	NovaHostname string // evidence->>'nova_hostname'; empty when nova never confirmed it
 	Confidence   string // declared | confirmed | local-only | control-only
+
+	// Controller is whether the newest capability pass found the control
+	// plane on this machine. It comes from the probe, not from
+	// openstack_control_hosts — that table, despite the name, holds names the
+	// control plane reports that match NO inventory host.
+	Controller bool
 }
 
 // FarmTopology is one deployment's membership as the inventory believes it,
@@ -27,11 +33,12 @@ type FarmTopology struct {
 	StateNote    string
 	Team         string // metadata->>'team'; who the farm is run for, empty when unrecorded
 
-	// ControlNames are the control plane hosts as nova reports them. They are
-	// nova's names, not inventory names — pairing the two is the caller's
-	// problem (membership.MatchHosts), because an unmatchable control name is
-	// worth showing rather than dropping.
-	ControlNames []string
+	// UnmatchedNames are machines the control plane names that the reconciler
+	// could pair with no inventory host (the openstack_control_hosts table —
+	// see store.ControlHost). One of them today is an inventory host whose
+	// nova.conf carries a typo'd name; the caller decides how visible to make
+	// each one, because a name nobody claims is worth showing, not dropping.
+	UnmatchedNames []string
 
 	// SyncedAt is the newest membership observation — the honest value for a
 	// "last synced" line, as opposed to "when this query ran".
@@ -75,9 +82,20 @@ func (s *Store) FarmTopologies(ctx context.Context, hostname string) ([]FarmTopo
 }
 
 func (s *Store) fillFarmTopology(ctx context.Context, f *FarmTopology) error {
+	// Controller comes from the newest capability pass only: a role the latest
+	// pass did not rewrite is a role the machine dropped (see openstack_fold),
+	// and a machine that stopped being a controller must not keep the crown on
+	// a login banner.
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.hostname, coalesce(host(s.ip),''), coalesce(m.evidence->>'nova_hostname',''),
-		       m.confidence, m.observed_at
+		       m.confidence, m.observed_at,
+		       EXISTS (
+		         SELECT 1 FROM server_capabilities c
+		         WHERE c.hostname = m.hostname AND c.kind = 'openstack'
+		           AND c.role = 'controller' AND c.detected
+		           AND c.pass_id = (SELECT max(c2.pass_id) FROM server_capabilities c2
+		                            WHERE c2.hostname = c.hostname AND c2.kind = c.kind)
+		       )
 		FROM openstack_memberships m
 		JOIN servers s USING (hostname)
 		WHERE m.deployment_id=$1 AND m.confidence <> 'conflict'
@@ -88,7 +106,7 @@ func (s *Store) fillFarmTopology(ctx context.Context, f *FarmTopology) error {
 	members, err := collectRows(rows, func(r pgx.Rows) (FarmMember, error) {
 		var m FarmMember
 		var observed time.Time
-		if err := r.Scan(&m.Hostname, &m.IP, &m.NovaHostname, &m.Confidence, &observed); err != nil {
+		if err := r.Scan(&m.Hostname, &m.IP, &m.NovaHostname, &m.Confidence, &observed, &m.Controller); err != nil {
 			return m, err
 		}
 		if observed.After(f.SyncedAt) {
@@ -107,7 +125,7 @@ func (s *Store) fillFarmTopology(ctx context.Context, f *FarmTopology) error {
 	if err != nil {
 		return err
 	}
-	f.ControlNames, err = collectRows(ctrl, func(r pgx.Rows) (string, error) {
+	f.UnmatchedNames, err = collectRows(ctrl, func(r pgx.Rows) (string, error) {
 		var n string
 		err := r.Scan(&n)
 		return n, err

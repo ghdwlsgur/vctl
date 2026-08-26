@@ -25,13 +25,12 @@ func (f *farmSink) FarmTopologies(context.Context, string) ([]store.FarmTopology
 
 func oneFarm() []store.FarmTopology {
 	return []store.FarmTopology{{
-		DisplayName:  "seoul-b",
-		State:        "active",
-		SyncedAt:     time.Date(2026, 8, 25, 5, 57, 47, 0, time.UTC),
-		ControlNames: []string{"sre-srv-0058"},
+		DisplayName: "seoul-b",
+		State:       "active",
+		SyncedAt:    time.Date(2026, 8, 25, 5, 57, 47, 0, time.UTC),
 		Members: []store.FarmMember{
 			{Hostname: "sre-srv-0025", IP: "192.168.201.52", NovaHostname: "sre-srv-0025"},
-			{Hostname: "sre-srv-0058", IP: "192.168.201.53", NovaHostname: "sre-srv-0058"},
+			{Hostname: "sre-srv-0058", IP: "192.168.201.53", NovaHostname: "sre-srv-0058", Controller: true},
 		},
 	}}
 }
