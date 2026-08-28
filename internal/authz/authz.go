@@ -70,6 +70,13 @@ var gated = map[string]Class{
 	// deletes nothing. The hidden prune automation command is intentionally not
 	// in this human RBAC catalog; its delete-only Vault role is the authorization.
 	"retention": ClassRead,
+	// Secrets. What `vctl kv` may list and read is decided by Vault's own path
+	// policy, on the server, for every call — a boundary both authoritative and
+	// finer than a command grant could be, since a token allowed kv/teams/a/*
+	// and nothing else is answered per path. Read class, then: login required,
+	// and Vault decides. An app-layer grant is not asked for because there is
+	// nothing it could add except a second place to keep the same rule.
+	"kv": ClassRead,
 }
 
 // ClassOf reports the class of a gated command; ok is false for an unknown

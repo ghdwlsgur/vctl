@@ -255,6 +255,28 @@ vctl audit --source-ip 192.0.2.10
 
 이 감사 테이블은 운영 메타데이터입니다. 인증서 서명 요청의 authoritative record는 여전히 Vault audit device입니다.
 
+## 시크릿 (KV)
+
+`vctl kv`는 `vctl login`이 이미 들고 있는 토큰으로 Vault KV 시크릿을 읽고 검색합니다. "그 자격증명이 어디 있고 어떤 필드가 있는지"에 다른 CLI나 복사한 토큰 없이 답합니다. 인자 없이 치면 `vctl ssh`처럼 픽커가 뜹니다. 단어를 주면 경로에서 찾고 전체 경로를 주면 그것을 그대로 읽습니다. 경로를 외워서 다시 칠 일이 없습니다.
+
+```bash
+vctl kv                                    # 볼 수 있는 전체에서 고르기
+vctl kv gitlab-albert                      # 단어: 그 이름의 시크릿, 여럿이면 픽커
+vctl kv search gitlab                      # 마운트 아래에서 "gitlab"이 들어간 경로
+vctl kv search oidc --under kv/teams/sre   # 한 팀 아래로 범위를 좁힘
+vctl kv list kv/teams/sre                  # 한 단계: 시크릿과 폴더
+vctl kv get kv/teams/sre/gitlab-albert     # 키는 보이고 값은 가려짐
+TOKEN=$(vctl kv get kv/teams/sre/gitlab-albert --field token)
+```
+
+이 기능이 유출 경로가 되지 않도록 세 가지 규칙을 지킵니다.
+
+- **Vault가 경로별로 결정합니다.** 이 명령은 권한을 더하지도 빼지도 않습니다. 목록을 보고 읽을 수 있는 범위는 토큰의 정책이 말하는 그대로입니다. 매 호출마다 서버가 검사합니다. 검색 중에 토큰이 볼 수 없는 폴더는 건너뛰고 개수만 셉니다. 실패가 아닙니다. 볼 수 있는 것은 그대로 받고 못 본 폴더가 몇 개인지도 알려줍니다.
+- **값은 요청하지 않으면 출력하지 않습니다.** `get`은 기본으로 값을 가리고 키 이름만 보여줍니다. 대개는 그것만 알면 됩니다. `--reveal`은 값을 보여주고 `--field <key>`는 스크립트용으로 하나만 출력합니다. `-o json`에서 `data` 객체는 `--reveal`일 때만 들어갑니다. 자리표시자가 아니라 아예 빠집니다.
+- **검색은 경로만 읽습니다.** 메타데이터 엔드포인트에 `LIST`만 걸고 `data/`는 건드리지 않습니다. Vault 감사 로그에서 검색은 내 신원으로 남는 list 항목의 연속입니다. read는 없습니다.
+
+모든 read는 Vault 자체 감사 장치에 내 신원으로 남습니다. vctl 쪽 별도 감사 행은 없습니다. 쓰기는 없습니다. Vault에 있는 시크릿 사본은 그 경로를 관리하는 IaC의 것입니다. CLI가 그 자리에서 고칠 수 있게 되면 둘이 어긋나기 시작합니다.
+
 ## Postgres 장애 중에도 쓰기
 
 인벤토리 DB는 RWO 볼륨에 붙은 Postgres 단일 인스턴스입니다. 여기가 죽으면 호스트 조회가 통째로 같이 죽습니다. 정작 SSH 인증서를 발급하는 Vault 는 멀쩡한데도 그렇습니다. 그래서 `vctl` 은 인벤토리를 로컬에 읽기 전용 스냅샷으로 들고 있다가 그 구간에도 `vctl ssh` 와 `vctl list` 가 돌아가게 합니다.
@@ -324,6 +346,10 @@ claude mcp add vctl -- vctl mcp
 | `vctl login [--method userpass\|oidc\|approle\|kubernetes]` | Vault에 로그인하고 토큰을 캐시합니다. `kubernetes`는 파드의 ServiceAccount 토큰을 교환하므로 클러스터 안 잡에는 심어둘 자격증명이 없습니다 |
 | `vctl token` | 갱신 또는 재인증 후 유효한 Vault 토큰을 출력합니다 |
 | `vctl exec -- <cmd>` | 자식 프로세스를 `VAULT_TOKEN`, `VAULT_ADDR`와 함께 실행합니다 |
+| `vctl kv [word\|path]` | `vctl ssh`가 호스트를 받는 방식으로 시크릿을 읽습니다. 전체 경로는 그대로 읽고 단어는 경로에서 찾습니다. 매치가 하나면 그것 · 이름이 정확히 같은 것이 있으면 그것 · 여럿이면 픽커(←/→로 폴더 좁힘) · 인자가 없으면 볼 수 있는 전체에서 고릅니다. 터미널이 없으면 애매한 단어는 후보를 나열하는 에러로 끝납니다 |
+| `vctl kv get [word\|path] [--reveal] [--field <key>] [--version <n>]` | 위와 같은 방식으로 시크릿을 찾습니다. 키는 보여주고 값은 가립니다. `--reveal`은 값을 보여주고 `--field`는 스크립트용으로 값 하나만 출력합니다. `-o json`은 `--reveal`일 때만 `data`를 담습니다 |
+| `vctl kv list [path]` | KV 경로 한 단계 아래의 시크릿과 폴더를 나열합니다(기본: 마운트 루트). 보이는 범위는 토큰의 Vault 정책이 허용하는 만큼입니다 |
+| `vctl kv search <word>... [--under <path>] [--limit <n>]` | 경로에 모든 단어가 들어간 시크릿을 찾습니다. 경로만 순회하고 시크릿은 읽지 않습니다. 토큰이 나열할 수 없는 폴더는 건너뛰고 개수만 셉니다 |
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |
 | `vctl ssh [host\|user@addr] [--server <host>]` | exact, fuzzy, IP, interactive 선택으로 접속합니다(픽커는 ←/→로 DC 필터). `--server`는 정확히 또는 IP로 해석해 비대화형으로 접속합니다(스크립트/에이전트용). `user@addr` 형태는 인벤토리를 거치지 않고 주소로 바로 접속합니다 |
 | `vctl list [--dc <dc>] [--wide]` | 인벤토리를 터미널 폭에 맞는 간결한 표로 표시합니다. `--wide`는 에이전트·운영 상태·SSH 사용자를 별도 열로 표시합니다 |
