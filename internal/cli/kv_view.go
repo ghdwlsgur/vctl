@@ -10,7 +10,6 @@ import (
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"golang.org/x/term"
 
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
@@ -36,7 +35,7 @@ func viewKVSecret(sec vaultc.KVSecret, in io.Reader, out io.Writer) error {
 // on both ends, and a live version with fields to look at. Piped output gets
 // the print, as do --reveal, --field and -o, which the caller checks.
 func kvViewerWanted(sec vaultc.KVSecret) bool {
-	return isTerminal() && term.IsTerminal(int(os.Stdout.Fd())) && kvViewable(sec)
+	return isTerminal() && isTerminalOut() && kvViewable(sec)
 }
 
 // kvViewable reports whether there is anything for the viewer to show: string
@@ -116,7 +115,7 @@ func (m kvViewModel) View() string {
 		b.WriteString("  " + pickDimStyle.Render(ui.PadRight(k, width)) + "  " + ui.Muted(kvHidden) + "\n")
 	}
 	for _, k := range m.sec.NonString {
-		b.WriteString("  " + pickDimStyle.Render(ui.PadRight(k, width)) + "  " + ui.Muted("(not a string — not rendered here)") + "\n")
+		b.WriteString("  " + pickDimStyle.Render(ui.PadRight(k, width)) + "  " + ui.Muted(kvNonStringNote) + "\n")
 	}
 	if len(m.sec.CustomMetadata) > 0 {
 		b.WriteString("\n" + ui.Muted("metadata: "+joinSortedKV(m.sec.CustomMetadata)) + "\n")

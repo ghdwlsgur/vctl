@@ -114,3 +114,10 @@ func hostPickLabels(rows []store.InventoryRow) []string {
 func isTerminal() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
 }
+
+// isTerminalOut reports whether stdout is a screen rather than a pipe — the
+// question a full-screen view asks before drawing, since a pipe would carry
+// the drawing off to whatever is reading it.
+func isTerminalOut() bool {
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}

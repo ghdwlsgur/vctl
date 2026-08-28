@@ -65,9 +65,9 @@ the shorter spelling of the curl case.`,
 				if err != nil {
 					return err
 				}
-				sec, err := kv.ReadKVSecret(ctx, path, 0)
+				sec, err := fetchKVSecret(ctx, kv, path, 0)
 				if err != nil {
-					return kvError(err, path)
+					return err
 				}
 				return runKVExec(ctx, sec, words, os.Stdin, os.Stdout, os.Stderr)
 			})

@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,9 +13,11 @@ import (
 	vault "github.com/hashicorp/vault/api"
 
 	"github.com/ghdwlsgur/vctl/internal/config"
-	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
 )
+
+// The kv tests follow the source files: this one holds the fake and the
+// fixtures every other kv_*_test.go shares, plus what kv.go itself owns.
 
 // fakeKV is a KV tree in memory: folders map to their entries, secrets to
 // their contents, and some folders answer 403 or fail outright. Safe under
@@ -77,6 +77,19 @@ func fleetLikeTree() *fakeKV {
 	}
 }
 
+// sampleSecret is one live secret with two string fields, a field that is not
+// a string, and operator metadata — every shape a rendering has to handle.
+func sampleSecret() vaultc.KVSecret {
+	return vaultc.KVSecret{
+		Path:           "kv/teams/sre/example",
+		Data:           map[string]string{"token": "token-field-value", "username": "someone"},
+		NonString:      []string{"retries"},
+		Version:        3,
+		CreatedAt:      time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC),
+		CustomMetadata: map[string]string{"owner": "sre"},
+	}
+}
+
 func TestKVRootIsTheFarmPrefixMount(t *testing.T) {
 	for _, tc := range []struct {
 		prefix, want string
@@ -108,190 +121,6 @@ func TestNormalizeKVPathCleansWhatWasTyped(t *testing.T) {
 	}
 }
 
-// The contract search is built on: a folder the token may not list is
-// reported, and everything else is still found — including the secret and the
-// folder that share the name "backstage".
-func TestWalkKVSkipsDeniedFoldersAndKeepsGoing(t *testing.T) {
-	kv := fleetLikeTree()
-	walk, err := walkKV(context.Background(), kv, "kv", 1000)
-	if err != nil {
-		t.Fatalf("walkKV: %v", err)
-	}
-	wantSecrets := []string{
-		"kv/backups/nightly",
-		"kv/teams/sre/backstage",
-		"kv/teams/sre/backstage/oidc",
-		"kv/teams/sre/gitlab-albert",
-		"kv/teams/sre/gitlab-mirror-deploy-tokens/repo-a",
-		"kv/teams/sre/gitlab-mirror-deploy-tokens/repo-b",
-	}
-	if fmt.Sprint(walk.Secrets) != fmt.Sprint(wantSecrets) {
-		t.Errorf("Secrets = %v\nwant      %v", walk.Secrets, wantSecrets)
-	}
-	if fmt.Sprint(walk.Denied) != "[kv/teams/private]" {
-		t.Errorf("Denied = %v, want the private folder", walk.Denied)
-	}
-	if walk.Folders != 6 || walk.Capped {
-		t.Errorf("Folders = %d, Capped = %v; want 6 answered and no cap", walk.Folders, walk.Capped)
-	}
-}
-
-func TestWalkKVStopsAtTheLimit(t *testing.T) {
-	walk, err := walkKV(context.Background(), fleetLikeTree(), "kv", 3)
-	if err != nil {
-		t.Fatalf("walkKV: %v", err)
-	}
-	if !walk.Capped {
-		t.Fatal("a tree larger than the limit did not report Capped")
-	}
-	if len(walk.Secrets) > 3 {
-		t.Errorf("%d secrets past a limit of 3", len(walk.Secrets))
-	}
-}
-
-// A root that is not there is the answer, not an empty result: "no matches"
-// for a mistyped --under would send someone looking for a secret that was
-// never searched for.
-func TestWalkKVReportsAMissingRoot(t *testing.T) {
-	_, err := walkKV(context.Background(), fleetLikeTree(), "kv/nowhere", 100)
-	if !errors.Is(err, vaultc.ErrKVNotFound) {
-		t.Fatalf("err = %v, want ErrKVNotFound", err)
-	}
-}
-
-// A transport failure is not a 403 and not a 404. Skipping it would report the
-// paths behind it as absent.
-func TestWalkKVAbortsOnATransportFailure(t *testing.T) {
-	kv := fleetLikeTree()
-	kv.broken = map[string]bool{"kv/teams/sre": true}
-	_, err := walkKV(context.Background(), kv, "kv", 100)
-	if err == nil || !strings.Contains(err.Error(), "connection refused") {
-		t.Fatalf("err = %v, want the transport failure surfaced", err)
-	}
-}
-
-// A folder that vanished between its parent's listing and ours is not worth
-// aborting for; below the root a 404 is skipped.
-func TestWalkKVIgnoresAFolderThatVanished(t *testing.T) {
-	kv := fleetLikeTree()
-	delete(kv.tree, "kv/backups")
-	walk, err := walkKV(context.Background(), kv, "kv", 100)
-	if err != nil {
-		t.Fatalf("walkKV: %v", err)
-	}
-	for _, s := range walk.Secrets {
-		if strings.HasPrefix(s, "kv/backups/") {
-			t.Errorf("a vanished folder still contributed %s", s)
-		}
-	}
-}
-
-func TestMatchesAllFoldNeedsEveryTerm(t *testing.T) {
-	p := "kv/teams/sre/GitLab-albert"
-	for _, tc := range []struct {
-		terms []string
-		want  bool
-	}{
-		{[]string{"gitlab"}, true},
-		{[]string{"GITLAB", "albert"}, true},
-		{[]string{"gitlab", "token"}, false},
-		{[]string{"sre/gitlab"}, true},
-		{nil, true},
-	} {
-		if got := matchesAllFold(p, tc.terms); got != tc.want {
-			t.Errorf("matchesAllFold(%q, %v) = %v, want %v", p, tc.terms, got, tc.want)
-		}
-	}
-}
-
-func TestHighlightFoldKeepsTheTextIntact(t *testing.T) {
-	for _, s := range []string{"kv/teams/sre/gitlab-albert", "kv/teams/sre/GitLab/gitlab", "plain"} {
-		if got := ui.StripANSI(highlightFold(s, []string{"gitlab", "sre"})); got != s {
-			t.Errorf("highlightFold changed the text: %q -> %q", s, got)
-		}
-	}
-}
-
-func sampleSecret() vaultc.KVSecret {
-	return vaultc.KVSecret{
-		Path:           "kv/teams/sre/example",
-		Data:           map[string]string{"token": "token-field-value", "username": "someone"},
-		NonString:      []string{"retries"},
-		Version:        3,
-		CreatedAt:      time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC),
-		CustomMetadata: map[string]string{"owner": "sre"},
-	}
-}
-
-// The default never puts a value on the screen. The keys are there — that is
-// what "is the field there" needs — and so is the way to see more.
-func TestRenderKVSecretMasksValuesByDefault(t *testing.T) {
-	var out bytes.Buffer
-	renderKVSecret(&out, sampleSecret(), false)
-	text := ui.StripANSI(out.String())
-	for _, want := range []string{"kv/teams/sre/example", "v3", "token", "username", "retries", kvHidden, "--reveal", "owner=sre"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("masked output missing %q:\n%s", want, text)
-		}
-	}
-	for _, leak := range []string{"token-field-value", "someone"} {
-		if strings.Contains(text, leak) {
-			t.Errorf("masked output shows the value %q:\n%s", leak, text)
-		}
-	}
-}
-
-func TestRenderKVSecretRevealsOnRequest(t *testing.T) {
-	var out bytes.Buffer
-	renderKVSecret(&out, sampleSecret(), true)
-	text := ui.StripANSI(out.String())
-	for _, want := range []string{"token-field-value", "someone"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("revealed output missing %q:\n%s", want, text)
-		}
-	}
-	if strings.Contains(text, kvHidden) || strings.Contains(text, "--reveal") {
-		t.Errorf("revealed output still masks or hints:\n%s", text)
-	}
-}
-
-// An empty field list would read as a secret with no fields. A deleted version
-// has fields; they are hidden, and the output has to say so.
-func TestRenderKVSecretSaysWhenAVersionIsDeleted(t *testing.T) {
-	sec := sampleSecret()
-	sec.Data = nil
-	sec.DeletedAt = time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-	var out bytes.Buffer
-	renderKVSecret(&out, sec, true)
-	if text := ui.StripANSI(out.String()); !strings.Contains(text, "deleted") {
-		t.Errorf("deleted version rendered without saying so:\n%s", text)
-	}
-}
-
-// Structured output follows the same rule as the table: data only on request,
-// and then absent rather than masked — a placeholder string is a value to a
-// program.
-func TestKVGetOutputCarriesDataOnlyWhenRevealed(t *testing.T) {
-	sec := sampleSecret()
-	hidden, err := json.Marshal(newKVGetOutput(sec, false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(hidden), `"data"`) || strings.Contains(string(hidden), "token-field-value") {
-		t.Errorf("hidden output carries data: %s", hidden)
-	}
-	if !strings.Contains(string(hidden), `"keys":["token","username"]`) {
-		t.Errorf("hidden output lacks the key list: %s", hidden)
-	}
-	revealed, err := json.Marshal(newKVGetOutput(sec, true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(revealed), `"token":"token-field-value"`) {
-		t.Errorf("revealed output lacks the data: %s", revealed)
-	}
-}
-
 func TestKVErrorSeparatesMissingFromForbidden(t *testing.T) {
 	missing := kvError(fmt.Errorf("x: %w", vaultc.ErrKVNotFound), "kv/x")
 	if !strings.Contains(missing.Error(), "nothing at kv/x") || !strings.Contains(missing.Error(), "kv search") {
@@ -304,6 +133,40 @@ func TestKVErrorSeparatesMissingFromForbidden(t *testing.T) {
 	other := errors.New("dial tcp: connection refused")
 	if kvError(other, "kv/x") != other {
 		t.Error("an unrelated error was rewritten")
+	}
+}
+
+// One read for every verb that needs a secret, with the one refinement a
+// bare read cannot make: a path that lists is a folder, and saying so beats
+// "nothing there" for the operator who typed one segment too few.
+func TestFetchKVSecretExplainsWhatItCouldNotRead(t *testing.T) {
+	kv := fleetLikeTree()
+	kv.secrets = map[string]vaultc.KVSecret{"kv/teams/sre/gitlab-albert": sampleSecret()}
+	// The fake denies by exact path; a secret inside the private folder is
+	// denied on read the way Vault would deny it.
+	kv.denied["kv/teams/private/x"] = true
+	ctx := context.Background()
+
+	if sec, err := fetchKVSecret(ctx, kv, "kv/teams/sre/gitlab-albert", 0); err != nil || sec.Path != "kv/teams/sre/example" {
+		t.Errorf("read = %+v, %v", sec, err)
+	}
+	if _, err := fetchKVSecret(ctx, kv, "kv/teams/sre", 0); err == nil || !strings.Contains(err.Error(), "is a folder") {
+		t.Errorf("folder = %v, want the folder hint", err)
+	}
+	if _, err := fetchKVSecret(ctx, kv, "kv/teams/sre/absent", 0); err == nil || !strings.Contains(err.Error(), "nothing at") {
+		t.Errorf("missing = %v, want the not-found sentence", err)
+	}
+	if _, err := fetchKVSecret(ctx, kv, "kv/teams/private/x", 0); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("denied = %v, want the policy sentence", err)
+	}
+	// A specific version that is missing is a missing version, not a folder;
+	// the list that would say so is not made.
+	before := len(kv.lists)
+	if _, err := fetchKVSecret(ctx, kv, "kv/teams/sre", 2); err == nil || strings.Contains(err.Error(), "is a folder") {
+		t.Errorf("versioned miss = %v, want a plain not-found", err)
+	}
+	if len(kv.lists) != before {
+		t.Error("a versioned miss listed the path to look for a folder")
 	}
 }
 
@@ -358,6 +221,9 @@ func TestKVArgumentContracts(t *testing.T) {
 		{[]string{"kv", "get"}, []string{"a", "b"}, false},
 		{[]string{"kv", "search"}, nil, false},
 		{[]string{"kv", "search"}, []string{"gitlab", "token"}, true},
+		// exec takes the secret and then the command; nothing at all is refused.
+		{[]string{"kv", "exec"}, nil, false},
+		{[]string{"kv", "exec"}, []string{"gitlab", "sh", "-c", "echo {token}"}, true},
 	} {
 		cmd, _, err := root.Find(tc.path)
 		if err != nil {
@@ -383,91 +249,5 @@ func TestKVGetRefusesFieldWithReveal(t *testing.T) {
 	}
 	if groups := mutuallyExclusiveWith(f); !strings.Contains(strings.Join(groups, " "), "reveal") {
 		t.Errorf("--field is not exclusive with --reveal: %v", groups)
-	}
-}
-
-// gitlabTree has the shape that makes a word ambiguous on the real mount: a
-// secret named exactly "gitlab", siblings that contain the word, and a backup
-// copy of one of them under another folder.
-func gitlabTree() *fakeKV {
-	return &fakeKV{
-		tree: map[string][]string{
-			"kv":              {"backups/", "teams/"},
-			"kv/backups":      {"copy/"},
-			"kv/backups/copy": {"gitlab-albert"},
-			"kv/teams":        {"sre/"},
-			"kv/teams/sre":    {"gitlab", "gitlab-albert", "gitlab-mirror", "netbox"},
-		},
-	}
-}
-
-// A full path is the answer itself: nothing is listed, so a script that names
-// its secret pays one read and no walk.
-func TestResolveKVPathTakesAFullPathWithoutWalking(t *testing.T) {
-	kv := gitlabTree()
-	got, err := resolveKVPath(context.Background(), kv, "kv", []string{"/kv/teams/sre/gitlab-albert/"})
-	if err != nil || got != "kv/teams/sre/gitlab-albert" {
-		t.Fatalf("resolve = %q, %v", got, err)
-	}
-	if len(kv.lists) != 0 {
-		t.Errorf("a full path listed %v; it should not have walked", kv.lists)
-	}
-}
-
-// One match is an answer. Tests run without a terminal, so this is also the
-// proof that an unambiguous word needs no picker.
-func TestResolveKVPathReadsTheOneSecretAWordMatches(t *testing.T) {
-	got, err := resolveKVPath(context.Background(), gitlabTree(), "kv", []string{"netbox"})
-	if err != nil || got != "kv/teams/sre/netbox" {
-		t.Fatalf("resolve = %q, %v", got, err)
-	}
-}
-
-// "gitlab" is inside four paths and is the whole name of one. The exact name
-// wins — inv.Resolve's rule for hostnames — so typing a secret's name reads
-// that secret rather than opening a picker over everything that mentions it.
-func TestResolveKVPathPrefersTheExactName(t *testing.T) {
-	got, err := resolveKVPath(context.Background(), gitlabTree(), "kv", []string{"GitLab"})
-	if err != nil || got != "kv/teams/sre/gitlab" {
-		t.Fatalf("resolve = %q, %v", got, err)
-	}
-}
-
-// Two secrets are named gitlab-albert — the real one and a backup copy. Without
-// a terminal that is an error naming both, never the one that sorted first.
-func TestResolveKVPathRefusesToGuessWithoutATerminal(t *testing.T) {
-	_, err := resolveKVPath(context.Background(), gitlabTree(), "kv", []string{"gitlab-albert"})
-	if err == nil {
-		t.Fatal("an ambiguous word resolved without a terminal")
-	}
-	for _, want := range []string{"2 secrets", "kv/backups/copy/gitlab-albert", "kv/teams/sre/gitlab-albert"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not mention %q", err, want)
-		}
-	}
-	if _, err := resolveKVPath(context.Background(), gitlabTree(), "kv", nil); err == nil || !strings.Contains(err.Error(), "no terminal") {
-		t.Errorf("no argument and no terminal = %v, want a refusal", err)
-	}
-}
-
-func TestResolveKVPathReportsNoMatch(t *testing.T) {
-	_, err := resolveKVPath(context.Background(), gitlabTree(), "kv", []string{"harbor"})
-	if err == nil || !strings.Contains(err.Error(), `no secret matches "harbor"`) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-// Tabs are the folder two below the mount — a team — or one below when the
-// tree is shallower there.
-func TestKVPickGroupIsTheFolderTwoBelowTheMount(t *testing.T) {
-	for path, want := range map[string]string{
-		"kv/teams/sre/gitlab":                    "teams/sre",
-		"kv/teams/sre/gitlab-mirror-tokens/repo": "teams/sre",
-		"kv/backups/nightly":                     "backups",
-		"kv/loose":                               "",
-	} {
-		if got := kvPickGroup(path, "kv"); got != want {
-			t.Errorf("kvPickGroup(%q) = %q, want %q", path, got, want)
-		}
 	}
 }
