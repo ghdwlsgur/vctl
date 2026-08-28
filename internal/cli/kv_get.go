@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -87,16 +86,9 @@ func runKVGet(cmd *cobra.Command, env CommandEnv, args []string, o kvGetOpts) er
 		if err != nil {
 			return err
 		}
-		sec, err := kv.ReadKVSecret(ctx, path, o.version)
+		sec, err := fetchKVSecret(ctx, kv, path, o.version)
 		if err != nil {
-			if errors.Is(err, vaultc.ErrKVNotFound) && o.version == 0 {
-				// A folder reads as nothing at all. One list tells the
-				// operator which of the two they typed.
-				if keys, lerr := kv.ListKV(ctx, path); lerr == nil && len(keys) > 0 {
-					return fmt.Errorf("%s is a folder, not a secret — 'vctl kv list %s' shows what is under it", path, path)
-				}
-			}
-			return kvError(err, path)
+			return err
 		}
 		if o.field != "" {
 			v, ok := sec.Data[o.field]
@@ -192,7 +184,7 @@ func renderKVSecret(w io.Writer, sec vaultc.KVSecret, reveal bool) {
 		rows = append(rows, ui.KV{Key: k, Raw: v})
 	}
 	for _, k := range sec.NonString {
-		rows = append(rows, ui.KV{Key: k, Raw: ui.Muted("(not a string — not rendered here)")})
+		rows = append(rows, ui.KV{Key: k, Raw: ui.Muted(kvNonStringNote)})
 	}
 	if len(rows) == 0 {
 		fmt.Fprintln(w, ui.Muted("(no fields)"))

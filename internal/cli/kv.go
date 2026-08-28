@@ -133,6 +133,29 @@ func kvError(err error, path string) error {
 	return err
 }
 
+// fetchKVSecret is the one read every verb that needs a secret goes through:
+// the version asked for, with Vault's answer turned into the operator's
+// sentence, and one refinement a bare read cannot make — a path that lists is
+// a folder, and "kv/teams/sre is a folder" beats "nothing at kv/teams/sre" for
+// whoever typed one segment too few. Only for the current version: a numbered
+// version that is missing is a missing version, and the list is not made.
+func fetchKVSecret(ctx context.Context, kv kvReader, path string, version int) (vaultc.KVSecret, error) {
+	sec, err := kv.ReadKVSecret(ctx, path, version)
+	if err == nil {
+		return sec, nil
+	}
+	if errors.Is(err, vaultc.ErrKVNotFound) && version == 0 {
+		if keys, lerr := kv.ListKV(ctx, path); lerr == nil && len(keys) > 0 {
+			return vaultc.KVSecret{}, fmt.Errorf("%s is a folder, not a secret — 'vctl kv list %s' shows what is under it", path, path)
+		}
+	}
+	return vaultc.KVSecret{}, kvError(err, path)
+}
+
+// kvNonStringNote stands where a field's value would, for a field that is not
+// a string. The print and the viewer say the same thing in the same place.
+const kvNonStringNote = "(not a string — not rendered here)"
+
 // warnDeniedFolders names the folders a walk could not list. It goes to stderr
 // so a script reading stdout gets paths alone, and it is a note rather than an
 // error: the answer is what the token may see, and this is how much it may not.
