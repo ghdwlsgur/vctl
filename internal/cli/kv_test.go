@@ -229,7 +229,7 @@ func TestRenderKVSecretMasksValuesByDefault(t *testing.T) {
 	var out bytes.Buffer
 	renderKVSecret(&out, sampleSecret(), false)
 	text := ui.StripANSI(out.String())
-	for _, want := range []string{"kv/teams/sre/example", "v3", "token", "username", "retries", kvMask, "--reveal", "owner=sre"} {
+	for _, want := range []string{"kv/teams/sre/example", "v3", "token", "username", "retries", kvHidden, "--reveal", "owner=sre"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("masked output missing %q:\n%s", want, text)
 		}
@@ -250,7 +250,7 @@ func TestRenderKVSecretRevealsOnRequest(t *testing.T) {
 			t.Errorf("revealed output missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, kvMask) || strings.Contains(text, "--reveal") {
+	if strings.Contains(text, kvHidden) || strings.Contains(text, "--reveal") {
 		t.Errorf("revealed output still masks or hints:\n%s", text)
 	}
 }
