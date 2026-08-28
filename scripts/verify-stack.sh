@@ -144,10 +144,28 @@ JSON
       creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT ALL ON ALL TABLES IN SCHEMA public TO \"{{name}}\"; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO \"{{name}}\";" >/dev/null
   done
 
+  # KV fixture for `vctl kv`. Secrets the test identity may read under
+  # kv/teams/test, and one under kv/teams/private that it may not — the denied
+  # folder is what proves a search reports a 403 instead of stopping at it.
+  # beta is both a secret and a folder, the shape KV allows and the real mount
+  # has. No credentials here: the values are labels, and this repo is public.
+  v secrets enable -path=kv -version=2 kv >/dev/null
+  v kv put kv/teams/test/alpha username=alpha-user note=fixture >/dev/null
+  v kv metadata put -custom-metadata=owner=fixture kv/teams/test/alpha >/dev/null
+  v kv put kv/teams/test/beta username=beta-user >/dev/null
+  v kv put kv/teams/test/beta/nested username=nested-user >/dev/null
+  v kv put kv/teams/private/gamma username=gamma-user >/dev/null
+
   # vctl-user must NOT reach vctl-rw. TestDBCredsDeniedWithoutPolicy asserts the
   # least-privilege boundary between read and write roles, and folding rw in
   # here would make that test pass for the wrong reason — or fail, loudly, as it
   # did when this fixture was assembled by hand.
+  #
+  # The KV lines grant list on the two folders above the team's (Vault checks a
+  # LIST against the path with a trailing slash, so these are exact, not globs —
+  # a glob on kv/metadata/teams/* would let the private folder through) and
+  # read+list under kv/teams/test only. kv/teams/private gets nothing, on
+  # purpose: TestKVDeniedOutsidePolicy and the search walk depend on the 403.
   v policy write vctl-user - >/dev/null <<'HCL'
 path "auth/token/lookup-self" { capabilities = ["read"] }
 path "auth/token/renew-self"  { capabilities = ["update"] }
@@ -155,6 +173,10 @@ path "database/creds/vctl-ro"       { capabilities = ["read"] }
 path "database/creds/vctl-identity" { capabilities = ["read"] }
 path "database/creds/vctl-status"   { capabilities = ["read"] }
 path "ssh/config/ca" { capabilities = ["read"] }
+path "kv/metadata/"             { capabilities = ["list"] }
+path "kv/metadata/teams/"       { capabilities = ["list"] }
+path "kv/metadata/teams/test/*" { capabilities = ["read", "list"] }
+path "kv/data/teams/test/*"     { capabilities = ["read"] }
 HCL
   v policy write vctl-ssh - >/dev/null <<'HCL'
 path "ssh/sign/sre-core" { capabilities = ["update"] }

@@ -96,7 +96,8 @@ Start here:
   vctl status           check your login and control-plane connections
   vctl list             browse the host inventory
   vctl ssh <host>       connect with a short-lived SSH certificate
-  vctl openstack        explore farms, physical hosts and VMs`,
+  vctl openstack        explore farms, physical hosts and VMs
+  vctl kv search <word> find where a credential lives in Vault`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		// App-layer RBAC (layer 2) gate. Runs before every command; ungated
@@ -133,7 +134,7 @@ Start here:
 		&cobra.Group{ID: "automation", Title: "Automation Commands:"},
 	)
 	addCommandGroup(root, "access",
-		loginCmd(env), logoutCmd(env), tokenCmd(env),
+		loginCmd(env), logoutCmd(env), tokenCmd(env), kvCmd(env),
 		gate(execCmd(env), "exec"),
 		gate(sshCmd(env), "ssh"),
 		gate(trustCACmd(env), "trust-ca"), caCmd(env), sessionCmd(env),

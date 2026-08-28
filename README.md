@@ -329,6 +329,28 @@ vctl audit --source-ip 192.0.2.10
 
 This audit table is operational metadata. The Vault audit device remains the authoritative record for certificate signing requests.
 
+## Secrets (KV)
+
+`vctl kv` reads and searches Vault KV secrets with the token `vctl login` already holds, so "where is that credential, and what fields does it have" is answered without a second CLI or a copied token. The bare command takes a secret the way `vctl ssh` takes a host — a word, a full path, or no argument and a picker — so a path never has to be retyped from memory.
+
+```bash
+vctl kv                                    # pick from everything you can list
+vctl kv gitlab-albert                      # a word: the secret it names, or a picker
+vctl kv search gitlab                      # paths under the mount containing "gitlab"
+vctl kv search oidc --under kv/teams/sre   # narrow the walk to one team
+vctl kv list kv/teams/sre                  # one level: secrets and folders
+vctl kv get kv/teams/sre/gitlab-albert     # keys shown, values masked
+TOKEN=$(vctl kv get kv/teams/sre/gitlab-albert --field token)
+```
+
+Three rules keep this from becoming the leak it could be.
+
+- **Vault decides, per path.** The commands add no access and take none away: what you can list and read is exactly what your token's policies say, checked on the server for every call. A folder your token may not list is skipped and counted during a search, not fatal — you get what you may see, and a note about what you may not.
+- **Values are never printed unless asked for.** `get` masks by default and shows the key names, which is usually the question. `--reveal` shows the values; `--field <key>` prints one for a script. With `-o json` the `data` object is present only under `--reveal` — absent, not a placeholder.
+- **Search reads paths, not secrets.** It walks `LIST` on the metadata endpoint and never touches `data/`. In Vault's audit log a search is a run of list entries under your identity, never a read.
+
+Every read lands in Vault's own audit device under your identity; there is no separate vctl audit row for it. Nothing here writes — a secret's copy in Vault belongs to the IaC that manages the path, and a CLI that could edit it in place is how the two stop agreeing.
+
 ## Surviving a Postgres Outage
 
 The inventory database is one Postgres instance behind a RWO volume, and when it goes down every host lookup goes with it — while Vault, which issues the SSH certificate, keeps working. `vctl` therefore keeps a local read-only snapshot of the inventory so `vctl ssh` and `vctl list` still work in that window.
@@ -427,6 +449,10 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl login [--method userpass\|oidc\|approle\|kubernetes]` | Log in to Vault and cache the token. `kubernetes` exchanges a pod's ServiceAccount token, so in-cluster jobs need no stored credential |
 | `vctl token` | Print a valid Vault token after renewal or re-authentication |
 | `vctl exec -- <cmd>` | Run a child process with `VAULT_TOKEN` and `VAULT_ADDR` |
+| `vctl kv [word\|path]` | Read a secret the way `vctl ssh` takes a host: a full path exactly, a word by match — one match reads it, an exact name wins, several open a picker (←/→ narrows by folder) — and no argument picks from everything you can list. Without a terminal an ambiguous word is an error that lists the candidates |
+| `vctl kv get [word\|path] [--reveal] [--field <key>] [--version <n>]` | Same resolution as the bare command. Keys shown with the values masked; `--reveal` shows them, `--field` prints one bare value for scripts. `-o json` carries `data` only with `--reveal` |
+| `vctl kv list [path]` | List the secrets and folders one level under a KV path (default: the mount root). What appears is what your token's Vault policies allow |
+| `vctl kv search <word>... [--under <path>] [--limit <n>]` | Find secrets whose path contains every word. Walks paths only — no secret is read. Folders your token may not list are skipped and counted |
 | `vctl agent [--sink <path>]` | Keep a token alive and write it to sink files |
 | `vctl ssh [host\|user@addr] [--server <host>]` | Connect by exact, fuzzy, IP, or interactive selection (picker filters by DC with ←/→); `--server` resolves exactly or by IP and connects non-interactively (scripts/agents). `user@addr` connects to an address directly, skipping inventory |
 | `vctl list [--dc <dc>] [--wide]` | List inventory hosts in a compact responsive table; `--wide` separates agent, state, and SSH user columns |
