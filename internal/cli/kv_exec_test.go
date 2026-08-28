@@ -35,8 +35,8 @@ func TestFillKVSubstitutesFieldsAndLeavesOtherBracesAlone(t *testing.T) {
 	if fmt.Sprint(f.argv) != fmt.Sprint(want) {
 		t.Errorf("argv = %q\nwant   %q", f.argv, want)
 	}
-	if f.uses != 3 || len(f.env) != 0 {
-		t.Errorf("uses = %d, env = %v; want 3 substitutions and no environment", f.uses, f.env)
+	if len(f.env) != 0 {
+		t.Errorf("env = %v; want no environment assignments", f.env)
 	}
 	if f.values["token"] == "" || f.values["username"] == "" || f.values["pin"] != "" {
 		t.Errorf("values = %v; want exactly the fields that were used", f.values)
@@ -133,6 +133,30 @@ func TestKVMaskRedactsEveryFormAcrossChunkBoundaries(t *testing.T) {
 	}
 	if m.total() != 4 || m.report() != "password ×2, token ×2" {
 		t.Errorf("total = %d, report = %q", m.total(), m.report())
+	}
+}
+
+// `echo "$X" | base64` encodes the value plus echo's newline. For a value
+// whose length is not a multiple of three that changes the last base64 group,
+// so the bare value's base64 never appears — and the newline form has to be a
+// needle of its own or the commonest accident leaks whole. 17 bytes here.
+func TestKVMaskCatchesTheBase64OfAnEchoedValue(t *testing.T) {
+	const tok = "tok-abcdef-123456"
+	echoed := base64.StdEncoding.EncodeToString([]byte(tok + "\n"))
+	if strings.HasPrefix(echoed, base64.StdEncoding.EncodeToString([]byte(tok))) {
+		t.Fatal("test value must not be a multiple of three bytes, or the bare form would match anyway")
+	}
+	m := newKVRedactor(map[string]string{"token": tok})
+	var out bytes.Buffer
+	w := m.writer(&out)
+	if _, err := w.Write([]byte(echoed + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "[REDACTED:token]\n" {
+		t.Errorf("echoed base64 came through as %q", out.String())
 	}
 }
 

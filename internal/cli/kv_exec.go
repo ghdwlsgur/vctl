@@ -1,20 +1,16 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
-	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -81,7 +77,7 @@ func runKVExec(ctx context.Context, sec vaultc.KVSecret, words []string, stdin i
 		return err
 	}
 	defer f.cleanup()
-	if f.uses == 0 {
+	if len(f.values) == 0 {
 		return fmt.Errorf("nothing to fill in: the command names no field of %s in braces (fields: %s)",
 			sec.Path, strings.Join(kvKeyNames(sec), ", "))
 	}
@@ -110,15 +106,9 @@ func runKVExec(ctx context.Context, sec vaultc.KVSecret, words []string, stdin i
 // they hold, and a command that only needed one password should not inherit it
 // by accident. `vctl exec` is the command that hands the token on, on purpose.
 func envWithoutVaultToken() []string {
-	env := os.Environ()
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "VAULT_TOKEN=") {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
+	return slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		return strings.HasPrefix(kv, "VAULT_TOKEN=")
+	})
 }
 
 // runChild runs a prepared child, lets it own ^C, and turns its exit status
@@ -156,7 +146,6 @@ type kvFill struct {
 	argv   []string
 	env    []string
 	values map[string]string
-	uses   int
 	tmpDir string
 }
 
@@ -196,7 +185,6 @@ func (f *kvFill) fill(sec vaultc.KVSecret, s string) (string, error) {
 		if !ok {
 			return m
 		}
-		f.uses++
 		f.values[key] = v
 		if !asFile {
 			return v
@@ -234,148 +222,4 @@ func (f *kvFill) cleanup() {
 	if f.tmpDir != "" {
 		_ = os.RemoveAll(f.tmpDir)
 	}
-}
-
-// kvRedactor redacts filled-in values from a stream. It knows the exact bytes, so
-// the filter is exact: each value, plus the base64 and URL-encoded forms a
-// command is likely to print it in. Values shorter than kvMaskMin are not
-// masked — a three-character "secret" would redact every "abc" on the screen,
-// and it was never a secret.
-//
-// A safety net, not a guarantee: a value printed in hex, or split across two
-// lines, passes. The guarantee is the shape of the command — the value never
-// needs to be printed — and the mask is for the times a command prints it
-// anyway.
-type kvRedactor struct {
-	mu      sync.Mutex
-	needles []kvNeedle
-	hits    map[string]int
-}
-
-type kvNeedle struct {
-	bytes []byte
-	key   string
-}
-
-const kvMaskMin = 4
-
-func newKVRedactor(values map[string]string) *kvRedactor {
-	m := &kvRedactor{hits: map[string]int{}}
-	for key, v := range values {
-		if len(v) < kvMaskMin {
-			continue
-		}
-		seen := map[string]bool{}
-		for _, form := range []string{
-			v,
-			base64.StdEncoding.EncodeToString([]byte(v)),
-			base64.RawStdEncoding.EncodeToString([]byte(v)),
-			base64.URLEncoding.EncodeToString([]byte(v)),
-			base64.RawURLEncoding.EncodeToString([]byte(v)),
-			url.QueryEscape(v),
-		} {
-			if seen[form] {
-				continue
-			}
-			seen[form] = true
-			m.needles = append(m.needles, kvNeedle{[]byte(form), key})
-		}
-	}
-	// Longest first, so a form that contains another is replaced whole.
-	sort.SliceStable(m.needles, func(i, j int) bool { return len(m.needles[i].bytes) > len(m.needles[j].bytes) })
-	return m
-}
-
-// redact replaces every complete needle in buf and counts what it replaced.
-func (m *kvRedactor) redact(buf []byte) []byte {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, n := range m.needles {
-		if c := bytes.Count(buf, n.bytes); c > 0 {
-			m.hits[n.key] += c
-			buf = bytes.ReplaceAll(buf, n.bytes, []byte("[REDACTED:"+n.key+"]"))
-		}
-	}
-	return buf
-}
-
-// holdback is how many trailing bytes of buf could be the start of a needle
-// whose rest has not arrived yet. Those wait for the next write; everything
-// before them is safe to pass on.
-func (m *kvRedactor) holdback(buf []byte) int {
-	hold := 0
-	for _, n := range m.needles {
-		for l := min(len(n.bytes)-1, len(buf)); l > hold; l-- {
-			if bytes.HasSuffix(buf, n.bytes[:l]) {
-				hold = l
-				break
-			}
-		}
-	}
-	return hold
-}
-
-func (m *kvRedactor) total() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	n := 0
-	for _, c := range m.hits {
-		n += c
-	}
-	return n
-}
-
-// report names what was masked, per field, in a stable order.
-func (m *kvRedactor) report() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	keys := make([]string, 0, len(m.hits))
-	for k := range m.hits {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		parts[i] = fmt.Sprintf("%s ×%d", k, m.hits[k])
-	}
-	return strings.Join(parts, ", ")
-}
-
-// maskWriter is one masked stream. stdout and stderr each get their own, over
-// the same kvMask, so the count covers both.
-type maskWriter struct {
-	m    *kvRedactor
-	w    io.Writer
-	tail []byte
-}
-
-func (m *kvRedactor) writer(w io.Writer) *maskWriter { return &maskWriter{m: m, w: w} }
-
-// Write holds back first and redacts second. The order matters: one needle
-// can be a proper prefix of another — base64 without its padding is the
-// padded form minus "=" — and redacting the moment the short one is complete
-// would print the long one's tail. So a suffix that could still grow into a
-// longer needle waits, whole, for the next write, and only what cannot is
-// redacted and released.
-func (mw *maskWriter) Write(p []byte) (int, error) {
-	buf := make([]byte, 0, len(mw.tail)+len(p))
-	buf = append(append(buf, mw.tail...), p...)
-	hold := mw.m.holdback(buf)
-	if _, err := mw.w.Write(mw.m.redact(buf[:len(buf)-hold])); err != nil {
-		return 0, err
-	}
-	mw.tail = append(mw.tail[:0], buf[len(buf)-hold:]...)
-	return len(p), nil
-}
-
-// Flush redacts and releases what was held back. Called once the child has
-// exited: there is no more output for a partial match to complete into, so
-// whatever the tail is, it is final.
-func (mw *maskWriter) Flush() error {
-	if len(mw.tail) == 0 {
-		return nil
-	}
-	_, err := mw.w.Write(mw.m.redact(mw.tail))
-	mw.tail = nil
-	return err
 }

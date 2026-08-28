@@ -156,38 +156,25 @@ func (c *Client) ListKV(ctx context.Context, path string) ([]string, error) {
 	return keys, nil
 }
 
-// ReadKV reads a KV v2 secret and returns its string fields.
+// ReadKV reads a KV secret and returns its string fields — the current
+// version, and only what a credential consumer can use.
 //
-// The path is the logical one an operator types — kv/teams/sre/x — and the
-// mount's data segment is inserted here, so callers do not have to know that
-// KV v2 stores under kv/data/.
-//
-// Only string fields are returned. Anything else in the secret is dropped
-// rather than stringified: a caller asking for credentials should get what was
-// stored or nothing, not a rendering of a nested structure.
+// Anything that is not a string is dropped rather than stringified: a caller
+// asking for credentials should get what was stored or nothing, not a
+// rendering of a nested structure. One parser for both readers, so a deleted
+// version or a v1 mount reads the same here as in `vctl kv get`.
 func (c *Client) ReadKV(ctx context.Context, path string) (map[string]string, error) {
-	sec, err := c.readPath(ctx, kvDataPath(path))
+	sec, err := c.ReadKVSecret(ctx, path, 0)
 	if err != nil {
 		return nil, err
 	}
-	// KV v2 nests the payload one level down; v1 does not.
-	data := sec.Data
-	if inner, ok := sec.Data["data"].(map[string]interface{}); ok {
-		data = inner
-	}
-	out := make(map[string]string, len(data))
-	for k, v := range data {
-		if s, ok := v.(string); ok {
-			out[k] = s
-		}
-	}
-	if len(out) == 0 {
+	if len(sec.Data) == 0 {
 		// Deliberately says nothing about what was there. This function's
 		// callers handle credentials, and an error string is the easiest place
 		// for one to escape into a log.
 		return nil, fmt.Errorf("%s: no string fields", path)
 	}
-	return out, nil
+	return sec.Data, nil
 }
 
 // kvDataPath turns kv/teams/sre/x into kv/data/teams/sre/x, and leaves a path
