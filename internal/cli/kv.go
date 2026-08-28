@@ -48,8 +48,8 @@ func kvCmd(env CommandEnv) *cobra.Command {
   vctl kv kv/teams/sre/x           a path: that secret, exactly
   vctl kv list kv/teams/sre        one level of the tree
   vctl kv search gitlab token      every path containing both words
-  vctl kv exec gitlab-albert -- curl -H 'PRIVATE-TOKEN: {token}' https://…
-                                   run a command with the value filled in, never shown
+  vctl kv exec vctl-postgres PGPASSWORD={password} psql -U {username} vctl
+                                   run a command with the values filled in, never shown
 
 The bare command takes a secret the way 'vctl ssh' takes a host. A word is
 matched against the whole path, case-insensitively; a secret named exactly that
@@ -63,9 +63,12 @@ What you may list and read is decided by your token's Vault policies, per
 path, on the server; vctl adds nothing and takes nothing away. 'vctl rbac
 whoami' shows the policies you hold.
 
-Values stay hidden unless asked for: keys are listed and values masked.
---reveal shows them, --field <key> prints exactly one for a script. 'search'
-walks paths only and never reads a secret.
+Values stay hidden unless asked for. On a terminal a secret opens in a viewer:
+↑/↓ moves through the fields and only the row under the cursor shows its value,
+enter copies that value to the clipboard, q leaves and nothing stays on the
+screen. Piped, the keys are listed and the values masked; --reveal prints them
+all, --field <key> prints exactly one for a script. 'search' walks paths only
+and never reads a secret.
 
   TOKEN=$(vctl kv gitlab-albert --field token)
 

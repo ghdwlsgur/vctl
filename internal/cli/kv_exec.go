@@ -21,22 +21,24 @@ import (
 
 func kvExecCmd(env CommandEnv) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "exec <word|path> -- <command> [args...]",
+		Use:     "exec <word|path> <command> [args...]",
 		Aliases: []string{"run"},
 		Short:   "Run a command with a secret's fields filled in — never shown",
 		Long: `exec runs a command with a secret's fields filled in, and makes sure they are
 never shown: not by you, not by the command, not to whatever is reading the
 output — an AI agent driving this terminal included.
 
-  vctl kv exec gitlab-albert -- curl -H 'PRIVATE-TOKEN: {token}' https://gitlab.example/api/v4/user
-  vctl kv exec vctl-postgres -- PGPASSWORD={password} psql -h db -U {username} vctl
-  vctl kv exec ansible-vault -- ansible-vault view x.yml --vault-password-file {password:file}
+  vctl kv exec vctl-postgres PGPASSWORD={password} psql -h db -U {username} vctl
+  vctl kv exec gitlab-albert curl -H 'PRIVATE-TOKEN: {token}' https://gitlab.example/api/v4/user
+  vctl kv exec ansible-vault ansible-vault view x.yml --vault-password-file {password:file}
 
-{key} anywhere in the command becomes that field's value. A leading NAME={key}
-word sets an environment variable instead, the way env(1) does, which keeps the
-value out of the argument list. {key:file} writes the value to a file only you
-can read and puts the file's path there; the file is gone when the command
-exits. Braces that do not name a field are left alone, so jq and awk still work.
+The first word is the secret and everything after it is the command, flags
+included — a -- between them is accepted and never needed. {key} anywhere in
+the command becomes that field's value. A leading NAME={key} word sets an
+environment variable instead, the way env(1) does, which keeps the value out of
+the argument list. {key:file} writes the value to a file only you can read and
+puts the file's path there; the file is gone when the command exits. Braces
+that do not name a field are left alone, so jq and awk still work.
 
 The command's output is filtered on the way out: every occurrence of a value
 that was filled in — and its base64 and URL-encoded forms — is replaced with
@@ -44,16 +46,22 @@ that was filled in — and its base64 and URL-encoded forms — is replaced with
 is not passed on; the child gets the fields you named and nothing else from
 Vault. The secret is resolved the way 'vctl kv' resolves one: a word that
 matches exactly one secret, or a full path. Without a terminal an ambiguous word
-is an error, never a guess.`,
-		Args:              cobra.MinimumNArgs(2),
-		ValidArgsFunction: firstArgOnly(completeKVPath(env)),
+is an error, never a guess. For an authenticated API call, 'vctl kv curl' is
+the shorter spelling of the curl case.`,
+		Args:               cobra.MinimumNArgs(1),
+		DisableFlagParsing: true,
+		ValidArgsFunction:  firstArgOnly(completeKVPath(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if cmd.ArgsLenAtDash() != 1 {
-				return fmt.Errorf("name one secret, then -- and the command: vctl kv exec <secret> -- <command> [args...]")
+			if wantsHelp(args) {
+				return cmd.Help()
+			}
+			secret, words, err := splitKVExecArgs(args)
+			if err != nil {
+				return err
 			}
 			return env.withKV(cmd.Context(), func(a *app.App, kv kvReader) error {
 				ctx := cmd.Context()
-				path, err := resolveKVPath(ctx, kv, kvRoot(a.Cfg), args[:1])
+				path, err := resolveKVPath(ctx, kv, kvRoot(a.Cfg), []string{secret})
 				if err != nil {
 					return err
 				}
@@ -61,11 +69,36 @@ is an error, never a guess.`,
 				if err != nil {
 					return kvError(err, path)
 				}
-				return runKVExec(ctx, sec, args[1:], os.Stdin, os.Stdout, os.Stderr)
+				return runKVExec(ctx, sec, words, os.Stdin, os.Stdout, os.Stderr)
 			})
 		},
 	}
 	return gate(cmd, "kv")
+}
+
+// wantsHelp is the -h/--help check a command with flag parsing disabled has
+// to make for itself. Only the first word: past the secret, -h belongs to the
+// child.
+func wantsHelp(args []string) bool {
+	return len(args) > 0 && (args[0] == "-h" || args[0] == "--help")
+}
+
+// splitKVExecArgs takes the secret off the front and hands back the command.
+// Flag parsing is off for this command so the command's own flags arrive
+// untouched, which also means the -- that used to separate them is optional:
+// honoured when typed, from habit, and not required.
+func splitKVExecArgs(args []string) (secret string, words []string, err error) {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return "", nil, fmt.Errorf("name the secret first: vctl kv exec <secret> <command> [args...]")
+	}
+	words = args[1:]
+	if len(words) > 0 && words[0] == "--" {
+		words = words[1:]
+	}
+	if len(words) == 0 {
+		return "", nil, fmt.Errorf("give the command to run after the secret: vctl kv exec %s <command> [args...]", args[0])
+	}
+	return args[0], words, nil
 }
 
 // runKVExec fills the command in from the secret and runs it behind a mask.
