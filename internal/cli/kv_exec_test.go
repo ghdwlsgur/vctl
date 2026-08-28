@@ -236,9 +236,9 @@ func TestRunKVExecDoesNotHandTheChildAVaultToken(t *testing.T) {
 	}
 }
 
-// Wiring: gated as a read of kv like its siblings, and the command has to come
-// after -- so the child's flags are never mistaken for ours.
-func TestKVExecIsGatedAsReadAndNeedsTheDash(t *testing.T) {
+// Wiring: gated as a read of kv like its siblings, with flag parsing off so the
+// child's flags are never mistaken for ours.
+func TestKVExecIsGatedAsReadWithFlagParsingOff(t *testing.T) {
 	root := NewRoot(fakeDeps(t))
 	ex := findCmd(findCmd(root, "kv"), "exec")
 	if ex == nil {
@@ -247,8 +247,35 @@ func TestKVExecIsGatedAsReadAndNeedsTheDash(t *testing.T) {
 	if ex.Annotations["rbac.command"] != "kv" || ex.Annotations["rbac.class"] != string(classRead) {
 		t.Errorf("annotations = %v, want a read gate named kv", ex.Annotations)
 	}
-	err := ex.RunE(ex, []string{"gitlab-albert", "echo", "{token}"})
-	if err == nil || !strings.Contains(err.Error(), "--") {
-		t.Errorf("without -- the command ran or failed for another reason: %v", err)
+	if !ex.DisableFlagParsing {
+		t.Error("flag parsing is on; the child's -x would be taken for one of ours")
+	}
+}
+
+// The secret comes first and the command is the rest. A -- between them is
+// tolerated for habit's sake and never required.
+func TestSplitKVExecArgsTakesTheSecretThenTheCommand(t *testing.T) {
+	for _, tc := range []struct {
+		args   []string
+		secret string
+		words  []string
+	}{
+		{[]string{"gl", "curl", "-H", "x", "https://u"}, "gl", []string{"curl", "-H", "x", "https://u"}},
+		{[]string{"gl", "--", "curl", "-H", "x"}, "gl", []string{"curl", "-H", "x"}},
+		{[]string{"gl", "PGPASSWORD={password}", "psql"}, "gl", []string{"PGPASSWORD={password}", "psql"}},
+	} {
+		secret, words, err := splitKVExecArgs(tc.args)
+		if err != nil || secret != tc.secret || fmt.Sprint(words) != fmt.Sprint(tc.words) {
+			t.Errorf("split(%q) = %q %q %v", tc.args, secret, words, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"gl"},             // no command
+		{"gl", "--"},       // no command after the dash
+		{"-x", "gl", "ls"}, // a flag where the secret goes
+	} {
+		if _, _, err := splitKVExecArgs(args); err == nil {
+			t.Errorf("%q was accepted", args)
+		}
 	}
 }

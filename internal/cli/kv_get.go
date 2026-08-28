@@ -110,6 +110,9 @@ func runKVGet(cmd *cobra.Command, env CommandEnv, args []string, o kvGetOpts) er
 		if format != outputTable {
 			return writeStructured(format, newKVGetOutput(sec, o.reveal))
 		}
+		if !o.reveal && kvViewerWanted(sec) {
+			return viewKVSecret(sec, os.Stdin, os.Stdout)
+		}
 		renderKVSecret(os.Stdout, sec, o.reveal)
 		return nil
 	})
@@ -169,14 +172,7 @@ func kvKeyNames(sec vaultc.KVSecret) []string {
 // reveal is set, and a deleted or destroyed version says so instead of showing
 // an empty list that would read as a secret with no fields.
 func renderKVSecret(w io.Writer, sec vaultc.KVSecret, reveal bool) {
-	var meta []string
-	if sec.Version > 0 {
-		meta = append(meta, fmt.Sprintf("v%d", sec.Version))
-	}
-	if !sec.CreatedAt.IsZero() {
-		meta = append(meta, sec.CreatedAt.Local().Format("2006-01-02")+" "+ui.StripANSI(ui.Ago(sec.CreatedAt)))
-	}
-	fmt.Fprintln(w, ui.GroupHeading(sec.Path, strings.Join(meta, " · ")))
+	fmt.Fprintln(w, kvHeading(sec))
 
 	switch {
 	case sec.Destroyed:
@@ -209,6 +205,19 @@ func renderKVSecret(w io.Writer, sec vaultc.KVSecret, reveal bool) {
 	if !reveal && len(sec.Data) > 0 {
 		fmt.Fprintln(w, ui.Muted("values hidden · --reveal shows them · --field <key> prints one"))
 	}
+}
+
+// kvHeading is the one line that names a secret and says which version this is
+// and how old — shared by the print and the viewer so they open the same way.
+func kvHeading(sec vaultc.KVSecret) string {
+	var meta []string
+	if sec.Version > 0 {
+		meta = append(meta, fmt.Sprintf("v%d", sec.Version))
+	}
+	if !sec.CreatedAt.IsZero() {
+		meta = append(meta, sec.CreatedAt.Local().Format("2006-01-02")+" "+ui.StripANSI(ui.Ago(sec.CreatedAt)))
+	}
+	return ui.GroupHeading(sec.Path, strings.Join(meta, " · "))
 }
 
 // joinSortedKV renders a small map as "k=v k=v" in key order, so two runs of

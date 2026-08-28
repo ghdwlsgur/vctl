@@ -272,14 +272,14 @@ TOKEN=$(vctl kv get kv/teams/sre/gitlab-albert --field token)
 이 기능이 유출 경로가 되지 않도록 세 가지 규칙을 지킵니다.
 
 - **Vault가 경로별로 결정합니다.** 이 명령은 권한을 더하지도 빼지도 않습니다. 목록을 보고 읽을 수 있는 범위는 토큰의 정책이 말하는 그대로입니다. 매 호출마다 서버가 검사합니다. 검색 중에 토큰이 볼 수 없는 폴더는 건너뛰고 개수만 셉니다. 실패가 아닙니다. 볼 수 있는 것은 그대로 받고 못 본 폴더가 몇 개인지도 알려줍니다.
-- **값은 요청하지 않으면 출력하지 않습니다.** `get`은 기본으로 값을 가리고 키 이름만 보여줍니다. 대개는 그것만 알면 됩니다. `--reveal`은 값을 보여주고 `--field <key>`는 스크립트용으로 하나만 출력합니다. `-o json`에서 `data` 객체는 `--reveal`일 때만 들어갑니다. 자리표시자가 아니라 아예 빠집니다.
+- **값은 요청하지 않으면 출력하지 않습니다.** 터미널에서 `get`은 뷰어를 엽니다. 필드가 나열되고 커서가 있는 행만 값이 보입니다. enter로 그 값을 클립보드에 복사합니다. 대체 화면에서 돌기 때문에 q로 나오면 스크롤백에 아무것도 남지 않습니다. 파이프로 넘기면 키 이름만 보이고 값은 가려집니다. 대개는 그것만 알면 됩니다. `--reveal`은 값을 모두 출력하고 `--field <key>`는 스크립트용으로 하나만 출력합니다. `-o json`에서 `data` 객체는 `--reveal`일 때만 들어갑니다. 자리표시자가 아니라 아예 빠집니다.
 - **검색은 경로만 읽습니다.** 메타데이터 엔드포인트에 `LIST`만 걸고 `data/`는 건드리지 않습니다. Vault 감사 로그에서 검색은 내 신원으로 남는 list 항목의 연속입니다. read는 없습니다.
 
 값이 실제로 필요한 자리에는 — API 호출, DB 로그인 — `vctl kv exec`가 아무에게도 보이지 않게 값을 채워 넣습니다. AI 에이전트가 명령을 치는 상황에 맞춘 모양입니다.
 
 ```bash
-vctl kv exec gitlab-albert -- curl -H 'PRIVATE-TOKEN: {token}' https://gitlab.example/api/v4/user
-vctl kv exec vctl-postgres -- PGPASSWORD={password} psql -h db -U {username} vctl
+vctl kv exec gitlab-albert curl -H 'PRIVATE-TOKEN: {token}' https://gitlab.example/api/v4/user
+vctl kv exec vctl-postgres PGPASSWORD={password} psql -h db -U {username} vctl
 ```
 
 `{key}`는 그 필드의 값이 됩니다. 앞머리의 `NAME={key}`는 환경변수로 들어갑니다. `{key:file}`은 본인만 읽을 수 있는 파일의 경로가 되어 명령이 끝나면 지워집니다. 출력은 나가는 길에 걸러집니다. 명령이 값을 그대로든 base64든 URL 인코딩이든 찍으면 `[REDACTED:key]`로 나오고 그런 일이 있었다고 알려줍니다. 에이전트는 필드 *이름*으로 명령을 짓고 값은 Vault에서 자식 프로세스로만 갑니다. Vault 토큰은 넘기지 않습니다.
@@ -356,10 +356,10 @@ claude mcp add vctl -- vctl mcp
 | `vctl token` | 갱신 또는 재인증 후 유효한 Vault 토큰을 출력합니다 |
 | `vctl exec -- <cmd>` | 자식 프로세스를 `VAULT_TOKEN`, `VAULT_ADDR`와 함께 실행합니다 |
 | `vctl kv [word\|path]` | `vctl ssh`가 호스트를 받는 방식으로 시크릿을 읽습니다. 전체 경로는 그대로 읽고 단어는 경로에서 찾습니다. 매치가 하나면 그것 · 이름이 정확히 같은 것이 있으면 그것 · 여럿이면 픽커(←/→로 폴더 좁힘) · 인자가 없으면 볼 수 있는 전체에서 고릅니다. 터미널이 없으면 애매한 단어는 후보를 나열하는 에러로 끝납니다 |
-| `vctl kv get [word\|path] [--reveal] [--field <key>] [--version <n>]` | 위와 같은 방식으로 시크릿을 찾습니다. 키는 보여주고 값은 가립니다. `--reveal`은 값을 보여주고 `--field`는 스크립트용으로 값 하나만 출력합니다. `-o json`은 `--reveal`일 때만 `data`를 담습니다 |
+| `vctl kv get [word\|path] [--reveal] [--field <key>] [--version <n>]` | 위와 같은 방식으로 시크릿을 찾습니다. 터미널에서는 뷰어가 열립니다. ↑/↓로 필드를 오가면 커서가 있는 행만 값이 보이고, enter로 그 값을 클립보드에 복사하고, q로 나오면 화면에 아무것도 남지 않습니다. 파이프로 넘기면 키만 보이고 값은 가려집니다. `--reveal`은 값을 모두 출력하고 `--field`는 스크립트용으로 값 하나만 출력합니다. `-o json`은 `--reveal`일 때만 `data`를 담습니다 |
 | `vctl kv list [path]` | KV 경로 한 단계 아래의 시크릿과 폴더를 나열합니다(기본: 마운트 루트). 보이는 범위는 토큰의 Vault 정책이 허용하는 만큼입니다 |
 | `vctl kv search <word>... [--under <path>] [--limit <n>]` | 경로에 모든 단어가 들어간 시크릿을 찾습니다. 경로만 순회하고 시크릿은 읽지 않습니다. 토큰이 나열할 수 없는 폴더는 건너뛰고 개수만 셉니다 |
-| `vctl kv exec <word\|path> -- <cmd...>` | `{key}` 자리에 시크릿 필드 값을 채워 명령을 실행합니다. 앞머리의 `NAME={key}`는 환경변수, `{key:file}`은 0600 임시파일 경로가 됩니다. 출력은 걸러져서 채워 넣은 값은 base64·URL 인코딩 형태까지 `[REDACTED:key]`로 나옵니다. Vault 토큰은 넘기지 않습니다 |
+| `vctl kv exec <word\|path> <cmd...>` | `{key}` 자리에 시크릿 필드 값을 채워 명령을 실행합니다. 앞머리의 `NAME={key}`는 환경변수, `{key:file}`은 0600 임시파일 경로가 됩니다. 출력은 걸러져서 채워 넣은 값은 base64·URL 인코딩 형태까지 `[REDACTED:key]`로 나옵니다. Vault 토큰은 넘기지 않습니다 |
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |
 | `vctl ssh [host\|user@addr] [--server <host>]` | exact, fuzzy, IP, interactive 선택으로 접속합니다(픽커는 ←/→로 DC 필터). `--server`는 정확히 또는 IP로 해석해 비대화형으로 접속합니다(스크립트/에이전트용). `user@addr` 형태는 인벤토리를 거치지 않고 주소로 바로 접속합니다 |
 | `vctl list [--dc <dc>] [--wide]` | 인벤토리를 터미널 폭에 맞는 간결한 표로 표시합니다. `--wide`는 에이전트·운영 상태·SSH 사용자를 별도 열로 표시합니다 |
