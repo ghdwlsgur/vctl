@@ -138,6 +138,7 @@ func TestTheGateActuallyRunsForEveryKVShape(t *testing.T) {
 		{"kv", "get"},
 		{"kv", "list"},
 		{"kv", "search"},
+		{"kv", "exec"},
 	} {
 		t.Run(strings.Join(argv, " "), func(t *testing.T) {
 			var reached bool

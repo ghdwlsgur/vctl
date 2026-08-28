@@ -43,6 +43,8 @@ func kvCmd(env CommandEnv) *cobra.Command {
   vctl kv kv/teams/sre/x           a path: that secret, exactly
   vctl kv list kv/teams/sre        one level of the tree
   vctl kv search gitlab token      every path containing both words
+  vctl kv exec gitlab-albert -- curl -H 'PRIVATE-TOKEN: {token}' https://…
+                                   run a command with the value filled in, never shown
 
 The bare command takes a secret the way 'vctl ssh' takes a host. A word is
 matched against the whole path, case-insensitively; a secret named exactly that
@@ -70,7 +72,7 @@ Every read lands in Vault's own audit log under your identity.`,
 		},
 	}
 	addKVGetFlags(cmd, &opts)
-	cmd.AddCommand(kvListCmd(env), kvGetCmd(env), kvSearchCmd(env))
+	cmd.AddCommand(kvListCmd(env), kvGetCmd(env), kvSearchCmd(env), kvExecCmd(env))
 	return supportsStructuredOutput(gate(cmd, "kv"))
 }
 

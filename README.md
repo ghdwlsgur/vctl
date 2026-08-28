@@ -349,6 +349,15 @@ Three rules keep this from becoming the leak it could be.
 - **Values are never printed unless asked for.** `get` masks by default and shows the key names, which is usually the question. `--reveal` shows the values; `--field <key>` prints one for a script. With `-o json` the `data` object is present only under `--reveal` — absent, not a placeholder.
 - **Search reads paths, not secrets.** It walks `LIST` on the metadata endpoint and never touches `data/`. In Vault's audit log a search is a run of list entries under your identity, never a read.
 
+When a command needs the value — an API call, a database login — `vctl kv exec` fills it in without anyone seeing it, which is the shape to use when an AI agent is the one typing:
+
+```bash
+vctl kv exec gitlab-albert -- curl -H 'PRIVATE-TOKEN: {token}' https://gitlab.example/api/v4/user
+vctl kv exec vctl-postgres -- PGPASSWORD={password} psql -h db -U {username} vctl
+```
+
+`{key}` becomes the field's value; a leading `NAME={key}` sets an environment variable instead; `{key:file}` hands over the path of a file only you can read, deleted when the command exits. The output is filtered on the way out — a value the command echoes, in plain, base64 or URL-encoded form, arrives as `[REDACTED:key]`, and you are told it happened. The agent composes the command with the field's *name*; the value goes from Vault into the child process and nowhere else. The Vault token is not passed on.
+
 Every read lands in Vault's own audit device under your identity; there is no separate vctl audit row for it. Nothing here writes — a secret's copy in Vault belongs to the IaC that manages the path, and a CLI that could edit it in place is how the two stop agreeing.
 
 ## Surviving a Postgres Outage
@@ -453,6 +462,7 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl kv get [word\|path] [--reveal] [--field <key>] [--version <n>]` | Same resolution as the bare command. Keys shown with the values masked; `--reveal` shows them, `--field` prints one bare value for scripts. `-o json` carries `data` only with `--reveal` |
 | `vctl kv list [path]` | List the secrets and folders one level under a KV path (default: the mount root). What appears is what your token's Vault policies allow |
 | `vctl kv search <word>... [--under <path>] [--limit <n>]` | Find secrets whose path contains every word. Walks paths only — no secret is read. Folders your token may not list are skipped and counted |
+| `vctl kv exec <word\|path> -- <cmd...>` | Run a command with the secret's fields filled in where `{key}` appears (leading `NAME={key}` words become environment variables, `{key:file}` a 0600 file path). Output is filtered: every filled-in value, base64 or URL-encoded too, comes out as `[REDACTED:key]`. The Vault token is not passed on |
 | `vctl agent [--sink <path>]` | Keep a token alive and write it to sink files |
 | `vctl ssh [host\|user@addr] [--server <host>]` | Connect by exact, fuzzy, IP, or interactive selection (picker filters by DC with ←/→); `--server` resolves exactly or by IP and connects non-interactively (scripts/agents). `user@addr` connects to an address directly, skipping inventory |
 | `vctl list [--dc <dc>] [--wide]` | List inventory hosts in a compact responsive table; `--wide` separates agent, state, and SSH user columns |

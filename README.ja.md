@@ -276,6 +276,15 @@ TOKEN=$(vctl kv get kv/teams/sre/gitlab-albert --field token)
 - **値は求められない限り出力しない。** `get` は既定で値をマスクし、キー名だけを示す。たいていはそれが問いだ。`--reveal` で値を表示し、`--field <key>` はスクリプト向けに一つだけ出力する。`-o json` では `data` オブジェクトは `--reveal` のときだけ含まれる。プレースホルダではなく不在だ。
 - **検索はパスだけを読む。** メタデータエンドポイントへの `LIST` だけで、`data/` には触れない。Vault の監査ログでは検索は自分の identity での list エントリの連続であり、read は残らない。
 
+値が本当に必要な場所 — API 呼び出し、DB ログイン — には `vctl kv exec` が誰にも見せずに値を埋める。AI エージェントがコマンドを打つ状況に合う形だ。
+
+```bash
+vctl kv exec gitlab-albert -- curl -H 'PRIVATE-TOKEN: {token}' https://gitlab.example/api/v4/user
+vctl kv exec vctl-postgres -- PGPASSWORD={password} psql -h db -U {username} vctl
+```
+
+`{key}` はそのフィールドの値になる。先頭の `NAME={key}` は環境変数として渡り、`{key:file}` は自分だけが読めるファイルのパスになってコマンド終了時に消える。出力は出ていく途中でフィルタされる。コマンドが値をそのまま・base64・URL エンコードのどれで出しても `[REDACTED:key]` になり、それが起きたことが知らされる。エージェントはフィールドの*名前*でコマンドを組み、値は Vault から子プロセスへだけ渡る。Vault トークンは渡さない。
+
 すべての read は Vault 自身の監査デバイスに自分の identity で残る。vctl 側の別の監査行はない。書き込みはない。Vault にあるシークレットの写しはそのパスを管理する IaC のものであり、CLI がその場で編集できるようになると両者は食い違い始める。
 
 ## Postgres 障害時の動作
@@ -379,6 +388,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl kv get [word\|path] [--reveal] [--field <key>] [--version <n>]` | 上と同じ方法でシークレットを探す。キーは表示し、値はマスクする。`--reveal` で値を表示、`--field` はスクリプト向けに値を一つだけ出力する。`-o json` は `--reveal` のときだけ `data` を含む |
 | `vctl kv list [path]` | KV パスの一階層下にあるシークレットとフォルダを一覧する(既定: マウントのルート)。見える範囲はトークンの Vault ポリシーが許す分だけ |
 | `vctl kv search <word>... [--under <path>] [--limit <n>]` | パスにすべての語を含むシークレットを探す。パスだけを辿り、シークレットは読まない。トークンが一覧できないフォルダはスキップして数える |
+| `vctl kv exec <word\|path> -- <cmd...>` | `{key}` の位置にシークレットのフィールド値を埋めてコマンドを実行する。先頭の `NAME={key}` は環境変数、`{key:file}` は 0600 の一時ファイルパスになる。出力はフィルタされ、埋めた値は base64・URL エンコード形も `[REDACTED:key]` で出る。Vault トークンは渡さない |
 | `vctl agent [--sink <path>]` | トークンを生かし続け、シンクファイルに書き出す |
 | `vctl ssh [host\|user@addr] [--server <host>]` | 完全一致、あいまい一致、IP、対話的な選択で接続する(ピッカーは ←/→ で DC フィルタ)。`--server` は完全一致または IP で解決し、非対話的に接続する(スクリプト/エージェント向け). `user@addr` 形式はインベントリを経由せずアドレスへ直接接続する |
 | `vctl list [--dc <dc>] [--wide]` | インベントリを端末幅に合わせた簡潔な表で表示する。`--wide` はエージェント・運用状態・SSH ユーザーを別の列に表示する |
