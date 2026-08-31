@@ -53,6 +53,7 @@ func (a *Agent) motdPass(ctx context.Context, c *conn) {
 			Header:    a.MOTDHeader,
 			ManagedBy: a.MOTDManagedBy,
 			Self:      a.Hostname,
+			Color:     a.MOTDColor,
 		}, farms)
 		return nil
 	})

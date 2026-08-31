@@ -136,6 +136,12 @@ type Config struct {
 	MOTDHeader    string `yaml:"motd_header"`
 	MOTDManagedBy string `yaml:"motd_managed_by"`
 
+	// MOTDColor wraps the masthead and the topology markers in ANSI colour.
+	// pam_motd prints the file verbatim, so the escapes render as colour on a
+	// login terminal (and show as raw bytes if the file is piped to a tool that
+	// does not interpret them). Default on; set false for a plain banner.
+	MOTDColor bool `yaml:"motd_color"`
+
 	// Runtime-only fields.
 	StateDir   string `yaml:"-"`
 	ConfigPath string `yaml:"-"`

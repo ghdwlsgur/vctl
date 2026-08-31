@@ -60,14 +60,19 @@ func Defaults() *Config {
 		AppRoleSelfRole:      "vctl-user",
 		MOTDHeader:           sreMOTDHeader,
 		MOTDManagedBy:        "Managed by Innogrid SRE Team.",
+		MOTDColor:            true,
 	}
 }
 
 // The masthead node-agent puts above the rendered farm topology (--motd).
-// Figlet "Innogrid SRE" — kept verbatim from the banner it replaces.
-const sreMOTDHeader = ` ___                              _     _   ____  ____  _____
-|_ _|_ __  _ __   ___   __ _ _ __(_) __| | / ___||  _ \| ____|
- | || '_ \| '_ \ / _ \ / _` + "`" + ` | '__| |/ _` + "`" + ` | \___ \| |_) |  _|
- | || | | | | | | (_) | (_| | |  | | (_| |  ___) |  _ <| |___
-|___|_| |_|_| |_|\___/ \__, |_|  |_|\__,_| |____/|_| \_\_____|
-                       |___/`
+// Figlet "INNOGRID" in ANSI Shadow: solid glyph bodies, so the banner colour
+// fills the letters instead of tracing an outline. 60 columns — the full
+// "Innogrid SRE" would be 88 and clip an 80-column terminal, so SRE sits as
+// the signature line under the block.
+const sreMOTDHeader = `██╗███╗   ██╗███╗   ██╗ ██████╗  ██████╗ ██████╗ ██╗██████╗
+██║████╗  ██║████╗  ██║██╔═══██╗██╔════╝ ██╔══██╗██║██╔══██╗
+██║██╔██╗ ██║██╔██╗ ██║██║   ██║██║  ███╗██████╔╝██║██║  ██║
+██║██║╚██╗██║██║╚██╗██║██║   ██║██║   ██║██╔══██╗██║██║  ██║
+██║██║ ╚████║██║ ╚████║╚██████╔╝╚██████╔╝██║  ██║██║██████╔╝
+╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝
+                                             ─────  S R E  ─`

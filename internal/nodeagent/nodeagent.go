@@ -75,6 +75,7 @@ type Agent struct {
 	MOTDPath      string
 	MOTDHeader    string
 	MOTDManagedBy string
+	MOTDColor     bool
 
 	// OpenSink dials the database. Called again whenever a failure drops the
 	// handle, so it must run the whole path — credential included.

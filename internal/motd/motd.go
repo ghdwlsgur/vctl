@@ -32,6 +32,61 @@ type Banner struct {
 	// Self is the inventory hostname of the machine the file is written on;
 	// its row gets the marker.
 	Self string
+	// Color wraps the masthead and the topology markers in ANSI colour. Off
+	// yields the exact bytes the plain banner always produced.
+	Color bool
+}
+
+// ANSI colour, used only when Banner.Color is set. These are raw escape bytes;
+// pam_motd prints the file verbatim, so a login terminal renders them as colour.
+const (
+	ansiReset  = "\033[0m"
+	ansiYellow = "\033[33m"
+	ansiGreen  = "\033[1;32m"
+)
+
+// paint wraps s in an escape when colour is on, and returns it untouched when
+// off — so the plain path is byte-for-byte what it always was. Apply it AFTER
+// any width-based padding: the escapes are zero-width on screen but
+// len()-counted, so colouring before %-*s alignment would skew the columns.
+func paint(on bool, code, s string) string {
+	if !on || s == "" {
+		return s
+	}
+	return code + s + ansiReset
+}
+
+// The masthead's vertical fade, top row to bottom row (teal → blue). True
+// colour (38;2;r;g;b) — every terminal this fleet logs into supports it, and
+// pam_motd passes the escapes through like any other byte.
+var (
+	mastFadeTop = [3]int{45, 212, 191}
+	mastFadeBot = [3]int{79, 122, 246}
+)
+
+// paintBlock fades a multi-line block (the masthead) from mastFadeTop to
+// mastFadeBot, one colour per line, resetting at each line end so the fade
+// never bleeds into what follows.
+func paintBlock(on bool, block string) string {
+	if !on {
+		return block
+	}
+	lines := strings.Split(block, "\n")
+	span := len(lines) - 1
+	for i, ln := range lines {
+		if ln == "" {
+			continue
+		}
+		t := 0
+		if span > 0 {
+			t = i
+		}
+		r := mastFadeTop[0] + (mastFadeBot[0]-mastFadeTop[0])*t/max(span, 1)
+		g := mastFadeTop[1] + (mastFadeBot[1]-mastFadeTop[1])*t/max(span, 1)
+		b := mastFadeTop[2] + (mastFadeBot[2]-mastFadeTop[2])*t/max(span, 1)
+		lines[i] = fmt.Sprintf("\033[38;2;%d;%d;%dm%s%s", r, g, b, ln, ansiReset)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Render produces the complete banner, or "" when the host is in no farm —
@@ -43,7 +98,7 @@ func Render(b Banner, farms []store.FarmTopology) string {
 	}
 	var out strings.Builder
 	if h := strings.TrimRight(b.Header, "\n"); h != "" {
-		out.WriteString(h)
+		out.WriteString(paintBlock(b.Color, h))
 		out.WriteString("\n\n")
 	}
 
@@ -60,7 +115,7 @@ func Render(b Banner, farms []store.FarmTopology) string {
 		if f.SyncedAt.After(synced) {
 			synced = f.SyncedAt
 		}
-		sections = append(sections, section(f, rows, unclaimed))
+		sections = append(sections, section(f, rows, unclaimed, b.Color))
 	}
 
 	fmt.Fprintf(&out, "This server is an OpenStack %s Node.\n", role)
@@ -209,7 +264,7 @@ func shortHost(h string) string {
 }
 
 // section renders one farm's topology block with aligned columns.
-func section(f store.FarmTopology, rows []row, unclaimed []string) string {
+func section(f store.FarmTopology, rows []row, unclaimed []string, color bool) string {
 	var out strings.Builder
 	title := "[ Cluster Topology ]"
 	if f.DisplayName != "" {
@@ -235,9 +290,15 @@ func section(f store.FarmTopology, rows []row, unclaimed []string) string {
 		if r.novaName != "" {
 			name += fmt.Sprintf(", nova calls it %q", r.novaName)
 		}
-		fmt.Fprintf(&out, "  %-*s : %-*s  (%s)", labelW, r.label, addrW, r.addr, name)
+		// Pad to width first, THEN colour — the escapes are len()-counted, so
+		// colouring before the %-*s would push the columns out of alignment.
+		label := fmt.Sprintf("%-*s", labelW, r.label)
+		if r.label == "Controller" {
+			label = paint(color, ansiYellow, label)
+		}
+		fmt.Fprintf(&out, "  %s : %-*s  (%s)", label, addrW, r.addr, name)
 		if r.here {
-			out.WriteString("  <- HERE")
+			out.WriteString("  " + paint(color, ansiGreen, "<- HERE"))
 		}
 		out.WriteString("\n")
 	}
