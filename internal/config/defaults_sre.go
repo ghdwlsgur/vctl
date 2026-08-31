@@ -60,6 +60,7 @@ func Defaults() *Config {
 		AppRoleSelfRole:      "vctl-user",
 		MOTDHeader:           sreMOTDHeader,
 		MOTDManagedBy:        "Managed by Innogrid SRE Team.",
+		MOTDColor:            true,
 	}
 }
 

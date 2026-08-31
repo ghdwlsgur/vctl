@@ -44,6 +44,7 @@ database role for low-risk, low-resource status reporting.`,
 			// domain — the flag only says where the file goes.
 			agent.MOTDHeader = a.Cfg.MOTDHeader
 			agent.MOTDManagedBy = a.Cfg.MOTDManagedBy
+			agent.MOTDColor = a.Cfg.MOTDColor
 			// Opened on demand and reopened after a failure, so the whole path
 			// — AppRole login, then a fresh dynamic credential — runs again.
 			agent.OpenSink = func(ctx context.Context) (nodeagent.Sink, error) {
