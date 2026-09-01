@@ -108,16 +108,39 @@ type Connector struct {
 	// OnAuditError is invoked when the best-effort audit write fails, so the
 	// caller can warn without the pipeline failing the connection. May be nil.
 	OnAuditError func(error)
+
+	// Now is the clock used to stamp an audit row with the certificate's signing
+	// time. Nil means time.Now; tests set it to assert the stamp.
+	Now func() time.Time
 }
 
 // Connect opens an interactive PTY shell to the target and blocks until it
 // exits. The attempt is always audited, success or failure.
+//
+// The audit row is written the moment the PTY opens — before the shell blocks,
+// not after it returns. An interactive session can last hours, and the process
+// can die inside it (a closed terminal is a SIGHUP, a crashed laptop is nothing
+// at all); recording only after sshc.Connect returned meant those sessions left
+// no trace in Postgres or the spool, and even a clean exit stamped the row with
+// the logout time instead of when access was granted. The access has happened
+// once the certificate is signed and the PTY is up, so that is when it is
+// logged, with the certificate's own signing time.
 func (c *Connector) Connect(ctx context.Context, req Request) error {
 	req.HostKey.apply(req.Target)
-	sign, serial := c.signFunc(ctx)
+	sign, serial, signedAt := c.signFunc(ctx)
 	vaultUser := c.attributedIdentity(ctx)
-	info, err := sshc.Connect(ctx, req.Target, sign)
-	c.record(ctx, accessEntry(vaultUser, req.Target, info, serial(), err))
+
+	recorded := false
+	info, err := sshc.Connect(ctx, req.Target, sign, func(dialed sshc.ConnectionInfo) {
+		// The PTY is open: the access is real and must survive whatever the
+		// session does next, including the process not returning from it.
+		c.record(ctx, accessEntry(vaultUser, req.Target, dialed, serial(), signedAt(), nil))
+		recorded = true
+	})
+	if !recorded {
+		// Dial or handshake failed before the shell — the attempt is still audited.
+		c.record(ctx, accessEntry(vaultUser, req.Target, info, serial(), signedAt(), err))
+	}
 	return err
 }
 
@@ -159,14 +182,14 @@ func (c *Connector) run(ctx context.Context, req Request, command string, timeou
 		defer cancel()
 	}
 	req.HostKey.apply(req.Target)
-	sign, serial := c.signFunc(runCtx)
+	sign, serial, signedAt := c.signFunc(runCtx)
 	vaultUser := c.attributedIdentity(ctx)
 	res, info, err := sshc.Run(runCtx, req.Target, sign, command)
 	return Result{
 			Host: req.Target.Name, Addr: req.Target.Addr,
 			Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode,
 		},
-		accessEntry(vaultUser, req.Target, info, serial(), err),
+		accessEntry(vaultUser, req.Target, info, serial(), signedAt(), err),
 		err
 }
 
@@ -178,21 +201,35 @@ func (c *Connector) record(ctx context.Context, entry store.AccessEntry) {
 }
 
 // signFunc returns a sshc.SignFunc that signs through the CA at the configured
-// TTL and a getter for the most recent issued cert serial. On a jump chain the
-// target is signed last, so the getter ends up holding the target's serial —
-// used to map the access-audit row to a specific certificate.
-func (c *Connector) signFunc(ctx context.Context) (sshc.SignFunc, func() string) {
-	var serial string
+// TTL, a getter for the most recent issued cert serial, and a getter for when it
+// was signed. On a jump chain the target is signed last, so both getters end up
+// holding the target's values — used to map the access-audit row to a specific
+// certificate and to stamp it with the time access was actually granted rather
+// than whenever the row happens to be written.
+func (c *Connector) signFunc(ctx context.Context) (sshc.SignFunc, func() string, func() time.Time) {
+	var (
+		serial   string
+		signedAt time.Time
+	)
 	fn := func(role, pub string, principals, extensions []string) (string, error) {
 		cert, err := c.Signer.SignSSH(ctx, role, pub, principals, c.SignTTL, extensions)
 		if err == nil {
 			if s := sshc.CertSerial(cert); s != "" {
 				serial = s
+				signedAt = c.now()
 			}
 		}
 		return cert, err
 	}
-	return fn, func() string { return serial }
+	return fn, func() string { return serial }, func() time.Time { return signedAt }
+}
+
+// now is the clock, injectable so tests can assert the stamped time.
+func (c *Connector) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
 }
 
 // ResolveServer resolves a host non-interactively (for --server and MCP): exact
@@ -250,8 +287,12 @@ func buildTargetSeen(ctx context.Context, inv Inventory, sv *store.Server, direc
 }
 
 // accessEntry assembles the central access-log row from the connection result
-// and the local client context.
-func accessEntry(vaultUser string, tgt *sshc.Target, connInfo sshc.ConnectionInfo, certSerial string, connErr error) store.AccessEntry {
+// and the local client context. signedAt is when the certificate for this access
+// was issued; a zero value lets the store fall back to its own clock, but the
+// callers pass the real signing time so the row reflects when access was granted
+// rather than when the row was written (which, for an interactive session, is
+// when it ended).
+func accessEntry(vaultUser string, tgt *sshc.Target, connInfo sshc.ConnectionInfo, certSerial string, signedAt time.Time, connErr error) store.AccessEntry {
 	clientUser := ""
 	if u, err := user.Current(); err == nil && u != nil {
 		clientUser = u.Username
@@ -264,6 +305,7 @@ func accessEntry(vaultUser string, tgt *sshc.Target, connInfo sshc.ConnectionInf
 		VaultUser:  vaultUser,
 		Hostname:   tgt.Name,
 		CertSerial: certSerial,
+		SignedAt:   signedAt,
 		OK:         connErr == nil,
 		SourceIP:   connInfo.SourceIP,
 		SourceAddr: connInfo.SourceAddr,
