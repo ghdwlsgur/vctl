@@ -44,7 +44,7 @@ func TestNodeAgentDropInShape(t *testing.T) {
 // Credentials land 0600 under a 0700 dir, and the units are written through
 // quoted heredocs so nothing in them is shell-expanded.
 func TestInstallScriptShape(t *testing.T) {
-	s := installScript("rid", "sid", "acc", "sre-srv-0100", true)
+	s := installScript("rid", "sid", "acc", "sre-srv-0100", true, []string{"192.0.2.10 vault.sre.local"})
 	for _, want := range []string{
 		"umask 077",
 		"chmod 0700 /etc/vctl",
@@ -59,5 +59,24 @@ func TestInstallScriptShape(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("install script missing %q", want)
 		}
+	}
+}
+
+// A control-plane pin lands in /etc/hosts only when the host cannot already
+// resolve the name — working internal DNS must win over a pin that can go
+// stale. Measured twice in one day: agents `active` while every report died
+// on "no such host" for names only the workstation could resolve.
+func TestInstallScriptPinsNamesBehindAResolutionGuard(t *testing.T) {
+	s := installScript("rid", "sid", "acc", "h", false, []string{"192.0.2.10 vault.sre.local", "192.0.2.10 vctl-postgres.sre.local"})
+	for _, want := range []string{
+		"getent hosts 'vault.sre.local' >/dev/null 2>&1 || echo '192.0.2.10 vault.sre.local' >> /etc/hosts",
+		"getent hosts 'vctl-postgres.sre.local' >/dev/null 2>&1 || echo '192.0.2.10 vctl-postgres.sre.local' >> /etc/hosts",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("install script missing pin guard:\n%s", want)
+		}
+	}
+	if s := installScript("rid", "sid", "acc", "h", false, nil); strings.Contains(s, "/etc/hosts") {
+		t.Error("no pins requested but the script still touches /etc/hosts")
 	}
 }

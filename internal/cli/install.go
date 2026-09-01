@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -115,7 +116,7 @@ is rotated, and the agent restarts.
 			}
 
 			ui.Infof(os.Stderr, "installing credentials and systemd units")
-			script := installScript(roleID, secretID, accessor, sv.Hostname, motd)
+			script := installScript(roleID, secretID, accessor, sv.Hostname, motd, controlPlanePins(a))
 			if err := installRun(ctx, target, sign, "sh", strings.NewReader(script)); err != nil {
 				return fmt.Errorf("remote install: %w", err)
 			}
@@ -183,6 +184,47 @@ func installRun(ctx context.Context, t *sshc.Target, sign sshc.SignFunc, command
 		return fmt.Errorf("exit %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
 	return nil
+}
+
+// controlPlanePins resolves the control-plane names the agent must reach —
+// the Vault address and the inventory database — on the workstation, and
+// returns them as "ip name" lines for /etc/hosts.
+//
+// The agent's first act is reaching Vault, and a fresh host with only public
+// DNS cannot resolve internal names. Measured twice in one day: an agent
+// `active` with every report ending "lookup vault.sre.local on 8.8.8.8:53: no
+// such host", and a second host that resolved Vault (an old hosts entry) but
+// not the database. The workstation running install has just proven it CAN
+// resolve these — EnsureLogin succeeded — so the answer is carried across.
+// The script applies each pin only where the host itself cannot resolve the
+// name, so working internal DNS always wins over a pin that could go stale.
+func controlPlanePins(a *app.App) []string {
+	var pins []string
+	for _, h := range []string{urlHostname(a.Cfg.VaultAddr), a.Cfg.DBHost} {
+		if h == "" || net.ParseIP(h) != nil {
+			continue
+		}
+		addrs, err := net.LookupHost(h)
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if ip := net.ParseIP(addr); ip != nil && ip.To4() != nil {
+				pins = append(pins, addr+" "+h)
+				break
+			}
+		}
+	}
+	return pins
+}
+
+// urlHostname is the bare host of a URL, "" when it has none.
+func urlHostname(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // agentBinary returns the vctl-agent build to push: a local file when the
@@ -269,7 +311,12 @@ func extractAgent(targz []byte) ([]byte, error) {
 // in 0600 files — the same shape the ansible role produces, so either path
 // can maintain a host the other set up. Heredoc sentinels are chosen so no
 // payload can terminate them early (unit files contain no VCTL_EOF lines).
-func installScript(roleID, secretID, accessor, hostname string, motd bool) string {
+//
+// pins are "ip name" lines for the control-plane names the agent must reach,
+// each applied only when the host cannot already resolve that name — a host
+// with working internal DNS keeps it, and only the one that would fail gets
+// the /etc/hosts entry.
+func installScript(roleID, secretID, accessor, hostname string, motd bool, pins []string) string {
 	var b strings.Builder
 	b.WriteString("set -e\numask 077\nmkdir -p /etc/vctl\nchmod 0700 /etc/vctl\n")
 	cred := func(path, value string) {
@@ -281,6 +328,10 @@ func installScript(roleID, secretID, accessor, hostname string, motd bool) strin
 	cred("/etc/vctl/approle", nodeAppRole)
 
 	b.WriteString("umask 022\n")
+	for _, p := range pins {
+		name := p[strings.LastIndexByte(p, ' ')+1:]
+		fmt.Fprintf(&b, "getent hosts '%s' >/dev/null 2>&1 || echo '%s' >> /etc/hosts\n", name, p)
+	}
 	fmt.Fprintf(&b, "cat > /etc/systemd/system/vctl-node-agent.service <<'VCTL_UNIT_EOF'\n%s\nVCTL_UNIT_EOF\n", nodeAgentUnit)
 	b.WriteString("mkdir -p /etc/systemd/system/vctl-node-agent.service.d\n")
 	fmt.Fprintf(&b, "cat > /etc/systemd/system/vctl-node-agent.service.d/10-hostname.conf <<'VCTL_DROPIN_EOF'\n%s\nVCTL_DROPIN_EOF\n", nodeAgentDropIn(hostname, motd))
