@@ -905,5 +905,11 @@ func sortedDetailKeys(details map[string]string) []string {
 }
 
 func detailLabel(k string) string {
+	// Details come from a node-agent capability report, which is inventory-
+	// controlled and does not validate its keys; an empty key would panic on
+	// k[:1]. A compromised or buggy host must not be able to crash the CLI.
+	if k == "" {
+		return ""
+	}
 	return strings.ToUpper(k[:1]) + strings.ReplaceAll(k[1:], "_", " ")
 }

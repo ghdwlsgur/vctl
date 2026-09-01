@@ -578,3 +578,15 @@ func TestCoverageDoesNotGoNegativeWhenMoreWasProbedThanTheInventoryHolds(t *test
 		t.Errorf("unprobed = %d, want it clamped at zero", got.Unprobed)
 	}
 }
+
+// A node-agent capability report is inventory-controlled and its keys are not
+// validated on the way in. An empty key must not panic the host detail view: a
+// compromised or buggy agent cannot be allowed to crash the operator's CLI.
+func TestDetailLabelDoesNotPanicOnAnEmptyKey(t *testing.T) {
+	if got := detailLabel(""); got != "" {
+		t.Errorf("detailLabel(\"\") = %q, want empty", got)
+	}
+	if got := detailLabel("nova_compute"); got != "Nova compute" {
+		t.Errorf("detailLabel(nova_compute) = %q", got)
+	}
+}
