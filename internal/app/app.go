@@ -84,6 +84,12 @@ func New() (*App, error) {
 // have. AppRole is what to do when nobody is there to be asked, not a shortcut
 // past that statement — so it still goes first whenever there is no terminal,
 // which is every pod, timer and CI job.
+// renewAhead is how early EnsureLogin starts renewing a still-valid renewable
+// token. Wide enough that the daemon's irregular call cadence (pool
+// reconnects, reopen-on-failure) gets many attempts before the deadline;
+// narrow enough that a person's 8h OIDC token isn't renewed on every command.
+const renewAhead = time.Hour
+
 func (a *App) EnsureLogin(ctx context.Context) error {
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
@@ -95,6 +101,18 @@ func (a *App) EnsureLogin(ctx context.Context) error {
 		// because the reload armed the same cache (sre-srv-0032, 2026-08-31).
 		switch err := a.Vault.ValidateToken(ctx); {
 		case err == nil:
+			// Renew ahead of expiry instead of inside the final minute. The
+			// fleet's AppRole tokens are periodic (24h) and were renewed by
+			// whatever EnsureLogin happened to run in the 60-second margin
+			// before the period lapsed — measured on a fleet host: 0.4s to
+			// spare, and the one lost race revoked the token mid-flight
+			// (renew answered 200; the expiration manager executed it four
+			// minutes later anyway). Best-effort: a failed early renewal
+			// leaves a token that is still valid now, and every later call
+			// inside the window retries.
+			if a.Vault.Renewable() && a.Vault.TTL() < renewAhead {
+				_ = a.Vault.Renew(ctx)
+			}
 			return nil
 		case errors.Is(err, vaultc.ErrTokenDenied):
 			// Vault's verdict outranks the local clock. Drop the corpse and

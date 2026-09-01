@@ -92,6 +92,63 @@ func TestEnsureLoginDistrustsACachedTokenVaultHasRevoked(t *testing.T) {
 	}
 }
 
+// A renewable token near its deadline is renewed while it is still healthy,
+// not inside the final minute. The fleet's periodic tokens (24h period) were
+// renewed by whatever EnsureLogin ran in the 60s pre-expiry margin — measured
+// slack on a fleet host: 0.4 seconds, and the one lost race revoked the token
+// mid-flight even though the renew itself answered 200.
+func TestEnsureLoginRenewsWellBeforeTheDeadline(t *testing.T) {
+	var renews int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/token/lookup-self":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "near-deadline"}})
+		case "/v1/auth/token/renew-self":
+			renews++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"auth": map[string]any{
+					"client_token":   "near-deadline",
+					"lease_duration": 86400,
+					"renewable":      true,
+				},
+			})
+		default:
+			t.Errorf("unexpected Vault call: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	stateDir := t.TempDir()
+	cache, _ := json.Marshal(map[string]any{
+		"token":     "near-deadline",
+		"expires":   time.Now().Add(10 * time.Minute).Format(time.RFC3339Nano), // valid, inside renewAhead
+		"renewable": true,
+	})
+	if err := os.WriteFile(filepath.Join(stateDir, "token"), cache, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	vc, err := vaultc.New(srv.URL, nil, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a := &App{
+		Cfg:         &config.Config{AppRoleMount: "approle"},
+		Vault:       vc,
+		Interactive: func() bool { return false },
+	}
+	if err := a.EnsureLogin(context.Background()); err != nil {
+		t.Fatalf("EnsureLogin: %v", err)
+	}
+	if renews != 1 {
+		t.Errorf("renews = %d, want 1 early renewal", renews)
+	}
+	if remaining := time.Until(vc.Expiry()); remaining < 23*time.Hour {
+		t.Errorf("expiry only %v away, want the fresh 24h grant recorded", remaining)
+	}
+}
+
 // Transport trouble is not a verdict on the token. A network blip during the
 // lookup must not throw away a good token — for a person that would burn an
 // interactive SSO round; for a daemon the very next call fails the same way
