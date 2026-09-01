@@ -52,6 +52,12 @@ validates sshd config before reloading, rolling back on failure.
 			if err != nil {
 				return err
 			}
+			// The user may have come from the inventory, which anyone with edit
+			// rights can write. It is about to become part of an external ssh
+			// argv — see validLoginUser for what a hostile value does there.
+			if err := validLoginUser(user); err != nil {
+				return err
+			}
 
 			if err := a.EnsureLogin(ctx); err != nil {
 				return err
@@ -64,15 +70,7 @@ validates sshd config before reloading, rolling back on failure.
 			dest := user + "@" + host
 			ui.Infof(os.Stderr, "installing Vault SSH CA trust on %s (port %s)", dest, portStr)
 
-			sshArgs := []string{"-p", portStr, "-o", "StrictHostKeyChecking=accept-new"}
-			if identity != "" {
-				sshArgs = append(sshArgs, "-i", identity)
-			}
-			remoteShell := "sh"
-			if useSudo {
-				remoteShell = "sudo sh"
-			}
-			sshArgs = append(sshArgs, dest, remoteShell)
+			sshArgs := trustCASSHArgs(dest, portStr, identity, useSudo)
 
 			c := exec.CommandContext(ctx, "ssh", sshArgs...)
 			c.Stdin = strings.NewReader(trustCAScript(caPub))
@@ -90,6 +88,22 @@ validates sshd config before reloading, rolling back on failure.
 	cmd.Flags().IntVar(&port, "port", 0, "override SSH port (default: inventory value or 22)")
 	cmd.Flags().StringVar(&loginAs, "user", "", "override login user")
 	return cmd
+}
+
+// trustCASSHArgs builds the argv for the bootstrap ssh. Options come first and
+// `--` closes them, so whatever dest holds is a destination to ssh and never an
+// option — the inventory-supplied user in dest is data, not syntax. Without the
+// separator a user of `-oProxyCommand=…` would run that command locally.
+func trustCASSHArgs(dest, portStr, identity string, useSudo bool) []string {
+	args := []string{"-p", portStr, "-o", "StrictHostKeyChecking=accept-new"}
+	if identity != "" {
+		args = append(args, "-i", identity)
+	}
+	remoteShell := "sh"
+	if useSudo {
+		remoteShell = "sudo sh"
+	}
+	return append(args, "--", dest, remoteShell)
 }
 
 // resolveTrustTarget turns the argument into (user, host, port). An explicit

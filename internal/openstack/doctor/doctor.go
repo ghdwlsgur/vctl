@@ -24,7 +24,10 @@ package doctor
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -116,14 +119,16 @@ func (d Doctor) Diagnose(ctx context.Context, id string, insecure bool) []Check 
 	client, authErr := openstackapi.New(ctx, creds, insecure, d.timeout())
 	if authErr != nil {
 		// A TLS failure and an unreachable endpoint read the same in the error,
-		// and they call for completely different next steps. Ask again without
-		// verification to tell them apart — only to report, never to proceed.
-		if !insecure {
-			if _, retry := openstackapi.New(ctx, creds, true, d.timeout()); retry == nil {
-				add("Keystone", Fail,
-					"authenticates only with TLS verification off — the certificate is the problem, not the route (%v)", authErr)
-				return append(out, d.lastReconcile(ctx, id))
-			}
+		// and they call for completely different next steps. Tell them apart by
+		// probing the certificate directly — never by re-authenticating with
+		// verification off, which would put this deployment's admin password on
+		// an unverified channel to whatever is actually answering (the very
+		// thing a TLS failure warns about). The probe opens a TLS handshake and
+		// sends nothing.
+		if !insecure && certificateIsTheProblem(ctx, creds.AuthURL, d.timeout()) {
+			add("Keystone", Fail,
+				"the endpoint answers TLS but its certificate does not verify — the certificate is the problem, not the route (%v)", authErr)
+			return append(out, d.lastReconcile(ctx, id))
 		}
 		add("Keystone", Fail, "%v", authErr)
 		return append(out, d.lastReconcile(ctx, id))
@@ -171,6 +176,49 @@ func (d Doctor) Diagnose(ctx context.Context, id string, insecure bool) []Check 
 	}
 
 	return append(out, d.lastReconcile(ctx, id))
+}
+
+// certificateIsTheProblem reports whether authURL's TLS endpoint is reachable
+// and completes a handshake but presents a certificate the system roots reject.
+// That is the one case worth calling out separately: the route is fine, the
+// certificate is not.
+//
+// It never authenticates and sends no request body — only a TLS handshake, once
+// with verification off (does the endpoint speak TLS at all?) and, if so, once
+// with verification on (does the certificate verify?). A password never leaves
+// the process, so a MITM on a genuinely bad certificate learns nothing.
+func certificateIsTheProblem(ctx context.Context, authURL string, timeout time.Duration) bool {
+	u, err := url.Parse(authURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	addr := u.Host
+	if u.Port() == "" {
+		addr = net.JoinHostPort(u.Hostname(), "443")
+	}
+
+	dialer := &net.Dialer{Timeout: timeout}
+	handshake := func(verify bool) error {
+		d := tls.Dialer{
+			NetDialer: dialer,
+			Config: &tls.Config{
+				ServerName:         u.Hostname(),
+				InsecureSkipVerify: !verify, // #nosec G402 -- diagnostic reachability probe, sends nothing
+			},
+		}
+		conn, err := d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return err
+		}
+		return conn.Close()
+	}
+
+	// Unreachable or not TLS at all: not a certificate problem, it is the route.
+	if err := handshake(false); err != nil {
+		return false
+	}
+	// Speaks TLS but will not verify: the certificate is the problem.
+	return handshake(true) != nil
 }
 
 // MissingCredFields names the credential fields a reconcile cannot run

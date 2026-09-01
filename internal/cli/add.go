@@ -256,6 +256,9 @@ func validateServer(ctx context.Context, st inventoryLister, sv store.Server) er
 	if strings.TrimSpace(sv.User) == "" {
 		return fmt.Errorf("--user is required")
 	}
+	if err := validLoginUser(sv.User); err != nil {
+		return fmt.Errorf("invalid --user: %w", err)
+	}
 	if strings.TrimSpace(sv.DC) == "" {
 		return fmt.Errorf("--dc is required")
 	}
