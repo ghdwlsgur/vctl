@@ -158,6 +158,17 @@ func Bar(done, total, width int) string {
 	return okStyle.Render(strings.Repeat("█", filled)) + mutedStyle.Render(strings.Repeat("░", width-filled))
 }
 
+// Meter renders a percentage as an uncolored block meter (▰▰▱▱…) for rows
+// whose colour comes from the row's own State — Bar's fill is always ok-green,
+// which is wrong for a gauge that exists to turn red.
+func Meter(pct float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	filled := min(width, max(0, int(pct*float64(width)/100+0.5)))
+	return strings.Repeat("▰", filled) + strings.Repeat("▱", width-filled)
+}
+
 // Ago renders a muted "(3m ago)" relative time for pairing next to an absolute
 // timestamp. Returns "" for a zero time.
 func Ago(t time.Time) string {

@@ -901,8 +901,8 @@ func TestConnectAsksForAUserThenHandsBackTheSubshell(t *testing.T) {
 	m := testExploreModel()
 	m.defaultUser = "ubuntu"
 	m = keys(m, "tab", "c") // focus rows, start connect on the first VM
-	if !m.askUser || m.connectVM == nil {
-		t.Fatalf("connect prompt not open: askUser=%v vm=%v", m.askUser, m.connectVM)
+	if !m.askingUser() || m.connectVM == nil {
+		t.Fatalf("connect prompt not open: askUser=%v vm=%v", m.askingUser(), m.connectVM)
 	}
 	if m.userInput != "ubuntu" {
 		t.Fatalf("prompt not prefilled with the default user: %q", m.userInput)
@@ -917,7 +917,7 @@ func TestConnectAsksForAUserThenHandsBackTheSubshell(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("enter produced no subshell command")
 	}
-	if m.askUser {
+	if m.askingUser() {
 		t.Error("prompt still open after enter")
 	}
 
@@ -925,13 +925,13 @@ func TestConnectAsksForAUserThenHandsBackTheSubshell(t *testing.T) {
 	m2 := keys(testExploreModel(), "tab", "c")
 	out2, cmd2 := m2.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m2 = out2.(exploreModel)
-	if cmd2 != nil || m2.askUser || m2.connectVM != nil {
+	if cmd2 != nil || m2.askingUser() || m2.connectVM != nil {
 		t.Error("esc did not cancel the pending connect")
 	}
 
 	// Inert on the hosts view.
 	m3 := keys(testExploreModel(), "tab", "s", "c")
-	if m3.askUser {
+	if m3.askingUser() {
 		t.Error("connect prompt opened from the hosts view")
 	}
 }
@@ -954,7 +954,7 @@ func TestDetailEnterOpensTheInlineConsole(t *testing.T) {
 		t.Fatal("detail did not capture the VM")
 	}
 	m = key(m, "enter") // ask for the login user
-	if !m.askUser {
+	if !m.askingUser() {
 		t.Fatal("enter on a VM detail did not ask for a user")
 	}
 	m = key(m, "enter") // accept the prefilled default

@@ -15,6 +15,7 @@ package access
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/user"
@@ -163,7 +164,14 @@ func (c *Connector) attributedIdentity(ctx context.Context) string {
 // When timeout > 0 the sign+dial+run are bounded by it; the audit write is not,
 // so a timed-out command is still recorded. The attempt is always audited.
 func (c *Connector) Execute(ctx context.Context, req Request, command string, timeout time.Duration) (Result, error) {
-	res, entry, err := c.run(ctx, req, command, timeout)
+	return c.ExecuteWithInput(ctx, req, command, timeout, nil)
+}
+
+// ExecuteWithInput is Execute with the command's stdin wired to input — how an
+// installer streams a file or a script to the far side without leaving this
+// package's audit path. A nil input behaves exactly like Execute.
+func (c *Connector) ExecuteWithInput(ctx context.Context, req Request, command string, timeout time.Duration, input io.Reader) (Result, error) {
+	res, entry, err := c.run(ctx, req, command, timeout, input)
 	c.record(ctx, entry)
 	return res, err
 }
@@ -174,7 +182,7 @@ func (c *Connector) Execute(ctx context.Context, req Request, command string, ti
 // Split out for Monitor, which polls on a timer and must not write a row per
 // poll. Execute is still the only way to run a one-off command, and it always
 // records — the split moves the decision, it does not remove it.
-func (c *Connector) run(ctx context.Context, req Request, command string, timeout time.Duration) (Result, store.AccessEntry, error) {
+func (c *Connector) run(ctx context.Context, req Request, command string, timeout time.Duration, input io.Reader) (Result, store.AccessEntry, error) {
 	runCtx := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -184,7 +192,7 @@ func (c *Connector) run(ctx context.Context, req Request, command string, timeou
 	req.HostKey.apply(req.Target)
 	sign, serial, signedAt := c.signFunc(runCtx)
 	vaultUser := c.attributedIdentity(ctx)
-	res, info, err := sshc.Run(runCtx, req.Target, sign, command)
+	res, info, err := sshc.RunWithInput(runCtx, req.Target, sign, command, input)
 	return Result{
 			Host: req.Target.Name, Addr: req.Target.Addr,
 			Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode,

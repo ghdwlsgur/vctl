@@ -110,9 +110,10 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 	// pipeline `vctl ssh --vm` exec and the MCP tool use. The connector is the
 	// audited path; wiring anything rawer here would open an unrecorded door.
 	conn := newConnector(a)
+	nets := a.Cfg.OperatorNetworks // the loaded config, not a per-command re-parse
 	m.execVM = func(v *store.Instance, user, command string) (string, int, error) {
 		t, err := access.VMTarget(nameOrID(*v), v.Addresses, access.VMPolicy{
-			User: user, CARole: a.Cfg.CARole, OperatorNets: operatorNetworks(),
+			User: user, CARole: a.Cfg.CARole, OperatorNets: nets,
 		})
 		if err != nil {
 			return "", 0, err

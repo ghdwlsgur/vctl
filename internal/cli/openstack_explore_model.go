@@ -100,7 +100,8 @@ type exploreModel struct {
 
 	// The pending connect: on a VM, `c` (full subshell) or enter-in-detail
 	// (inline console) first asks for a login user — Nova does not record one.
-	askUser     bool
+	// The prompt is open exactly while connectVM is set; enter consumes it, so
+	// there is no separate boolean to keep in sync.
 	userInput   string
 	connectVM   *store.Instance
 	connectMode connectMode
@@ -277,7 +278,6 @@ func (m exploreModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.onKey(msg)
 	case exploreConnectDone:
-		m.connectVM = nil
 		if msg.err != nil {
 			m.connectNote = fmt.Sprintf("%s: %s", msg.vm, strutil.OneLine(msg.err.Error()))
 		}
@@ -366,7 +366,7 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.typing {
 		return m.onFilterKey(msg)
 	}
-	if m.askUser {
+	if m.askingUser() {
 		return m.onConnectKey(msg)
 	}
 	if len(m.detail) > 0 {
@@ -460,12 +460,14 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // user, so the one thing the browser cannot answer for you is asked, prefilled
 // with the config default.
 func (m *exploreModel) startConnect(v *store.Instance, mode connectMode) {
-	m.askUser = true
 	m.userInput = m.defaultUser
 	m.connectVM = v
 	m.connectMode = mode
 	m.connectNote = ""
 }
+
+// askingUser reports whether the login-user prompt is open.
+func (m exploreModel) askingUser() bool { return m.connectVM != nil }
 
 // onConnectKey edits the login user for the pending connect. Enter proceeds —
 // into the inline console or the full subshell, whichever asked — and esc
@@ -473,32 +475,26 @@ func (m *exploreModel) startConnect(v *store.Instance, mode connectMode) {
 func (m exploreModel) onConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
-		m.askUser = false
+		// Enter consumes the pending VM either way, which is what closes the
+		// prompt — the prompt is open exactly while connectVM is set.
+		v := m.connectVM
+		m.connectVM = nil
 		user := strings.TrimSpace(m.userInput)
-		if m.connectVM == nil || user == "" {
-			m.connectVM = nil
+		if v == nil || user == "" {
 			return m, nil
 		}
 		if m.connectMode == modeConsole {
-			m.console = &exploreConsole{vm: m.connectVM, user: user}
-			m.connectVM = nil
+			m.console = &exploreConsole{vm: v, user: user}
 			return m, nil
 		}
-		return m, m.connectCmd()
+		return m, m.connectCmd(v, user)
 	case tea.KeyEsc:
-		m.askUser, m.connectVM = false, nil
+		m.connectVM = nil
 		return m, nil
 	case tea.KeyCtrlC:
 		return m, tea.Quit
-	case tea.KeyBackspace:
-		if r := []rune(m.userInput); len(r) > 0 {
-			m.userInput = string(r[:len(r)-1])
-		}
-		return m, nil
-	case tea.KeyRunes:
-		m.userInput += string(msg.Runes)
-		return m, nil
 	}
+	m.userInput, _ = editLine(m.userInput, msg)
 	return m, nil
 }
 
@@ -509,13 +505,12 @@ func (m exploreModel) onConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // --allow-stale is passed because the browser already showed the record's age
 // beside the address; the flag exists to force that acknowledgment on people
 // connecting blind.
-func (m exploreModel) connectCmd() tea.Cmd {
-	v := m.connectVM
+func (m exploreModel) connectCmd(v *store.Instance, user string) tea.Cmd {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = os.Args[0]
 	}
-	args := []string{"ssh", "--vm", v.InstanceID, "--user", strings.TrimSpace(m.userInput), "--allow-stale"}
+	args := []string{"ssh", "--vm", v.InstanceID, "--user", user, "--allow-stale"}
 	if v.DeploymentID != "" {
 		args = append(args, "--farm", v.DeploymentID)
 	}
@@ -555,18 +550,8 @@ func (m exploreModel) onConsoleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		c.input = ""
 		c.running = true
 		return m, m.consoleRun(command)
-	case tea.KeyBackspace:
-		if r := []rune(c.input); len(r) > 0 {
-			c.input = string(r[:len(r)-1])
-		}
-		return m, nil
-	case tea.KeySpace:
-		c.input += " "
-		return m, nil
-	case tea.KeyRunes:
-		c.input += string(msg.Runes)
-		return m, nil
 	}
+	c.input, _ = editLine(c.input, msg)
 	return m, nil
 }
 
@@ -608,7 +593,36 @@ func (m exploreModel) onConsoleOutput(msg consoleOutput) exploreModel {
 	} else if msg.code != 0 {
 		c.lines = append(c.lines, ui.Muted(fmt.Sprintf("exit %d", msg.code)))
 	}
+	// The pane only ever shows the tail, so the scrollback must not grow with
+	// every journalctl dump for the browser's lifetime. Reslice-with-copy so
+	// the dropped head's backing array is actually released.
+	if n := len(c.lines); n > consoleScrollback {
+		c.lines = append([]string(nil), c.lines[n-consoleScrollback:]...)
+	}
 	return m
+}
+
+// consoleScrollback is how many lines the pane keeps. Far more than it can
+// show, far less than a dmesg dump; the access log is the archive.
+const consoleScrollback = 400
+
+// editLine applies one key to a line under edit, reporting whether the key
+// was an editing key. One editor for the filter, the connect prompt and the
+// console — three hand-rolled copies had already diverged (one silently
+// dropped the space key).
+func editLine(s string, msg tea.KeyMsg) (string, bool) {
+	switch msg.Type {
+	case tea.KeyBackspace:
+		if r := []rune(s); len(r) > 0 {
+			return string(r[:len(r)-1]), true
+		}
+		return s, true
+	case tea.KeySpace:
+		return s + " ", true
+	case tea.KeyRunes:
+		return s + string(msg.Runes), true
+	}
+	return s, false
 }
 
 func (m exploreModel) onFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -621,19 +635,9 @@ func (m exploreModel) onFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyCtrlC:
 		return m, tea.Quit
-	case tea.KeyBackspace:
-		f := m.activeFilter()
-		if f != "" {
-			r := []rune(f)
-			m.setFilter(string(r[:len(r)-1]))
-		}
-		return m, nil
-	case tea.KeySpace:
-		m.setFilter(m.activeFilter() + " ")
-		return m, nil
-	case tea.KeyRunes:
-		m.setFilter(m.activeFilter() + string(msg.Runes))
-		return m, nil
+	}
+	if v, ok := editLine(m.activeFilter(), msg); ok {
+		m.setFilter(v)
 	}
 	return m, nil
 }

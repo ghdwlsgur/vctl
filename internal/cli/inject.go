@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -97,7 +98,7 @@ connection to fetch sshd's own reason.
 			c.Stdout = &out
 			c.Stderr = os.Stderr
 			runErr := c.Run()
-			remoteEpoch := printInstallOutput(&out)
+			remoteEpoch := printInstallOutput(out.String())
 			if runErr != nil {
 				return fmt.Errorf("remote install on %s failed: %w", dest, runErr)
 			}
@@ -108,17 +109,19 @@ connection to fetch sshd's own reason.
 			}
 
 			ui.Infof(os.Stderr, "verifying with a real certificate login as %s", user)
-			target := &sshc.Target{
-				Name:           args[0],
-				Addr:           net.JoinHostPort(host, portStr),
-				User:           user,
-				Role:           a.Cfg.CARole,
-				AutoAddHostKey: true,
+			// Through the connector, not raw sshc: the verification IS an SSH
+			// into the host, and every certificate login leaves an audit row —
+			// including this one.
+			verify := access.Request{
+				Target: &sshc.Target{
+					Name: args[0],
+					Addr: net.JoinHostPort(host, portStr),
+					User: user,
+					Role: a.Cfg.CARole,
+				},
+				HostKey: access.HostKeyAcceptNew,
 			}
-			sign := func(role, publicKey string, principals, extensions []string) (string, error) {
-				return a.Vault.SignSSH(ctx, role, publicKey, principals, a.Cfg.SSHSign, extensions)
-			}
-			if _, _, err := sshc.Run(ctx, target, sign, "true"); err != nil {
+			if err := execStep(newConnector(a).Execute(ctx, verify, "true", 0)); err != nil {
 				ui.Errorf(os.Stderr, "certificate login failed: %v", err)
 				injectDiagnose(ctx, dest, portStr, identity, useSudo)
 				return fmt.Errorf("CA trust installed but a certificate login still fails — see the sshd log above")
@@ -153,8 +156,8 @@ func injectSSHArgs(dest, portStr, identity string, useSudo bool) []string {
 // printInstallOutput relays the installer's output and extracts the epoch
 // marker the script printed, returning 0 when no marker was found (an older
 // or tampered remote shell) — callers treat 0 as "unknown, skip the check".
-func printInstallOutput(out *bytes.Buffer) (remoteEpoch int64) {
-	for _, ln := range strings.Split(out.String(), "\n") {
+func printInstallOutput(out string) (remoteEpoch int64) {
+	for _, ln := range strings.Split(out, "\n") {
 		if v, ok := strings.CutPrefix(ln, "VCTL_REMOTE_EPOCH="); ok {
 			if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
 				remoteEpoch = n
@@ -183,17 +186,18 @@ func clockSkewProblem(localNow time.Time, remoteEpoch int64) string {
 		return ""
 	}
 	skew := localNow.Sub(time.Unix(remoteEpoch, 0))
+	var direction, consequence string
 	switch {
 	case skew > maxCertClockSkew:
-		return fmt.Sprintf("the host clock is %s behind — certificates will be rejected as \"not yet valid\". "+
-			"Fix time sync first (chronyd, or: timedatectl set-local-rtc 0; date -u -s <now>; hwclock --systohc)",
-			skew.Round(time.Second))
+		direction, consequence = "behind", `certificates will be rejected as "not yet valid"`
 	case skew < -maxCertClockSkew:
-		return fmt.Sprintf("the host clock is %s ahead — certificates will expire early or be rejected. "+
-			"Fix time sync first (chronyd, or: timedatectl set-local-rtc 0; date -u -s <now>; hwclock --systohc)",
-			(-skew).Round(time.Second))
+		skew, direction, consequence = -skew, "ahead", "certificates will expire early or be rejected"
+	default:
+		return ""
 	}
-	return ""
+	return fmt.Sprintf("the host clock is %s %s — %s. "+
+		"Fix time sync first (chronyd, or: timedatectl set-local-rtc 0; date -u -s <now>; hwclock --systohc)",
+		skew.Round(time.Second), direction, consequence)
 }
 
 // injectDiagnose fetches sshd's own account of the rejection over the
