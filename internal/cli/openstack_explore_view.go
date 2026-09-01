@@ -126,6 +126,9 @@ func (m exploreModel) titleBar() string {
 	if m.refreshErr != nil {
 		line += "  " + exploreWarnStyle.Render("refresh failed: "+strutil.OneLine(m.refreshErr.Error()))
 	}
+	if m.connectNote != "" {
+		line += "  " + exploreWarnStyle.Render("connect: "+m.connectNote)
+	}
 	return line
 }
 
@@ -381,11 +384,19 @@ func (m exploreModel) footer() string {
 		return exploreCursorStyle.Render("/"+m.activeFilter()) +
 			ui.Muted("   enter keep · esc clear")
 	}
+	if m.askUser {
+		vm := ""
+		if m.connectVM != nil {
+			vm = nameOrID(*m.connectVM) + " "
+		}
+		return exploreCursorStyle.Render("connect "+vm+"as: "+m.userInput+"█") +
+			ui.Muted("   enter connect · esc cancel")
+	}
 	// Dropped from the middle out: the two ends are the ones somebody needs
 	// without being told, and a footer cut in half by the terminal edge tells
 	// them nothing at all.
 	keys := []string{
-		"tab switch", "↑↓ move", "enter open", "v VMs", "s hosts",
+		"tab switch", "↑↓ move", "enter open", "c connect", "v VMs", "s hosts",
 		"/ filter", "r refresh", "q quit",
 	}
 	for len(keys) > 2 && lipgloss.Width(strings.Join(keys, " · ")) > m.width {

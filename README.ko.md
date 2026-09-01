@@ -177,7 +177,7 @@ CLI가 실행 전에 검사합니다.
 
 - 읽기 커맨드는 앱에서 기본 허용하지만, `audit`과 `session`은 Vault의
   `vctl-auditor` 정책이 없으면 DB 자격 증명 발급 단계에서 거부됩니다.
-- 변경·접속 커맨드(`ssh`, `exec`, `sync`, `trust-ca`)는 그룹이 권한을
+- 변경·접속 커맨드(`ssh`, `exec`, `sync`, `inject`, `install`)는 그룹이 권한을
   부여하기 전까지 거부됩니다.
 - `vctl-admin`(과 `sre-admin`)은 앱 계층을 우회하므로 관리자가 스스로 막히는 일은
   없습니다.
@@ -317,7 +317,7 @@ vctl cache clear      # 스냅샷과 캐시된 grant 삭제
 | Vault 토큰 정책 | 실시간 `lookup-self` | 실시간 `lookup-self` (캐싱 안 함) |
 | 읽기 명령 (`list`, `status`, `audit`) | 허용 | 허용 |
 | `ssh` | grant 필요 | **Postgres 가 이전에 확인해준** grant 필요 + `cache_offline_ttl`(기본 24h) 이내 |
-| `sync`, `trust-ca`, `ip set/rm`, `wg sync` | grant 필요 | 항상 거부 — 어차피 DB 에 써야 하는 명령입니다 |
+| `sync`, `inject`, `install`, `ip set/rm`, `wg sync` | grant 필요 | 항상 거부 — 어차피 DB 에 써야 하는 명령입니다 |
 | 관리자 명령 | admin 정책 필요 | admin 정책 필요 |
 
 긴 장애 중에 회수된 grant 가 한 번도 다시 접속하지 않는 노트북에서 영원히 살아 있으면 안 됩니다. 이 유효 기간은 그래서 뒀습니다. `cache_disabled: true`(또는 `VCTL_CACHE_DISABLE=1`)로 이 기능을 통째로 끄면 예전의 fail-hard 동작으로 정확히 돌아갑니다.
@@ -379,6 +379,9 @@ claude mcp add vctl -- vctl mcp
 | `vctl mcp` | 인벤토리를 AI 에이전트에 노출하는 읽기 전용 MCP 서버(stdio). `vctl_ssh_exec`로 호스트 명령 실행도 가능. 호출자 신원으로 동작 — RBAC 적용 |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | 앱 계층 커맨드 RBAC 관리(관리자). `assign`/`grant`은 인터랙티브 픽커 |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | 중앙 SSH 접근 감사 row를 보여줍니다 |
+| `vctl inject <host\|user@addr> [--sudo] [-i <key>]` | vctl ssh를 위한 호스트 준비: Vault SSH CA 신뢰를 설치하고 실제 인증서 로그인으로 검증까지 합니다 (별칭: `trust-ca`) |
+| `vctl install <host> [--motd=false] [--binary <path>]` | Vault 인증서 연결로 node-agent를 설치합니다 (바이너리·AppRole 자격증명·systemd 유닛) |
+| `vctl log <host>` | 호스트 한 대의 node-agent 헬스체크를 대시보드로 보여줍니다 (하트비트 신선도·load·메모리·디스크) |
 | `vctl node-agent [--interval 5m] [--probe-interval 1h]` | 이미 등록된 인벤토리 호스트의 가벼운 런타임 상태를 보고합니다. 주기가 긴 probe는 그 호스트가 어떤 플랫폼의 무슨 역할인지 기록합니다 |
 | `vctl cache status\|refresh\|clear` | Postgres 불통 시 쓰이는 로컬 인벤토리 스냅샷을 확인·제어합니다 |
 | `vctl status` | 로그인, SSH CA, inventory DB 연결 상태를 확인합니다 |

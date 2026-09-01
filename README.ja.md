@@ -174,7 +174,7 @@ Vault の `oidc` 認証バックエンドは GitLab をアイデンティティ�
 **第 2 層 — アプリ(追加制限)。** `vctl rbac` の Postgres grant を標準 CLI がコマンド実行前に検査します。
 
 - 読み取りコマンド(`list`、`status`、`audit`、`session`)はデフォルトで許可されます。
-- 変更/接続コマンド(`ssh`、`exec`、`sync`、`trust-ca`)は、グループが付与するまで拒否されます。
+- 変更/接続コマンド(`ssh`、`exec`、`sync`、`inject`、`install`)は、グループが付与するまで拒否されます。
 - `vctl-admin`(および `sre-admin`)はアプリ層をバイパスするため、admin が締め出されることはありません。
 
 admin は対話的なピッカーを使って CLI から管理します。
@@ -213,11 +213,11 @@ vctl ssh <host>
 `extra_ips`(`vctl edit --extra-ip`)、node-agent の `observed_ips` のいずれかに一致し、
 `vctl list` が追加 IP も表示します。対話ピッカーは ←/→ でデータセンター別に絞り込めます。
 
-ホストが Vault SSH CA を信頼して初めて、これらの証明書を受け入れます。新しいホストは `vctl trust-ca` で一度オンボーディングします(通常の SSH 接続を通じて CA 公開鍵を `TrustedUserCAKeys` としてインストールし、sshd を再読み込みします)。
+ホストが Vault SSH CA を信頼して初めて、これらの証明書を受け入れます。新しいホストは `vctl inject`(旧 `trust-ca`、エイリアスとして動作)で一度オンボーディングします。通常の SSH 接続を通じて CA 公開鍵を `TrustedUserCAKeys` としてインストールして sshd を再読み込みし、その後、実際に証明書でログインして検証します。時刻ずれや sshd 側の拒否理由もそのまま報告されます。
 
 ```bash
-vctl trust-ca rnd-gitlab             # resolve user/addr from inventory
-vctl trust-ca root@198.51.100.25     # or an explicit, not-yet-registered host
+vctl inject rnd-gitlab             # resolve user/addr from inventory
+vctl inject root@198.51.100.25     # or an explicit, not-yet-registered host
 ```
 
 これがないと、ホストが未知の CA を拒否するため、`vctl ssh` はハンドシェイクに失敗します(`no supported methods remain`)。ゴールデンイメージに CA 鍵を焼き込んでおけば、ホストごとのオンボーディングを省略できます。
@@ -318,7 +318,7 @@ vctl cache clear      # スナップショットとキャッシュされた gran
 | Vault token policy | 都度 `lookup-self` | 都度 `lookup-self`(キャッシュしない) |
 | 読み取りコマンド (`list`, `status`, `audit`) | 許可 | 許可 |
 | `ssh` | grant が必要 | **Postgres が以前に確認した** grant が必要、かつ `cache_offline_ttl`(既定 24h)以内 |
-| `sync`, `trust-ca`, `ip set/rm`, `wg sync` | grant が必要 | 常に拒否 — どのみち DB への書き込みが必要です |
+| `sync`, `inject`, `install`, `ip set/rm`, `wg sync` | grant が必要 | 常に拒否 — どのみち DB への書き込みが必要です |
 | 管理者コマンド | admin policy が必要 | admin policy が必要 |
 
 この有効期間は、長い障害中に取り消された grant が、一度も再接続しないノート PC で永久に生き続けないようにするためのものです。`cache_disabled: true`(または `VCTL_CACHE_DISABLE=1`)でこの仕組み全体を無効にすると、以前の fail-hard な動作にそのまま戻ります。
@@ -408,7 +408,9 @@ claude mcp add vctl -- vctl mcp
 | `vctl mcp` | インベントリを AI エージェントに公開する読み取り専用 MCP サーバ(stdio)。`vctl_ssh_exec` でホストのコマンド実行も可能。呼び出し元の識別情報で動作 — RBAC 適用 |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | アプリ層のコマンド RBAC を管理する(admin)。`assign`/`grant` は対話的なピッカー |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | 中央の SSH アクセス監査行を表示する |
-| `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | vctl ssh が動作するようホストに Vault SSH CA の信頼をインストールする(一度きりのオンボーディング) |
+| `vctl inject <host\|user@addr> [--sudo] [-i <key>]` | vctl ssh のためにホストを準備する: Vault SSH CA の信頼をインストールし、実際の証明書ログインで検証する(エイリアス: `trust-ca`) |
+| `vctl install <host> [--motd=false] [--binary <path>]` | Vault 証明書接続で node-agent をインストールする(バイナリ、AppRole 資格情報、systemd ユニット) |
+| `vctl log <host>` | ホストの node-agent ヘルスチェックをダッシュボードで表示する |
 | `vctl ca install\|remove\|print` | このマシンの OS ストアで埋め込みルート CA を信頼し、ブラウザ/curl が組織の内部ホスト名を受け入れるようにする(HSTS エラーを解消)。プラットフォームは自動検出 |
 | `vctl node-agent [--interval 5m] [--probe-interval 1h]` | すでに登録済みのインベントリについて軽量なホストのランタイム状態を報告する。間隔の長い probe はそのホストがどのプラットフォームのどの役割かを記録する |
 | `vctl session [<serial>\|--list\|--json]` | SSH セッション内で誰が何をしたかを表示する(ホストのカーネル監査タイムライン) |

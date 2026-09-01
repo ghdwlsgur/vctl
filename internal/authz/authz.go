@@ -45,9 +45,10 @@ const (
 // so neither drift can come back.
 var gated = map[string]Class{
 	// Access.
-	"ssh":      ClassMutate,
-	"exec":     ClassMutate,
-	"trust-ca": ClassMutate,
+	"ssh":     ClassMutate,
+	"exec":    ClassMutate,
+	"inject":  ClassMutate,
+	"install": ClassMutate,
 	// Inventory writes.
 	"add":    ClassMutate,
 	"delete": ClassMutate,

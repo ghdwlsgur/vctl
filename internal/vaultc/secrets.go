@@ -150,12 +150,26 @@ func (c *Client) AppRoleRoleID(ctx context.Context, mount, role string) (string,
 
 // GenerateSecretID issues a fresh secret_id for an approle role.
 func (c *Client) GenerateSecretID(ctx context.Context, mount, role string) (string, error) {
+	sid, _, err := c.GenerateSecretIDWithAccessor(ctx, mount, role)
+	return sid, err
+}
+
+// GenerateSecretIDWithAccessor issues a fresh secret_id and also returns its
+// accessor — the handle an operator stores so the credential can later be
+// revoked without ever writing the secret itself anywhere else.
+func (c *Client) GenerateSecretIDWithAccessor(ctx context.Context, mount, role string) (secretID, accessor string, err error) {
 	p := fmt.Sprintf("auth/%s/role/%s/secret-id", mount, role)
 	sec, err := c.writePath(ctx, p, nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return reqString(sec, p, "secret_id")
+	if secretID, err = reqString(sec, p, "secret_id"); err != nil {
+		return "", "", err
+	}
+	if accessor, err = reqString(sec, p, "secret_id_accessor"); err != nil {
+		return "", "", err
+	}
+	return secretID, accessor, nil
 }
 
 // KV reads and listing live in kv.go.
