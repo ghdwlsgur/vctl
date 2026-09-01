@@ -935,3 +935,73 @@ func TestConnectAsksForAUserThenHandsBackTheSubshell(t *testing.T) {
 		t.Error("connect prompt opened from the hosts view")
 	}
 }
+
+// Enter on a VM's detail opens the inline console: a prompt under the detail
+// where each submitted command runs through the injected executor and its
+// output lands in the pane. Letters — q included — are typed, not shortcuts;
+// only esc leaves, and it leaves the detail standing.
+func TestDetailEnterOpensTheInlineConsole(t *testing.T) {
+	m := testExploreModel()
+	m.defaultUser = "rocky"
+	var gotUser, gotCmd string
+	m.execVM = func(v *store.Instance, user, command string) (string, int, error) {
+		gotUser, gotCmd = user, command
+		return "13:37:00 up 47 days\n", 0, nil
+	}
+
+	m = keys(m, "tab", "enter") // open the first VM's detail
+	if m.detailVM == nil {
+		t.Fatal("detail did not capture the VM")
+	}
+	m = key(m, "enter") // ask for the login user
+	if !m.askUser {
+		t.Fatal("enter on a VM detail did not ask for a user")
+	}
+	m = key(m, "enter") // accept the prefilled default
+	if m.console == nil || m.console.user != "rocky" {
+		t.Fatalf("console not open as the default user: %+v", m.console)
+	}
+	if len(m.detail) == 0 {
+		t.Error("opening the console closed the detail")
+	}
+
+	// Type a command — including q, which must not quit — and run it.
+	m = keys(m, "u", "p", "t", "i", "m", "e", " ", "-", "q")
+	if m.console.input != "uptime -q" {
+		t.Fatalf("typed input = %q", m.console.input)
+	}
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = out.(exploreModel)
+	if cmd == nil {
+		t.Fatal("enter produced no run command")
+	}
+	if !m.console.running {
+		t.Error("console not marked running")
+	}
+	msg := cmd()
+	res, ok := msg.(consoleOutput)
+	if !ok {
+		t.Fatalf("run returned %T", msg)
+	}
+	if gotUser != "rocky" || gotCmd != "uptime -q" {
+		t.Fatalf("executor got user=%q cmd=%q", gotUser, gotCmd)
+	}
+	out, _ = m.Update(res)
+	m = out.(exploreModel)
+	if m.console.running {
+		t.Error("still running after output landed")
+	}
+	joined := strings.Join(m.console.lines, "\n")
+	if !strings.Contains(joined, "rocky@bastion $ uptime -q") || !strings.Contains(joined, "47 days") {
+		t.Fatalf("scrollback missing echo or output:\n%s", joined)
+	}
+
+	// esc closes the console and keeps the detail.
+	m = key(m, "esc")
+	if m.console != nil {
+		t.Error("esc did not close the console")
+	}
+	if len(m.detail) == 0 {
+		t.Error("esc closed the detail along with the console")
+	}
+}
