@@ -156,9 +156,13 @@ func TestLiveStatusTextDistinguishesFreshFromStale(t *testing.T) {
 			Status: &store.ServerStatus{LastSeenAt: fresh}}, "up"},
 		{"agent silent for two days", store.ServerWithStatus{
 			Status: &store.ServerStatus{LastSeenAt: old}}, "stale"},
+		// Unmanaged hosts get no verdict at all: up/down is a statement about
+		// the node-agent, and the old probe fallback ("up~", then a red
+		// "down") blamed appliances and never-onboarded machines for a daemon
+		// they don't run.
 		{"no agent, but a sync probe saw it", store.ServerWithStatus{
-			Server: store.Server{LastSeenUp: &probed}}, "up~"},
-		{"no agent, never probed", store.ServerWithStatus{}, "down"},
+			Server: store.Server{LastSeenUp: &probed}}, ""},
+		{"no agent, never probed", store.ServerWithStatus{}, ""},
 	}
 	for _, tc := range cases {
 		if got := liveStatusText(tc.in); got != tc.want {

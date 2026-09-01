@@ -227,10 +227,8 @@ func renderInventoryMode(w io.Writer, servers []store.InventoryRow, cached, allI
 // Past it, the agent reads as "stale". One place to tune the operational SLA.
 const statusFreshnessWindow = 10 * time.Minute
 
-// liveStatus prefers the node-agent's live report over the sync-time probe.
-// An agent that reported within the freshness window means the host is up right
-// now (dynamic); a stale agent reads as down; with no agent we fall back to the
-// last sync probe, marked "up~" to show it's point-in-time, not live.
+// liveStatus renders the node-agent's live report. A fresh heartbeat is "up",
+// a lapsed one "stale"; a host with no agent gets a muted "-" and no verdict.
 //
 // cached means the row came from the local snapshot, where no verdict is
 // honest — see agentCell.
@@ -243,24 +241,26 @@ func liveStatus(s store.ServerWithStatus, cached bool) string {
 		return ui.OK("up")
 	case "stale":
 		return ui.Warn("stale") // agent stopped reporting → likely down
-	case "up~":
-		return ui.Muted("up~") // last sync probe only (no agent)
 	default:
-		return ui.Fail("down") // red — not reachable / no signal
+		return ui.Muted("-") // unmanaged — liveness is not a claim we can make
 	}
 }
 
 // liveStatusText is the shared, uncolored liveness decision for status-aware
-// views. Agent freshness wins; otherwise the sync-time probe; otherwise down.
+// views. It is a statement about the node-agent, so a host that has never
+// reported gets "" — no verdict — rather than a fallback.
+//
+// It used to fall back to the sync-time probe ("up~") and then to "down".
+// That painted every unmanaged machine in the inventory — appliances,
+// gateways, hosts nobody onboarded — with a red "down" they could never
+// clear, blaming them for a daemon they don't run. `vctl status` already
+// counts these as "unmanaged" rather than failed; this is the same judgement.
 func liveStatusText(s store.ServerWithStatus) string {
-	if s.Status != nil {
-		if time.Since(s.Status.LastSeenAt) <= statusFreshnessWindow {
-			return "up"
-		}
-		return "stale"
+	if s.Status == nil {
+		return ""
 	}
-	if s.LastSeenUp != nil {
-		return "up~"
+	if time.Since(s.Status.LastSeenAt) <= statusFreshnessWindow {
+		return "up"
 	}
-	return "down"
+	return "stale"
 }
