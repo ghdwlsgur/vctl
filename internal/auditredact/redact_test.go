@@ -21,7 +21,12 @@ func TestArguments(t *testing.T) {
 		// A name that only contains a sensitive word as a substring, not a suffix
 		// ending at '=', is not a credential and is left alone.
 		{"substring not suffix", `env TOKENIZER=on run`, `env TOKENIZER=on run`},
-		{"vault login token", `vault login hvs.CAESIabc`, `vault login [REDACTED]`},
+		// The fixture deliberately does NOT wear Vault's real "hvs." prefix —
+		// secret scanners pattern-match it, and a redaction test is the one
+		// place secret-shaped strings must not live. The rule is positional
+		// (anything after `vault login` not starting with '-'), so a neutral
+		// stand-in exercises it identically.
+		{"vault login token", `vault login dummy.TESTTOKEN`, `vault login [REDACTED]`},
 		{"vault login flag kept", `vault login -method=oidc`, `vault login -method=oidc`},
 		{"curl basic user pass", `curl -u admin:s3cret https://api`, `curl -u admin:[REDACTED] https://api`},
 		{"kubernetes literal", `kubectl create secret generic x --from-literal=password=abc`, `kubectl create secret generic x --from-literal=password=[REDACTED]`},
