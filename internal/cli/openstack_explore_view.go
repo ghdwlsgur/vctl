@@ -364,6 +364,17 @@ func (m exploreModel) detailView() string {
 	head := exploreTitleStyle.Render("▌ " + ui.Truncate(m.detailOf, 60))
 	b.WriteString(m.clip(head+"  "+ui.Muted(m.freshness())) + "\n")
 	h := m.bodyHeight() + 1
+	consoleH := 0
+	if m.console != nil {
+		// The console takes the bottom of the screen; the detail keeps the
+		// rest. Half and half up to a ceiling — a prompt three lines tall is
+		// unusable and a detail squeezed to two is not a detail.
+		consoleH = min(h/2, 14)
+		if consoleH < 4 {
+			consoleH = min(4, h-1)
+		}
+		h -= consoleH
+	}
 	end := min(m.detailTop+h, len(m.detail))
 	for i := m.detailTop; i < end; i++ {
 		b.WriteString(m.clip(m.detail[i]) + "\n")
@@ -371,11 +382,67 @@ func (m exploreModel) detailView() string {
 	for i := end - m.detailTop; i < h; i++ {
 		b.WriteString("\n")
 	}
+	if m.console != nil {
+		b.WriteString(m.consolePane(consoleH))
+	}
+	if m.askUser {
+		vm := ""
+		if m.connectVM != nil {
+			vm = nameOrID(*m.connectVM) + " "
+		}
+		b.WriteString(m.clip(exploreCursorStyle.Render("connect "+vm+"as: "+m.userInput+"█") +
+			ui.Muted("   enter connect · esc cancel")))
+		return b.String()
+	}
+	b.WriteString(m.clip(ui.Muted(m.detailHint(h, end))))
+	return b.String()
+}
+
+// detailHint is the key line under the detail — and under the console when it
+// is open, where the keys mean different things.
+func (m exploreModel) detailHint(h, end int) string {
+	if m.console != nil {
+		return "enter run · esc close console · ^C clear line"
+	}
+	if m.askUser {
+		return "enter connect · esc cancel"
+	}
 	hint := "esc back · ↑↓ scroll · p keep on exit · q close"
+	if m.detailVM != nil {
+		hint = "enter console · c shell · " + hint
+	}
 	if len(m.detail) > h {
 		hint = fmt.Sprintf("%d–%d of %d · ", m.detailTop+1, end, len(m.detail)) + hint
 	}
-	b.WriteString(m.clip(ui.Muted(hint)))
+	return hint
+}
+
+// consolePane draws the inline console: a rule, the scrollback tail, and the
+// prompt line being edited. Always the tail — a pane this size is for watching
+// what the last command said, not for archaeology (the access log keeps that).
+func (m exploreModel) consolePane(height int) string {
+	c := m.console
+	var b strings.Builder
+	title := fmt.Sprintf("─ %s@%s ", c.user, ui.Truncate(nameOrID(*c.vm), 40))
+	rule := m.width - lipgloss.Width(title) - 1
+	if rule < 0 {
+		rule = 0
+	}
+	b.WriteString(m.clip(exploreDimStyle.Render(title+strings.Repeat("─", rule))) + "\n")
+
+	rows := height - 2 // rule + prompt line
+	start := max(0, len(c.lines)-rows)
+	for _, ln := range c.lines[start:] {
+		b.WriteString(m.clip(ln) + "\n")
+	}
+	for i := len(c.lines) - start; i < rows; i++ {
+		b.WriteString("\n")
+	}
+	prompt := exploreCursorStyle.Render(consolePrompt(c)) + c.input + exploreCursorStyle.Render("█")
+	if c.running {
+		prompt = exploreCursorStyle.Render(consolePrompt(c)) + c.input + ui.Muted("  … running")
+	}
+	b.WriteString(m.clip(prompt) + "\n")
 	return b.String()
 }
 

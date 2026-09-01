@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -104,6 +105,29 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 	m := newExploreModel(data)
 	m.defaultUser = a.Cfg.SSHDefaultUser
 	m.refresh = func() (exploreData, error) { return loadExploreData(ctx, a, st) }
+	// The inline console's executor: each submitted command is one Execute —
+	// a fresh Vault-signed certificate and an audit row per command, the same
+	// pipeline `vctl ssh --vm` exec and the MCP tool use. The connector is the
+	// audited path; wiring anything rawer here would open an unrecorded door.
+	conn := newConnector(a)
+	m.execVM = func(v *store.Instance, user, command string) (string, int, error) {
+		t, err := access.VMTarget(nameOrID(*v), v.Addresses, access.VMPolicy{
+			User: user, CARole: a.Cfg.CARole, OperatorNets: operatorNetworks(),
+		})
+		if err != nil {
+			return "", 0, err
+		}
+		res, err := conn.Execute(ctx, access.Request{Target: t, HostKey: access.HostKeyAcceptNew},
+			command, consoleCommandTimeout)
+		out := res.Stdout
+		if res.Stderr != "" {
+			if out != "" && !strings.HasSuffix(out, "\n") {
+				out += "\n"
+			}
+			out += res.Stderr
+		}
+		return out, res.ExitCode, err
+	}
 	// A stored reading is a starting point, not an answer: the screen is up
 	// immediately and the refresh that corrects it is already running.
 	// Not when a login is due: the prompt would open behind the alternate
@@ -248,3 +272,8 @@ func exploreDataFrom(cat fleet.Catalog) exploreData {
 	}
 	return out
 }
+
+// consoleCommandTimeout bounds one inline-console command. Long enough for a
+// slow package query, short enough that a hung remote gives the pane back —
+// anything longer-running belongs in the `c` subshell, which has a real PTY.
+const consoleCommandTimeout = 60 * time.Second

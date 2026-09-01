@@ -12,6 +12,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
+	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
 // The browser's state and what moves it: which pane has the keys, which rows
@@ -21,6 +22,36 @@ import (
 // state or a transition to the next one, which is what lets the tests drive a
 // model through a sequence of keys and assert on where the cursor ended up
 // without rendering a frame. See openstack_explore_view.go for the drawing.
+
+// connectMode is how a confirmed connect proceeds once the login user is known.
+type connectMode int
+
+const (
+	// modeSubshell suspends the screen and runs `vctl ssh --vm` with a PTY —
+	// for the visit that needs an editor or a pager. Bound to `c`.
+	modeSubshell connectMode = iota
+	// modeConsole opens the inline pane under the VM's detail — for the visit
+	// that is three commands and a look at their output. Bound to enter.
+	modeConsole
+)
+
+// exploreConsole is the inline pane's state: whose machine, the scrollback,
+// and the command being typed. It hangs off the model as a pointer so a
+// background command's output lands in the same pane the keys are editing.
+type exploreConsole struct {
+	vm      *store.Instance
+	user    string
+	lines   []string
+	input   string
+	running bool
+}
+
+// consoleOutput carries one finished command's output back to the pane.
+type consoleOutput struct {
+	out  string
+	code int
+	err  error
+}
 
 // Which pane the keys go to.
 type explorePane int
@@ -251,6 +282,8 @@ func (m exploreModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.connectNote = fmt.Sprintf("%s: %s", msg.vm, strutil.OneLine(msg.err.Error()))
 		}
 		return m, nil
+	case consoleOutput:
+		return m.onConsoleOutput(msg), nil
 	}
 	return m, nil
 }
@@ -407,7 +440,7 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.kind == kindVMs && m.focus == paneRows {
 			if vms := m.visibleVMs(); len(vms) > 0 {
 				v := vms[clampIndex(m.rowCur, len(vms))]
-				m.startConnect(&v)
+				m.startConnect(&v, modeSubshell)
 			}
 		}
 		return m, nil
@@ -426,20 +459,28 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // startConnect opens the login-user prompt for one VM. Nova records no login
 // user, so the one thing the browser cannot answer for you is asked, prefilled
 // with the config default.
-func (m *exploreModel) startConnect(v *store.Instance) {
+func (m *exploreModel) startConnect(v *store.Instance, mode connectMode) {
 	m.askUser = true
 	m.userInput = m.defaultUser
 	m.connectVM = v
+	m.connectMode = mode
 	m.connectNote = ""
 }
 
-// onConnectKey edits the login user for the pending connect. Enter suspends
-// the screen and runs the connection; esc forgets the whole idea.
+// onConnectKey edits the login user for the pending connect. Enter proceeds —
+// into the inline console or the full subshell, whichever asked — and esc
+// forgets the whole idea.
 func (m exploreModel) onConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
 		m.askUser = false
-		if m.connectVM == nil || strings.TrimSpace(m.userInput) == "" {
+		user := strings.TrimSpace(m.userInput)
+		if m.connectVM == nil || user == "" {
+			m.connectVM = nil
+			return m, nil
+		}
+		if m.connectMode == modeConsole {
+			m.console = &exploreConsole{vm: m.connectVM, user: user}
 			m.connectVM = nil
 			return m, nil
 		}
@@ -489,6 +530,87 @@ type exploreConnectDone struct {
 	err error
 }
 
+// onConsoleKey edits and submits the inline console's command line. Only esc
+// leaves — every letter, q included, is something somebody types into a shell.
+func (m exploreModel) onConsoleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	c := m.console
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.console = nil
+		return m, nil
+	case tea.KeyCtrlC:
+		// ^C in a prompt means "abandon this line", not "kill the browser".
+		if c.running || c.input != "" {
+			c.input = ""
+			return m, nil
+		}
+		m.console = nil
+		return m, nil
+	case tea.KeyEnter:
+		command := strings.TrimSpace(c.input)
+		if command == "" || c.running {
+			return m, nil
+		}
+		c.lines = append(c.lines, consolePrompt(c)+command)
+		c.input = ""
+		c.running = true
+		return m, m.consoleRun(command)
+	case tea.KeyBackspace:
+		if r := []rune(c.input); len(r) > 0 {
+			c.input = string(r[:len(r)-1])
+		}
+		return m, nil
+	case tea.KeySpace:
+		c.input += " "
+		return m, nil
+	case tea.KeyRunes:
+		c.input += string(msg.Runes)
+		return m, nil
+	}
+	return m, nil
+}
+
+// consolePrompt is the echoed prompt for the scrollback, shaped like the shell
+// the pane stands in for.
+func consolePrompt(c *exploreConsole) string {
+	return c.user + "@" + nameOrID(*c.vm) + " $ "
+}
+
+// consoleRun executes one command off the key path. Each command goes through
+// the same pipeline as `vctl ssh --vm` exec — a fresh Vault-signed certificate
+// and an audit row — via the injected execVM.
+func (m exploreModel) consoleRun(command string) tea.Cmd {
+	run, c := m.execVM, m.console
+	if run == nil || c == nil {
+		return func() tea.Msg {
+			return consoleOutput{err: fmt.Errorf("console has no executor wired")}
+		}
+	}
+	vm, user := c.vm, c.user
+	return func() tea.Msg {
+		out, code, err := run(vm, user, command)
+		return consoleOutput{out: out, code: code, err: err}
+	}
+}
+
+// onConsoleOutput appends one finished command's output to the pane.
+func (m exploreModel) onConsoleOutput(msg consoleOutput) exploreModel {
+	c := m.console
+	if c == nil {
+		return m // pane closed while the command ran; the audit row still exists
+	}
+	c.running = false
+	if out := strings.TrimRight(msg.out, "\n"); out != "" {
+		c.lines = append(c.lines, strings.Split(out, "\n")...)
+	}
+	if msg.err != nil {
+		c.lines = append(c.lines, ui.Fail(strutil.OneLine(msg.err.Error())))
+	} else if msg.code != 0 {
+		c.lines = append(c.lines, ui.Muted(fmt.Sprintf("exit %d", msg.code)))
+	}
+	return m
+}
+
 func (m exploreModel) onFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter, tea.KeyEsc:
@@ -517,15 +639,27 @@ func (m exploreModel) onFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m exploreModel) onDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.console != nil {
+		return m.onConsoleKey(msg)
+	}
 	switch msg.String() {
-	case "esc", "enter", "q":
+	case "esc", "q":
 		m.detail, m.detailTop, m.detailOf, m.detailVM = nil, 0, "", nil
 		return m, nil
-	case "c":
-		// The detail is where somebody reads the address and decides to go
-		// there — so the connection starts here too, not back on the list.
+	case "enter":
+		// On a VM's detail, enter opens the console under it — the detail is
+		// where somebody reads the address and decides to act on it. On a
+		// host's detail it closes, as enter always did.
 		if m.detailVM != nil {
-			m.startConnect(m.detailVM)
+			m.startConnect(m.detailVM, modeConsole)
+			return m, nil
+		}
+		m.detail, m.detailTop, m.detailOf = nil, 0, ""
+		return m, nil
+	case "c":
+		// The full subshell (PTY: editors, pagers) from the same place.
+		if m.detailVM != nil {
+			m.startConnect(m.detailVM, modeSubshell)
 		}
 		return m, nil
 	case "ctrl+c":
