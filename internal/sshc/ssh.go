@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -84,6 +85,14 @@ type RunResult struct {
 // is returned in RunResult.ExitCode with a nil error (the command ran); only a
 // transport/connection failure returns a non-nil error.
 func Run(ctx context.Context, t *Target, sign SignFunc, command string) (RunResult, ConnectionInfo, error) {
+	return RunWithInput(ctx, t, sign, command, nil)
+}
+
+// RunWithInput is Run with the command's stdin wired to input — how an
+// installer streams a file into `cat > path` on the far side without a second
+// transport, a temp file, or shell-quoting the payload. A nil input behaves
+// exactly like Run.
+func RunWithInput(ctx context.Context, t *Target, sign SignFunc, command string, input io.Reader) (RunResult, ConnectionInfo, error) {
 	client, cleanup, info, err := dialTarget(ctx, t, sign)
 	if err != nil {
 		return RunResult{}, info, err
@@ -99,6 +108,9 @@ func Run(ctx context.Context, t *Target, sign SignFunc, command string) (RunResu
 	var stdout, stderr bytes.Buffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
+	if input != nil {
+		sess.Stdin = input
+	}
 
 	done := make(chan error, 1)
 	go func() { done <- sess.Run(command) }()

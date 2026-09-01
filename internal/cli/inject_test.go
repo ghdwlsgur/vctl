@@ -1,16 +1,18 @@
 package cli
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The destination is the one argument an operator does not type themselves —
 // the user half comes from the inventory. It has to land after `--`, where ssh
 // stops reading options, or a user of `-oProxyCommand=…` becomes a command run
 // on the operator's own machine.
-func TestTrustCASSHArgsCloseOptionsBeforeTheDestination(t *testing.T) {
-	args := trustCASSHArgs("-oProxyCommand=id@198.51.100.25", "22", "", false)
+func TestInjectSSHArgsCloseOptionsBeforeTheDestination(t *testing.T) {
+	args := injectSSHArgs("-oProxyCommand=id@198.51.100.25", "22", "", false)
 
 	sep := -1
 	for i, a := range args {
@@ -32,8 +34,8 @@ func TestTrustCASSHArgsCloseOptionsBeforeTheDestination(t *testing.T) {
 	}
 }
 
-func TestTrustCASSHArgsCarryIdentityPortAndSudo(t *testing.T) {
-	args := trustCASSHArgs("root@198.51.100.25", "2222", "/home/op/.ssh/id", true)
+func TestInjectSSHArgsCarryIdentityPortAndSudo(t *testing.T) {
+	args := injectSSHArgs("root@198.51.100.25", "2222", "/home/op/.ssh/id", true)
 	want := []string{"-p", "2222", "-o", "StrictHostKeyChecking=accept-new", "-i", "/home/op/.ssh/id", "--", "root@198.51.100.25", "sudo sh"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %q, want %q", args, want)
@@ -52,5 +54,34 @@ func TestValidLoginUserRefusesWhatSSHWouldMisread(t *testing.T) {
 		if err := validLoginUser(ok); err != nil {
 			t.Errorf("validLoginUser(%q) = %v", ok, err)
 		}
+	}
+}
+
+// The skew check is what turns "permission denied" into a finding. Measured
+// origin: a Rocky 10 host whose RTC held KST read as UTC — nine hours behind,
+// every certificate "not yet valid", while trust-ca had printed OK.
+func TestClockSkewProblemFlagsWhatCertsCannotSurvive(t *testing.T) {
+	now := time.Now()
+	if msg := clockSkewProblem(now, now.Add(-9*time.Hour).Unix()); !strings.Contains(msg, "behind") {
+		t.Errorf("nine hours behind not flagged: %q", msg)
+	}
+	if msg := clockSkewProblem(now, now.Add(45*time.Minute).Unix()); !strings.Contains(msg, "ahead") {
+		t.Errorf("45m ahead not flagged: %q", msg)
+	}
+	if msg := clockSkewProblem(now, now.Add(-5*time.Second).Unix()); msg != "" {
+		t.Errorf("5s skew flagged: %q", msg)
+	}
+	// Unknown clock (no marker) is not a verdict.
+	if msg := clockSkewProblem(now, 0); msg != "" {
+		t.Errorf("unknown epoch flagged: %q", msg)
+	}
+}
+
+// The epoch marker is consumed, everything else is relayed verbatim.
+func TestPrintInstallOutputExtractsTheEpochMarker(t *testing.T) {
+	var buf bytes.Buffer
+	buf.WriteString("VCTL_REMOTE_EPOCH=1756711200\n[vctl] CA trust installed at /etc/ssh/vault-ca.pub\n")
+	if got := printInstallOutput(&buf); got != 1756711200 {
+		t.Fatalf("epoch = %d, want 1756711200", got)
 	}
 }

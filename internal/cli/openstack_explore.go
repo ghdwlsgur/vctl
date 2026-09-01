@@ -42,7 +42,8 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 		Long: "Two panes: deployments on the left, the selected one's VMs or hosts on the right.\n\n" +
 			"  tab      move between the panes        v / h   VMs or hosts on the right\n" +
 			"  enter    open the row's detail         /       filter the focused pane\n" +
-			"  r        re-read from the database     q       quit\n\n" +
+			"  c        connect to the selected VM    r       re-read from the database\n" +
+			"           (subshell via vctl ssh --vm)  q       quit\n\n" +
 			"Opens from the last reading when there is one and refreshes behind the screen,\n" +
 			"so the first thing on screen is not an empty pane. The title bar says which it\n" +
 			"is showing and how old it is.\n\n" +
@@ -101,6 +102,7 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 		return nil
 	}
 	m := newExploreModel(data)
+	m.defaultUser = a.Cfg.SSHDefaultUser
 	m.refresh = func() (exploreData, error) { return loadExploreData(ctx, a, st) }
 	// A stored reading is a starting point, not an answer: the screen is up
 	// immediately and the refresh that corrects it is already running.

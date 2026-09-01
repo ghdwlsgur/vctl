@@ -237,7 +237,7 @@ Postgres and is enforced by the stock CLI before each command:
 
 - Read commands are allowed by the app by default, but Vault still denies audit
   commands unless the token carries `vctl-auditor`.
-- Mutate/connect commands (`ssh`, `exec`, `sync`, `trust-ca`) are denied
+- Mutate/connect commands (`ssh`, `exec`, `sync`, `inject`, `install`) are denied
   until a group grants them.
 - `vctl-admin` (and `sre-admin`) bypass the app layer, so admins never lock out.
 
@@ -283,12 +283,15 @@ NICs) is reachable by any of them: `vctl ssh --server <ip>` matches the primary
 filters by datacenter with ←/→.
 
 A host only accepts those certificates once it trusts the Vault SSH CA. Onboard
-a new host once with `vctl trust-ca` (it installs the CA public key as
-`TrustedUserCAKeys` over an ordinary SSH connection and reloads sshd):
+a new host once with `vctl inject` (formerly `trust-ca`, which still works as
+an alias). It installs the CA public key as `TrustedUserCAKeys` over an
+ordinary SSH connection, reloads sshd, then proves the result by signing a
+certificate and logging in with it — clock skew and sshd's own rejection
+reason are reported instead of a bare "permission denied":
 
 ```bash
-vctl trust-ca rnd-gitlab             # resolve user/addr from inventory
-vctl trust-ca root@198.51.100.25     # or an explicit, not-yet-registered host
+vctl inject rnd-gitlab             # resolve user/addr from inventory
+vctl inject root@198.51.100.25     # or an explicit, not-yet-registered host
 ```
 
 Without this, `vctl ssh` fails the handshake (`no supported methods remain`)
@@ -391,7 +394,7 @@ Command grants are cached alongside the inventory, because otherwise every mutat
 | Vault token policies | live `lookup-self` | live `lookup-self` (never cached) |
 | Read commands (`list`, `status`, `audit`) | allowed | allowed |
 | `ssh` | needs a grant | needs a grant **that Postgres previously confirmed**, inside `cache_offline_ttl` (default 24h) |
-| `sync`, `trust-ca`, `ip set/rm`, `wg sync` | needs a grant | always refused — they write to the database anyway |
+| `sync`, `inject`, `install`, `ip set/rm`, `wg sync` | needs a grant | always refused — they write to the database anyway |
 | Admin commands | needs an admin policy | needs an admin policy |
 
 The window exists so a grant revoked during a long outage cannot stay usable forever on a laptop that never reconnects. Set `cache_disabled: true` (or `VCTL_CACHE_DISABLE=1`) to turn the whole mechanism off and restore the previous fail-hard behaviour exactly.
@@ -484,7 +487,9 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl mcp` | Run a read-only MCP server (stdio) exposing the inventory to AI agents; `vctl_ssh_exec` also runs commands on hosts. Runs as your identity — RBAC applies |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | Manage app-layer command RBAC (admin); `assign`/`grant` are interactive pickers |
 | `vctl audit [--detail] [--host <host>] [--user <user>] [--source-ip <ip>]` | Show central SSH access audit rows |
-| `vctl trust-ca <host\|user@addr> [--sudo] [-i <key>]` | Install Vault SSH CA trust on a host so vctl ssh works (one-time onboarding) |
+| `vctl inject <host\|user@addr> [--sudo] [-i <key>]` | Prepare a host for vctl ssh: install Vault SSH CA trust, then verify with a real certificate login (alias: `trust-ca`) |
+| `vctl install <host> [--motd=false] [--binary <path>]` | Install the node-agent on an inventory host over a Vault-certificate connection (binary, AppRole creds, systemd unit) |
+| `vctl log <host>` | Show one host's node-agent healthcheck as a dashboard (heartbeat freshness, load, memory, disk, agent vitals) |
 | `vctl ca install\|remove\|print` | Trust the embedded root CA in this machine's OS store so browsers/curl accept the organization's internal hostnames (clears HSTS errors); platform auto-detected |
 | `vctl node-agent [--interval 5m] [--probe-interval 1h]` | Report lightweight host runtime status for already registered inventory. A slower probe pass records what platform the host is part of and in what role |
 | `vctl session [<serial>\|--list\|--json]` | Show what a person did inside an SSH session (host kernel-audit timeline) |

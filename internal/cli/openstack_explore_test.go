@@ -892,3 +892,46 @@ func TestTheCursorRowIsAlwaysRenderedInALongList(t *testing.T) {
 		t.Fatalf("the selected row is not rendered; the cursor scrolled off screen\n%s", strings.Join(lines, "\n"))
 	}
 }
+
+// `c` on a VM asks for a login user (Nova records none), enter hands back the
+// command that suspends the screen, and esc forgets the whole idea. The
+// keypress must be inert on the hosts view — there `s`/`c` would otherwise
+// collide with a person's muscle memory for list navigation.
+func TestConnectAsksForAUserThenHandsBackTheSubshell(t *testing.T) {
+	m := testExploreModel()
+	m.defaultUser = "ubuntu"
+	m = keys(m, "tab", "c") // focus rows, start connect on the first VM
+	if !m.askUser || m.connectVM == nil {
+		t.Fatalf("connect prompt not open: askUser=%v vm=%v", m.askUser, m.connectVM)
+	}
+	if m.userInput != "ubuntu" {
+		t.Fatalf("prompt not prefilled with the default user: %q", m.userInput)
+	}
+	// Type a different user over the default.
+	m = keys(m, "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "rocky")
+	if m.userInput != "rocky" {
+		t.Fatalf("edited user = %q", m.userInput)
+	}
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = out.(exploreModel)
+	if cmd == nil {
+		t.Fatal("enter produced no subshell command")
+	}
+	if m.askUser {
+		t.Error("prompt still open after enter")
+	}
+
+	// esc cancels without a command.
+	m2 := keys(testExploreModel(), "tab", "c")
+	out2, cmd2 := m2.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m2 = out2.(exploreModel)
+	if cmd2 != nil || m2.askUser || m2.connectVM != nil {
+		t.Error("esc did not cancel the pending connect")
+	}
+
+	// Inert on the hosts view.
+	m3 := keys(testExploreModel(), "tab", "s", "c")
+	if m3.askUser {
+		t.Error("connect prompt opened from the hosts view")
+	}
+}

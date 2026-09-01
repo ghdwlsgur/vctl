@@ -137,10 +137,10 @@ Start here:
 		loginCmd(env), logoutCmd(env), tokenCmd(env), kvCmd(env),
 		gate(execCmd(env), "exec"),
 		gate(sshCmd(env), "ssh"),
-		gate(trustCACmd(env), "trust-ca"), caCmd(env), sessionCmd(env),
+		gate(injectCmd(env), "inject"), gate(installCmd(env), "install"), caCmd(env), sessionCmd(env),
 	)
 	addCommandGroup(root, "infrastructure",
-		lsCmd(env), ipCmd(env), wgCmd(env), openstackCmd(env), statusCmd(env),
+		lsCmd(env), ipCmd(env), wgCmd(env), openstackCmd(env), statusCmd(env), logCmd(env),
 	)
 	addCommandGroup(root, "operations",
 		gate(syncCmd(env), "sync"),

@@ -2,12 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
+	"github.com/ghdwlsgur/vctl/internal/strutil"
 )
 
 // The browser's state and what moves it: which pane has the keys, which rows
@@ -52,14 +56,26 @@ type exploreModel struct {
 	typing                bool
 
 	// detail is the overlay: the individual command's own rendering, held as
-	// lines so it can scroll.
+	// lines so it can scroll. detailVM is set when the overlay shows a VM, so
+	// `c` knows what to connect to.
 	detail    []string
 	detailTop int
 	detailOf  string
+	detailVM  *store.Instance
 
 	// carry is printed after the screen is restored — see runExplore.
 	carry []string
 	err   error
+
+	// The pending connect: `c` on a VM asks for a login user (Nova does not
+	// record one), enter suspends the screen and runs `vctl ssh --vm` as a
+	// subshell — the real command, so the RBAC gate and the audit row are the
+	// same ones a typed connection gets.
+	askUser     bool
+	userInput   string
+	connectVM   *store.Instance
+	connectNote string // what the last subshell said on the way out
+	defaultUser string
 
 	// refresh reads the fleet again. Held as a function so the model can be
 	// driven in a test without a database, and called from a tea.Cmd so the
@@ -223,6 +239,12 @@ func (m exploreModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.onRefreshed(msg), nil
 	case tea.KeyMsg:
 		return m.onKey(msg)
+	case exploreConnectDone:
+		m.connectVM = nil
+		if msg.err != nil {
+			m.connectNote = fmt.Sprintf("%s: %s", msg.vm, strutil.OneLine(msg.err.Error()))
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -305,6 +327,9 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.typing {
 		return m.onFilterKey(msg)
 	}
+	if m.askUser {
+		return m.onConnectKey(msg)
+	}
 	if len(m.detail) > 0 {
 		return m.onDetailKey(msg)
 	}
@@ -372,6 +397,14 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshing, m.refreshErr = true, nil
 		return m, m.refreshCmd()
+	case "c":
+		if m.kind == kindVMs && m.focus == paneRows {
+			if vms := m.visibleVMs(); len(vms) > 0 {
+				v := vms[clampIndex(m.rowCur, len(vms))]
+				m.startConnect(&v)
+			}
+		}
+		return m, nil
 	case "enter":
 		if m.focus == paneFarms {
 			m.focus = paneRows
@@ -382,6 +415,72 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// startConnect opens the login-user prompt for one VM. Nova records no login
+// user, so the one thing the browser cannot answer for you is asked, prefilled
+// with the config default.
+func (m *exploreModel) startConnect(v *store.Instance) {
+	m.askUser = true
+	m.userInput = m.defaultUser
+	m.connectVM = v
+	m.connectNote = ""
+}
+
+// onConnectKey edits the login user for the pending connect. Enter suspends
+// the screen and runs the connection; esc forgets the whole idea.
+func (m exploreModel) onConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		m.askUser = false
+		if m.connectVM == nil || strings.TrimSpace(m.userInput) == "" {
+			m.connectVM = nil
+			return m, nil
+		}
+		return m, m.connectCmd()
+	case tea.KeyEsc:
+		m.askUser, m.connectVM = false, nil
+		return m, nil
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyBackspace:
+		if r := []rune(m.userInput); len(r) > 0 {
+			m.userInput = string(r[:len(r)-1])
+		}
+		return m, nil
+	case tea.KeyRunes:
+		m.userInput += string(msg.Runes)
+		return m, nil
+	}
+	return m, nil
+}
+
+// connectCmd suspends the browser and runs `vctl ssh --vm` attached to the
+// terminal, resuming when the shell exits. It execs this same binary rather
+// than dialing in-process: the subshell then IS the vctl ssh command — same
+// RBAC gate, same audit row, same jump logic — and cannot drift from it.
+// --allow-stale is passed because the browser already showed the record's age
+// beside the address; the flag exists to force that acknowledgment on people
+// connecting blind.
+func (m exploreModel) connectCmd() tea.Cmd {
+	v := m.connectVM
+	exe, err := os.Executable()
+	if err != nil {
+		exe = os.Args[0]
+	}
+	args := []string{"ssh", "--vm", v.InstanceID, "--user", strings.TrimSpace(m.userInput), "--allow-stale"}
+	if v.DeploymentID != "" {
+		args = append(args, "--farm", v.DeploymentID)
+	}
+	return tea.ExecProcess(exec.Command(exe, args...), func(err error) tea.Msg {
+		return exploreConnectDone{vm: nameOrID(*v), err: err}
+	})
+}
+
+// exploreConnectDone reports the subshell's exit back to the resumed screen.
+type exploreConnectDone struct {
+	vm  string
+	err error
 }
 
 func (m exploreModel) onFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -414,7 +513,14 @@ func (m exploreModel) onFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m exploreModel) onDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "enter", "q":
-		m.detail, m.detailTop, m.detailOf = nil, 0, ""
+		m.detail, m.detailTop, m.detailOf, m.detailVM = nil, 0, "", nil
+		return m, nil
+	case "c":
+		// The detail is where somebody reads the address and decides to go
+		// there — so the connection starts here too, not back on the list.
+		if m.detailVM != nil {
+			m.startConnect(m.detailVM)
+		}
 		return m, nil
 	case "ctrl+c":
 		// Leaving from a detail keeps it: see runExplore.
@@ -509,6 +615,7 @@ func (m *exploreModel) openDetail() {
 		h := hosts[clampIndex(m.rowCur, len(hosts))]
 		renderOpenStackHost(&buf, h, now)
 		m.detailOf = h.Hostname
+		m.detailVM = nil
 	default:
 		vms := m.visibleVMs()
 		if len(vms) == 0 {
@@ -517,6 +624,7 @@ func (m *exploreModel) openDetail() {
 		v := vms[clampIndex(m.rowCur, len(vms))]
 		renderVMShow(&buf, v, m.data.Names, m.data.Nets, now)
 		m.detailOf = nameOrID(v)
+		m.detailVM = &v
 	}
 	m.detail = strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	m.detailTop = 0
