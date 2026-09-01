@@ -89,17 +89,31 @@ func paintBlock(on bool, block string) string {
 	return strings.Join(lines, "\n")
 }
 
-// Render produces the complete banner, or "" when the host is in no farm —
-// the caller treats "" as "leave the file alone", so a machine that is not an
-// OpenStack member never has its MOTD claimed by this code.
+// Render produces the complete banner. A host in no farm gets the branding
+// alone — masthead and the ManagedBy line. No role line, no topology, no sync
+// stamp: those are claims about farm data the host does not have, and the
+// original sin this package exists to stop is a banner asserting things
+// nobody keeps true.
+//
+// This used to return "" for a farmless host so the agent would never claim
+// /etc/motd on machines it could not describe. The fleet then ran with two
+// kinds of banner — rendered ones next to hand-written leftovers frozen
+// years stale — which is its own kind of lie, so now every host the flag is
+// enabled on gets the same masthead. "" still comes back when there is
+// nothing to render at all (no header, no ManagedBy, no farm), and the
+// caller still treats "" as "leave the file alone".
 func Render(b Banner, farms []store.FarmTopology) string {
-	if len(farms) == 0 {
-		return ""
-	}
 	var out strings.Builder
 	if h := strings.TrimRight(b.Header, "\n"); h != "" {
 		out.WriteString(paintBlock(b.Color, h))
 		out.WriteString("\n\n")
+	}
+	if len(farms) == 0 {
+		if b.ManagedBy != "" {
+			out.WriteString(b.ManagedBy)
+			out.WriteString("\n")
+		}
+		return out.String()
 	}
 
 	// The role line describes the machine, not a farm, so it is computed

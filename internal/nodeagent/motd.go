@@ -36,9 +36,10 @@ func (a *Agent) motdLoop(ctx context.Context, c *conn) {
 
 // motdPass renders the banner and writes it only when it differs.
 //
-// A host in no farm renders "" and nothing is written or removed: this code
-// only ever claims the file on machines whose topology it can describe, so
-// enabling the flag fleet-wide cannot blank a banner somebody else owns.
+// A host in no farm gets the branding banner (masthead + ManagedBy) rather
+// than being skipped, so the flag means the same thing on every host it is
+// enabled on. The "" guard below still holds for a banner configured with
+// nothing to say — that renders empty and the file is left alone.
 func (a *Agent) motdPass(ctx context.Context, c *conn) {
 	if a.MOTDPath == "" {
 		return

@@ -64,6 +64,6 @@ database role for low-risk, low-resource status reporting.`,
 		"how often to run platform capability probes (OpenStack, ...); 0 disables them")
 	cmd.Flags().BoolVar(&agent.Once, "once", false, "report once and exit")
 	cmd.Flags().StringVar(&agent.MOTDPath, "motd", "",
-		"keep this file rendered as a login banner from the host's OpenStack farm topology (empty disables; hosts in no farm are left untouched)")
+		"keep this file rendered as a login banner from the host's OpenStack farm topology (empty disables; hosts in no farm get the branding masthead alone)")
 	return cmd
 }
