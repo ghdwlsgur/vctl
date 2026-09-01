@@ -7,6 +7,7 @@ package vaultc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,6 +57,33 @@ func New(addr string, caPEM []byte, stateDir string) (*Client, error) {
 	c := &Client{api: api, tokenPath: filepath.Join(stateDir, "token")}
 	c.loadToken()
 	return c, nil
+}
+
+// ErrTokenDenied means Vault itself rejected the current token — revoked,
+// expired server-side, or otherwise dead — as opposed to a transport failure
+// that says nothing about the token.
+var ErrTokenDenied = errors.New("vault: token rejected by server")
+
+// ValidateToken asks Vault whether the current token is still accepted, with
+// one lookup-self. nil means accepted. ErrTokenDenied means Vault said no.
+// Any other error is transport trouble and carries no verdict on the token.
+//
+// This exists because the cached expiry is a local clock record, and Vault
+// can revoke a token long before that record runs out. HasValidToken answers
+// "does the cache say it's alive"; this answers "does Vault".
+func (c *Client) ValidateToken(ctx context.Context) error {
+	if c.api.Token() == "" {
+		return ErrTokenDenied
+	}
+	_, err := c.api.Auth().Token().LookupSelfWithContext(ctx)
+	if err == nil {
+		return nil
+	}
+	var re *vault.ResponseError
+	if errors.As(err, &re) && re.StatusCode == 403 {
+		return fmt.Errorf("%w: %v", ErrTokenDenied, err)
+	}
+	return fmt.Errorf("vault: token lookup: %w", err)
 }
 
 // HasValidToken reports whether the cached token is valid with 60s of margin.

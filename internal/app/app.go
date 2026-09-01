@@ -4,6 +4,7 @@ package app
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -87,7 +88,24 @@ func (a *App) EnsureLogin(ctx context.Context) error {
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
 	if a.Vault.HasValidToken() {
-		return nil
+		// The cache says alive; ask Vault before believing it. A token can be
+		// revoked server-side long before the local expiry record runs out,
+		// and trusting the record kept a fleet host replaying a dead token —
+		// 403 on every request — for a day and a half, through restarts,
+		// because the reload armed the same cache (sre-srv-0032, 2026-08-31).
+		switch err := a.Vault.ValidateToken(ctx); {
+		case err == nil:
+			return nil
+		case errors.Is(err, vaultc.ErrTokenDenied):
+			// Vault's verdict outranks the local clock. Drop the corpse and
+			// fall through to a fresh login.
+			_ = a.Vault.Logout()
+		default:
+			// Transport trouble: no verdict on the token. Keep it — a re-login
+			// would fail the same way, and for a person it would burn an
+			// interactive SSO round on a network blip.
+			return nil
+		}
 	}
 	if a.Vault.Renewable() && a.Vault.TTL() > 0 {
 		if err := a.Vault.Renew(ctx); err == nil {
