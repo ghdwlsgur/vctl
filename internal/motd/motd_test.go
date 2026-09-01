@@ -68,11 +68,19 @@ func TestControllerGetsTheControllerRoleLine(t *testing.T) {
 	}
 }
 
-// No farm, no banner. "" is the contract that keeps the agent from claiming
-// /etc/motd on machines this code knows nothing about.
-func TestNoFarmRendersNothing(t *testing.T) {
-	if got := Render(Banner{Header: "art", Self: "x"}, nil); got != "" {
-		t.Fatalf("expected empty render, got:\n%s", got)
+// No farm: the file is still claimed, but only with the branding — masthead
+// and ManagedBy. No role line, no topology, no sync stamp: those would be
+// claims about farm data the host does not have.
+func TestNoFarmRendersBrandingOnly(t *testing.T) {
+	got := Render(Banner{Header: "art", ManagedBy: "Managed by X.", Self: "x"}, nil)
+	want := "art\n\nManaged by X.\n"
+	if got != want {
+		t.Fatalf("branding banner mismatch\n--- got ---\n%q\n--- want ---\n%q", got, want)
+	}
+	// Nothing to render at all still yields "", the caller's leave-it-alone
+	// signal.
+	if got := Render(Banner{Self: "x"}, nil); got != "" {
+		t.Fatalf("expected empty render with no header and no ManagedBy, got:\n%s", got)
 	}
 }
 
