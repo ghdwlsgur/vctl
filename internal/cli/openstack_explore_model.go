@@ -67,15 +67,21 @@ type exploreModel struct {
 	carry []string
 	err   error
 
-	// The pending connect: `c` on a VM asks for a login user (Nova does not
-	// record one), enter suspends the screen and runs `vctl ssh --vm` as a
-	// subshell — the real command, so the RBAC gate and the audit row are the
-	// same ones a typed connection gets.
+	// The pending connect: on a VM, `c` (full subshell) or enter-in-detail
+	// (inline console) first asks for a login user — Nova does not record one.
 	askUser     bool
 	userInput   string
 	connectVM   *store.Instance
+	connectMode connectMode
 	connectNote string // what the last subshell said on the way out
 	defaultUser string
+
+	// console is the inline pane under a VM's detail: a prompt, and the output
+	// of every command run so far. Commands run one at a time through the same
+	// pipeline as `vctl ssh --vm` exec — a fresh Vault-signed certificate and
+	// an audit row per command — via execVM, injected so tests never dial.
+	console *exploreConsole
+	execVM  func(v *store.Instance, user, command string) (string, int, error)
 
 	// refresh reads the fleet again. Held as a function so the model can be
 	// driven in a test without a database, and called from a tea.Cmd so the
