@@ -57,7 +57,7 @@ func (c *Connector) Monitor() *Monitor {
 // Execute would; the difference is that the attempt is recorded only when it
 // changes what the audit log already says.
 func (m *Monitor) Poll(ctx context.Context, req Request, command string, timeout time.Duration) (Result, error) {
-	res, entry, err := m.conn.run(ctx, req, command, timeout)
+	res, entry, err := m.conn.run(ctx, req, command, timeout, nil)
 	if m.shouldRecord(req.Target.Name, err == nil) {
 		m.conn.record(ctx, entry)
 	}

@@ -70,7 +70,7 @@ func renderHostLog(ws *store.ServerWithStatus, cached bool) {
 	}
 	st := ws.Status
 
-	rows := []ui.KV{agentRow(st, cached)}
+	rows := []ui.KV{agentRow(ws, cached)}
 	if st.OS != "" || st.Kernel != "" {
 		rows = append(rows, ui.KV{Key: "Host", Value: strings.TrimSpace(st.OS + " · " + st.Kernel), State: ui.StatePlain})
 	}
@@ -91,7 +91,10 @@ func renderHostLog(ws *store.ServerWithStatus, cached bool) {
 
 // agentRow is the headline: is the agent alive, and how stale is the picture
 // below it. Everything else on the dashboard is only as current as this row.
-func agentRow(st *store.ServerStatus, cached bool) ui.KV {
+// The verdict itself comes from liveStatusText — the shared liveness decision
+// every status-aware view uses — so the up/stale threshold lives in one place.
+func agentRow(ws *store.ServerWithStatus, cached bool) ui.KV {
+	st := ws.Status
 	age := time.Since(st.LastSeenAt).Round(time.Second)
 	ver := ""
 	if st.AgentVersion != "" {
@@ -100,7 +103,7 @@ func agentRow(st *store.ServerStatus, cached bool) ui.KV {
 	switch {
 	case cached:
 		return ui.KV{Key: "Agent", Value: fmt.Sprintf("snapshot data%s — liveness unknown offline", ver), State: ui.StateWarn}
-	case age <= statusFreshnessWindow:
+	case liveStatusText(*ws) == "up":
 		return ui.KV{Key: "Agent", Value: fmt.Sprintf("up — reported %s ago%s", strutil.CompactDuration(age), ver), State: ui.StateOK}
 	default:
 		return ui.KV{Key: "Agent", Value: fmt.Sprintf("stale — last report %s ago%s (data below is that old)", strutil.CompactDuration(age), ver), State: ui.StateWarn}
@@ -131,14 +134,6 @@ func gaugeRow(label string, pct *float64) ui.KV {
 		return ui.KV{Key: label, Value: "not reported", State: ui.StatePlain}
 	}
 	p := *pct
-	filled := int(p/10 + 0.5)
-	if filled > 10 {
-		filled = 10
-	}
-	if filled < 0 {
-		filled = 0
-	}
-	meter := strings.Repeat("▰", filled) + strings.Repeat("▱", 10-filled)
 	state := ui.StateOK
 	switch {
 	case p >= 90:
@@ -146,5 +141,5 @@ func gaugeRow(label string, pct *float64) ui.KV {
 	case p >= 75:
 		state = ui.StateWarn
 	}
-	return ui.KV{Key: label, Value: fmt.Sprintf("%s %5.1f%%", meter, p), State: state}
+	return ui.KV{Key: label, Value: fmt.Sprintf("%s %5.1f%%", ui.Meter(p, 10), p), State: state}
 }

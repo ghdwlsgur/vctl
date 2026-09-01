@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -79,9 +78,8 @@ func TestClockSkewProblemFlagsWhatCertsCannotSurvive(t *testing.T) {
 
 // The epoch marker is consumed, everything else is relayed verbatim.
 func TestPrintInstallOutputExtractsTheEpochMarker(t *testing.T) {
-	var buf bytes.Buffer
-	buf.WriteString("VCTL_REMOTE_EPOCH=1756711200\n[vctl] CA trust installed at /etc/ssh/vault-ca.pub\n")
-	if got := printInstallOutput(&buf); got != 1756711200 {
+	out := "VCTL_REMOTE_EPOCH=1756711200\n[vctl] CA trust installed at /etc/ssh/vault-ca.pub\n"
+	if got := printInstallOutput(out); got != 1756711200 {
 		t.Fatalf("epoch = %d, want 1756711200", got)
 	}
 }

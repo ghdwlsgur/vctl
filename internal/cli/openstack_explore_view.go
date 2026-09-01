@@ -385,17 +385,19 @@ func (m exploreModel) detailView() string {
 	if m.console != nil {
 		b.WriteString(m.consolePane(consoleH))
 	}
-	if m.askUser {
-		vm := ""
-		if m.connectVM != nil {
-			vm = nameOrID(*m.connectVM) + " "
-		}
-		b.WriteString(m.clip(exploreCursorStyle.Render("connect "+vm+"as: "+m.userInput+"█") +
-			ui.Muted("   enter connect · esc cancel")))
+	if m.askingUser() {
+		b.WriteString(m.clip(m.connectPromptLine()))
 		return b.String()
 	}
 	b.WriteString(m.clip(ui.Muted(m.detailHint(h, end))))
 	return b.String()
+}
+
+// connectPromptLine is the login-user prompt, shared by the detail view and
+// the list footer. Only rendered while a connect is pending (connectVM set).
+func (m exploreModel) connectPromptLine() string {
+	return exploreCursorStyle.Render("connect "+nameOrID(*m.connectVM)+" as: "+m.userInput+"█") +
+		ui.Muted("   enter connect · esc cancel")
 }
 
 // detailHint is the key line under the detail — and under the console when it
@@ -403,9 +405,6 @@ func (m exploreModel) detailView() string {
 func (m exploreModel) detailHint(h, end int) string {
 	if m.console != nil {
 		return "enter run · esc close console · ^C clear line"
-	}
-	if m.askUser {
-		return "enter connect · esc cancel"
 	}
 	hint := "esc back · ↑↓ scroll · p keep on exit · q close"
 	if m.detailVM != nil {
@@ -451,13 +450,8 @@ func (m exploreModel) footer() string {
 		return exploreCursorStyle.Render("/"+m.activeFilter()) +
 			ui.Muted("   enter keep · esc clear")
 	}
-	if m.askUser {
-		vm := ""
-		if m.connectVM != nil {
-			vm = nameOrID(*m.connectVM) + " "
-		}
-		return exploreCursorStyle.Render("connect "+vm+"as: "+m.userInput+"█") +
-			ui.Muted("   enter connect · esc cancel")
+	if m.askingUser() {
+		return m.connectPromptLine()
 	}
 	// Dropped from the middle out: the two ends are the ones somebody needs
 	// without being told, and a footer cut in half by the terminal edge tells

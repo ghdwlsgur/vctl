@@ -1,25 +1,11 @@
 package cli
 
 import (
-	"os"
 	"strings"
 	"testing"
-)
 
-// The embedded unit and the ansible-shipped unit must be the same file, or a
-// host set up by `vctl install` and one set up by the fleet role drift apart
-// in resource limits and hardening — the exact class of invisible difference
-// the unit's own comments document being burned by. go:embed cannot reach
-// deploy/ from this package, so the test does the pinning instead.
-func TestNodeAgentUnitMatchesTheDeployFile(t *testing.T) {
-	b, err := os.ReadFile("../../deploy/node/vctl-node-agent.service")
-	if err != nil {
-		t.Fatalf("reading the deploy unit: %v", err)
-	}
-	if got, want := strings.TrimRight(nodeAgentUnit, "\n"), strings.TrimRight(string(b), "\n"); got != want {
-		t.Fatalf("embedded unit differs from deploy/node/vctl-node-agent.service — update the constant in install.go")
-	}
-}
+	deploynode "github.com/ghdwlsgur/vctl/deploy/node"
+)
 
 // The drop-in pins the inventory hostname and, with the banner on, appends
 // exactly the writable path the strict sandbox needs.
@@ -41,10 +27,11 @@ func TestNodeAgentDropInShape(t *testing.T) {
 	}
 }
 
-// Credentials land 0600 under a 0700 dir, and the units are written through
-// quoted heredocs so nothing in them is shell-expanded.
+// Credentials land 0600 under a 0700 dir, the units are written through
+// quoted heredocs so nothing in them is shell-expanded, and the script itself
+// proves the agent came up — set -e turns a dead unit into a failed install.
 func TestInstallScriptShape(t *testing.T) {
-	s := installScript("rid", "sid", "acc", "sre-srv-0100", true, []string{"192.0.2.10 vault.sre.local"})
+	s := installScript("rid", "sid", "acc", "sre-srv-0100", true, nil)
 	for _, want := range []string{
 		"umask 077",
 		"chmod 0700 /etc/vctl",
@@ -55,28 +42,39 @@ func TestInstallScriptShape(t *testing.T) {
 		"<<'VCTL_DROPIN_EOF'",
 		"[ -f /etc/motd ] || install -m 0644 /dev/null /etc/motd",
 		"systemctl enable --now vctl-node-agent",
+		"systemctl is-active --quiet vctl-node-agent",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("install script missing %q", want)
 		}
 	}
+	// The unit rides in from the deploy tree — one source, no second copy.
+	if !strings.Contains(s, strings.TrimRight(deploynode.AgentUnit, "\n")) {
+		t.Error("install script does not carry the embedded deploy unit verbatim")
+	}
+	if strings.Contains(s, "/etc/hosts") {
+		t.Error("no pins requested but the script still touches /etc/hosts")
+	}
 }
 
-// A control-plane pin lands in /etc/hosts only when the host cannot already
-// resolve the name — working internal DNS must win over a pin that can go
-// stale. Measured twice in one day: agents `active` while every report died
-// on "no such host" for names only the workstation could resolve.
-func TestInstallScriptPinsNamesBehindAResolutionGuard(t *testing.T) {
-	s := installScript("rid", "sid", "acc", "h", false, []string{"192.0.2.10 vault.sre.local", "192.0.2.10 vctl-postgres.sre.local"})
+// Control-plane pins ride as the exact marker block the ansible role's
+// blockinfile manages, so a later fleet run takes ownership of the same block
+// instead of stacking a second copy — and only when the marker is absent AND a
+// pinned name does not resolve, so working internal DNS wins. Measured twice
+// in one day: agents `active` while every report died on "no such host" for
+// names only the workstation could resolve.
+func TestInstallScriptPinsUseTheAnsibleMarkerBlock(t *testing.T) {
+	s := installScript("rid", "sid", "acc", "h", false, []hostPin{
+		{IP: "192.0.2.10", Name: "vault.sre.local"},
+		{IP: "192.0.2.10", Name: "vctl-postgres.sre.local"},
+	})
 	for _, want := range []string{
-		"getent hosts 'vault.sre.local' >/dev/null 2>&1 || echo '192.0.2.10 vault.sre.local' >> /etc/hosts",
-		"getent hosts 'vctl-postgres.sre.local' >/dev/null 2>&1 || echo '192.0.2.10 vctl-postgres.sre.local' >> /etc/hosts",
+		"grep -q '# BEGIN VCTL AUDIT (vault/postgres)' /etc/hosts",
+		"! getent hosts 'vault.sre.local' >/dev/null 2>&1 || ! getent hosts 'vctl-postgres.sre.local' >/dev/null 2>&1",
+		"# BEGIN VCTL AUDIT (vault/postgres)\n192.0.2.10 vault.sre.local\n192.0.2.10 vctl-postgres.sre.local\n# END VCTL AUDIT (vault/postgres)",
 	} {
 		if !strings.Contains(s, want) {
-			t.Errorf("install script missing pin guard:\n%s", want)
+			t.Errorf("install script missing pin block piece:\n%s", want)
 		}
-	}
-	if s := installScript("rid", "sid", "acc", "h", false, nil); strings.Contains(s, "/etc/hosts") {
-		t.Error("no pins requested but the script still touches /etc/hosts")
 	}
 }
