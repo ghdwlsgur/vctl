@@ -39,6 +39,7 @@ func injectCmd(env CommandEnv) *cobra.Command {
 		useSudo  bool
 		port     int
 		loginAs  string
+		fixClock bool
 	)
 	cmd := &cobra.Command{
 		Use:     "inject [host|user@addr]",
@@ -51,8 +52,9 @@ It fetches the Vault SSH CA public key and, over an ordinary SSH connection
 yet), installs it as TrustedUserCAKeys and reloads sshd. It then verifies the
 result the only way that counts: by signing a certificate and logging in with
 it. Clock skew beyond what certificate validity tolerates is detected before
-the doomed attempt, and a failed login is followed up over the bootstrap
-connection to fetch sshd's own reason.
+the doomed attempt — pass --fix-clock to set the host's clock from this
+machine over the same bootstrap connection — and a failed login is followed
+up over the bootstrap connection to fetch sshd's own reason.
 
   vctl inject rnd-gitlab             # resolve user/addr from inventory
   vctl inject root@198.51.100.25     # explicit target (user@addr)
@@ -104,8 +106,26 @@ connection to fetch sshd's own reason.
 			}
 
 			if msg := clockSkewProblem(time.Now(), remoteEpoch); msg != "" {
-				ui.Errorf(os.Stderr, "CA trust installed, but %s", msg)
-				return fmt.Errorf("certificate login cannot work until the host clock is fixed")
+				if !fixClock {
+					ui.Errorf(os.Stderr, "CA trust installed, but %s", msg)
+					return fmt.Errorf("certificate login cannot work until the host clock is fixed — re-run with --fix-clock to set it from this machine over the same bootstrap connection")
+				}
+				// Fresh installs arrive with the RTC in local time and no NTP
+				// daemon (measured five times in one onboarding week); the fix
+				// is carrying this machine's clock across, exactly what an
+				// operator does by hand. A second bootstrap connection — and a
+				// second password prompt when that is the auth — is the cost.
+				ui.Warnf(os.Stderr, "%s — fixing over the bootstrap connection", msg)
+				epoch, hasNTP, err := injectFixClock(ctx, dest, portStr, identity, useSudo)
+				if err != nil {
+					return fmt.Errorf("clock fix on %s failed: %w", dest, err)
+				}
+				if msg := clockSkewProblem(time.Now(), epoch); msg != "" {
+					return fmt.Errorf("clock still wrong after the fix: %s", msg)
+				}
+				if !hasNTP {
+					ui.Warnf(os.Stderr, "clock set manually and the RTC updated, but the host has no NTP daemon — install chrony so it stays right")
+				}
 			}
 
 			ui.Infof(os.Stderr, "verifying with a real certificate login as %s", user)
@@ -134,6 +154,8 @@ connection to fetch sshd's own reason.
 	cmd.Flags().BoolVar(&useSudo, "sudo", false, "use sudo for the remote install (non-root login)")
 	cmd.Flags().IntVar(&port, "port", 0, "override SSH port (default: inventory value or 22)")
 	cmd.Flags().StringVar(&loginAs, "user", "", "override login user")
+	cmd.Flags().BoolVar(&fixClock, "fix-clock", false,
+		"when the host clock is too skewed for certificates, set it from this machine's clock over the bootstrap connection")
 	return cmd
 }
 
@@ -198,6 +220,46 @@ func clockSkewProblem(localNow time.Time, remoteEpoch int64) string {
 	return fmt.Sprintf("the host clock is %s %s — %s. "+
 		"Fix time sync first (chronyd, or: timedatectl set-local-rtc 0; date -u -s <now>; hwclock --systohc)",
 		skew.Round(time.Second), direction, consequence)
+}
+
+// injectFixClock sets the host clock from this machine's over the bootstrap
+// connection: RTC interpreted as UTC, time stepped to now, RTC written back,
+// and chronyd enabled when the host has it. It reports the host's clock after
+// the fix and whether an NTP daemon is now running.
+func injectFixClock(ctx context.Context, dest, portStr, identity string, useSudo bool) (epoch int64, hasNTP bool, err error) {
+	var out bytes.Buffer
+	c := exec.CommandContext(ctx, "ssh", injectSSHArgs(dest, portStr, identity, useSudo)...)
+	c.Stdin = strings.NewReader(injectFixClockScript(time.Now()))
+	c.Stdout = &out
+	c.Stderr = os.Stderr
+	if err := c.Run(); err != nil {
+		return 0, false, err
+	}
+	for _, ln := range strings.Split(out.String(), "\n") {
+		if v, ok := strings.CutPrefix(ln, "VCTL_REMOTE_EPOCH="); ok {
+			epoch, _ = strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		}
+		if strings.TrimSpace(ln) == "VCTL_NTP=yes" {
+			hasNTP = true
+		}
+	}
+	return epoch, hasNTP, nil
+}
+
+// injectFixClockScript carries the caller's clock across. The timestamp is
+// baked in when the script is built; the seconds the connection takes are
+// noise against the 30s tolerance certificates actually need.
+func injectFixClockScript(now time.Time) string {
+	return fmt.Sprintf(`set -e
+timedatectl set-local-rtc 0 2>/dev/null || true
+date -u -s '%s' >/dev/null
+hwclock --systohc 2>/dev/null || true
+if command -v chronyd >/dev/null 2>&1; then
+  systemctl enable --now chronyd >/dev/null 2>&1 || true
+fi
+systemctl is-active --quiet chronyd 2>/dev/null && echo VCTL_NTP=yes || echo VCTL_NTP=no
+echo "VCTL_REMOTE_EPOCH=$(date -u +%%s)"
+`, now.UTC().Format("2006-01-02 15:04:05"))
 }
 
 // injectDiagnose fetches sshd's own account of the rejection over the

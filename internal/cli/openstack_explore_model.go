@@ -44,6 +44,11 @@ type exploreConsole struct {
 	lines   []string
 	input   string
 	running bool
+
+	// history holds submitted commands; histIdx == len(history) means the
+	// prompt is on a fresh line. Up/down walk it the way a shell does.
+	history []string
+	histIdx int
 }
 
 // consoleOutput carries one finished command's output back to the pane.
@@ -547,9 +552,29 @@ func (m exploreModel) onConsoleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		c.lines = append(c.lines, consolePrompt(c)+command)
+		if n := len(c.history); n == 0 || c.history[n-1] != command {
+			c.history = append(c.history, command)
+		}
+		c.histIdx = len(c.history)
 		c.input = ""
 		c.running = true
 		return m, m.consoleRun(command)
+	case tea.KeyUp:
+		if c.histIdx > 0 {
+			c.histIdx--
+			c.input = c.history[c.histIdx]
+		}
+		return m, nil
+	case tea.KeyDown:
+		if c.histIdx < len(c.history) {
+			c.histIdx++
+			if c.histIdx == len(c.history) {
+				c.input = ""
+			} else {
+				c.input = c.history[c.histIdx]
+			}
+		}
+		return m, nil
 	}
 	c.input, _ = editLine(c.input, msg)
 	return m, nil
