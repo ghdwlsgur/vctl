@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"time"
+
+	"github.com/ghdwlsgur/vctl/internal/store"
 	"strings"
 	"testing"
 
@@ -25,5 +28,23 @@ func TestGaugeRow(t *testing.T) {
 	warm := 80.0
 	if row := gaugeRow("Disk /", &warm); row.State != ui.StateWarn {
 		t.Errorf("80%% not warned: %v", row.State)
+	}
+}
+
+// The headline row's verdict must be liveStatusText's — the shared decision —
+// with only the dressing (age, version, cached caveat) added here.
+func TestAgentRowStates(t *testing.T) {
+	fresh := &store.ServerWithStatus{Status: &store.ServerStatus{
+		LastSeenAt: time.Now().Add(-time.Minute), AgentVersion: "0.4.10"}}
+	if row := agentRow(fresh, false); row.State != ui.StateOK || !strings.Contains(row.Value, "up — reported") || !strings.Contains(row.Value, "0.4.10") {
+		t.Errorf("fresh = %+v", row)
+	}
+	stale := &store.ServerWithStatus{Status: &store.ServerStatus{
+		LastSeenAt: time.Now().Add(-48 * time.Hour)}}
+	if row := agentRow(stale, false); row.State != ui.StateWarn || !strings.Contains(row.Value, "stale") {
+		t.Errorf("stale = %+v", row)
+	}
+	if row := agentRow(fresh, true); row.State != ui.StateWarn || !strings.Contains(row.Value, "liveness unknown offline") {
+		t.Errorf("cached = %+v", row)
 	}
 }

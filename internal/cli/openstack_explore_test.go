@@ -1005,3 +1005,74 @@ func TestDetailEnterOpensTheInlineConsole(t *testing.T) {
 		t.Error("esc closed the detail along with the console")
 	}
 }
+
+// One editor serves the filter, the connect prompt and the console. Space is
+// part of the contract — the connect prompt's hand-rolled copy silently
+// dropped it once.
+func TestEditLine(t *testing.T) {
+	s, ok := editLine("ab", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if s != "abc" || !ok {
+		t.Fatalf("runes: %q %v", s, ok)
+	}
+	if s, _ = editLine(s, tea.KeyMsg{Type: tea.KeySpace}); s != "abc " {
+		t.Fatalf("space: %q", s)
+	}
+	if s, _ = editLine(s, tea.KeyMsg{Type: tea.KeyBackspace}); s != "abc" {
+		t.Fatalf("backspace: %q", s)
+	}
+	if s, _ = editLine("", tea.KeyMsg{Type: tea.KeyBackspace}); s != "" {
+		t.Fatalf("backspace on empty: %q", s)
+	}
+	if _, ok = editLine("x", tea.KeyMsg{Type: tea.KeyEnter}); ok {
+		t.Fatal("enter claimed as an editing key")
+	}
+}
+
+// The pane shows the tail and the access log keeps the archive, so the
+// scrollback must not grow with every journalctl dump for the browser's
+// lifetime.
+func TestConsoleScrollbackIsCapped(t *testing.T) {
+	m := testExploreModel()
+	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "root"}
+	huge := strings.Repeat("line\n", consoleScrollback*2)
+	out, _ := m.Update(consoleOutput{out: huge})
+	m = out.(exploreModel)
+	if got := len(m.console.lines); got != consoleScrollback {
+		t.Fatalf("scrollback = %d lines, want capped at %d", got, consoleScrollback)
+	}
+}
+
+// ^C at the console prompt abandons the line first and only closes the pane
+// when there is nothing to abandon — a shell reflex, not a quit.
+func TestConsoleCtrlCClearsBeforeClosing(t *testing.T) {
+	m := testExploreModel()
+	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "root", input: "rm -rf"}
+	m.detail = []string{"detail"}
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = out.(exploreModel)
+	if m.console == nil || m.console.input != "" {
+		t.Fatalf("first ^C: console=%v input=%q, want open pane with cleared line", m.console, m.console.input)
+	}
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = out.(exploreModel)
+	if m.console != nil {
+		t.Fatal("second ^C did not close the pane")
+	}
+}
+
+// A command already in flight owns the connection; enter must not stack a
+// second one.
+func TestConsoleIgnoresEnterWhileRunning(t *testing.T) {
+	m := testExploreModel()
+	m.execVM = func(*store.Instance, string, string) (string, int, error) { return "", 0, nil }
+	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "root", input: "uptime", running: true}
+	m.detail = []string{"detail"}
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = out.(exploreModel)
+	if cmd != nil {
+		t.Fatal("enter while running produced a second command")
+	}
+	if m.console.input != "uptime" {
+		t.Fatalf("input consumed while running: %q", m.console.input)
+	}
+}

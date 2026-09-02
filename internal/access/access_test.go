@@ -220,3 +220,28 @@ func TestOnAuditErrorSurfacedNotFatal(t *testing.T) {
 		t.Fatalf("OnAuditError surfaced = %v, want the audit-write error", surfaced)
 	}
 }
+
+// ExecuteWithInput is a new door into the same pipeline, and the invariant the
+// package exists for must hold behind it too: even when nothing dials (the
+// signer refuses, so no network is touched), exactly one audit row lands.
+func TestExecuteWithInputAuditsTheAttempt(t *testing.T) {
+	audit := &recordingAudit{}
+	c := &Connector{
+		Signer:   fakeSigner{err: errors.New("sign refused")},
+		Identity: fakeID{id: "userpass-bob"},
+		Audit:    audit,
+		SignTTL:  "30m",
+	}
+	_, err := c.ExecuteWithInput(context.Background(),
+		Request{Target: &sshc.Target{Name: "h", Addr: "10.0.0.10:22"}, HostKey: HostKeyAcceptNew},
+		"cat > /tmp/x", 0, strings.NewReader("payload"))
+	if err == nil {
+		t.Fatal("err = nil, want dial failure")
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("audit rows = %d, want exactly 1", len(audit.entries))
+	}
+	if e := audit.entries[0]; e.OK || e.VaultUser != "userpass-bob" {
+		t.Fatalf("audit entry = %+v, want failed attributed row", e)
+	}
+}
