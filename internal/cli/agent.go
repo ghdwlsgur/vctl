@@ -8,10 +8,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/agent"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func agentCmd(env CommandEnv) *cobra.Command {
+func agentCmd(env cmdkit.Env) *cobra.Command {
 	var sinks []string
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -26,7 +27,7 @@ func agentCmd(env CommandEnv) *cobra.Command {
   vctl agent --sink /run/vault-token
   VAULT_TOKEN=$(cat ~/.vctl/token-sink) vault kv get ...`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/audit"
 	"github.com/ghdwlsgur/vctl/internal/auditredact"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -100,7 +101,7 @@ type tetraEvent struct {
 	ProcessExit *tetraExit `json:"process_exit"`
 }
 
-func collectCmd(env CommandEnv) *cobra.Command {
+func collectCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		from           string
 		host           string
@@ -130,7 +131,7 @@ storing it buys nothing and costs everything. A miss is held for
 before watch-sessions has written the session row. Pass --require-session=false
 for full host capture.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, adb, err := env.audit()
+			_, adb, err := env.Audit()
 			if err != nil {
 				return err
 			}
@@ -262,7 +263,7 @@ for full host capture.`,
 	}
 	cmd.Flags().StringVar(&from, "from", "", "read events from a file instead of stdin")
 	cmd.Flags().StringVar(&host, "host", "", "inventory hostname to record events under (default: event node_name); must match what watch-sessions records or nothing attributes")
-	registerCompletion(cmd, "host", completeInventoryHost(env))
+	cmdkit.RegisterCompletion(cmd, "host", cmdkit.CompleteInventoryHost(env))
 	cmd.Flags().StringVar(&serial, "serial", "", "attach events to a known cert serial")
 	cmd.Flags().IntVar(&batch, "batch", 200, "insert batch size")
 	cmd.Flags().DurationVar(&flushInterval, "flush-interval", 3*time.Second, "max time before flushing buffered events")

@@ -22,6 +22,7 @@ import (
 	deploynode "github.com/ghdwlsgur/vctl/deploy/node"
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -41,7 +42,7 @@ import (
 // the hosts that need this most are the ones without outbound internet. Every
 // remote step goes through access.Connector, so each connection leaves the
 // same audit row a `vctl ssh` would.
-func installCmd(env CommandEnv) *cobra.Command {
+func installCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		binPath string
 		motd    bool
@@ -66,7 +67,7 @@ is rotated, and the agent restarts.
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}
@@ -103,7 +104,7 @@ is rotated, and the agent restarts.
 			shaHex := hex.EncodeToString(sum[:])
 			ui.Infof(os.Stderr, "agent binary ready (%d bytes, sha256 %s…)", len(bin), shaHex[:12])
 
-			conn := newConnector(a)
+			conn := cmdkit.NewConnector(a)
 			req := access.Request{
 				Target: &sshc.Target{
 					Name: sv.Hostname,

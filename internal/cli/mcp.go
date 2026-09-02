@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/mcp"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -17,7 +18,7 @@ import (
 // took env as a parameter and never used it, building its own app instead, so
 // the fake app every other command honours never reached the tools. What the
 // server borrows from the CLI is now stated in mcp.Deps.
-func mcpCmd(env CommandEnv) *cobra.Command {
+func mcpCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "mcp",
 		Short: "Run a read-only MCP server (stdio) exposing the inventory to AI agents",
@@ -34,7 +35,7 @@ Wire it into Claude Code:
 			return mcp.Serve(cmd.Context(), os.Stdin, os.Stdout, mcp.Deps{
 				Version:   Version,
 				NewApp:    mcpApp(env),
-				Connector: newConnector,
+				Connector: cmdkit.NewConnector,
 				HostStatus: func(w store.ServerWithStatus) string {
 					return ui.StripANSI(liveStatus(w, false)) // MCP reads the live store
 				},
@@ -53,9 +54,9 @@ Wire it into Claude Code:
 // enough: the non-interactive login order still ends on the configured
 // method, and userpass would read the prompt's answer off the same stdin the
 // protocol runs on.
-func mcpApp(env CommandEnv) func() (*app.App, error) {
+func mcpApp(env cmdkit.Env) func() (*app.App, error) {
 	return func() (*app.App, error) {
-		a, err := env.newApp()
+		a, err := env.App()
 		if err != nil {
 			return nil, err
 		}

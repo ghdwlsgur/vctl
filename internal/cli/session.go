@@ -8,11 +8,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/audit"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func sessionCmd(env CommandEnv) *cobra.Command {
+func sessionCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		list        bool
 		host        string
@@ -38,11 +39,11 @@ Two uses:
   vctl session <cert-serial> --json   machine-readable export`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := commandOutput(cmd, asJSON)
+			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {
 				return err
 			}
-			_, adb, err := env.audit()
+			_, adb, err := env.Audit()
 			if err != nil {
 				return err
 			}
@@ -53,8 +54,8 @@ Two uses:
 					if err != nil {
 						return err
 					}
-					if format != outputTable {
-						return writeStructured(format, sessions)
+					if format != cmdkit.OutputTable {
+						return cmdkit.WriteStructured(format, sessions)
 					}
 					return printSessions(sessions)
 				}
@@ -68,8 +69,8 @@ Two uses:
 					ui.Warnf(os.Stderr, "no session recorded for serial %s (collector/stamper deployed on the host?)", serial)
 					return nil
 				}
-				if format != outputTable {
-					return writeStructured(format, timelineExport(sessions, events))
+				if format != cmdkit.OutputTable {
+					return cmdkit.WriteStructured(format, timelineExport(sessions, events))
 				}
 				return printTimeline(sessions, events, sessionDetailOptions{Full: full, Width: detailWidth})
 			})
@@ -77,24 +78,24 @@ Two uses:
 	}
 	cmd.Flags().BoolVar(&list, "list", false, "list recent sessions instead of one timeline")
 	cmd.Flags().StringVar(&host, "host", "", "filter by hostname substring (with --list)")
-	registerCompletion(cmd, "host", completeInventoryHost(env))
+	cmdkit.RegisterCompletion(cmd, "host", cmdkit.CompleteInventoryHost(env))
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	cmd.Flags().BoolVar(&full, "full", false, "show full command details without truncating table cells")
 	cmd.Flags().IntVar(&detailWidth, "detail-width", 120, "max visible width for the detail column; use --full to disable")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "max sessions to show")
-	return supportsStructuredOutput(cmd)
+	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
 // sessionStartCmd registers an SSH session (cert serial -> human, on a host).
 // Hidden: invoked by the host-side login stamper, not by humans.
-func sessionStartCmd(env CommandEnv) *cobra.Command {
+func sessionStartCmd(env cmdkit.Env) *cobra.Command {
 	var a store.AuditSession
 	cmd := &cobra.Command{
 		Use:    "session-start",
 		Short:  "Register an SSH session for kernel audit (host stamper use)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, adb, err := env.audit()
+			_, adb, err := env.Audit()
 			if err != nil {
 				return err
 			}

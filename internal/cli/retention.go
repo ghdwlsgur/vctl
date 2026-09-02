@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/audit"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -23,7 +24,7 @@ import (
 // delete-only job returns space to the table's free list rather than the volume,
 // so a burst parks the high-water mark and nothing reports it. That is what this
 // command answers.
-func retentionCmd(env CommandEnv) *cobra.Command {
+func retentionCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		days        int
 		sessionDays int
@@ -46,7 +47,7 @@ Horizons default to config (kernel_retention_days / session_retention_days).
   vctl retention --days 30          # report against a different event horizon`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, adb, err := env.audit()
+			a, adb, err := env.Audit()
 			if err != nil {
 				return err
 			}
@@ -114,14 +115,14 @@ Horizons default to config (kernel_retention_days / session_retention_days).
 // CronJob. It is hidden because human credentials intentionally cannot obtain
 // the delete-only database role; operators use `vctl retention` to inspect and
 // Kubernetes to trigger this job off schedule.
-func pruneCmd(env CommandEnv) *cobra.Command {
+func pruneCmd(env cmdkit.Env) *cobra.Command {
 	var days, sessionDays, accessDays, batchSize int
 	cmd := &cobra.Command{
 		Use:    "prune",
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			a, adb, err := env.audit()
+			a, adb, err := env.Audit()
 			if err != nil {
 				return err
 			}

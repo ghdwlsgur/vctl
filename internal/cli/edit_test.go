@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -98,13 +99,13 @@ func TestHostEditsValidateAcceptsClearingTheJumpHost(t *testing.T) {
 // print the same error several times.
 func TestFindHostNamesTheMissingHost(t *testing.T) {
 	st := &fakeLister{rows: rowsFull(store.Server{Hostname: "web-01"})}
-	if _, err := findHost(context.Background(), st, "web-99"); err == nil {
+	if _, err := cmdkit.FindHost(context.Background(), st, "web-99"); err == nil {
 		t.Fatal("findHost accepted a hostname that is not in the inventory")
 	} else if !strings.Contains(err.Error(), "web-99") {
 		t.Errorf("error %q does not name the host", err)
 	}
-	if got, err := findHost(context.Background(), st, "web-01"); err != nil || got.Hostname != "web-01" {
-		t.Errorf("findHost(web-01) = %v, %v", got.Hostname, err)
+	if got, err := cmdkit.FindHost(context.Background(), st, "web-01"); err != nil || got.Hostname != "web-01" {
+		t.Errorf("cmdkit.FindHost(web-01) = %v, %v", got.Hostname, err)
 	}
 }
 

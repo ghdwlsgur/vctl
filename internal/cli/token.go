@@ -4,9 +4,11 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 )
 
-func tokenCmd(env CommandEnv) *cobra.Command {
+func tokenCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "token",
 		Short: "Print a valid Vault token after renewal or re-authentication",
@@ -14,7 +16,7 @@ func tokenCmd(env CommandEnv) *cobra.Command {
 
   export VAULT_TOKEN=$(vctl token)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
 )
@@ -35,7 +36,7 @@ func viewKVSecret(sec vaultc.KVSecret, in io.Reader, out io.Writer) error {
 // on both ends, and a live version with fields to look at. Piped output gets
 // the print, as do --reveal, --field and -o, which the caller checks.
 func kvViewerWanted(sec vaultc.KVSecret) bool {
-	return isTerminal() && isTerminalOut() && kvViewable(sec)
+	return cmdkit.IsTerminal() && cmdkit.IsTerminalOut() && kvViewable(sec)
 }
 
 // kvViewable reports whether there is anything for the viewer to show: string
@@ -98,7 +99,7 @@ func (m kvViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m kvViewModel) View() string {
 	var b strings.Builder
 	b.WriteString(kvHeading(m.sec) + "\n")
-	b.WriteString(pickDimStyle.Render("↑↓ move — the row under the cursor shows its value · enter/c copy it · q quit") + "\n\n")
+	b.WriteString(cmdkit.PickDimStyle.Render("↑↓ move — the row under the cursor shows its value · enter/c copy it · q quit") + "\n\n")
 
 	width := 0
 	for _, k := range m.keys {
@@ -109,13 +110,13 @@ func (m kvViewModel) View() string {
 	}
 	for i, k := range m.keys {
 		if i == m.cursor {
-			b.WriteString(pickCursorStyle.Render("› ") + pickSelectedStyle.Render(ui.PadRight(k, width)) + "  " + ui.Value(m.sec.Data[k]) + "\n")
+			b.WriteString(cmdkit.PickCursorStyle.Render("› ") + cmdkit.PickSelectedStyle.Render(ui.PadRight(k, width)) + "  " + ui.Value(m.sec.Data[k]) + "\n")
 			continue
 		}
-		b.WriteString("  " + pickDimStyle.Render(ui.PadRight(k, width)) + "  " + ui.Muted(kvHidden) + "\n")
+		b.WriteString("  " + cmdkit.PickDimStyle.Render(ui.PadRight(k, width)) + "  " + ui.Muted(kvHidden) + "\n")
 	}
 	for _, k := range m.sec.NonString {
-		b.WriteString("  " + pickDimStyle.Render(ui.PadRight(k, width)) + "  " + ui.Muted(kvNonStringNote) + "\n")
+		b.WriteString("  " + cmdkit.PickDimStyle.Render(ui.PadRight(k, width)) + "  " + ui.Muted(kvNonStringNote) + "\n")
 	}
 	if len(m.sec.CustomMetadata) > 0 {
 		b.WriteString("\n" + ui.Muted("metadata: "+joinSortedKV(m.sec.CustomMetadata)) + "\n")

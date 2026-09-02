@@ -15,6 +15,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/authz"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -30,7 +31,7 @@ type monTarget struct {
 	tgt  *sshc.Target
 }
 
-func wgMonitorCmd(env CommandEnv) *cobra.Command {
+func wgMonitorCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		intervalSec, timeoutSec int
 		syncFirst, all          bool
@@ -47,7 +48,7 @@ does not write to the DB. Non-interactive stdout prints a single snapshot.
 has data). Because that writes, it additionally requires the 'wg-sync' grant.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}
@@ -77,7 +78,7 @@ has data). Because that writes, it additionally requires the 'wg-sync' grant.`,
 				return fmt.Errorf("no reachable gateways")
 			}
 
-			conn := newConnector(a)
+			conn := cmdkit.NewConnector(a)
 			interval := time.Duration(intervalSec) * time.Second
 			timeout := time.Duration(timeoutSec) * time.Second
 
@@ -101,15 +102,15 @@ has data). Because that writes, it additionally requires the 'wg-sync' grant.`,
 	cmd.Flags().IntVar(&timeoutSec, "timeout", 10, "per-poll SSH timeout (seconds)")
 	cmd.Flags().BoolVar(&syncFirst, "sync", false, "collect into the DB once before monitoring (needs the wg-sync grant)")
 	cmd.Flags().BoolVar(&all, "all", false, "with no host args, target every inventory host")
-	return gate(cmd, "wg")
+	return cmdkit.Gate(cmd, "wg")
 }
 
 // wgSyncBeforeMonitor runs one collection of the monitor targets into the DB,
 // used by `wg monitor --sync`. Monitoring is read-only, so this write path is
 // gated at runtime by the same 'wg-sync' permission the sync command carries —
-// keeping the two-layer RBAC model intact even though the command is classRead.
+// keeping the two-layer RBAC model intact even though the command is authz.ClassRead.
 func wgSyncBeforeMonitor(ctx context.Context, a *app.App, conn *access.Connector, targets []monTarget, timeout time.Duration) error {
-	if err := newAuthorizer(a).Check(ctx, authz.Command{Name: "wg-sync", Class: classMutate}); err != nil {
+	if err := cmdkit.NewAuthorizer(a).Check(ctx, authz.Command{Name: "wg-sync", Class: authz.ClassMutate}); err != nil {
 		return err
 	}
 	st, err := a.OpenStore(ctx, app.PurposeInventoryWrite)

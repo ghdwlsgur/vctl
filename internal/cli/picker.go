@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -23,7 +24,7 @@ func selectServer(cands []store.ServerWithStatus, title string, cached bool) (*s
 		return nil, fmt.Errorf("no servers to choose from")
 	}
 	match := func(i int, q string) bool { return matchServer(cands[i], q) }
-	i, err := pickIndexMatch(serverPickLabels(cands, cached), serverPickGroups(cands), match, title)
+	i, err := cmdkit.PickIndexMatch(serverPickLabels(cands, cached), serverPickGroups(cands), match, title)
 	if err != nil {
 		return nil, err
 	}
@@ -47,12 +48,12 @@ func matchServer(c store.ServerWithStatus, q string) bool {
 }
 
 // serverPickGroups is the datacenter of each candidate, for the picker's tabs.
-func serverPickGroups(cands []store.ServerWithStatus) *listGroups {
+func serverPickGroups(cands []store.ServerWithStatus) *cmdkit.ListGroups {
 	of := make([]string, 0, len(cands))
 	for _, c := range cands {
 		of = append(of, c.DC)
 	}
-	return &listGroups{name: "DC", of: of}
+	return cmdkit.NewListGroups("DC", of)
 }
 
 // serverPickNameWidth caps the hostname column, the same figure as the host
@@ -70,10 +71,10 @@ func serverPickLabels(cands []store.ServerWithStatus, cached bool) []string {
 	for _, c := range cands {
 		cells = append(cells, []string{
 			ui.Truncate(c.Hostname, serverPickNameWidth),
-			addrCell(c.IP, c.Port),
+			cmdkit.AddrCell(c.IP, c.Port),
 			c.DC,
 			liveStatus(c, cached),
-			stateCell(c.State),
+			cmdkit.StateCell(c.State),
 		})
 	}
 	w := ui.ColumnWidths(cells)

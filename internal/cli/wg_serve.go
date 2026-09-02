@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -52,7 +53,7 @@ func inlineDashboardScripts() []byte {
 
 // --- command ---
 
-func wgServeCmd(env CommandEnv) *cobra.Command {
+func wgServeCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		addr        string
 		intervalSec int
@@ -71,7 +72,7 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 		// it all hangs off, and shutdown.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}
@@ -92,7 +93,7 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 				return err
 			}
 			interval := time.Duration(intervalSec) * time.Second
-			live := newLivePoller(newConnector(a).Monitor(), targets, snap.EdgeFor,
+			live := newLivePoller(cmdkit.NewConnector(a).Monitor(), targets, snap.EdgeFor,
 				interval, time.Duration(timeoutSec)*time.Second)
 			stop, done := live.Start(ctx)
 			defer stop()
@@ -115,7 +116,7 @@ DB (run 'vctl wg sync' first); rates are read live and never written back.`,
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8420", "listen address")
 	cmd.Flags().IntVar(&intervalSec, "interval", 2, "poll interval (seconds)")
 	cmd.Flags().IntVar(&timeoutSec, "timeout", 10, "per-poll SSH timeout (seconds)")
-	return gate(cmd, "wg")
+	return cmdkit.Gate(cmd, "wg")
 }
 
 // displayAddr turns a bind address into a clickable one (":8420" → "127.0.0.1:8420").

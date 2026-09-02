@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -21,7 +22,7 @@ import (
 //
 // This is distinct from `trust-ca`, which installs the Vault *SSH* CA on a
 // remote host so `vctl ssh` works. `ca` is about *TLS* trust on this machine.
-func caCmd(env CommandEnv) *cobra.Command {
+func caCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ca",
 		Short: "Trust the SRE root CA on this machine (fixes browser/HSTS errors for *.sre.local)",
@@ -41,7 +42,7 @@ The platform is detected automatically:
 	return cmd
 }
 
-func caInstallCmd(env CommandEnv) *cobra.Command {
+func caInstallCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "install",
 		Short: "Install the SRE root CA into this machine's trust store",
@@ -63,7 +64,7 @@ func caInstallCmd(env CommandEnv) *cobra.Command {
 	}
 }
 
-func caRemoveCmd(env CommandEnv) *cobra.Command {
+func caRemoveCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "remove",
 		Short: "Remove the SRE root CA trust from this machine",
@@ -85,7 +86,7 @@ func caRemoveCmd(env CommandEnv) *cobra.Command {
 	}
 }
 
-func caPrintCmd(env CommandEnv) *cobra.Command {
+func caPrintCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "print",
 		Short: "Print the embedded SRE root CA (PEM) for manual installation",

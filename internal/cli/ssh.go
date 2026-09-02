@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -14,6 +13,8 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
+	"github.com/ghdwlsgur/vctl/internal/cli/openstack"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/invcache"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
@@ -22,7 +23,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func sshCmd(env CommandEnv) *cobra.Command {
+func sshCmd(env cmdkit.Env) *cobra.Command {
 	var server, vm, user, vmFarm string
 	var allowStale bool
 	cmd := &cobra.Command{
@@ -86,14 +87,14 @@ the configured default.`,
 			// open it. That also makes this the way in when the inventory
 			// database itself is unreachable and the snapshot cannot help.
 			if ep, ok := parseUserAtAddr(query); ok {
-				return env.withApp(func(a *app.App) error {
+				return env.WithApp(func(a *app.App) error {
 					tgt := ep.target(a.Cfg)
 					ui.Infof(os.Stderr, "connecting to %s@%s (direct, not from inventory)", tgt.User, tgt.Addr)
-					return newConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+					return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
 				})
 			}
 
-			return env.withInventory(ctx, func(a *app.App, inv *app.Inventory) error {
+			return env.WithInventory(ctx, func(a *app.App, inv *app.Inventory) error {
 				var (
 					target *store.Server
 					err    error
@@ -113,7 +114,7 @@ the configured default.`,
 				}
 
 				ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
-				return newConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+				return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
 			})
 		},
 	}
@@ -122,13 +123,13 @@ the configured default.`,
 	cmd.Flags().StringVar(&user, "user", "", "login user for --vm (Nova does not record one)")
 	cmd.Flags().BoolVar(&allowStale, "allow-stale", false, "connect to a --vm whose record is older than the collector's schedule")
 	cmd.Flags().StringVar(&vmFarm, "farm", "", "deployment holding the --vm instance, when its id is in more than one")
-	registerCompletion(cmd, "server", completeInventoryHost(env))
-	registerCompletion(cmd, "vm", completeVM(env))
-	registerCompletion(cmd, "farm", completeFarm(env))
+	cmdkit.RegisterCompletion(cmd, "server", cmdkit.CompleteInventoryHost(env))
+	cmdkit.RegisterCompletion(cmd, "vm", openstack.CompleteVM(env))
+	cmdkit.RegisterCompletion(cmd, "farm", openstack.CompleteFarm(env))
 	// The positional takes an inventory name or user@addr, and only the first
 	// of those is something anything here knows. The direct form needs no
 	// inventory, which is the point of it.
-	cmd.ValidArgsFunction = completeInventoryHost(env)
+	cmd.ValidArgsFunction = cmdkit.CompleteInventoryHost(env)
 	return cmd
 }
 
@@ -169,36 +170,6 @@ func (e sshEndpoint) target(cfg *config.Config) *sshc.Target {
 		User: user,
 		Role: cfg.CARole,
 	}
-}
-
-// newConnector builds the SSH connector for this app: Vault signs certs and
-// reports the identity, the app writes the audit row, and an audit-write failure
-// is warned (never fatal). Shared by `vctl ssh` and the MCP vctl_ssh_exec tool.
-func newConnector(a *app.App) *access.Connector {
-	return &access.Connector{
-		Signer:   a.Vault,
-		Identity: a.Vault,
-		Audit:    a,
-		SignTTL:  a.Cfg.SSHSign,
-		OnAuditError: func(err error) {
-			ui.Warnf(os.Stderr, "%s", auditErrorMessage(err))
-		},
-	}
-}
-
-// auditErrorMessage turns a failed audit write into what the operator needs to
-// know: whether the record is gone or merely waiting.
-//
-// The distinction is the whole point of the spool. Reporting a queued record as
-// "not recorded" would tell someone their access left no trace at the exact
-// moment it did — and would push them to go re-record it by hand.
-func auditErrorMessage(err error) string {
-	var spooled *app.SpooledError
-	if errors.As(err, &spooled) {
-		return fmt.Sprintf("audit database unreachable — access record queued locally (%d pending), "+
-			"it flushes on the next successful write", spooled.Pending)
-	}
-	return fmt.Sprintf("access log not recorded: %v", err)
 }
 
 // pick selects one server by argument, fuzzy match, or interactive picker. It
@@ -280,22 +251,22 @@ func withLiveStatus(ctx context.Context, st invcache.Reader, cands []store.Serve
 //
 // A physical host has both doors: the positional form prompts, --server does
 // not. Here the terminal is what says which one this is.
-func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string, allowStale bool) error {
+func sshVM(ctx context.Context, env cmdkit.Env, selector, user, farm string, allowStale bool) error {
 	id, ok := access.NovaID(selector)
 	if !ok {
 		return fmt.Errorf("--vm takes a Nova instance id or openstack:///<id>, not %q; "+
 			"run 'vctl openstack vm' to find it", selector)
 	}
-	return env.withStore(ctx, false, func(a *app.App, st *store.Store) error {
+	return env.WithStore(ctx, false, func(a *app.App, st *store.Store) error {
 		deployment := ""
 		if farm != "" {
-			resolved, err := resolveFarmID(ctx, a, st, farm)
+			resolved, err := openstack.ResolveFarmID(ctx, a, st, farm)
 			if err != nil {
 				return err
 			}
 			deployment = resolved
 		}
-		v, err := oneVM(ctx, st, id, deployment)
+		v, err := openstack.OneVM(ctx, st, id, deployment)
 		if err != nil {
 			return err
 		}
@@ -311,21 +282,21 @@ func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string, all
 		// for days sets nothing: the rows keep their addresses, look exactly
 		// like fresh ones, and the address in them is where some VM used to be.
 		// On a tenant range that gets reused, that is somebody else's machine.
-		if age := time.Since(v.ObservedAt); age > staleProbeWindow && !allowStale {
+		if age := time.Since(v.ObservedAt); age > openstack.StaleProbeWindow && !allowStale {
 			when := "never collected"
 			if !v.ObservedAt.IsZero() {
 				when = strutil.CompactDuration(age) + " ago"
 			}
-			if !isTerminal() {
+			if !cmdkit.IsTerminal() {
 				return fmt.Errorf("%s was last collected %s, older than the collector's schedule; "+
-					"run 'vctl openstack reconcile' or pass --allow-stale", nameOrID(v), when)
+					"run 'vctl openstack reconcile' or pass --allow-stale", openstack.NameOrID(v), when)
 			}
 			ui.Warnf(os.Stderr, "%s in %s was last collected %s — its address may not be current",
-				nameOrID(v), v.DeploymentID, when)
+				openstack.NameOrID(v), v.DeploymentID, when)
 			var ok bool
 			if err := huh.NewForm(huh.NewGroup(
 				huh.NewConfirm().
-					Title("Connect to " + nameOrID(v) + " on a stale record?").
+					Title("Connect to " + openstack.NameOrID(v) + " on a stale record?").
 					Description(fmt.Sprintf("%s in %s, last collected %s", id, v.DeploymentID, when)).
 					Affirmative("Connect").
 					Negative("Cancel").
@@ -349,10 +320,10 @@ func sshVM(ctx context.Context, env CommandEnv, selector, user, farm string, all
 		ui.Infof(os.Stderr, "connecting to %s (%s@%s) — VM in %s, project %s",
 			tgt.Name, tgt.User, tgt.Addr, v.DeploymentID, orUnknown(v.ProjectName))
 		policy := access.HostKeyStrict
-		if isTerminal() {
+		if cmdkit.IsTerminal() {
 			policy = access.HostKeyPrompt
 		}
-		return newConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+		return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
 	})
 }
 

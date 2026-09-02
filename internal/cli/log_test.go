@@ -3,9 +3,10 @@ package cli
 import (
 	"time"
 
-	"github.com/ghdwlsgur/vctl/internal/store"
 	"strings"
 	"testing"
+
+	"github.com/ghdwlsgur/vctl/internal/store"
 
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )

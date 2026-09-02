@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -23,7 +24,7 @@ import (
 // ipKinds are the allowed allocation categories for the 201.x ledger.
 var ipKinds = []string{"personal", "server", "vm", "floating-ip", "router-gw", "dnat-vip"}
 
-func ipCmd(env CommandEnv) *cobra.Command {
+func ipCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ip",
 		Short: "Manage the 192.168.201.0/24 IP allocation ledger (IPAM)",
@@ -51,7 +52,7 @@ type ipStore interface {
 var _ ipStore = (*store.Store)(nil)
 
 // ipListCmd prints the ledger, optionally filtered. Read (default-allow).
-func ipListCmd(env CommandEnv) *cobra.Command {
+func ipListCmd(env cmdkit.Env) *cobra.Command {
 	var kind, owner string
 	cmd := &cobra.Command{
 		Use:     "list [filter]",
@@ -63,7 +64,7 @@ func ipListCmd(env CommandEnv) *cobra.Command {
 			if len(args) == 1 {
 				filter = args[0]
 			}
-			return withStorePort(env, cmd.Context(), false, func(_ *app.App, st ipStore) error {
+			return cmdkit.WithStorePort(env, cmd.Context(), false, func(_ *app.App, st ipStore) error {
 				rows, err := st.IPAllocList(cmd.Context(), kind, owner, filter)
 				if err != nil {
 					return err
@@ -79,11 +80,11 @@ func ipListCmd(env CommandEnv) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&kind, "kind", "", "filter by kind ("+joinKinds()+")")
 	cmd.Flags().StringVar(&owner, "owner", "", "filter by owner substring")
-	return gateReadView(cmd, "ip")
+	return cmdkit.GateReadView(cmd, "ip")
 }
 
 // ipSetCmd creates or updates one allocation. Mutate (default-deny w/o grant).
-func ipSetCmd(env CommandEnv) *cobra.Command {
+func ipSetCmd(env cmdkit.Env) *cobra.Command {
 	var a store.IPAllocation
 	cmd := &cobra.Command{
 		Use:   "set <ip>",
@@ -101,7 +102,7 @@ func ipSetCmd(env CommandEnv) *cobra.Command {
 				return fmt.Errorf("invalid --farm-vip: %q", a.FarmVIP)
 			}
 			a.IP = ip
-			return withStorePort(env, cmd.Context(), true, func(_ *app.App, st ipStore) error {
+			return cmdkit.WithStorePort(env, cmd.Context(), true, func(_ *app.App, st ipStore) error {
 				if err := st.IPAllocUpsert(cmd.Context(), a); err != nil {
 					return err
 				}
@@ -118,7 +119,7 @@ func ipSetCmd(env CommandEnv) *cobra.Command {
 	// The one flag here that names an inventory host. --farm and --project on
 	// this command are labels on an address record, not the deployment and the
 	// Keystone project they sound like.
-	registerCompletion(cmd, "hostname", completeInventoryHost(env))
+	cmdkit.RegisterCompletion(cmd, "hostname", cmdkit.CompleteInventoryHost(env))
 	f.StringVar(&a.OS, "os", "", "OS for a personal device (Mac/Windows)")
 	f.StringVar(&a.Project, "project", "", "OpenStack project or purpose")
 	f.StringVar(&a.Farm, "farm", "", "OpenStack farm label (A/B/C/D)")
@@ -128,11 +129,11 @@ func ipSetCmd(env CommandEnv) *cobra.Command {
 	f.StringVar(&a.WGTunnel, "wg", "", "WireGuard tunnel (wg0/wg1/wg2/wg3)")
 	f.StringVar(&a.Status, "status", "", "active | broken | reserved (default active)")
 	f.StringVar(&a.Note, "note", "", "free-form note")
-	return gate(cmd, "ip")
+	return cmdkit.Gate(cmd, "ip")
 }
 
 // ipRmCmd deletes one allocation. Mutate (default-deny w/o grant).
-func ipRmCmd(env CommandEnv) *cobra.Command {
+func ipRmCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rm <ip>",
 		Aliases: []string{"delete"},
@@ -143,7 +144,7 @@ func ipRmCmd(env CommandEnv) *cobra.Command {
 			if net.ParseIP(ip) == nil {
 				return fmt.Errorf("invalid IP: %q", ip)
 			}
-			return withStorePort(env, cmd.Context(), true, func(_ *app.App, st ipStore) error {
+			return cmdkit.WithStorePort(env, cmd.Context(), true, func(_ *app.App, st ipStore) error {
 				if err := st.IPAllocDelete(cmd.Context(), ip); err != nil {
 					return err
 				}
@@ -152,7 +153,7 @@ func ipRmCmd(env CommandEnv) *cobra.Command {
 			})
 		},
 	}
-	return gate(cmd, "ip")
+	return cmdkit.Gate(cmd, "ip")
 }
 
 func joinKinds() string { return strings.Join(ipKinds, "|") }
@@ -283,7 +284,7 @@ func ipStatusState(status string) ui.State {
 // The endpoint is named as host/interface because that is what an operator can
 // read off `vctl wg graph`; the public key it resolves to is what gets stored,
 // since that is the identity the rest of the schema uses.
-func ipBindWGCmd(env CommandEnv) *cobra.Command {
+func ipBindWGCmd(env cmdkit.Env) *cobra.Command {
 	var endpoint string
 	var clear bool
 	cmd := &cobra.Command{
@@ -307,7 +308,7 @@ is stored as that interface's public key.
 			if clear == (endpoint != "") {
 				return fmt.Errorf("pass exactly one of --endpoint or --clear")
 			}
-			return withStorePort(env, ctx, true, func(_ *app.App, st ipStore) error {
+			return cmdkit.WithStorePort(env, ctx, true, func(_ *app.App, st ipStore) error {
 				key := ""
 				if !clear {
 					var err error
@@ -333,7 +334,7 @@ is stored as that interface's public key.
 	}
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "owning endpoint as host/interface, e.g. sre-lb/wg1")
 	cmd.Flags().BoolVar(&clear, "clear", false, "remove the binding and go back to guessing from labels")
-	return gate(cmd, "ip")
+	return cmdkit.Gate(cmd, "ip")
 }
 
 // resolveWGEndpointKey turns "host/iface" into that interface's public key.

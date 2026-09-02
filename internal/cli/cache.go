@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/invcache"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
@@ -21,7 +22,7 @@ import (
 // The subcommands are inspection and manual control only; the snapshot refreshes
 // itself during ordinary online use, so `refresh` exists for the case where
 // someone knows they are about to lose connectivity.
-func cacheCmd(env CommandEnv) *cobra.Command {
+func cacheCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cache",
 		Short: "Inspect the local inventory snapshot used when Postgres is unreachable",
@@ -37,13 +38,13 @@ the inventory database cannot be reached. Writes always go to Postgres.
 	return cmd
 }
 
-func cacheStatusCmd(env CommandEnv) *cobra.Command {
+func cacheStatusCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show local snapshot age and queued audit records",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return env.withApp(func(a *app.App) error {
+			return env.WithApp(func(a *app.App) error {
 				ui.Section(os.Stdout, "Local inventory cache")
 				if a.Cfg.CacheDisabled {
 					ui.Warnf(os.Stdout, "disabled (VCTL_CACHE_DISABLE / cache_disabled)")
@@ -110,7 +111,7 @@ func renderCachedGrants(a *app.App, snap *invcache.Snapshot) {
 	sort.Strings(identities) // map order would reshuffle the report between runs
 
 	for _, identity := range identities {
-		g := cachedGrant(snap.Grants[identity])
+		g := cmdkit.CachedGrant(snap.Grants[identity])
 		state := ui.OK("valid")
 		if g.Expired(now, window) {
 			state = ui.Fail("expired")
@@ -120,14 +121,14 @@ func renderCachedGrants(a *app.App, snap *invcache.Snapshot) {
 	}
 }
 
-func cacheRefreshCmd(env CommandEnv) *cobra.Command {
+func cacheRefreshCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "refresh",
 		Short: "Refresh the local snapshot from Postgres now",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			return env.withPurposeStore(ctx, app.PurposeInventoryRead, func(a *app.App, st *store.Store) error {
+			return env.WithPurposeStore(ctx, app.PurposeInventoryRead, func(a *app.App, st *store.Store) error {
 				snap, err := a.CaptureSnapshot(ctx, st)
 				if err != nil {
 					return err
@@ -139,13 +140,13 @@ func cacheRefreshCmd(env CommandEnv) *cobra.Command {
 	}
 }
 
-func cacheClearCmd(env CommandEnv) *cobra.Command {
+func cacheClearCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "clear",
 		Short: "Delete the local snapshot and cached grants",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return env.withApp(func(a *app.App) error {
+			return env.WithApp(func(a *app.App) error {
 				f := a.CacheFile()
 				if err := f.Clear(); err != nil {
 					return err

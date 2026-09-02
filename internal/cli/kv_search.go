@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
 )
@@ -143,7 +144,7 @@ type kvSearchOutput struct {
 	Capped  bool     `json:"capped,omitempty"`
 }
 
-func kvSearchCmd(env CommandEnv) *cobra.Command {
+func kvSearchCmd(env cmdkit.Env) *cobra.Command {
 	var under string
 	var limit int
 	cmd := &cobra.Command{
@@ -161,7 +162,7 @@ is what you can see, with a note about how much you could not.
   vctl kv search oidc --under kv/teams/sre`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := requestedOutput(cmd)
+			format, err := cmdkit.RequestedOutput(cmd)
 			if err != nil {
 				return err
 			}
@@ -177,7 +178,7 @@ is what you can see, with a note about how much you could not.
 			if limit <= 0 {
 				return fmt.Errorf("--limit must be positive")
 			}
-			return env.withKV(cmd.Context(), func(a *app.App, kv kvReader) error {
+			return withKV(env, cmd.Context(), func(a *app.App, kv kvReader) error {
 				root := kvRoot(a.Cfg)
 				if u := normalizeKVPath(under); u != "" {
 					root = u
@@ -192,8 +193,8 @@ is what you can see, with a note about how much you could not.
 						matches = append(matches, p)
 					}
 				}
-				if format != outputTable {
-					return writeStructured(format, kvSearchOutput{
+				if format != cmdkit.OutputTable {
+					return cmdkit.WriteStructured(format, kvSearchOutput{
 						Terms: terms, Under: root, Matches: matches,
 						Folders: walk.Folders, Denied: walk.Denied, Capped: walk.Capped,
 					})
@@ -205,8 +206,8 @@ is what you can see, with a note about how much you could not.
 	}
 	cmd.Flags().StringVar(&under, "under", "", "start the walk here instead of at the mount root")
 	cmd.Flags().IntVar(&limit, "limit", kvWalkLimit, "stop after this many entries have been seen")
-	registerCompletion(cmd, "under", completeKVPath(env))
-	return supportsStructuredOutput(gate(cmd, "kv"))
+	cmdkit.RegisterCompletion(cmd, "under", completeKVPath(env))
+	return cmdkit.SupportsStructuredOutput(cmdkit.Gate(cmd, "kv"))
 }
 
 // renderKVSearch prints the matches with the words that matched picked out, and

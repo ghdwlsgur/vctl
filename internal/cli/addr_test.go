@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -29,8 +30,8 @@ func TestAddrCellShowsOnlyNonDefaultPorts(t *testing.T) {
 		{"IPv6 on the default port is bare", "fd00::1", 22, "fd00::1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := addrCell(tc.ip, tc.port); got != tc.want {
-				t.Errorf("addrCell(%q, %d) = %q, want %q", tc.ip, tc.port, got, tc.want)
+			if got := cmdkit.AddrCell(tc.ip, tc.port); got != tc.want {
+				t.Errorf("cmdkit.AddrCell(%q, %d) = %q, want %q", tc.ip, tc.port, got, tc.want)
 			}
 		})
 	}
@@ -106,7 +107,7 @@ func TestServerPickLabelsGrowTheAddressColumnOnlyWhenNeeded(t *testing.T) {
 // The edit/delete picker reads from the same inventory, so a host that answers
 // on a non-default port has to say so there too.
 func TestHostPickLabelsCarryThePort(t *testing.T) {
-	labels := hostPickLabels(rowsFull(
+	labels := cmdkit.HostPickLabels(rowsFull(
 		store.Server{Hostname: "ctl01", IP: "172.21.0.11", Port: 10022, DC: "coex-onprem"},
 		store.Server{Hostname: "aio01", IP: "172.18.0.11", Port: 22, DC: "incheon"},
 	))

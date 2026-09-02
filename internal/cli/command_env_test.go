@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -16,12 +17,12 @@ import (
 // and that was a convention rather than a guarantee.
 func TestACommandTakesItsAppFromTheEnv(t *testing.T) {
 	var used bool
-	env := CommandEnv{NewApp: func() (*app.App, error) {
+	env := cmdkit.Env{NewApp: func() (*app.App, error) {
 		used = true
 		return nil, errors.New("env factory")
 	}}
 
-	err := env.withStore(context.Background(), false, func(*app.App, *store.Store) error {
+	err := env.WithStore(context.Background(), false, func(*app.App, *store.Store) error {
 		return nil
 	})
 	if !used {

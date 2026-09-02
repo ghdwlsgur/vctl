@@ -558,6 +558,8 @@ internal/sshc         native SSH client with cert signer, jump chains, PTY, and 
 internal/syncx        ssh config parsing and host probing
 internal/hoststatus   node-agent host metrics collection (/proc, syscall) with pure, testable parsers
 internal/strutil      tiny shared string helpers
-internal/cli          Cobra commands (incl. app-layer RBAC: vctl rbac, MCP server: vctl mcp)
+internal/cli          Cobra command tree root (incl. app-layer RBAC: vctl rbac, MCP server: vctl mcp)
+internal/cli/openstack  the vctl openstack command tree and its completions
+internal/cli/internal/cmdkit  command framework: env seam, output, completion, RBAC gate, pickers
 deploy/vault          policies (incl. RBAC vctl-admin/user + vctl-admins group), DB engine bootstrap, OIDC guide
 ```

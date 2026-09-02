@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
 )
@@ -37,7 +38,7 @@ func addKVGetFlags(cmd *cobra.Command, o *kvGetOpts) {
 	cmd.MarkFlagsMutuallyExclusive("field", "reveal")
 }
 
-func kvGetCmd(env CommandEnv) *cobra.Command {
+func kvGetCmd(env cmdkit.Env) *cobra.Command {
 	var opts kvGetOpts
 	cmd := &cobra.Command{
 		Use:   "get [word|path]",
@@ -65,22 +66,22 @@ placeholder something might take for the value.`,
 		},
 	}
 	addKVGetFlags(cmd, &opts)
-	return supportsStructuredOutput(gate(cmd, "kv"))
+	return cmdkit.SupportsStructuredOutput(cmdkit.Gate(cmd, "kv"))
 }
 
 // runKVGet is the read behind both `vctl kv [word|path]` and `vctl kv get`.
-func runKVGet(cmd *cobra.Command, env CommandEnv, args []string, o kvGetOpts) error {
-	format, err := requestedOutput(cmd)
+func runKVGet(cmd *cobra.Command, env cmdkit.Env, args []string, o kvGetOpts) error {
+	format, err := cmdkit.RequestedOutput(cmd)
 	if err != nil {
 		return err
 	}
-	if o.field != "" && format != outputTable {
+	if o.field != "" && format != cmdkit.OutputTable {
 		return fmt.Errorf("--field prints one bare value; it does not combine with --output %s", format)
 	}
 	if o.version < 0 {
 		return fmt.Errorf("--version must be a version number, 1 or higher")
 	}
-	return env.withKV(cmd.Context(), func(a *app.App, kv kvReader) error {
+	return withKV(env, cmd.Context(), func(a *app.App, kv kvReader) error {
 		ctx := cmd.Context()
 		path, err := resolveKVPath(ctx, kv, kvRoot(a.Cfg), args)
 		if err != nil {
@@ -99,8 +100,8 @@ func runKVGet(cmd *cobra.Command, env CommandEnv, args []string, o kvGetOpts) er
 			fmt.Fprintln(os.Stdout, v)
 			return nil
 		}
-		if format != outputTable {
-			return writeStructured(format, newKVGetOutput(sec, o.reveal))
+		if format != cmdkit.OutputTable {
+			return cmdkit.WriteStructured(format, newKVGetOutput(sec, o.reveal))
 		}
 		if !o.reveal && kvViewerWanted(sec) {
 			return viewKVSecret(sec, os.Stdin, os.Stdout)

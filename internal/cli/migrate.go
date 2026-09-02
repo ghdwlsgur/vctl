@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -27,7 +28,7 @@ import (
 // --status is the read-only half, and it opens the store with read credentials
 // on purpose: "what does this database have" should be answerable without
 // holding the rights to change it.
-func migrateCmd(env CommandEnv) *cobra.Command {
+func migrateCmd(env cmdkit.Env) *cobra.Command {
 	var status bool
 	cmd := &cobra.Command{
 		Use:   "migrate",
@@ -45,7 +46,7 @@ and the error is reported; re-run it deliberately once you have looked.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}
