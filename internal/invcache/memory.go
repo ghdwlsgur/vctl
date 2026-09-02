@@ -112,6 +112,19 @@ func (m *Memory) ListWithStatus(_ context.Context, dc string) ([]store.ServerWit
 	return out, nil
 }
 
+// WithStatus returns one host's row with its last captured status, or
+// (nil, nil) when the snapshot does not hold it — the same contract the live
+// store answers with.
+func (m *Memory) WithStatus(_ context.Context, hostname string) (*store.ServerWithStatus, error) {
+	for _, r := range m.rows() {
+		if r.Hostname == hostname {
+			row := cloneWithStatus(r)
+			return &row, nil
+		}
+	}
+	return nil, nil
+}
+
 // filtered applies the DC filter and returns rows in (dc, hostname) order. The
 // snapshot is already sorted that way, so this only filters.
 func (m *Memory) filtered(dc string) []store.ServerWithStatus {

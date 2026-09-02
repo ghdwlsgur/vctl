@@ -46,11 +46,16 @@ self-observability numbers.
 			if err != nil {
 				return err
 			}
-			rows, err := withLiveStatus(ctx, inv, []store.Server{*sv})
+			ws, err := inv.WithStatus(ctx, sv.Hostname)
 			if err != nil {
 				return err
 			}
-			renderHostLog(&rows[0], inv.Cached())
+			if ws == nil {
+				// pick just resolved it, so a miss here is a race with a
+				// deletion; render what we hold rather than erroring.
+				ws = &store.ServerWithStatus{Server: *sv}
+			}
+			renderHostLog(ws, inv.Cached())
 			return nil
 		},
 	}

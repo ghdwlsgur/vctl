@@ -225,3 +225,21 @@ func TestFileStoreRejectsForeignVersion(t *testing.T) {
 		t.Fatal("a foreign snapshot version was accepted")
 	}
 }
+
+// WithStatus answers for one host with the same rows ListWithStatus serves,
+// and (nil, nil) for a host the snapshot does not hold — the live store's
+// contract, so callers cannot tell the two Readers apart.
+func TestMemoryWithStatus(t *testing.T) {
+	m := NewMemory(fixture())
+	ws, err := m.WithStatus(context.Background(), "sre-srv-0048")
+	if err != nil || ws == nil {
+		t.Fatalf("known host: ws=%v err=%v", ws, err)
+	}
+	if ws.Hostname != "sre-srv-0048" || ws.Status == nil || len(ws.Status.ObservedIPs) != 1 {
+		t.Fatalf("row = %+v, want the captured status attached", ws)
+	}
+	ws, err = m.WithStatus(context.Background(), "no-such-host")
+	if err != nil || ws != nil {
+		t.Fatalf("unknown host: ws=%v err=%v, want nil,nil", ws, err)
+	}
+}

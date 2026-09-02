@@ -94,14 +94,53 @@ func (s *Store) UpsertServerStatus(ctx context.Context, st ServerStatus) (bool, 
 	return tag.RowsAffected() > 0, nil
 }
 
-// ListWithStatus returns inventory rows with optional runtime status.
-func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStatus, error) {
-	q := `SELECT ` + prefixedSelectCols("srv") + `,
+// serverWithStatusCols is the SELECT list every status-joined read shares, and
+// scanServerWithStatus is its one scanner — a second copy of either is how the
+// listing and the single-host read drift into disagreeing about a machine.
+func serverWithStatusCols() string {
+	return `SELECT ` + prefixedSelectCols("srv") + `,
 		       coalesce(ss.hostname,''), ss.last_seen_at, coalesce(ss.agent_version,''), coalesce(ss.os,''), coalesce(ss.kernel,''),
 		       coalesce(ss.uptime_seconds,0), ss.load1, ss.memory_used_pct, ss.disk_root_used_pct, ` + ipArrayCol("ss.observed_ips") + `,
 		       ss.mount_count, ss.collect_ms
 		FROM servers srv
 		LEFT JOIN server_status ss ON ss.hostname = srv.hostname`
+}
+
+func scanServerWithStatus(r pgx.Rows) (ServerWithStatus, error) {
+	var item ServerWithStatus
+	var statusHost string
+	var st ServerStatus
+	var lastSeen sql.NullTime
+	var load1, memoryUsed, diskUsed sql.NullFloat64
+	var mountCount, collectMs sql.NullInt32
+	var observedIPs []string
+	err := r.Scan(&item.Hostname, &item.IP, &item.Port, &item.User, &item.JumpVia, &item.DC, &item.CARole,
+		&item.CAKeyVersion, &item.LastSeenUp, &item.ExtraIPs, &item.State,
+		&statusHost, &lastSeen, &st.AgentVersion, &st.OS, &st.Kernel,
+		&st.UptimeSeconds, &load1, &memoryUsed, &diskUsed, &observedIPs,
+		&mountCount, &collectMs)
+	if err != nil {
+		return item, err
+	}
+	if statusHost != "" {
+		st.Hostname = statusHost
+		if lastSeen.Valid {
+			st.LastSeenAt = lastSeen.Time
+		}
+		st.Load1 = nullFloatPtr(load1)
+		st.MemoryUsedPct = nullFloatPtr(memoryUsed)
+		st.DiskRootUsedPct = nullFloatPtr(diskUsed)
+		st.ObservedIPs = observedIPs
+		st.MountCount = nullInt32Ptr(mountCount)
+		st.CollectMs = nullInt32Ptr(collectMs)
+		item.Status = &st
+	}
+	return item, nil
+}
+
+// ListWithStatus returns inventory rows with optional runtime status.
+func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStatus, error) {
+	q := serverWithStatusCols()
 	var args []any
 	if dc != "" {
 		q += ` WHERE srv.dc=$1`
@@ -113,37 +152,26 @@ func (s *Store) ListWithStatus(ctx context.Context, dc string) ([]ServerWithStat
 	if err != nil {
 		return nil, err
 	}
-	return collectRows(rows, func(r pgx.Rows) (ServerWithStatus, error) {
-		var item ServerWithStatus
-		var statusHost string
-		var st ServerStatus
-		var lastSeen sql.NullTime
-		var load1, memoryUsed, diskUsed sql.NullFloat64
-		var mountCount, collectMs sql.NullInt32
-		var observedIPs []string
-		err := r.Scan(&item.Hostname, &item.IP, &item.Port, &item.User, &item.JumpVia, &item.DC, &item.CARole,
-			&item.CAKeyVersion, &item.LastSeenUp, &item.ExtraIPs, &item.State,
-			&statusHost, &lastSeen, &st.AgentVersion, &st.OS, &st.Kernel,
-			&st.UptimeSeconds, &load1, &memoryUsed, &diskUsed, &observedIPs,
-			&mountCount, &collectMs)
-		if err != nil {
-			return item, err
-		}
-		if statusHost != "" {
-			st.Hostname = statusHost
-			if lastSeen.Valid {
-				st.LastSeenAt = lastSeen.Time
-			}
-			st.Load1 = nullFloatPtr(load1)
-			st.MemoryUsedPct = nullFloatPtr(memoryUsed)
-			st.DiskRootUsedPct = nullFloatPtr(diskUsed)
-			st.ObservedIPs = observedIPs
-			st.MountCount = nullInt32Ptr(mountCount)
-			st.CollectMs = nullInt32Ptr(collectMs)
-			item.Status = &st
-		}
-		return item, nil
-	})
+	return collectRows(rows, scanServerWithStatus)
+}
+
+// WithStatus returns one host's inventory row joined with its runtime status,
+// or (nil, nil) when the host is not in the inventory. It exists so a
+// single-host view (vctl log) does not pull the whole fleet over the WAN to
+// keep one row.
+func (s *Store) WithStatus(ctx context.Context, hostname string) (*ServerWithStatus, error) {
+	rows, err := s.pool.Query(ctx, serverWithStatusCols()+` WHERE srv.hostname=$1`, hostname)
+	if err != nil {
+		return nil, err
+	}
+	items, err := collectRows(rows, scanServerWithStatus)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return &items[0], nil
 }
 
 func nullFloatPtr(v sql.NullFloat64) *float64 {

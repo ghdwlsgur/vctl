@@ -50,6 +50,10 @@ type Reader interface {
 	List(ctx context.Context, dc string) ([]store.Server, error)
 	ListInventory(ctx context.Context, dc string) ([]store.InventoryRow, error)
 	ListWithStatus(ctx context.Context, dc string) ([]store.ServerWithStatus, error)
+	// WithStatus is the single-host form of ListWithStatus: (nil, nil) when
+	// the host is unknown. It exists so one-host views do not pull the whole
+	// fleet to keep one row.
+	WithStatus(ctx context.Context, hostname string) (*store.ServerWithStatus, error)
 }
 
 // Compile-time proof that the live store still satisfies the read surface. If a
