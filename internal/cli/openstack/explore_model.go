@@ -56,6 +56,20 @@ type exploreConsole struct {
 type consoleOutput struct {
 	out  string
 	code int
+	// user is who the command ultimately ran as. It differs from the pane's
+	// user when the executor's fallback walk moved past a refused login —
+	// root on an image that disables it — and the pane follows it.
+	user string
+	err  error
+}
+
+// vmExecResult is what one console command execution produced: the output,
+// the exit code, the login user that ended the fallback walk, and the error
+// that stands after it.
+type vmExecResult struct {
+	out  string
+	code int
+	user string
 	err  error
 }
 
@@ -119,7 +133,7 @@ type exploreModel struct {
 	// pipeline as `vctl ssh --vm` exec — a fresh Vault-signed certificate and
 	// an audit row per command — via execVM, injected so tests never dial.
 	console *exploreConsole
-	execVM  func(v *store.Instance, r vmRoute, user, command string) (string, int, error)
+	execVM  func(v *store.Instance, r vmRoute, user, command string) vmExecResult
 
 	// refresh reads the fleet again. Held as a function so the model can be
 	// driven in a test without a database, and called from a tea.Cmd so the
@@ -640,8 +654,8 @@ func (m exploreModel) consoleRun(command string) tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
-		out, code, err := run(vm, r, user, command)
-		return consoleOutput{out: out, code: code, err: err}
+		res := run(vm, r, user, command)
+		return consoleOutput{out: res.out, code: res.code, user: res.user, err: res.err}
 	}
 }
 
@@ -652,6 +666,15 @@ func (m exploreModel) onConsoleOutput(msg consoleOutput) exploreModel {
 		return m // pane closed while the command ran; the audit row still exists
 	}
 	c.running = false
+	// The fallback walk landing on another user is a fact about every command
+	// that follows, so the pane says it once and takes the new name — prompt,
+	// rule and audit rows all read the same afterwards. Only on success: a
+	// walk that failed everywhere changed nothing.
+	if msg.err == nil && msg.user != "" && msg.user != c.user {
+		c.lines = append(c.lines, ui.Muted(
+			fmt.Sprintf("%s@ rejected — continuing as %s (image account)", c.user, msg.user)))
+		c.user = msg.user
+	}
 	if out := strings.TrimRight(msg.out, "\n"); out != "" {
 		c.lines = append(c.lines, strings.Split(out, "\n")...)
 	}

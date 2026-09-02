@@ -310,42 +310,60 @@ func sshVM(ctx context.Context, env cmdkit.Env, selector, user, farm string, all
 				return fmt.Errorf("not connecting to a stale record")
 			}
 		}
+		// A named user is exact; an unnamed one is a walk — root first, then
+		// what the image name implies, then the configured default. Only an
+		// authentication refusal advances it: a route that is down answers the
+		// same for every user.
+		cands := []string{user}
 		if user == "" {
-			user = a.Cfg.SSHDefaultUser
+			cands = osdomain.LoginCandidates(v.ImageName, a.Cfg.SSHDefaultUser)
 		}
-		policyIn := access.VMPolicy{
-			User: user, CARole: a.Cfg.CARole, OperatorNets: a.Cfg.OperatorNetworks,
-		}
-		tgt, err := access.VMTarget(v.Name, v.Addresses, policyIn)
-		if err != nil {
+		target := func(u string) (*sshc.Target, error) {
+			policyIn := access.VMPolicy{
+				User: u, CARole: a.Cfg.CARole, OperatorNets: a.Cfg.OperatorNetworks,
+			}
+			tgt, err := access.VMTarget(v.Name, v.Addresses, policyIn)
+			if err == nil {
+				return tgt, nil
+			}
 			// Tenant-only is not always the end: a same-project sibling holding
 			// a port on the same tenant network is a hop this data does vouch
 			// for. The read is the database, never the stored reading — the
 			// sibling's address is about to be dialed.
 			if !errors.Is(err, access.ErrNoVouchedAddress) {
-				return err
+				return nil, err
 			}
 			siblings, serr := st.Instances(ctx, store.InstanceFilter{
 				DeploymentID: v.DeploymentID, ProjectIDs: []string{v.ProjectID},
 			})
 			if serr != nil {
-				return err
+				return nil, err
 			}
 			via, viaAddr, tenantAddr, ok := osdomain.TenantJump(v, siblings, a.Cfg.OperatorNetworks)
 			if !ok {
-				return fmt.Errorf("%w — and no ACTIVE VM on its tenant network carries one to jump through", err)
+				return nil, fmt.Errorf("%w — and no ACTIVE VM on its tenant network carries one to jump through", err)
 			}
 			ui.Infof(os.Stderr, "%s is tenant-only — dialing %s directly, falling back through %s (%s)",
 				openstack.NameOrID(v), tenantAddr, openstack.NameOrID(*via), viaAddr)
-			tgt = access.VMTargetVia(v.Name, tenantAddr, openstack.NameOrID(*via), viaAddr, policyIn)
+			return access.VMTargetVia(v.Name, tenantAddr, openstack.NameOrID(*via), viaAddr, policyIn), nil
 		}
-		ui.Infof(os.Stderr, "connecting to %s (%s@%s) — VM in %s, project %s",
-			tgt.Name, tgt.User, tgt.Addr, v.DeploymentID, orUnknown(v.ProjectName))
 		policy := access.HostKeyStrict
 		if cmdkit.IsTerminal() {
 			policy = access.HostKeyPrompt
 		}
-		return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+		_, err = access.TryLoginUsers(cands, func(u string) error {
+			tgt, terr := target(u)
+			if terr != nil {
+				return terr
+			}
+			ui.Infof(os.Stderr, "connecting to %s (%s@%s) — VM in %s, project %s",
+				tgt.Name, tgt.User, tgt.Addr, v.DeploymentID, orUnknown(v.ProjectName))
+			return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+		}, func(rejectedUser, next string) {
+			ui.Warnf(os.Stderr, "%s rejected login user %q — trying %q (image %s)",
+				openstack.NameOrID(v), rejectedUser, next, orUnknown(v.ImageName))
+		})
+		return err
 	})
 }
 

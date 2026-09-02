@@ -116,6 +116,34 @@ func VMTargetVia(name, tenantAddr, viaName, viaAddr string, p VMPolicy) *sshc.Ta
 	}
 }
 
+// TryLoginUsers walks login-user candidates until one is not refused by the
+// server. The walk advances only on an authentication failure — root not
+// existing on an Ubuntu image, an image account not existing on a Rocky one.
+// A network error or a success is an answer about the machine rather than the
+// user, and stops the walk where it stands.
+//
+// Every attempt goes through the caller's attempt func, so every attempt is a
+// signed certificate and an audit row: a rejected root login on a machine is a
+// fact the trail should carry, not a detail to optimise away.
+//
+// rejected, when non-nil, is told before each fallback — the operator watching
+// a connection hang between two dials deserves the reason.
+func TryLoginUsers(cands []string, attempt func(user string) error, rejected func(user, next string)) (string, error) {
+	var user string
+	var err error
+	for i, u := range cands {
+		user = u
+		err = attempt(u)
+		if err == nil || !sshc.IsAuthFailure(err) || i == len(cands)-1 {
+			return user, err
+		}
+		if rejected != nil {
+			rejected(u, cands[i+1])
+		}
+	}
+	return user, err
+}
+
 // NovaID extracts the instance id from what somebody typed.
 //
 // Kubernetes writes a node's provider as openstack:///<uuid>, so that string is

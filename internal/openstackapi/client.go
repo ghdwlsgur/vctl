@@ -39,6 +39,8 @@ type Client struct {
 	// identities are the Keystone endpoints from the catalog, used to turn
 	// project ids into the names people actually call them by.
 	identities []endpoint
+	// images are the Glance endpoints, used the same way for image ids.
+	images []endpoint
 }
 
 type endpoint struct {
@@ -137,6 +139,8 @@ func (c *Client) authenticate(ctx context.Context, cr Credentials) error {
 				c.computes = append(c.computes, ep)
 			case "identity":
 				c.identities = append(c.identities, ep)
+			case "image":
+				c.images = append(c.images, ep)
 			}
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
+	osdomain "github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -110,7 +111,9 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 		return nil
 	}
 	m := newExploreModel(data)
-	m.defaultUser = a.Cfg.SSHDefaultUser
+	// root first, like every VM path — the prompt shows it and the executor
+	// below walks the image-implied fallback when a machine refuses it.
+	m.defaultUser = osdomain.DefaultVMUser
 	m.refresh = func() (exploreData, error) { return loadExploreData(ctx, a, st) }
 	// The inline console's executor: each submitted command is one Execute —
 	// a fresh Vault-signed certificate and an audit row per command, the same
@@ -118,31 +121,47 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 	// audited path; wiring anything rawer here would open an unrecorded door.
 	conn := cmdkit.NewConnector(a)
 	nets := a.Cfg.OperatorNetworks // the loaded config, not a per-command re-parse
-	m.execVM = func(v *store.Instance, r vmRoute, user, command string) (string, int, error) {
-		p := access.VMPolicy{User: user, CARole: a.Cfg.CARole, OperatorNets: nets}
-		var t *sshc.Target
-		var err error
-		if r.via != nil {
-			// The model found the tenant door and its hop; the dialer still
-			// tries the door directly first, so a VPN that routes the tenant
-			// range skips the hop.
-			t = access.VMTargetVia(NameOrID(*v), r.tenantAddr, NameOrID(*r.via), r.viaAddr, p)
-		} else {
-			t, err = access.VMTarget(NameOrID(*v), v.Addresses, p)
-		}
-		if err != nil {
-			return "", 0, err
-		}
-		res, err := conn.Execute(ctx, access.Request{Target: t, HostKey: access.HostKeyAcceptNew},
-			command, consoleCommandTimeout)
-		out := res.Stdout
-		if res.Stderr != "" {
-			if out != "" && !strings.HasSuffix(out, "\n") {
-				out += "\n"
+	m.execVM = func(v *store.Instance, r vmRoute, user, command string) vmExecResult {
+		attempt := func(u string) (string, int, error) {
+			p := access.VMPolicy{User: u, CARole: a.Cfg.CARole, OperatorNets: nets}
+			var t *sshc.Target
+			var err error
+			if r.via != nil {
+				// The model found the tenant door and its hop; the dialer still
+				// tries the door directly first, so a VPN that routes the tenant
+				// range skips the hop.
+				t = access.VMTargetVia(NameOrID(*v), r.tenantAddr, NameOrID(*r.via), r.viaAddr, p)
+			} else {
+				t, err = access.VMTarget(NameOrID(*v), v.Addresses, p)
 			}
-			out += res.Stderr
+			if err != nil {
+				return "", 0, err
+			}
+			res, err := conn.Execute(ctx, access.Request{Target: t, HostKey: access.HostKeyAcceptNew},
+				command, consoleCommandTimeout)
+			out := res.Stdout
+			if res.Stderr != "" {
+				if out != "" && !strings.HasSuffix(out, "\n") {
+					out += "\n"
+				}
+				out += res.Stderr
+			}
+			return out, res.ExitCode, err
 		}
-		return out, res.ExitCode, err
+		// The prompt's prefill is a default, so it earns the fallback walk; a
+		// user somebody typed over it is exact and fails as itself.
+		cands := []string{user}
+		if user == osdomain.DefaultVMUser {
+			cands = osdomain.LoginCandidates(v.ImageName, a.Cfg.SSHDefaultUser)
+		}
+		var out string
+		var code int
+		used, err := access.TryLoginUsers(cands, func(u string) error {
+			var aerr error
+			out, code, aerr = attempt(u)
+			return aerr
+		}, nil)
+		return vmExecResult{out: out, code: code, user: used, err: err}
 	}
 	// A stored reading is a starting point, not an answer: the screen is up
 	// immediately and the refresh that corrects it is already running.

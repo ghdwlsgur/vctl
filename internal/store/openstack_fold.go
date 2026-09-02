@@ -104,7 +104,7 @@ func foldCapabilityRows(rows []capabilityRow, members map[string][]OpenStackMemb
 	for _, r := range rows {
 		if _, ok := byHost[r.Hostname]; !ok {
 			byHost[r.Hostname] = &OpenStackHost{
-				Hostname: r.Hostname, DC: r.DC, HostState: StateOrActive(r.HostState),
+				Hostname: r.Hostname, IP: r.IP, DC: r.DC, HostState: StateOrActive(r.HostState),
 			}
 			order = append(order, r.Hostname)
 			// Seeded from the first row rather than left at the zero value. A

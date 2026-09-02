@@ -102,6 +102,7 @@ type Credentials interface {
 type Listing struct {
 	Instances    []openstackapi.Instance
 	ProjectNames map[string]string
+	ImageNames   map[string]string
 	Warnings     []error
 
 	// Complete says the listing is the whole deployment rather than a prefix of
@@ -266,8 +267,10 @@ func (s *Service) collectInstances(ctx context.Context, id string,
 		row := ToStoreInstance(id, i)
 		// Nova reports an owner as a bare uuid and Keystone is the only place
 		// the name exists. A run that could not resolve them leaves the column
-		// alone rather than blanking what an earlier run found.
+		// alone rather than blanking what an earlier run found. The image name
+		// gets the same treatment, from Glance.
 		row.ProjectName = list.ProjectNames[row.ProjectID]
+		row.ImageName = list.ImageNames[row.ImageID]
 		rows = append(rows, row)
 	}
 	n, err := s.Repo.ReplaceInstances(ctx, id, rows, s.now(), list.Complete)

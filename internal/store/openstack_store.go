@@ -18,7 +18,11 @@ import (
 // this machine", not "who is a controller" — so the rows are folded back into
 // one record per host here rather than in every caller.
 type OpenStackHost struct {
-	Hostname  string `json:"hostname"`
+	Hostname string `json:"hostname"`
+	// IP is the host's primary inventory address — how somebody reaches the
+	// machine a probe row describes. Empty for a capability row whose host has
+	// left the inventory.
+	IP        string `json:"ip,omitempty"`
 	DC        string `json:"dc,omitempty"`
 	HostState string `json:"host_state"` // active | maintenance | broken | retired
 
@@ -130,7 +134,7 @@ func openStackHostsOn(ctx context.Context, db rowQuerier) ([]OpenStackHost, erro
 	rows, err := queryAndCollect(ctx, db, `
 		SELECT c.hostname, c.role, c.detected, c.active, c.components, c.details,
 		       c.last_error, c.observed_at, c.pass_id,
-		       coalesce(s.dc,''), coalesce(s.state,'active')
+		       coalesce(s.dc,''), coalesce(s.state,'active'), coalesce(host(s.ip),'')
 		FROM server_capabilities c
 		LEFT JOIN servers s ON s.hostname = c.hostname
 		WHERE c.kind = $1
@@ -151,13 +155,14 @@ type capabilityRow struct {
 	Capability
 	DC        string
 	HostState string
+	IP        string
 }
 
 func scanCapabilityRow(r pgx.Rows) (capabilityRow, error) {
 	var row capabilityRow
 	var comps, details []byte
 	if err := r.Scan(&row.Hostname, &row.Role, &row.Detected, &row.Active, &comps, &details,
-		&row.LastError, &row.ObservedAt, &row.PassID, &row.DC, &row.HostState); err != nil {
+		&row.LastError, &row.ObservedAt, &row.PassID, &row.DC, &row.HostState, &row.IP); err != nil {
 		return row, err
 	}
 	// A row with malformed JSON still says which host holds which role, which is

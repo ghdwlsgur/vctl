@@ -148,3 +148,43 @@ func TestVMTargetViaBuildsTheTwoHops(t *testing.T) {
 		t.Error("direct must still be tried first: a VPN that routes the tenant range skips the hop")
 	}
 }
+
+// The walk advances only past an authentication refusal: a route that is down
+// answers the same for every user, and retrying a different name over it
+// learns nothing while costing a certificate per try.
+func TestTryLoginUsersAdvancesOnlyPastAuthRefusals(t *testing.T) {
+	authErr := errors.New("x handshake: ssh: unable to authenticate, attempted methods [none publickey]")
+
+	tried := []string{}
+	var toldRejected, toldNext string
+	used, err := TryLoginUsers([]string{"root", "ubuntu"}, func(u string) error {
+		tried = append(tried, u)
+		if u == "root" {
+			return authErr
+		}
+		return nil
+	}, func(u, next string) { toldRejected, toldNext = u, next })
+	if used != "ubuntu" || err != nil || len(tried) != 2 {
+		t.Fatalf("used=%q err=%v tried=%v", used, err, tried)
+	}
+	if toldRejected != "root" || toldNext != "ubuntu" {
+		t.Errorf("rejected callback got (%q, %q)", toldRejected, toldNext)
+	}
+
+	// A network failure stops the walk where it stands.
+	netErr := errors.New("dial tcp 10.0.0.5:22: i/o timeout")
+	tried = nil
+	used, err = TryLoginUsers([]string{"root", "ubuntu"}, func(u string) error {
+		tried = append(tried, u)
+		return netErr
+	}, nil)
+	if used != "root" || !errors.Is(err, netErr) || len(tried) != 1 {
+		t.Fatalf("network error: used=%q err=%v tried=%v", used, err, tried)
+	}
+
+	// Every candidate refusing returns the last refusal, as itself.
+	used, err = TryLoginUsers([]string{"root", "ubuntu"}, func(string) error { return authErr }, nil)
+	if used != "ubuntu" || !errors.Is(err, authErr) {
+		t.Fatalf("all refused: used=%q err=%v", used, err)
+	}
+}

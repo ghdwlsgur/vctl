@@ -65,6 +65,11 @@ func (novaCloud) Instances(ctx context.Context, c openstackapi.Credentials, inse
 		out.Warnings = append(out.Warnings, fmt.Errorf("project names: %w", err))
 	}
 	out.ProjectNames = names
+	images, err := client.ImageNames(ctx)
+	if err != nil {
+		out.Warnings = append(out.Warnings, fmt.Errorf("image names: %w", err))
+	}
+	out.ImageNames = images
 	return out, nil
 }
 
