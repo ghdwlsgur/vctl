@@ -126,8 +126,11 @@ func TestVMShowSaysWhenSSHWillRefuse(t *testing.T) {
 	if strings.Contains(out, "vctl ssh --vm "+v.InstanceID) {
 		t.Errorf("offered a command that will be refused:\n%s", out)
 	}
-	if !strings.Contains(out, "will refuse") {
-		t.Errorf("did not say ssh will refuse:\n%s", out)
+	if !strings.Contains(out, "refuses when none does") {
+		t.Errorf("did not say when ssh will refuse:\n%s", out)
+	}
+	if !strings.Contains(out, "hop through") {
+		t.Errorf("did not mention the tenant-network hop:\n%s", out)
 	}
 	// And it points at the door that does not pretend to know.
 	if !strings.Contains(out, "vctl ssh <user>@<addr>") {

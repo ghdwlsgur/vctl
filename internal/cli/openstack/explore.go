@@ -14,6 +14,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
+	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -112,10 +113,18 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 	// audited path; wiring anything rawer here would open an unrecorded door.
 	conn := cmdkit.NewConnector(a)
 	nets := a.Cfg.OperatorNetworks // the loaded config, not a per-command re-parse
-	m.execVM = func(v *store.Instance, user, command string) (string, int, error) {
-		t, err := access.VMTarget(NameOrID(*v), v.Addresses, access.VMPolicy{
-			User: user, CARole: a.Cfg.CARole, OperatorNets: nets,
-		})
+	m.execVM = func(v *store.Instance, r vmRoute, user, command string) (string, int, error) {
+		p := access.VMPolicy{User: user, CARole: a.Cfg.CARole, OperatorNets: nets}
+		var t *sshc.Target
+		var err error
+		if r.via != nil {
+			// The model found the tenant door and its hop; the dialer still
+			// tries the door directly first, so a VPN that routes the tenant
+			// range skips the hop.
+			t = access.VMTargetVia(NameOrID(*v), r.tenantAddr, NameOrID(*r.via), r.viaAddr, p)
+		} else {
+			t, err = access.VMTarget(NameOrID(*v), v.Addresses, p)
+		}
 		if err != nil {
 			return "", 0, err
 		}

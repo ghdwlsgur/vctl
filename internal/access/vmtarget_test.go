@@ -1,6 +1,7 @@
 package access
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -110,5 +111,40 @@ func TestVMTargetSeparatesNoAddressFromNoUsableAddress(t *testing.T) {
 	}
 	if errNone.Error() == errTenant.Error() {
 		t.Errorf("both refusals read the same: %q", errNone)
+	}
+}
+
+// The tenant-only refusal is typed, because a caller that knows a safe hop
+// (openstack.TenantJump) recovers from exactly this error and no other — a
+// missing user or a VM with no address at all must not be "fixed" by jumping.
+func TestTheTenantOnlyRefusalIsTyped(t *testing.T) {
+	_, err := VMTarget("vm", []store.InstanceAddress{{Address: "10.3.3.17"}}, VMPolicy{User: "ubuntu"})
+	if !errors.Is(err, ErrNoVouchedAddress) {
+		t.Fatalf("tenant-only refusal is not ErrNoVouchedAddress: %v", err)
+	}
+	_, err = VMTarget("vm", nil, VMPolicy{User: "ubuntu"})
+	if errors.Is(err, ErrNoVouchedAddress) {
+		t.Error("no-address refusal wrongly matches ErrNoVouchedAddress")
+	}
+	_, err = VMTarget("vm", []store.InstanceAddress{{Address: "10.3.3.17"}}, VMPolicy{})
+	if errors.Is(err, ErrNoVouchedAddress) {
+		t.Error("missing-user refusal wrongly matches ErrNoVouchedAddress")
+	}
+}
+
+// VMTargetVia states the hop explicitly: tenant door as the target, the
+// vouched sibling as the jump, one identity across both hops.
+func TestVMTargetViaBuildsTheTwoHops(t *testing.T) {
+	tgt := VMTargetVia("worker-1", "10.3.3.17", "worker-2", "203.0.113.9",
+		VMPolicy{User: "ubuntu", CARole: "vm"})
+	if tgt.Addr != "10.3.3.17:22" || tgt.User != "ubuntu" || tgt.Role != "vm" {
+		t.Fatalf("target hop wrong: %+v", tgt)
+	}
+	if tgt.Jump == nil || tgt.Jump.Addr != "203.0.113.9:22" || tgt.Jump.Name != "worker-2" ||
+		tgt.Jump.User != "ubuntu" || tgt.Jump.Role != "vm" {
+		t.Fatalf("jump hop wrong: %+v", tgt.Jump)
+	}
+	if tgt.SkipDirect {
+		t.Error("direct must still be tried first: a VPN that routes the tenant range skips the hop")
 	}
 }
