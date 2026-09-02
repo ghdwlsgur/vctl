@@ -40,7 +40,34 @@ var (
 	// Not muted, unlike everything else on that line: a refresh that failed is
 	// the reason the age beside it stopped moving.
 	exploreWarnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	// The program's name as a badge rather than a word: the one block of color
+	// on the frame, so the eye lands on the top-left first.
+	exploreBadgeStyle = lipgloss.NewStyle().Bold(true).
+				Foreground(lipgloss.Color("232")).Background(lipgloss.Color("39")).Padding(0, 1)
+	// The focused pane's heading. Underlined as well as accented, because the
+	// two headings are far apart and a color difference alone asks the reader
+	// to compare across the screen.
+	exploreActiveHeadStyle = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color("39"))
 )
+
+// colorless is a terminal that shows no styling — piped output, NO_COLOR, a
+// dumb TERM. The selection band below writes raw SGR sequences, which such a
+// terminal would print as garbage, so it is skipped and the cursor marker
+// carries the selection alone.
+var colorless = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("x") == "x"
+
+// selectionBand paints the focused row's background so the cursor reads as a
+// band across the pane rather than two characters at its edge. Styled cells
+// end with their own SGR reset, each of which would end the band with them, so
+// the band is re-armed after every reset the row carries.
+func selectionBand(s string, width int) string {
+	if colorless {
+		return s
+	}
+	const bg = "\x1b[48;5;237m"
+	s = ui.PadRight(s, width)
+	return bg + strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+bg) + "\x1b[0m"
+}
 
 // bodyHeight is the number of lines the panes get.
 func (m exploreModel) bodyHeight() int {
@@ -119,7 +146,7 @@ func (m exploreModel) titleBar() string {
 	for _, vs := range m.data.VMs {
 		vms += len(liveInstances(vs))
 	}
-	head := exploreTitleStyle.Render("OPENSTACK")
+	head := exploreBadgeStyle.Render("OPENSTACK")
 	detail := fmt.Sprintf("%d farms · %d hosts · %d VMs · %s",
 		len(m.data.Farms), hosts, vms, m.freshness())
 	line := head + "  " + ui.Muted(detail)
@@ -178,7 +205,7 @@ func (m exploreModel) farmPaneLines() []string {
 		count := fmt.Sprintf("%dH %dV", len(m.data.Hosts[f.ID]), len(liveInstances(m.data.VMs[f.ID])))
 		nameWidth := max(6, farmPaneWidth-lipgloss.Width(count)-3)
 		text := ui.PadRight(ui.Truncate(name, nameWidth), nameWidth) + " " + ui.Muted(count)
-		out = append(out, m.cursorLine(text, i == clampIndex(m.farmCur, len(farms)), m.focus == paneFarms))
+		out = append(out, m.cursorLine(text, i == clampIndex(m.farmCur, len(farms)), m.focus == paneFarms, farmPaneWidth))
 	}
 	if len(farms) == 0 {
 		out = append(out, ui.Muted("  no match"))
@@ -188,18 +215,19 @@ func (m exploreModel) farmPaneLines() []string {
 
 func paneHeading(s string, active bool) string {
 	if active {
-		return exploreTitleStyle.Render(s)
+		return exploreActiveHeadStyle.Render(s)
 	}
 	return exploreHeadingStyle.Render(s)
 }
 
 // cursorLine marks the selected row, and marks it differently in the pane that
 // is not taking keys — otherwise two rows look equally selected and the arrow
-// keys appear to move the wrong one.
-func (m exploreModel) cursorLine(text string, selected, focused bool) string {
+// keys appear to move the wrong one. The focused selection is a band the width
+// of its pane; the other pane's remembered selection is only a marker.
+func (m exploreModel) cursorLine(text string, selected, focused bool, width int) string {
 	switch {
 	case selected && focused:
-		return exploreCursorStyle.Render("› ") + exploreFocusStyle.Render(text)
+		return selectionBand(exploreCursorStyle.Render("› ")+exploreFocusStyle.Render(text), width)
 	case selected:
 		return exploreDimStyle.Render("· ") + exploreFocusStyle.Render(text)
 	default:
@@ -307,7 +335,7 @@ func (m exploreModel) rowPaneLines() []string {
 	end := min(m.rowTop+m.rowsHeight(), len(cells))
 	for i := m.rowTop; i < end; i++ {
 		out = append(out, m.cursorLine(cols.render(cells[i], width-2),
-			i == clampIndex(m.rowCur, len(cells)), m.focus == paneRows))
+			i == clampIndex(m.rowCur, len(cells)), m.focus == paneRows, width))
 	}
 	// The count is in the heading, so a partial window is visible there; this
 	// says which part. The slot for it is reserved in rowsHeight, so it never
@@ -366,9 +394,19 @@ func (m exploreModel) detailView() string {
 	// The freshness comes with it. The title bar that carried it is not on
 	// screen here, and this is the view that shows a VM's addresses and offers
 	// the line for reaching one — where somebody stops reading and starts
-	// acting on what is in front of them.
-	head := exploreTitleStyle.Render("▌ " + ui.Truncate(m.detailOf, 60))
-	b.WriteString(m.clip(head+"  "+ui.Muted(m.freshness())) + "\n")
+	// acting on what is in front of them. A rule with the farm and the age,
+	// not the name again: the detail's own first line already says the name,
+	// and the same words twice in two lines read as a rendering fault.
+	crumb := m.freshness()
+	if f, ok := m.currentFarm(); ok {
+		crumb = farmMenuTitle(f) + " · " + crumb
+	}
+	fill := m.width - lipgloss.Width(crumb) - 4
+	if fill < 0 {
+		fill = 0
+	}
+	b.WriteString(m.clip(exploreDimStyle.Render("─ ")+ui.Muted(crumb)+
+		exploreDimStyle.Render(" "+strings.Repeat("─", fill))) + "\n")
 	h := m.bodyHeight() + 1
 	consoleH := 0
 	if m.console != nil {
@@ -395,7 +433,7 @@ func (m exploreModel) detailView() string {
 		b.WriteString(m.clip(m.connectPromptLine()))
 		return b.String()
 	}
-	b.WriteString(m.clip(ui.Muted(m.detailHint(h, end))))
+	b.WriteString(m.clip(m.detailHint(h, end)))
 	return b.String()
 }
 
@@ -410,16 +448,20 @@ func (m exploreModel) connectPromptLine() string {
 // is open, where the keys mean different things.
 func (m exploreModel) detailHint(h, end int) string {
 	if m.console != nil {
-		return "enter run · esc close console · ^C clear line"
+		return strings.Join(hintKeys(
+			[2]string{"enter", "run"}, [2]string{"esc", "close console"}, [2]string{"^C", "clear line"},
+		), hintSep)
 	}
-	hint := "esc back · ↑↓ scroll · p keep on exit · q close"
-	if m.detailVM != nil {
-		hint = "enter console · c shell · " + hint
-	}
+	var pairs [][2]string
 	if len(m.detail) > h {
-		hint = fmt.Sprintf("%d–%d of %d · ", m.detailTop+1, end, len(m.detail)) + hint
+		pairs = append(pairs, [2]string{"", fmt.Sprintf("%d–%d of %d", m.detailTop+1, end, len(m.detail))})
 	}
-	return hint
+	if m.detailVM != nil {
+		pairs = append(pairs, [2]string{"enter", "console"}, [2]string{"c", "shell"})
+	}
+	pairs = append(pairs, [2]string{"esc", "back"}, [2]string{"↑↓", "scroll"},
+		[2]string{"p", "keep on exit"}, [2]string{"q", "close"})
+	return strings.Join(hintKeys(pairs...), hintSep)
 }
 
 // consolePane draws the inline console: a rule, the scrollback tail, and the
@@ -428,12 +470,15 @@ func (m exploreModel) detailHint(h, end int) string {
 func (m exploreModel) consolePane(height int) string {
 	c := m.console
 	var b strings.Builder
-	title := fmt.Sprintf("─ %s@%s ", c.user, ui.Truncate(NameOrID(*c.vm), 40))
-	rule := m.width - lipgloss.Width(title) - 1
+	// The label sits in the rule but not in the rule's gray: user@vm is what
+	// says where these commands are landing, and it has to survive a glance.
+	label := c.user + "@" + ui.Truncate(NameOrID(*c.vm), 40)
+	rule := m.width - lipgloss.Width(label) - 4
 	if rule < 0 {
 		rule = 0
 	}
-	b.WriteString(m.clip(exploreDimStyle.Render(title+strings.Repeat("─", rule))) + "\n")
+	b.WriteString(m.clip(exploreDimStyle.Render("─ ")+exploreHeadingStyle.Render(label)+
+		exploreDimStyle.Render(" "+strings.Repeat("─", rule))) + "\n")
 
 	rows := height - 2 // rule + prompt line
 	start := max(0, len(c.lines)-rows)
@@ -451,6 +496,24 @@ func (m exploreModel) consolePane(height int) string {
 	return b.String()
 }
 
+// hintKeys renders a key line — "tab switch · q quit" — with the keys in the
+// accent and the words muted: the keys are what somebody is scanning for, and
+// a line that is all one gray makes them read the words to find them.
+func hintKeys(pairs ...[2]string) []string {
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		if p[0] == "" {
+			out = append(out, ui.Muted(p[1]))
+			continue
+		}
+		out = append(out, exploreCursorStyle.Render(p[0])+" "+ui.Muted(p[1]))
+	}
+	return out
+}
+
+// hintSep joins hint entries. Muted like the words, so the dots recede.
+var hintSep = ui.Muted(" · ")
+
 func (m exploreModel) footer() string {
 	if m.typing {
 		return exploreCursorStyle.Render("/"+m.activeFilter()) +
@@ -462,14 +525,15 @@ func (m exploreModel) footer() string {
 	// Dropped from the middle out: the two ends are the ones somebody needs
 	// without being told, and a footer cut in half by the terminal edge tells
 	// them nothing at all.
-	keys := []string{
-		"tab switch", "↑↓ move", "enter open", "c connect", "v VMs", "s hosts",
-		"/ filter", "r refresh", "q quit",
-	}
-	for len(keys) > 2 && lipgloss.Width(strings.Join(keys, " · ")) > m.width {
+	keys := hintKeys(
+		[2]string{"tab", "switch"}, [2]string{"↑↓", "move"}, [2]string{"enter", "open"},
+		[2]string{"c", "connect"}, [2]string{"v", "VMs"}, [2]string{"s", "hosts"},
+		[2]string{"/", "filter"}, [2]string{"r", "refresh"}, [2]string{"q", "quit"},
+	)
+	for len(keys) > 2 && lipgloss.Width(strings.Join(keys, hintSep)) > m.width {
 		keys = append(keys[:len(keys)-2], keys[len(keys)-1])
 	}
-	return ui.Muted(strings.Join(keys, " · "))
+	return strings.Join(keys, hintSep)
 }
 
 // liveInstances drops the VMs nova no longer lists.
