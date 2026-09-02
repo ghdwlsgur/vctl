@@ -1076,3 +1076,55 @@ func TestConsoleIgnoresEnterWhileRunning(t *testing.T) {
 		t.Fatalf("input consumed while running: %q", m.console.input)
 	}
 }
+
+// Up and down walk the submitted commands the way a shell does: up recalls,
+// down returns toward the fresh line, and consecutive duplicates collapse.
+func TestConsoleHistoryWalksLikeAShell(t *testing.T) {
+	m := testExploreModel()
+	m.execVM = func(*store.Instance, string, string) (string, int, error) { return "", 0, nil }
+	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "root"}
+	m.detail = []string{"detail"}
+
+	submit := func(cmd string) {
+		m.console.input = cmd
+		out, c := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m = out.(exploreModel)
+		if c != nil {
+			out, _ = m.Update(c().(consoleOutput)) // let the fake finish
+			m = out.(exploreModel)
+		}
+	}
+	submit("uptime")
+	submit("uptime") // consecutive duplicate collapses
+	submit("df -h")
+	if got := len(m.console.history); got != 2 {
+		t.Fatalf("history = %d entries, want 2", got)
+	}
+
+	up := tea.KeyMsg{Type: tea.KeyUp}
+	down := tea.KeyMsg{Type: tea.KeyDown}
+	step := func(k tea.KeyMsg) {
+		out, _ := m.Update(k)
+		m = out.(exploreModel)
+	}
+	step(up)
+	if m.console.input != "df -h" {
+		t.Fatalf("first up = %q", m.console.input)
+	}
+	step(up)
+	if m.console.input != "uptime" {
+		t.Fatalf("second up = %q", m.console.input)
+	}
+	step(up) // at the oldest entry: stays
+	if m.console.input != "uptime" {
+		t.Fatalf("up past oldest = %q", m.console.input)
+	}
+	step(down)
+	if m.console.input != "df -h" {
+		t.Fatalf("down = %q", m.console.input)
+	}
+	step(down) // past the newest: back to a fresh line
+	if m.console.input != "" {
+		t.Fatalf("down past newest = %q, want empty", m.console.input)
+	}
+}
