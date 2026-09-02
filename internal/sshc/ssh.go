@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -359,4 +360,17 @@ func shell(client *ssh.Client) error {
 		return nil
 	}
 	return err
+}
+
+// IsAuthFailure reports whether an error is the server refusing the identity —
+// the certificate's user does not exist there, or the CA is not trusted — as
+// opposed to the network or the handshake mechanics failing. Callers walking
+// login-user candidates advance on this and only this: retrying a different
+// user over a dead route learns nothing and costs a certificate per try.
+//
+// A substring of x/crypto/ssh's error, because the library exposes no typed
+// value for it; the string is stable across the versions this module has
+// vendored and is asserted by a test.
+func IsAuthFailure(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unable to authenticate")
 }

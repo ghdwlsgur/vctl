@@ -752,6 +752,53 @@ func TestNoRenderedLineOverflowsTheTerminal(t *testing.T) {
 	}
 }
 
+// The sidebar sizes itself to the longest deployment name, and the row under
+// the cursor gives its counts up when the whole name needs the room — reading
+// a truncated name meant moving to it, so the row the cursor is on is exactly
+// the one that must not truncate. The counts come back when the cursor leaves.
+func TestFarmPaneShowsTheWholeSelectedName(t *testing.T) {
+	const long = "incheon-openstack-aio-production"
+	m := testExploreModel()
+	m.data.Farms[0].Name = long
+	m.width, m.height = 110, 12
+
+	lines := strings.Split(ui.StripANSI(m.View()), "\n")
+	var found bool
+	for _, ln := range lines {
+		if !strings.Contains(ln, long) || strings.Contains(ln, "VMS") {
+			continue // the right pane's heading also carries the name
+		}
+		found = true
+		if strings.Contains(ln, "2H 2V") {
+			t.Errorf("the counts crowd the full name: %q", ln)
+		}
+	}
+	if !found {
+		t.Fatalf("the selected farm's whole name is not on screen:\n%s", strings.Join(lines, "\n"))
+	}
+	// The unselected farm keeps its counts on the same screen.
+	if !strings.Contains(strings.Join(lines, "\n"), "1H 1V") {
+		t.Error("the other farm lost its counts")
+	}
+	// And the cursor moving away brings the first farm's counts back.
+	m.farmCur = 1
+	if got := ui.StripANSI(m.View()); !strings.Contains(got, "2H 2V") {
+		t.Errorf("counts did not come back after the cursor left:\n%s", got)
+	}
+}
+
+// A host row carries the address somebody will reach the machine on. The rest
+// of the row describes what the host is; the IP is how to get there.
+func TestHostRowsCarryTheInventoryIP(t *testing.T) {
+	m := testExploreModel()
+	m.data.Hosts["10.0.0.1:5000"][0].IP = "192.168.201.31"
+	m.kind = kindHosts
+	m.focus = paneRows
+	if got := ui.StripANSI(m.View()); !strings.Contains(got, "192.168.201.31") {
+		t.Errorf("the host pane shows no IP:\n%s", got)
+	}
+}
+
 // The focused row is a band across its pane, not two characters at its edge —
 // and the band has to survive the row's own styling: every styled cell ends
 // with a reset, each of which would end the band with it.
@@ -998,9 +1045,9 @@ func TestDetailEnterOpensTheInlineConsole(t *testing.T) {
 	m := testExploreModel()
 	m.defaultUser = "rocky"
 	var gotUser, gotCmd string
-	m.execVM = func(v *store.Instance, _ vmRoute, user, command string) (string, int, error) {
+	m.execVM = func(v *store.Instance, _ vmRoute, user, command string) vmExecResult {
 		gotUser, gotCmd = user, command
-		return "13:37:00 up 47 days\n", 0, nil
+		return vmExecResult{out: "13:37:00 up 47 days\n", user: user}
 	}
 
 	m = keys(m, "tab", "enter") // open the first VM's detail
@@ -1118,6 +1165,31 @@ func TestConsoleExplainsAPrincipalRefusal(t *testing.T) {
 	}
 }
 
+// When the executor's fallback walk lands on another login user, the pane
+// follows it — once, with a line saying so — because every command after that
+// runs as the new user and the prompt must not claim otherwise. A walk that
+// failed everywhere changes nothing.
+func TestConsoleFollowsTheFallbackUser(t *testing.T) {
+	m := testExploreModel()
+	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "root"}
+	out, _ := m.Update(consoleOutput{out: "ok\n", user: "rocky"})
+	m = out.(exploreModel)
+	if m.console.user != "rocky" {
+		t.Fatalf("console user = %q, want the fallback user", m.console.user)
+	}
+	if tail := strings.Join(m.console.lines, "\n"); !strings.Contains(tail, "continuing as rocky") {
+		t.Errorf("the switch happened silently:\n%s", tail)
+	}
+
+	// Failure keeps the pane's user: nothing was established about another one.
+	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "root"}
+	out, _ = m.Update(consoleOutput{user: "ubuntu", err: fmt.Errorf("ssh: unable to authenticate")})
+	m = out.(exploreModel)
+	if m.console.user != "root" {
+		t.Errorf("a failed walk moved the pane to %q", m.console.user)
+	}
+}
+
 // ^C at the console prompt abandons the line first and only closes the pane
 // when there is nothing to abandon — a shell reflex, not a quit.
 func TestConsoleCtrlCClearsBeforeClosing(t *testing.T) {
@@ -1140,7 +1212,7 @@ func TestConsoleCtrlCClearsBeforeClosing(t *testing.T) {
 // second one.
 func TestConsoleIgnoresEnterWhileRunning(t *testing.T) {
 	m := testExploreModel()
-	m.execVM = func(*store.Instance, vmRoute, string, string) (string, int, error) { return "", 0, nil }
+	m.execVM = func(*store.Instance, vmRoute, string, string) vmExecResult { return vmExecResult{} }
 	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "root", input: "uptime", running: true}
 	m.detail = []string{"detail"}
 	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1157,7 +1229,7 @@ func TestConsoleIgnoresEnterWhileRunning(t *testing.T) {
 // down returns toward the fresh line, and consecutive duplicates collapse.
 func TestConsoleHistoryWalksLikeAShell(t *testing.T) {
 	m := testExploreModel()
-	m.execVM = func(*store.Instance, vmRoute, string, string) (string, int, error) { return "", 0, nil }
+	m.execVM = func(*store.Instance, vmRoute, string, string) vmExecResult { return vmExecResult{} }
 	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "root"}
 	m.detail = []string{"detail"}
 
@@ -1243,9 +1315,9 @@ func TestConsoleHandsTheExecutorTheTenantHop(t *testing.T) {
 		Addresses: []store.InstanceAddress{{NetworkName: "tenant-a", Address: "10.10.0.7"}},
 	}
 	var got vmRoute
-	m.execVM = func(_ *store.Instance, r vmRoute, _, _ string) (string, int, error) {
+	m.execVM = func(_ *store.Instance, r vmRoute, _, _ string) vmExecResult {
 		got = r
-		return "", 0, nil
+		return vmExecResult{}
 	}
 	m.console = &exploreConsole{vm: &tenantOnly, user: "ubuntu"}
 	m.consoleRun("ls")()

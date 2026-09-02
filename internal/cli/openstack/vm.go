@@ -702,8 +702,15 @@ func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets [
 	if v.FlavorID != "" {
 		rows = append(rows, ui.KV{Key: "Flavor", Value: v.FlavorID})
 	}
-	if v.ImageID != "" {
-		rows = append(rows, ui.KV{Key: "Image", Value: v.ImageID})
+	if v.ImageID != "" || v.ImageName != "" {
+		// The name leads when Glance gave one: it is what implies the fallback
+		// login user, and a reader checking why a connection chose "rocky"
+		// should find the answer on this row.
+		img := v.ImageID
+		if v.ImageName != "" {
+			img = v.ImageName + ui.Muted("  "+v.ImageID)
+		}
+		rows = append(rows, ui.KV{Key: "Image", Value: img})
 	}
 	if v.CreatedAt != nil {
 		rows = append(rows, ui.KV{Key: "Created", Value: v.CreatedAt.Format(time.RFC3339)})

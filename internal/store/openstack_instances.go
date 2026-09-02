@@ -28,6 +28,10 @@ type Instance struct {
 
 	FlavorID string `json:"flavor_id,omitempty"`
 	ImageID  string `json:"image_id,omitempty"`
+	// ImageName is what the last collection saw the image called in Glance.
+	// Empty means the collector could not ask, not that the VM has no image.
+	// It is also what implies the fallback login user — see openstack.LoginCandidates.
+	ImageName string `json:"image_name,omitempty"`
 
 	CreatedAt  *time.Time `json:"created_at,omitempty"`
 	UpdatedAt  *time.Time `json:"updated_at,omitempty"`
@@ -79,9 +83,9 @@ func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []In
 		batch.Queue(`
 			INSERT INTO openstack_instances
 				(deployment_id, instance_id, project_id, project_name, name, status, power_state, task_state,
-				 availability_zone, hypervisor_hostname, flavor_id, image_id,
+				 availability_zone, hypervisor_hostname, flavor_id, image_id, image_name,
 				 created_at, updated_at, observed_at, missing_since)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, NULL)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, NULL)
 			ON CONFLICT (deployment_id, instance_id) DO UPDATE SET
 				project_id=EXCLUDED.project_id,
 				-- Only when the collection had an answer. A run that could not
@@ -93,12 +97,14 @@ func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []In
 				availability_zone=EXCLUDED.availability_zone,
 				hypervisor_hostname=EXCLUDED.hypervisor_hostname,
 				flavor_id=EXCLUDED.flavor_id, image_id=EXCLUDED.image_id,
+				-- Same contract as project_name: Glance silence keeps the old answer.
+				image_name=COALESCE(NULLIF(EXCLUDED.image_name, ''), openstack_instances.image_name),
 				created_at=EXCLUDED.created_at, updated_at=EXCLUDED.updated_at,
 				observed_at=EXCLUDED.observed_at,
 				-- Coming back clears it, so the column always means "missing now".
 					missing_since=NULL`,
 			deployment, i.InstanceID, i.ProjectID, i.ProjectName, i.Name, i.Status, i.PowerState, i.TaskState,
-			i.AvailabilityZone, i.HypervisorHostname, i.FlavorID, i.ImageID,
+			i.AvailabilityZone, i.HypervisorHostname, i.FlavorID, i.ImageID, i.ImageName,
 			i.CreatedAt, i.UpdatedAt, at)
 		done = append(done, false)
 		// Addresses are replaced wholesale rather than merged: a VM that loses a
@@ -226,7 +232,7 @@ func (s *Store) Instances(ctx context.Context, f InstanceFilter) ([]Instance, er
 
 func instancesOn(ctx context.Context, db rowQuerier, f InstanceFilter) ([]Instance, error) {
 	q := `SELECT deployment_id, instance_id, project_id, project_name, name, status, power_state, task_state,
-		 availability_zone, hypervisor_hostname, flavor_id, image_id,
+		 availability_zone, hypervisor_hostname, flavor_id, image_id, image_name,
 		 created_at, updated_at, observed_at, missing_since
 		FROM openstack_instances WHERE 1=1`
 	var args []any
@@ -334,7 +340,7 @@ func scanInstance(r pgx.Rows) (Instance, error) {
 	var i Instance
 	err := r.Scan(&i.DeploymentID, &i.InstanceID, &i.ProjectID, &i.ProjectName, &i.Name,
 		&i.Status, &i.PowerState, &i.TaskState,
-		&i.AvailabilityZone, &i.HypervisorHostname, &i.FlavorID, &i.ImageID,
+		&i.AvailabilityZone, &i.HypervisorHostname, &i.FlavorID, &i.ImageID, &i.ImageName,
 		&i.CreatedAt, &i.UpdatedAt, &i.ObservedAt, &i.MissingSince)
 	return i, err
 }

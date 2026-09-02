@@ -777,6 +777,7 @@ func openstackHostCmd(env cmdkit.Env) *cobra.Command {
 func renderOpenStackHost(w io.Writer, h store.OpenStackHost, now time.Time) {
 	ui.Section(w, h.Hostname)
 	rows := []ui.KV{
+		{Key: "IP", Value: ui.OrDash(h.IP)},
 		{Key: "DC", Value: ui.OrDash(h.DC)},
 		{Key: "Host state", Value: h.HostState, State: hostStateUI(h.HostState)},
 		{Key: "OpenStack", Value: detectedText(h), State: detectedState(h)},

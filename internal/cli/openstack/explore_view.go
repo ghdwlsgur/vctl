@@ -24,12 +24,31 @@ import (
 // clamping to store — a pointer receiver here would let a width change edit the
 // selection it is drawing.
 
-// Layout constants. The left pane is fixed because a deployment name is short
-// and predictable; every column that varies is on the right.
+// Layout constants.
 const (
-	farmPaneWidth = 26
-	chromeLines   = 5 // title, breathing room, pane heading, column heading, footer
+	// The sidebar sizes itself to the longest deployment name between these
+	// bounds — see farmPaneWidth. The floor keeps the counts column steady on
+	// short names; the ceiling keeps one long name from halving the row pane.
+	farmPaneMinWidth = 26
+	farmPaneMaxWidth = 40
+	chromeLines      = 5 // title, breathing room, pane heading, column heading, footer
 )
+
+// farmPaneWidth is the sidebar's width for this reading: wide enough for every
+// deployment's whole name where the bounds allow. Sized from all farms rather
+// than the filtered ones, so typing a filter does not make the panes jump.
+func (m exploreModel) farmPaneWidth() int {
+	w := farmPaneMinWidth
+	for _, f := range m.data.Farms {
+		if n := lipgloss.Width(farmMenuTitle(f)) + 2; n > w {
+			w = n
+		}
+	}
+	w = min(w, farmPaneMaxWidth)
+	// Never more than half the screen: on a narrow terminal the rows are what
+	// somebody is here for.
+	return min(w, max(farmPaneMinWidth, m.width/2))
+}
 
 var (
 	exploreTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
@@ -56,17 +75,30 @@ var (
 // carries the selection alone.
 var colorless = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("x") == "x"
 
-// selectionBand paints the focused row's background so the cursor reads as a
-// band across the pane rather than two characters at its edge. Styled cells
-// end with their own SGR reset, each of which would end the band with them, so
-// the band is re-armed after every reset the row carries.
-func selectionBand(s string, width int) string {
+// band paints a background across width columns. Styled cells end with their
+// own SGR reset, each of which would end the band with them, so the band is
+// re-armed after every reset the row carries. Nesting works because a later
+// SGR wins: a selection band laid over a pane's ground keeps its own color.
+func band(s string, width int, bg string) string {
 	if colorless {
 		return s
 	}
-	const bg = "\x1b[48;5;237m"
 	s = ui.PadRight(s, width)
 	return bg + strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+bg) + "\x1b[0m"
+}
+
+// selectionBand is the focused row's background, so the cursor reads as a band
+// across the pane rather than two characters at its edge.
+func selectionBand(s string, width int) string {
+	return band(s, width, "\x1b[48;5;237m")
+}
+
+// farmPaneCell is the left pane's ground — a shade of its own, the way an
+// editor's file tree sits on a different surface than the buffer beside it.
+// Every left-pane line goes through it, empty filler included, so the pane
+// reads as a column rather than a ragged list.
+func farmPaneCell(s string, width int) string {
+	return band(s, width, "\x1b[48;5;235m")
 }
 
 // bodyHeight is the number of lines the panes get.
@@ -93,7 +125,7 @@ func (m exploreModel) rowsHeight() int {
 }
 
 func (m exploreModel) rowPaneWidth() int {
-	w := m.width - farmPaneWidth - 3
+	w := m.width - m.farmPaneWidth() - 3
 	if w < 20 {
 		return 20
 	}
@@ -108,10 +140,15 @@ func (m exploreModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.clip(m.titleBar()) + "\n\n")
 
+	paneW := m.farmPaneWidth()
 	farmLines := m.farmPaneLines()
 	rowLines := m.rowPaneLines()
 	for i := 0; i < m.bodyHeight()+1; i++ {
-		left := ""
+		// The left pane's ground extends past its last row — a sidebar is a
+		// column, and a background that stops where the list does reads as a
+		// rendering fault. farmPaneLines paints its own rows; the filler is
+		// painted here.
+		left := farmPaneCell("", paneW)
 		if i < len(farmLines) {
 			left = farmLines[i]
 		}
@@ -119,7 +156,7 @@ func (m exploreModel) View() string {
 		if i < len(rowLines) {
 			right = rowLines[i]
 		}
-		b.WriteString(m.clip(ui.PadRight(left, farmPaneWidth)+exploreDimStyle.Render(" │ ")+right) + "\n")
+		b.WriteString(m.clip(ui.PadRight(left, paneW)+exploreDimStyle.Render(" │ ")+right) + "\n")
 	}
 	b.WriteString(m.clip(m.footer()))
 	return b.String()
@@ -192,23 +229,42 @@ func (m exploreModel) freshness() string {
 
 func (m exploreModel) farmPaneLines() []string {
 	farms := m.visibleFarms()
+	paneW := m.farmPaneWidth()
 	title := "FARMS"
 	if m.farmFilter != "" {
 		title += " /" + m.farmFilter
 	}
-	out := []string{paneHeading(ui.Truncate(title, farmPaneWidth), m.focus == paneFarms)}
+	out := []string{farmPaneCell(" "+paneHeading(ui.Truncate(title, paneW-1), m.focus == paneFarms), paneW)}
 	for i, f := range farms {
 		name := f.Name
 		if name == "" {
 			name = f.ID
 		}
+		selected := i == clampIndex(m.farmCur, len(farms))
 		count := fmt.Sprintf("%dH %dV", len(m.data.Hosts[f.ID]), len(liveInstances(m.data.VMs[f.ID])))
-		nameWidth := max(6, farmPaneWidth-lipgloss.Width(count)-3)
-		text := ui.PadRight(ui.Truncate(name, nameWidth), nameWidth) + " " + ui.Muted(count)
-		out = append(out, m.cursorLine(text, i == clampIndex(m.farmCur, len(farms)), m.focus == paneFarms, farmPaneWidth))
+		avail := paneW - 2 // the cursor marker
+		var text string
+		switch {
+		case selected && lipgloss.Width(name)+1+lipgloss.Width(count) > avail:
+			// The row under the cursor shows its whole name; the counts give
+			// way and come back the moment the cursor moves on. Reading a
+			// truncated name means moving to it — the counts are then one
+			// glance away on the right pane's heading anyway.
+			text = ui.Truncate(name, avail)
+		default:
+			nameWidth := max(6, avail-lipgloss.Width(count)-1)
+			text = ui.PadRight(ui.Truncate(name, nameWidth), nameWidth) + " " + ui.Muted(count)
+		}
+		line := m.cursorLine(text, selected, m.focus == paneFarms, paneW)
+		if !(selected && m.focus == paneFarms) {
+			// The selection band paints its own row; everything else sits on
+			// the pane's ground.
+			line = farmPaneCell(line, paneW)
+		}
+		out = append(out, line)
 	}
 	if len(farms) == 0 {
-		out = append(out, ui.Muted("  no match"))
+		out = append(out, farmPaneCell(ui.Muted("  no match"), paneW))
 	}
 	return out
 }
@@ -250,8 +306,8 @@ var (
 		widths: []int{0, 16, 12, 19, 14},
 	}
 	hostColumns = exploreColumns{
-		titles: []string{"HOST", "ROLES", "RELEASE", "SEEN", ""},
-		widths: []int{0, 22, 9, 6, 18},
+		titles: []string{"HOST", "IP", "ROLES", "RELEASE", "SEEN", ""},
+		widths: []int{0, 15, 22, 9, 6, 18},
 	}
 )
 
@@ -363,6 +419,7 @@ func (m exploreModel) rowCells() (exploreColumns, [][]string) {
 		for _, h := range hosts {
 			out = append(out, []string{
 				h.Hostname,
+				ui.Muted(h.IP),
 				rolesSummary(h.Roles, false),
 				versionCell(h, false),
 				ageCell(h, now),
