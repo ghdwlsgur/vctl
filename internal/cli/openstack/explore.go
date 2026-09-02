@@ -50,6 +50,11 @@ func openstackExploreCmd(env cmdkit.Env) *cobra.Command {
 			"Opens from the last reading when there is one and refreshes behind the screen,\n" +
 			"so the first thing on screen is not an empty pane. The title bar says which it\n" +
 			"is showing and how old it is.\n\n" +
+			"VM addresses are colored by network — same color, same wire (project-scoped,\n" +
+			"the pair the tenant jump matches on). A dot after an address is a further\n" +
+			"network the VM holds a port on, in that network's color: a floating address\n" +
+			"whose color matches tenant-only rows is the door a connection to them hops\n" +
+			"through.\n\n" +
 			"Read-only, and it reads the database alone — nothing here contacts a farm's\n" +
 			"control plane. Each detail screen is the same renderer the individual command\n" +
 			"uses: `openstack host` and `vm show`.\n\n" +
