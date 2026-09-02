@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/cli/openstack"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/invcache"
+	osdomain "github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
@@ -311,11 +313,31 @@ func sshVM(ctx context.Context, env cmdkit.Env, selector, user, farm string, all
 		if user == "" {
 			user = a.Cfg.SSHDefaultUser
 		}
-		tgt, err := access.VMTarget(v.Name, v.Addresses, access.VMPolicy{
+		policyIn := access.VMPolicy{
 			User: user, CARole: a.Cfg.CARole, OperatorNets: a.Cfg.OperatorNetworks,
-		})
+		}
+		tgt, err := access.VMTarget(v.Name, v.Addresses, policyIn)
 		if err != nil {
-			return err
+			// Tenant-only is not always the end: a same-project sibling holding
+			// a port on the same tenant network is a hop this data does vouch
+			// for. The read is the database, never the stored reading — the
+			// sibling's address is about to be dialed.
+			if !errors.Is(err, access.ErrNoVouchedAddress) {
+				return err
+			}
+			siblings, serr := st.Instances(ctx, store.InstanceFilter{
+				DeploymentID: v.DeploymentID, ProjectIDs: []string{v.ProjectID},
+			})
+			if serr != nil {
+				return err
+			}
+			via, viaAddr, tenantAddr, ok := osdomain.TenantJump(v, siblings, a.Cfg.OperatorNetworks)
+			if !ok {
+				return fmt.Errorf("%w — and no ACTIVE VM on its tenant network carries one to jump through", err)
+			}
+			ui.Infof(os.Stderr, "%s is tenant-only — dialing %s directly, falling back through %s (%s)",
+				openstack.NameOrID(v), tenantAddr, openstack.NameOrID(*via), viaAddr)
+			tgt = access.VMTargetVia(v.Name, tenantAddr, openstack.NameOrID(*via), viaAddr, policyIn)
 		}
 		ui.Infof(os.Stderr, "connecting to %s (%s@%s) — VM in %s, project %s",
 			tgt.Name, tgt.User, tgt.Addr, v.DeploymentID, orUnknown(v.ProjectName))

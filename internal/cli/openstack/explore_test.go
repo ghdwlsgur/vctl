@@ -193,8 +193,11 @@ func testExploreModel() exploreModel {
 		VMs: map[string][]store.Instance{
 			"10.0.0.1:5000": {
 				{DeploymentID: "10.0.0.1:5000", InstanceID: "u-1", Name: "bastion", Status: "ACTIVE",
-					ProjectName: "platform", HypervisorHostname: "sre-srv-0001",
-					Addresses: []store.InstanceAddress{{Address: "10.10.0.5"}}},
+					ProjectID: "p-1", ProjectName: "platform", HypervisorHostname: "sre-srv-0001",
+					Addresses: []store.InstanceAddress{
+						{NetworkName: "tenant-a", Address: "10.10.0.5"},
+						{Address: "203.0.113.5", Type: "floating"},
+					}},
 				{DeploymentID: "10.0.0.1:5000", InstanceID: "u-2", Name: "quay-registry", Status: "ACTIVE",
 					ProjectName: "build", HypervisorHostname: "sre-srv-0002"},
 			},
@@ -945,7 +948,7 @@ func TestDetailEnterOpensTheInlineConsole(t *testing.T) {
 	m := testExploreModel()
 	m.defaultUser = "rocky"
 	var gotUser, gotCmd string
-	m.execVM = func(v *store.Instance, user, command string) (string, int, error) {
+	m.execVM = func(v *store.Instance, _ vmRoute, user, command string) (string, int, error) {
 		gotUser, gotCmd = user, command
 		return "13:37:00 up 47 days\n", 0, nil
 	}
@@ -1065,7 +1068,7 @@ func TestConsoleCtrlCClearsBeforeClosing(t *testing.T) {
 // second one.
 func TestConsoleIgnoresEnterWhileRunning(t *testing.T) {
 	m := testExploreModel()
-	m.execVM = func(*store.Instance, string, string) (string, int, error) { return "", 0, nil }
+	m.execVM = func(*store.Instance, vmRoute, string, string) (string, int, error) { return "", 0, nil }
 	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "root", input: "uptime", running: true}
 	m.detail = []string{"detail"}
 	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1082,7 +1085,7 @@ func TestConsoleIgnoresEnterWhileRunning(t *testing.T) {
 // down returns toward the fresh line, and consecutive duplicates collapse.
 func TestConsoleHistoryWalksLikeAShell(t *testing.T) {
 	m := testExploreModel()
-	m.execVM = func(*store.Instance, string, string) (string, int, error) { return "", 0, nil }
+	m.execVM = func(*store.Instance, vmRoute, string, string) (string, int, error) { return "", 0, nil }
 	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "root"}
 	m.detail = []string{"detail"}
 
@@ -1127,5 +1130,62 @@ func TestConsoleHistoryWalksLikeAShell(t *testing.T) {
 	step(down) // past the newest: back to a fresh line
 	if m.console.input != "" {
 		t.Fatalf("down past newest = %q, want empty", m.console.input)
+	}
+}
+
+// A VM nothing can dial gets its refusal before the login prompt, not after
+// the first command — a console on a machine with no route is a prompt lying
+// about where it goes. A tenant-only VM whose sibling can carry the hop still
+// opens, and the hop rides along to the executor.
+func TestConsoleRefusesBeforeThePromptWhenNothingCanDial(t *testing.T) {
+	m := testExploreModel()
+
+	unreachable := store.Instance{DeploymentID: "10.0.0.2:5000", InstanceID: "u-9", Name: "worker-1"}
+	m.startConnect(&unreachable, modeConsole)
+	if m.askingUser() {
+		t.Fatal("asked for a login user with no route to the VM")
+	}
+	if !strings.Contains(m.connectNote, "no floating or operator-network address") {
+		t.Fatalf("refusal does not say why: %q", m.connectNote)
+	}
+
+	tenantOnly := store.Instance{
+		DeploymentID: "10.0.0.1:5000", InstanceID: "u-3", Name: "worker-tenant",
+		ProjectID: "p-1", Status: "ACTIVE",
+		Addresses: []store.InstanceAddress{{NetworkName: "tenant-a", Address: "10.10.0.7"}},
+	}
+	m.startConnect(&tenantOnly, modeConsole)
+	if !m.askingUser() {
+		t.Fatalf("tenant-only VM with a sibling hop was refused: %q", m.connectNote)
+	}
+}
+
+// The route is computed when the command is submitted, from the data on
+// screen: the executor for a tenant-only VM receives the sibling hop and the
+// tenant door, and a directly-reachable VM travels with no hop at all.
+func TestConsoleHandsTheExecutorTheTenantHop(t *testing.T) {
+	m := testExploreModel()
+	tenantOnly := store.Instance{
+		DeploymentID: "10.0.0.1:5000", InstanceID: "u-3", Name: "worker-tenant",
+		ProjectID: "p-1", Status: "ACTIVE",
+		Addresses: []store.InstanceAddress{{NetworkName: "tenant-a", Address: "10.10.0.7"}},
+	}
+	var got vmRoute
+	m.execVM = func(_ *store.Instance, r vmRoute, _, _ string) (string, int, error) {
+		got = r
+		return "", 0, nil
+	}
+	m.console = &exploreConsole{vm: &tenantOnly, user: "ubuntu"}
+	m.consoleRun("ls")()
+	if got.via == nil || got.via.Name != "bastion" || got.viaAddr != "203.0.113.5" || got.tenantAddr != "10.10.0.7" {
+		t.Fatalf("hop not handed to the executor: %+v", got)
+	}
+
+	direct := m.data.VMs["10.0.0.1:5000"][0] // bastion has a floating address
+	m.console = &exploreConsole{vm: &direct, user: "ubuntu"}
+	got = vmRoute{via: &direct}
+	m.consoleRun("ls")()
+	if got.via != nil {
+		t.Fatalf("a directly-reachable VM should carry no hop: %+v", got)
 	}
 }

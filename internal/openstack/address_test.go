@@ -2,6 +2,7 @@ package openstack
 
 import (
 	"testing"
+	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
@@ -149,5 +150,108 @@ func TestTheListingAnswersWhereTheConnectionRefuses(t *testing.T) {
 	}
 	if got := ConnectableAddress(only, []string{"192.168."}); got != "" {
 		t.Errorf("ConnectableAddress = %q, want nothing to connect to", got)
+	}
+}
+
+func jumpTarget() store.Instance {
+	return store.Instance{
+		InstanceID: "t-1", ProjectID: "p-1", Name: "worker-1", Status: "ACTIVE",
+		Addresses: []store.InstanceAddress{
+			{NetworkName: "tenant-a", Address: "10.3.3.17"},
+		},
+	}
+}
+
+func jumpSibling(id, name, project string, addrs ...store.InstanceAddress) store.Instance {
+	return store.Instance{InstanceID: id, ProjectID: project, Name: name, Status: "ACTIVE", Addresses: addrs}
+}
+
+// A sibling holding a port on the target's tenant network and a floating
+// address is the hop; the tenant door is the target's own address on that
+// network.
+func TestTenantJumpFindsTheFloatingSiblingOnTheSharedNetwork(t *testing.T) {
+	via, viaAddr, door, ok := TenantJump(jumpTarget(), []store.Instance{
+		jumpSibling("s-1", "worker-2", "p-1",
+			store.InstanceAddress{NetworkName: "tenant-a", Address: "10.3.3.18"},
+			store.InstanceAddress{Address: "203.0.113.9", Type: "floating"},
+		),
+	}, nil)
+	if !ok || via.InstanceID != "s-1" || viaAddr != "203.0.113.9" || door != "10.3.3.17" {
+		t.Fatalf("got via=%v hop=%q door=%q ok=%v", via, viaAddr, door, ok)
+	}
+}
+
+// Network names are project-scoped: the same name in another tenant is a
+// different wire, and matching across projects would be the cross-farm guess
+// this exists to avoid. A target whose project the collector could not resolve
+// gets no jump for the same reason.
+func TestTenantJumpStaysInsideTheProject(t *testing.T) {
+	other := jumpSibling("s-2", "impostor", "p-2",
+		store.InstanceAddress{NetworkName: "tenant-a", Address: "10.3.3.99"},
+		store.InstanceAddress{Address: "203.0.113.7", Type: "floating"},
+	)
+	if _, _, _, ok := TenantJump(jumpTarget(), []store.Instance{other}, nil); ok {
+		t.Error("jumped through a VM in another project")
+	}
+	unowned := jumpTarget()
+	unowned.ProjectID = ""
+	mine := jumpSibling("s-1", "worker-2", "",
+		store.InstanceAddress{NetworkName: "tenant-a", Address: "10.3.3.18"},
+		store.InstanceAddress{Address: "203.0.113.9", Type: "floating"},
+	)
+	if _, _, _, ok := TenantJump(unowned, []store.Instance{mine}, nil); ok {
+		t.Error("jumped although neither project is known")
+	}
+}
+
+// A hop has to be a machine that is up and still listed. SHUTOFF holds the
+// address without answering on it, and a missing VM's address may belong to
+// whoever holds it now.
+func TestTenantJumpSkipsWhatCannotCarryTheHop(t *testing.T) {
+	down := jumpSibling("s-1", "worker-2", "p-1",
+		store.InstanceAddress{NetworkName: "tenant-a", Address: "10.3.3.18"},
+		store.InstanceAddress{Address: "203.0.113.9", Type: "floating"},
+	)
+	down.Status = "SHUTOFF"
+	gone := jumpSibling("s-2", "worker-3", "p-1",
+		store.InstanceAddress{NetworkName: "tenant-a", Address: "10.3.3.19"},
+		store.InstanceAddress{Address: "203.0.113.10", Type: "floating"},
+	)
+	since := time.Now()
+	gone.MissingSince = &since
+	self := jumpTarget() // the target is never its own hop
+	wrongNet := jumpSibling("s-3", "elsewhere", "p-1",
+		store.InstanceAddress{NetworkName: "tenant-b", Address: "10.9.9.9"},
+		store.InstanceAddress{Address: "203.0.113.11", Type: "floating"},
+	)
+	if _, _, _, ok := TenantJump(jumpTarget(), []store.Instance{down, gone, self, wrongNet}, nil); ok {
+		t.Error("picked a hop that cannot carry the connection")
+	}
+}
+
+// A floating hop beats an operator-network hop, and at equal rank the pick is
+// by name — the same request goes through the same door every time, so the
+// audit trail reads as a route rather than a coin flip.
+func TestTenantJumpPicksDeterministically(t *testing.T) {
+	operator := jumpSibling("s-1", "aaa-worker", "p-1",
+		store.InstanceAddress{NetworkName: "tenant-a", Address: "10.3.3.18"},
+		store.InstanceAddress{NetworkName: "ops", Address: "192.168.1.4"},
+	)
+	floating := jumpSibling("s-2", "zzz-worker", "p-1",
+		store.InstanceAddress{NetworkName: "tenant-a", Address: "10.3.3.19"},
+		store.InstanceAddress{Address: "203.0.113.9", Type: "floating"},
+	)
+	via, viaAddr, _, ok := TenantJump(jumpTarget(), []store.Instance{operator, floating}, []string{"192.168."})
+	if !ok || via.InstanceID != "s-2" || viaAddr != "203.0.113.9" {
+		t.Fatalf("floating hop should win: via=%v addr=%q", via, viaAddr)
+	}
+
+	second := jumpSibling("s-3", "aaa-worker", "p-1",
+		store.InstanceAddress{NetworkName: "tenant-a", Address: "10.3.3.20"},
+		store.InstanceAddress{Address: "203.0.113.10", Type: "floating"},
+	)
+	via, _, _, ok = TenantJump(jumpTarget(), []store.Instance{floating, second}, nil)
+	if !ok || via.Name != "aaa-worker" {
+		t.Fatalf("equal rank should pick by name: %v", via)
 	}
 }

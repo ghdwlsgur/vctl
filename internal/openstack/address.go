@@ -90,3 +90,69 @@ func ConnectableAddress(addrs []store.InstanceAddress, operatorNets []string) st
 	}
 	return best
 }
+
+// TenantJump finds the hop that makes a tenant-only VM reachable: a sibling on
+// the same tenant network that carries an address ConnectableAddress vouches
+// for. From inside that network the tenant address is no longer a guess — the
+// ambiguity ConnectableAddress refuses is between farms reusing the same
+// RFC1918 range, and a sibling holding a port on this network in this farm is
+// past it.
+//
+// The sibling has to be in the same project. Network names are project-scoped,
+// so the same name in another tenant is a different wire; a target whose
+// project the collector could not resolve gets no jump, because matching names
+// across unknown projects is the cross-farm guess all over again. It also has
+// to be ACTIVE and still listed — a hop through a machine nova has stopped
+// listing is a hop through whoever holds that address now.
+//
+// The pick is deterministic — floating hop over operator-network hop, then
+// name — so the same request goes through the same door every time and the
+// audit trail reads as a route rather than a coin flip.
+func TenantJump(target store.Instance, siblings []store.Instance, operatorNets []string) (via *store.Instance, viaAddr, tenantAddr string, ok bool) {
+	if target.ProjectID == "" {
+		return nil, "", "", false
+	}
+	// The target's tenant doors: one address per network, first recorded wins.
+	nets := map[string]string{}
+	for _, a := range target.Addresses {
+		if a.Type != "floating" && a.NetworkName != "" && nets[a.NetworkName] == "" {
+			nets[a.NetworkName] = a.Address
+		}
+	}
+	if len(nets) == 0 {
+		return nil, "", "", false
+	}
+	bestRank := 0
+	for i := range siblings {
+		s := &siblings[i]
+		if s.InstanceID == target.InstanceID || s.ProjectID != target.ProjectID ||
+			s.MissingSince != nil || !strings.EqualFold(s.Status, "ACTIVE") {
+			continue
+		}
+		hop := ConnectableAddress(s.Addresses, operatorNets)
+		if hop == "" {
+			continue
+		}
+		var door string
+		for _, a := range s.Addresses {
+			if a.Type != "floating" && a.NetworkName != "" && nets[a.NetworkName] != "" {
+				door = nets[a.NetworkName]
+				break
+			}
+		}
+		if door == "" {
+			continue
+		}
+		r := 1
+		for _, a := range s.Addresses {
+			if a.Type == "floating" && a.Address == hop {
+				r = 2
+				break
+			}
+		}
+		if r > bestRank || (r == bestRank && via != nil && s.Name < via.Name) {
+			via, viaAddr, tenantAddr, bestRank = s, hop, door, r
+		}
+	}
+	return via, viaAddr, tenantAddr, via != nil
+}

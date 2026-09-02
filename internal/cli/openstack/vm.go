@@ -738,7 +738,8 @@ func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets [
 		return
 	}
 	fmt.Fprintf(w, "  %s\n", ui.Muted(
-		"no floating or operator-network address, so 'vctl ssh --vm' will refuse; "+
+		"no floating or operator-network address — 'vctl ssh --vm' will hop through an ACTIVE "+
+			"same-network VM that has one, and refuses when none does; "+
 			"use 'vctl ssh <user>@<addr>' if you know one of the above is this VM"))
 }
 

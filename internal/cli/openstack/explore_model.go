@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	osdomain "github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -118,7 +119,7 @@ type exploreModel struct {
 	// pipeline as `vctl ssh --vm` exec — a fresh Vault-signed certificate and
 	// an audit row per command — via execVM, injected so tests never dial.
 	console *exploreConsole
-	execVM  func(v *store.Instance, user, command string) (string, int, error)
+	execVM  func(v *store.Instance, r vmRoute, user, command string) (string, int, error)
 
 	// refresh reads the fleet again. Held as a function so the model can be
 	// driven in a test without a database, and called from a tea.Cmd so the
@@ -464,7 +465,41 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // startConnect opens the login-user prompt for one VM. Nova records no login
 // user, so the one thing the browser cannot answer for you is asked, prefilled
 // with the config default.
+// vmRoute is how a connection reaches a VM: nothing extra for one with a
+// vouched address, and the tenant door plus its hop for one that only its
+// tenant network holds.
+type vmRoute struct {
+	via        *store.Instance
+	viaAddr    string
+	tenantAddr string
+}
+
+// routeTo answers whether v can be reached from here at all, using what the
+// screen already knows. Recomputed at submit time rather than stored: a
+// refresh can attach a floating address or retire the hop, and the route has
+// to follow the data on screen.
+func (m exploreModel) routeTo(v *store.Instance) (vmRoute, bool) {
+	if osdomain.ConnectableAddress(v.Addresses, m.data.Nets) != "" {
+		return vmRoute{}, true
+	}
+	via, viaAddr, tenantAddr, ok := osdomain.TenantJump(*v, m.data.VMs[v.DeploymentID], m.data.Nets)
+	if !ok {
+		return vmRoute{}, false
+	}
+	return vmRoute{via: via, viaAddr: viaAddr, tenantAddr: tenantAddr}, true
+}
+
+// startConnect opens the login-user prompt — unless no address vouches for the
+// VM and no sibling on its tenant network can carry the hop, in which case the
+// refusal that used to arrive after the first command arrives before the
+// prompt: a console on a machine nothing can dial is a prompt lying about
+// where it goes.
 func (m *exploreModel) startConnect(v *store.Instance, mode connectMode) {
+	if _, ok := m.routeTo(v); !ok {
+		m.connectNote = NameOrID(*v) + " has no floating or operator-network address, " +
+			"and no ACTIVE VM on its tenant network carries one to jump through"
+		return
+	}
 	m.userInput = m.defaultUser
 	m.connectVM = v
 	m.connectMode = mode
@@ -597,8 +632,15 @@ func (m exploreModel) consoleRun(command string) tea.Cmd {
 		}
 	}
 	vm, user := c.vm, c.user
+	r, ok := m.routeTo(vm)
+	if !ok {
+		// The pane opened when a route existed; a refresh has since taken it.
+		return func() tea.Msg {
+			return consoleOutput{err: fmt.Errorf("%s has no reachable address any more", NameOrID(*vm))}
+		}
+	}
 	return func() tea.Msg {
-		out, code, err := run(vm, user, command)
+		out, code, err := run(vm, r, user, command)
 		return consoleOutput{out: out, code: code, err: err}
 	}
 }

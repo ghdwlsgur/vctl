@@ -1,6 +1,7 @@
 package access
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -27,12 +28,20 @@ type VMPolicy struct {
 	OperatorNets []string
 }
 
+// ErrNoVouchedAddress is the refusal VMTarget answers when every address a VM
+// has is one connecting to would be a guess. Callers that know a safe hop —
+// a sibling on the same tenant network, found by openstack.TenantJump — test
+// for it and build the route with VMTargetVia instead.
+var ErrNoVouchedAddress = errors.New("no floating or operator-network address")
+
 // VMTarget builds an SSH target for a Nova instance.
 //
-// No jump chain. A jump host is inventory topology and a VM has none — the
-// address either routes from here or it does not, and inventing a hop would be
-// a guess about a network this data does not describe. Same reasoning as the
-// direct user@addr path.
+// No invented jump chain. A jump host is inventory topology and a VM has none —
+// the address either routes from here or it does not, and inventing a hop would
+// be a guess about a network this data does not describe. The one hop that is
+// not invented — a same-project sibling holding a port on the same tenant
+// network — is the caller's to find (openstack.TenantJump) and to state
+// explicitly through VMTargetVia.
 //
 // The address comes from openstack.ConnectableAddress, which is stricter than
 // what the listing prints. A listing showing a tenant address is showing what it
@@ -61,10 +70,10 @@ func VMTarget(name string, addrs []store.InstanceAddress, p VMPolicy) (*sshc.Tar
 			known = append(known, a.Address)
 		}
 		return nil, fmt.Errorf(
-			"%s has no floating or operator-network address (only %s); "+
+			"%s has %w (only %s); "+
 				"tenant ranges repeat across farms, so connecting to one would be a guess. "+
 				"Use 'vctl ssh <user>@<addr>' if you know that address is this VM",
-			name, strings.Join(known, ", "))
+			name, ErrNoVouchedAddress, strings.Join(known, ", "))
 	}
 	port := p.Port
 	if port == 0 {
@@ -76,6 +85,35 @@ func VMTarget(name string, addrs []store.InstanceAddress, p VMPolicy) (*sshc.Tar
 		User: p.User,
 		Role: p.CARole,
 	}, nil
+}
+
+// VMTargetVia builds the two-hop target for a VM that only its tenant network
+// holds: the sibling with the vouched address is the jump, and the tenant
+// address is dialed from inside that network. The dialer still tries the
+// target directly first — an operator whose VPN routes the tenant range
+// connects without the hop, and everyone else falls through it.
+//
+// Both hops use the same login user and signing role: the siblings this is for
+// are cluster machines stamped from the same image, and a hop that needs a
+// different identity is one the operator should build by hand with
+// 'vctl ssh <user>@<addr>'.
+func VMTargetVia(name, tenantAddr, viaName, viaAddr string, p VMPolicy) *sshc.Target {
+	port := p.Port
+	if port == 0 {
+		port = 22
+	}
+	return &sshc.Target{
+		Name: name,
+		Addr: net.JoinHostPort(tenantAddr, strconv.Itoa(port)),
+		User: p.User,
+		Role: p.CARole,
+		Jump: &sshc.Target{
+			Name: viaName,
+			Addr: net.JoinHostPort(viaAddr, strconv.Itoa(port)),
+			User: p.User,
+			Role: p.CARole,
+		},
+	}
 }
 
 // NovaID extracts the instance id from what somebody typed.
