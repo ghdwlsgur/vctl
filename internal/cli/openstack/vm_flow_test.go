@@ -100,7 +100,7 @@ func lineFor(t *testing.T, out, name string) string {
 func TestVMShowPrintsTheCommandToConnect(t *testing.T) {
 	var buf bytes.Buffer
 	v := vmSeen("a5b39f17-4acb-4f96-a9d7-ec1916400e21", "bastion", time.Minute)
-	renderVMShow(&buf, v, nil, []string{"192.168."}, time.Now())
+	renderVMShow(&buf, v, nil, []string{"192.168."}, nil, time.Now())
 
 	out := buf.String()
 	if !strings.Contains(out, "vctl ssh --vm "+v.InstanceID) {
@@ -118,7 +118,7 @@ func TestVMShowSaysWhenSSHWillRefuse(t *testing.T) {
 	var buf bytes.Buffer
 	v := vmSeen("a5b39f17-4acb-4f96-a9d7-ec1916400e21", "tenant-only", time.Minute)
 	v.Addresses = []store.InstanceAddress{{Address: "10.3.1.7", Type: "fixed"}}
-	renderVMShow(&buf, v, nil, []string{"192.168."}, time.Now())
+	renderVMShow(&buf, v, nil, []string{"192.168."}, nil, time.Now())
 
 	// The refusal names the command it is refusing, so match the offer's shape
 	// — a runnable line ends with the uuid and --user.

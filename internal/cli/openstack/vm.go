@@ -441,6 +441,10 @@ func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, opera
 	// The same heading the host listing uses, so one farm reads the same in both.
 	for _, id := range ids {
 		group := byFarm[id]
+		// Colors are dealt per farm, like the explore panes: a network is a
+		// per-deployment thing, and one palette across farms would tie colors
+		// to deployments the reader is not comparing.
+		pal := newNetPalette(group)
 		fmt.Fprintf(w, "\n%s\n", ui.GroupHeading(farmLabelOf(id, farms), fmt.Sprintf("%d VMs", len(group))))
 		cells := make([][]string, 0, len(group)+1)
 		cells = append(cells, headerRow(wide))
@@ -451,7 +455,7 @@ func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, opera
 				vmStateCell(v),
 				ui.Muted(ui.Truncate(vmProjectLabel(v), 22)),
 				ui.Truncate(v.HypervisorHostname, 20),
-				ui.Truncate(primaryAddress(v, operatorNets), 24),
+				ui.Truncate(addressCell(v, operatorNets, pal), 24),
 				ui.Muted(ui.Truncate(v.AvailabilityZone, 12)),
 				vmSeenCell(v, now),
 				vmMissingCell(v, now),
@@ -510,28 +514,6 @@ func vmStateCell(v store.Instance) string {
 	default:
 		return v.Status
 	}
-}
-
-// primaryAddress leads with the address somebody can actually reach the VM on
-// and mutes the rest.
-//
-// A VM answers on several — a tenant network that does not route past its own
-// farm, sometimes a storage one, and one an operator can open. Nothing in the
-// data marks them apart, so leading with whichever nova listed first was right
-// by accident: half the rows showed a 10.x that nobody outside the farm can
-// open, and the address column is the column people copy out of.
-//
-// Order: a floating address, then one on an operator network, then anything —
-// and that ranking is osdomain.ReachableAddress, the same function the SSH
-// path resolves a VM with, so the address on screen is the address a connection
-// will use. It was inline here, decoration and all, which is why the two could
-// not share it.
-func primaryAddress(v store.Instance, operatorNets []string) string {
-	best := osdomain.PreferredAddress(v.Addresses, operatorNets)
-	if extra := len(v.Addresses) - 1; extra > 0 && best != "" {
-		return best + ui.Muted(fmt.Sprintf(" (+%d)", extra))
-	}
-	return best
 }
 
 func vmMissingCell(v store.Instance, now time.Time) string {
@@ -671,7 +653,11 @@ func openstackVMShowCmd(env cmdkit.Env) *cobra.Command {
 				if format != cmdkit.OutputTable {
 					return cmdkit.WriteStructured(format, v)
 				}
-				renderVMShow(os.Stdout, v, cat.Names(), operatorNetworks(), time.Now())
+				// The palette here covers one VM, so its own networks stay
+				// told apart; farm-wide color agreement is the browser's job,
+				// where the farm is on screen to agree with.
+				renderVMShow(os.Stdout, v, cat.Names(), operatorNetworks(),
+					newNetPalette([]store.Instance{v}), time.Now())
 				return nil
 			})
 		},
@@ -682,7 +668,7 @@ func openstackVMShowCmd(env cmdkit.Env) *cobra.Command {
 	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
-func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets []string, now time.Time) {
+func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets []string, pal netPalette, now time.Time) {
 	ui.Section(w, NameOrID(v))
 	rows := []ui.KV{
 		{Key: "UUID", Value: v.InstanceID},
@@ -696,13 +682,15 @@ func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets [
 	}
 	// Every address, not the ranked one. The listing picks; this is where a
 	// person decides, and the tenant addresses are part of what they are
-	// deciding between.
+	// deciding between. Painted in the same per-network colors as the listing
+	// above it, so the address somebody picked a row by is the address they
+	// find here.
 	for i, a := range v.Addresses {
 		key := "Addresses"
 		if i > 0 {
 			key = ""
 		}
-		label := a.Address
+		label := pal.paint(vmNetKey(v, a), a.Address)
 		if a.NetworkName != "" {
 			label += ui.Muted("  " + a.NetworkName)
 		}

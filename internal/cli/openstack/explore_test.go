@@ -1046,6 +1046,28 @@ func TestConsoleScrollbackIsCapped(t *testing.T) {
 	}
 }
 
+// Vault's valid_principals refusal names the field, not the mistake. The pane
+// says what actually went wrong — the login user — and what to do about it,
+// because the one way to hit this is a typo swallowed by the connect prompt.
+func TestConsoleExplainsAPrincipalRefusal(t *testing.T) {
+	m := testExploreModel()
+	m.console = &exploreConsole{vm: &store.Instance{InstanceID: "u-1", Name: "vm"}, user: "ubuntuls"}
+	out, _ := m.Update(consoleOutput{err: fmt.Errorf(
+		"ssh/sign/sre-core: * ubuntuls is not a valid value for valid_principals")})
+	m = out.(exploreModel)
+	tail := strings.Join(m.console.lines, "\n")
+	if !strings.Contains(tail, `"ubuntuls"`) || !strings.Contains(tail, "reconnect") {
+		t.Fatalf("no usable hint after a valid_principals refusal:\n%s", tail)
+	}
+	// Any other failure stays as it is — one line, no advice to give.
+	m.console.lines = nil
+	out, _ = m.Update(consoleOutput{err: fmt.Errorf("dial tcp: timeout")})
+	m = out.(exploreModel)
+	if got := len(m.console.lines); got != 1 {
+		t.Fatalf("an ordinary error grew %d lines, want 1", got)
+	}
+}
+
 // ^C at the console prompt abandons the line first and only closes the pane
 // when there is nothing to abandon — a shell reflex, not a quit.
 func TestConsoleCtrlCClearsBeforeClosing(t *testing.T) {

@@ -217,7 +217,9 @@ type exploreColumns struct {
 var (
 	vmColumns = exploreColumns{
 		titles: []string{"NAME", "PROJECT", "STATE", "ADDRESS", "HOST"},
-		widths: []int{0, 16, 12, 16, 14},
+		// ADDRESS holds a full IPv4 address plus the network dots — see
+		// addressCell — so it is wider than the address alone.
+		widths: []int{0, 16, 12, 19, 14},
 	}
 	hostColumns = exploreColumns{
 		titles: []string{"HOST", "ROLES", "RELEASE", "SEEN", ""},
@@ -342,13 +344,17 @@ func (m exploreModel) rowCells() (exploreColumns, [][]string) {
 		return hostColumns, out
 	}
 	vms := m.visibleVMs()
+	// The palette comes from the whole farm, not the filtered rows: a filter
+	// that hides half the VMs must not recolor the other half, and the detail
+	// behind enter draws from the same map.
+	pal := m.farmPalette()
 	out := make([][]string, 0, len(vms))
 	for _, v := range vms {
 		out = append(out, []string{
 			NameOrID(v),
 			ui.Muted(vmProjectLabel(v)),
 			vmStateCell(v),
-			primaryAddress(v, m.data.Nets),
+			addressCell(v, m.data.Nets, pal),
 			ui.Muted(v.HypervisorHostname),
 		})
 	}

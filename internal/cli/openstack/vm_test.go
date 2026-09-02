@@ -22,46 +22,33 @@ func TestProviderIDIsAcceptedAsAnInstanceID(t *testing.T) {
 }
 
 // The floating address is the one somebody reaches the VM on, so it leads.
-func TestPrimaryAddressPrefersFloating(t *testing.T) {
+func TestAddressCellPrefersFloating(t *testing.T) {
 	v := store.Instance{Addresses: []store.InstanceAddress{
 		{Address: "10.0.0.5", Type: "fixed"},
 		{Address: "192.0.2.9", Type: "floating"},
 	}}
 	// Even against an operator network: floating exists because somebody
 	// attached it to make the VM reachable, which beats a guess from a prefix.
-	if got := primaryAddress(v, []string{"10.0.0."}); !strings.Contains(got, "192.0.2.9") {
-		t.Errorf("primaryAddress = %q, want the floating one", got)
+	if got := addressCell(v, []string{"10.0.0."}, nil); !strings.HasPrefix(got, "192.0.2.9") {
+		t.Errorf("addressCell = %q, want the floating one first", got)
 	}
 }
 
 // A VM answers on a tenant network that does not route past its own farm and on
 // one an operator can open. Leading with whichever nova listed first was right
 // by accident, and the address column is the one people copy out of.
-func TestPrimaryAddressPrefersTheOperatorNetwork(t *testing.T) {
+func TestAddressCellPrefersTheOperatorNetwork(t *testing.T) {
 	v := store.Instance{Addresses: []store.InstanceAddress{
 		{Address: "10.3.1.115", Type: "fixed"},
 		{Address: "192.168.201.207", Type: "fixed"},
 	}}
-	if got := primaryAddress(v, []string{"192.168."}); !strings.Contains(got, "192.168.201.207") {
-		t.Errorf("primaryAddress = %q, want the operator-network one", got)
+	if got := addressCell(v, []string{"192.168."}, nil); !strings.HasPrefix(got, "192.168.201.207") {
+		t.Errorf("addressCell = %q, want the operator-network one first", got)
 	}
 	// With nothing configured there is no preference to apply, and the listing
 	// must still show an address rather than nothing.
-	if got := primaryAddress(v, nil); got == "" {
-		t.Error("primaryAddress gave nothing when no operator network is configured")
-	}
-}
-
-// With only fixed addresses the first is shown and the rest counted, the same
-// trade the host listing makes for multi-homed machines.
-func TestPrimaryAddressCountsTheRest(t *testing.T) {
-	v := store.Instance{Addresses: []store.InstanceAddress{
-		{Address: "10.0.0.5", Type: "fixed"},
-		{Address: "10.0.1.5", Type: "fixed"},
-	}}
-	got := primaryAddress(v, nil)
-	if !strings.Contains(got, "10.0.0.5") || !strings.Contains(got, "+1") {
-		t.Errorf("primaryAddress = %q, want the first and a count", got)
+	if got := addressCell(v, nil, nil); got == "" {
+		t.Error("addressCell gave nothing when no operator network is configured")
 	}
 }
 

@@ -657,6 +657,14 @@ func (m exploreModel) onConsoleOutput(msg consoleOutput) exploreModel {
 	}
 	if msg.err != nil {
 		c.lines = append(c.lines, ui.Fail(strutil.OneLine(msg.err.Error())))
+		// Vault's refusal names the field, not the mistake. The one way to hit
+		// it here is a login user the CA role will not sign for — usually a
+		// typo swallowed by the connect prompt — and the fix is a reconnect,
+		// not a retry of the same command.
+		if strings.Contains(msg.err.Error(), "valid_principals") {
+			c.lines = append(c.lines, ui.Muted(
+				"the CA will not sign for login user \""+c.user+"\" — esc, then enter to reconnect as a valid user"))
+		}
 	} else if msg.code != 0 {
 		c.lines = append(c.lines, ui.Muted(fmt.Sprintf("exit %d", msg.code)))
 	}
@@ -833,10 +841,21 @@ func (m *exploreModel) openDetail() {
 			return
 		}
 		v := vms[clampIndex(m.rowCur, len(vms))]
-		renderVMShow(&buf, v, m.data.Names, m.data.Nets, now)
+		renderVMShow(&buf, v, m.data.Names, m.data.Nets, m.farmPalette(), now)
 		m.detailOf = NameOrID(v)
 		m.detailVM = &v
 	}
 	m.detail = strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	m.detailTop = 0
+}
+
+// farmPalette deals the current farm's network colors. Rebuilt per render
+// rather than cached: it is a map and a sort over a few hundred addresses, and
+// a cache would be one more thing a refresh has to invalidate.
+func (m exploreModel) farmPalette() netPalette {
+	f, ok := m.currentFarm()
+	if !ok {
+		return nil
+	}
+	return newNetPalette(liveInstances(m.data.VMs[f.ID]))
 }

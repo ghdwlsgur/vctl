@@ -455,7 +455,7 @@ func TestAFreshReadingDoesNotMakeAStaleVMLookCurrent(t *testing.T) {
 		Addresses: []store.InstanceAddress{{Address: "10.10.0.5"}},
 	}
 	var buf bytes.Buffer
-	renderVMShow(&buf, v, map[string]string{"10.0.0.1:5000": "seoul-a"}, nil, time.Now())
+	renderVMShow(&buf, v, map[string]string{"10.0.0.1:5000": "seoul-a"}, nil, nil, time.Now())
 	if got := ui.StripANSI(buf.String()); !strings.Contains(got, "may not be current") {
 		t.Errorf("a VM nobody has collected in over a window reads as current:\n%s", got)
 	}
