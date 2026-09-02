@@ -83,3 +83,24 @@ func TestPrintInstallOutputExtractsTheEpochMarker(t *testing.T) {
 		t.Fatalf("epoch = %d, want 1756711200", got)
 	}
 }
+
+// The installer script's first output line is the host's clock — the skew
+// check rides the bootstrap connection for free — and the CA key travels in a
+// quoted heredoc so nothing in it is shell-expanded. The rollback branch keeps
+// a broken drop-in from surviving a failed sshd -t.
+func TestInjectScriptShape(t *testing.T) {
+	s := injectScript("ssh-rsa AAAA-test-ca")
+	if !strings.HasPrefix(s, "set -e\necho \"VCTL_REMOTE_EPOCH=$(date -u +%s)\"") {
+		t.Fatalf("epoch marker is not the first output:\n%s", s[:80])
+	}
+	for _, want := range []string{
+		"<<'VCTL_CA_EOF'\nssh-rsa AAAA-test-ca\nVCTL_CA_EOF",
+		"TrustedUserCAKeys",
+		"sshd -t",
+		"rm -f \"$DROPIN\"",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("inject script missing %q", want)
+		}
+	}
+}

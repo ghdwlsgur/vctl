@@ -302,14 +302,7 @@ ExecStart=/usr/local/bin/vctl-agent node-agent --hostname '%s' --interval 5m%s%s
 
 // agentBinary returns the vctl-agent build to push: a local file when the
 // operator supplied one, otherwise the GitHub release asset matching this
-// CLI's version, verified against the release's checksums.txt. The workstation
-// downloads and the SSH channel delivers — fleet hosts often have no outbound
-// internet, and the ansible role ships a staged file for the same reason.
-//
-// The verified binary is cached under the user cache dir keyed by version, and
-// a cached copy is re-verified against the release's checksums.txt on every
-// use — onboarding N hosts downloads the archive once, and a corrupted cache
-// can never be pushed.
+// CLI's version.
 func agentBinary(ctx context.Context, binPath string) ([]byte, error) {
 	if binPath != "" {
 		return os.ReadFile(binPath)
@@ -318,51 +311,75 @@ func agentBinary(ctx context.Context, binPath string) ([]byte, error) {
 	if ver == "" || ver == "dev" {
 		return nil, fmt.Errorf("this vctl build has no release version — pass --binary <path>")
 	}
-	base := fmt.Sprintf("https://github.com/ghdwlsgur/vctl/releases/download/v%s", ver)
-	archive := fmt.Sprintf("vctl-agent_%s_linux_amd64.tar.gz", ver)
+	return githubRelease(ver).agent(ctx)
+}
 
-	sums, err := httpGet(ctx, base+"/checksums.txt")
+// releaseSource fetches the vctl-agent release archive, verified against the
+// release's checksums.txt. The workstation downloads and the SSH channel
+// delivers — fleet hosts often have no outbound internet, and the ansible role
+// ships a staged file for the same reason.
+//
+// base and cacheDir are fields rather than constants so tests can serve a
+// release from httptest and cache into a temp dir; production values come from
+// githubRelease.
+type releaseSource struct {
+	base     string // release URL prefix holding checksums.txt and the archive
+	archive  string // archive file name, also the cache key
+	cacheDir string // verified archives are kept here; "" disables caching
+}
+
+func githubRelease(ver string) releaseSource {
+	cacheDir := ""
+	if dir, err := os.UserCacheDir(); err == nil {
+		cacheDir = filepath.Join(dir, "vctl")
+	}
+	return releaseSource{
+		base:     fmt.Sprintf("https://github.com/ghdwlsgur/vctl/releases/download/v%s", ver),
+		archive:  fmt.Sprintf("vctl-agent_%s_linux_amd64.tar.gz", ver),
+		cacheDir: cacheDir,
+	}
+}
+
+// agent returns the extracted vctl-agent binary. The verified archive is
+// cached under cacheDir keyed by its name, and a cached copy is re-verified
+// against checksums.txt on every use — onboarding N hosts downloads once, and
+// a corrupted cache can never be pushed.
+func (r releaseSource) agent(ctx context.Context) ([]byte, error) {
+	sums, err := httpGet(ctx, r.base+"/checksums.txt")
 	if err != nil {
 		return nil, fmt.Errorf("checksums.txt: %w", err)
 	}
 	want := ""
 	for _, ln := range strings.Split(string(sums), "\n") {
-		if strings.HasSuffix(ln, "  "+archive) {
+		if strings.HasSuffix(ln, "  "+r.archive) {
 			want = strings.Fields(ln)[0]
 			break
 		}
 	}
 	if want == "" {
-		return nil, fmt.Errorf("release v%s has no checksum for %s", ver, archive)
+		return nil, fmt.Errorf("release has no checksum for %s", r.archive)
 	}
 
-	cache := agentCachePath(archive)
-	if blob, err := os.ReadFile(cache); err == nil && archiveSumOK(blob, want) {
-		return extractAgent(blob)
+	cache := ""
+	if r.cacheDir != "" {
+		cache = filepath.Join(r.cacheDir, r.archive)
+		if blob, err := os.ReadFile(cache); err == nil && archiveSumOK(blob, want) {
+			return extractAgent(blob)
+		}
 	}
-	ui.Infof(os.Stderr, "downloading %s", archive)
-	blob, err := httpGet(ctx, base+"/"+archive)
+	ui.Infof(os.Stderr, "downloading %s", r.archive)
+	blob, err := httpGet(ctx, r.base+"/"+r.archive)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", archive, err)
+		return nil, fmt.Errorf("%s: %w", r.archive, err)
 	}
 	if !archiveSumOK(blob, want) {
-		return nil, fmt.Errorf("%s does not match the release checksum", archive)
+		return nil, fmt.Errorf("%s does not match the release checksum", r.archive)
 	}
 	if cache != "" {
-		_ = os.MkdirAll(filepath.Dir(cache), 0o755)
+		_ = os.MkdirAll(r.cacheDir, 0o755)
 		_ = os.WriteFile(cache, blob, 0o644) // best-effort: reuse is an optimisation
 	}
 	return extractAgent(blob)
-}
-
-// agentCachePath is where a verified release archive is kept between installs,
-// "" when the platform offers no cache dir (then every install downloads).
-func agentCachePath(archive string) string {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "vctl", archive)
 }
 
 func archiveSumOK(blob []byte, want string) bool {
