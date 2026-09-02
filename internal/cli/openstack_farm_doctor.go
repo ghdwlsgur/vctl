@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/openstack/doctor"
 	"github.com/ghdwlsgur/vctl/internal/openstack/farmcreds"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -17,20 +18,20 @@ import (
 // openstackFarmDoctorCmd wires `farm doctor`: pick the deployment, run the
 // diagnosis (internal/openstack/doctor, where it can be tested without a
 // terminal, a Vault and a live control plane), and render or export it.
-func openstackFarmDoctorCmd(env CommandEnv) *cobra.Command {
+func openstackFarmDoctorCmd(env cmdkit.Env) *cobra.Command {
 	var insecure bool
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:               "doctor [deployment]",
 		Short:             "Check what a reconcile would need, without changing anything",
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: byPosition(completeFarm(env)),
+		ValidArgsFunction: cmdkit.ByPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := commandOutput(cmd, asJSON)
+			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {
 				return err
 			}
-			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				farms, ok, err := farmChoicesForPick(ctx, a, st)
 				if err != nil || !ok {
@@ -45,8 +46,8 @@ func openstackFarmDoctorCmd(env CommandEnv) *cobra.Command {
 					Runs:  st,
 				}
 				checks := d.Diagnose(ctx, pick.ID, insecure)
-				if format != outputTable {
-					if err := writeStructured(format, farmDoctorExport{
+				if format != cmdkit.OutputTable {
+					if err := cmdkit.WriteStructured(format, farmDoctorExport{
 						Farm: pick.ID, Name: pick.Name, Checks: checks,
 					}); err != nil {
 						return err
@@ -63,7 +64,7 @@ func openstackFarmDoctorCmd(env CommandEnv) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification, to tell a certificate problem from a reachability one")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	return supportsStructuredOutput(cmd)
+	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
 // farmDoctorExport is the wire shape: the deployment the checks are about,

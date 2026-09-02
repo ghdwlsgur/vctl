@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/nodeagent"
 )
 
@@ -19,7 +20,7 @@ import (
 // and its reconnect policy all used to be in this file, under a RunE. None of
 // it could be exercised without building a command tree, and all of it is
 // invariant somebody learned the hard way.
-func nodeAgentCmd(env CommandEnv) *cobra.Command {
+func nodeAgentCmd(env cmdkit.Env) *cobra.Command {
 	agent := &nodeagent.Agent{Version: Version}
 	cmd := &cobra.Command{
 		Use:   "node-agent",
@@ -30,7 +31,7 @@ It never creates inventory. The host must already exist in the servers table;
 otherwise the heartbeat is ignored. Use AppRole credentials and a narrow
 database role for low-risk, low-resource status reporting.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}
@@ -58,7 +59,7 @@ database role for low-risk, low-resource status reporting.`,
 		},
 	}
 	cmd.Flags().StringVar(&agent.Hostname, "hostname", "", "inventory hostname to report; defaults to os hostname")
-	registerCompletion(cmd, "hostname", completeInventoryHost(env))
+	cmdkit.RegisterCompletion(cmd, "hostname", cmdkit.CompleteInventoryHost(env))
 	cmd.Flags().DurationVar(&agent.Interval, "interval", 5*time.Minute, "heartbeat interval")
 	cmd.Flags().DurationVar(&agent.ProbeInterval, "probe-interval", time.Hour,
 		"how often to run platform capability probes (OpenStack, ...); 0 disables them")

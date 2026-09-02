@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,15 @@ import (
 // A source scan is crude, and it is still the only thing that fails when
 // somebody adds huh.NewSelect without Inline(true) two years from now.
 func TestEverySelectIsInline(t *testing.T) {
-	files, err := filepath.Glob("*.go")
+	// The whole command tree, not just this directory: the rule holds for the
+	// packages the tree was split into (cmdkit, openstack) the same as here.
+	var files []string
+	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".go") {
+			files = append(files, path)
+		}
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

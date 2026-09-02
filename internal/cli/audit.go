@@ -6,10 +6,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/audit"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func auditCmd(env CommandEnv) *cobra.Command {
+func auditCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		host     string
 		user     string
@@ -28,7 +29,7 @@ This is the inventory-level audit. The authoritative record of every signing
 request lives in the Vault file audit device on the Vault pod
 (/vault/audit/vault_audit.log) - use it for forensic / tamper-evident review.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, adb, err := env.audit()
+			_, adb, err := env.Audit()
 			if err != nil {
 				return err
 			}
@@ -72,7 +73,7 @@ request lives in the Vault file audit device on the Vault pod
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "filter by hostname substring")
-	registerCompletion(cmd, "host", completeInventoryHost(env))
+	cmdkit.RegisterCompletion(cmd, "host", cmdkit.CompleteInventoryHost(env))
 	cmd.Flags().StringVar(&user, "user", "", "filter by vault user substring")
 	cmd.Flags().StringVar(&sourceIP, "source-ip", "", "filter by exact source IP")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 50, "max rows to show")

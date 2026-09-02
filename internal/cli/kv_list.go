@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
@@ -20,7 +21,7 @@ type kvListing struct {
 	Keys []string `json:"keys"`
 }
 
-func kvListCmd(env CommandEnv) *cobra.Command {
+func kvListCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list [path]",
 		Aliases: []string{"ls"},
@@ -33,11 +34,11 @@ under a path. With no path it starts at the mount.
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: firstArgOnly(completeKVPath(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := requestedOutput(cmd)
+			format, err := cmdkit.RequestedOutput(cmd)
 			if err != nil {
 				return err
 			}
-			return env.withKV(cmd.Context(), func(a *app.App, kv kvReader) error {
+			return withKV(env, cmd.Context(), func(a *app.App, kv kvReader) error {
 				path := kvRoot(a.Cfg)
 				if len(args) == 1 {
 					if p := normalizeKVPath(args[0]); p != "" {
@@ -48,15 +49,15 @@ under a path. With no path it starts at the mount.
 				if err != nil {
 					return kvError(err, path)
 				}
-				if format != outputTable {
-					return writeStructured(format, kvListing{Path: path, Keys: keys})
+				if format != cmdkit.OutputTable {
+					return cmdkit.WriteStructured(format, kvListing{Path: path, Keys: keys})
 				}
 				renderKVListing(os.Stdout, path, keys)
 				return nil
 			})
 		},
 	}
-	return supportsStructuredOutput(gate(cmd, "kv"))
+	return cmdkit.SupportsStructuredOutput(cmdkit.Gate(cmd, "kv"))
 }
 
 // renderKVListing prints folders first, the way a directory listing does, so

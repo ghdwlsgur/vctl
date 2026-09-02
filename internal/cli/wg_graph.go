@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -24,7 +25,7 @@ const wgHandshakeWindow = 3 * time.Minute
 
 // wgGraphCmd renders the collected WireGuard topology, as a terminal summary or
 // a mermaid diagram. Read (default-allow).
-func wgGraphCmd(env CommandEnv) *cobra.Command {
+func wgGraphCmd(env cmdkit.Env) *cobra.Command {
 	var format, hostFilter string
 	cmd := &cobra.Command{
 		Use:     "graph",
@@ -35,7 +36,7 @@ renders it as an aligned terminal summary (default) or a mermaid diagram
 (--format mermaid) you can paste into docs. Peers are matched to the far-end
 gateway by public key when both ends were collected.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ifaces, err := st.WGInterfaces(cmd.Context())
 				if err != nil {
 					return err
@@ -65,8 +66,8 @@ gateway by public key when both ends were collected.`,
 	}
 	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal|mermaid")
 	cmd.Flags().StringVar(&hostFilter, "host", "", "restrict to one gateway host")
-	registerCompletion(cmd, "host", completeInventoryHost(env))
-	return gate(cmd, "wg")
+	cmdkit.RegisterCompletion(cmd, "host", cmdkit.CompleteInventoryHost(env))
+	return cmdkit.Gate(cmd, "wg")
 }
 
 func filterWGByHost(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, host string) ([]store.WGInterfaceRow, []store.WGPeerRow) {

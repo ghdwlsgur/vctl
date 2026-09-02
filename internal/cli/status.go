@@ -10,17 +10,18 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func statusCmd(env CommandEnv) *cobra.Command {
+func statusCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Check login and connection status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withApp(func(a *app.App) error {
+			return env.WithApp(func(a *app.App) error {
 				ctx := cmd.Context()
 				ui.Section(os.Stdout, "vctl status")
 				rows := []ui.KV{

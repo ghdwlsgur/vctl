@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -15,13 +16,13 @@ import (
 // are not. The column exists to be blank unless somebody has something to say.
 func TestStateCellIsBlankForActive(t *testing.T) {
 	for _, s := range []string{store.StateActive, ""} {
-		if got := ui.StripANSI(stateCell(s)); got != "" {
-			t.Errorf("stateCell(%q) = %q, want blank", s, got)
+		if got := ui.StripANSI(cmdkit.StateCell(s)); got != "" {
+			t.Errorf("cmdkit.StateCell(%q) = %q, want blank", s, got)
 		}
 	}
 	for _, s := range []string{store.StateBroken, store.StateMaintenance, store.StateRetired} {
-		if got := ui.StripANSI(stateCell(s)); got == "" {
-			t.Errorf("stateCell(%q) rendered nothing", s)
+		if got := ui.StripANSI(cmdkit.StateCell(s)); got == "" {
+			t.Errorf("cmdkit.StateCell(%q) rendered nothing", s)
 		}
 	}
 }
@@ -139,7 +140,7 @@ func TestHostEditsValidateRejectsAnUnknownState(t *testing.T) {
 // a time and an explanation baked into the label would show one state's meaning
 // while hiding the other three.
 func TestStateOptionsOfferEveryStateAsItsOwnWord(t *testing.T) {
-	opts := stateOptions()
+	opts := cmdkit.StateOptions()
 	if len(opts) != len(store.HostStates) {
 		t.Fatalf("stateOptions gave %d choices, want %d", len(opts), len(store.HostStates))
 	}

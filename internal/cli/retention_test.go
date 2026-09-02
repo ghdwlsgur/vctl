@@ -8,6 +8,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/authz"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
@@ -129,7 +130,7 @@ func TestOpenStackPruneIsAHiddenAutomationCommand(t *testing.T) {
 }
 
 func TestPruneRejectsAccessRetentionWhenSessionsAreKeptForever(t *testing.T) {
-	cmd := pruneCmd(CommandEnv{NewApp: func() (*app.App, error) {
+	cmd := pruneCmd(cmdkit.Env{NewApp: func() (*app.App, error) {
 		return &app.App{Cfg: &config.Config{
 			KernelRetentionDays: 14,
 			AccessRetentionDays: 1095,

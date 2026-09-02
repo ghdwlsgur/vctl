@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -180,26 +181,11 @@ func TestVMNameCompletionSaysWhenANameFitsMoreThanOneVM(t *testing.T) {
 	}
 }
 
-func TestInventoryHostCompletionLeavesOutRetiredHosts(t *testing.T) {
-	servers := []store.Server{
-		{Hostname: "sre-svr-0001", DC: "seoul"},
-		{Hostname: "sre-svr-0002", DC: "seoul", State: store.StateMaintenance},
-		{Hostname: "sre-svr-0003", DC: "seoul", State: store.StateRetired},
-	}
-	got := inventoryHostCompletions(servers, "sre-")
-	if v := values(got); len(v) != 2 {
-		t.Fatalf("got %v, want the two hosts that are not retired", v)
-	}
-	if !strings.Contains(got[1], store.StateMaintenance) {
-		t.Errorf("a host in maintenance should say so: %q", got[1])
-	}
-}
-
 // A description is display text and the value is a protocol field. cobra splits
 // them on a tab and the shell splits candidates on newlines, so a VM named with
 // either — nova accepts both — would move the boundary.
 func TestCandidateFlattensWhatWouldBreakTheProtocol(t *testing.T) {
-	got := candidate("id", "na\tme\nfarm")
+	got := cmdkit.Candidate("id", "na\tme\nfarm")
 	if strings.Count(got, "\t") != 1 {
 		t.Errorf("description tab survived: %q", got)
 	}
@@ -209,15 +195,15 @@ func TestCandidateFlattensWhatWouldBreakTheProtocol(t *testing.T) {
 	if value(got) != "id" {
 		t.Errorf("value became %q", value(got))
 	}
-	if candidate("id", "") != "id" {
-		t.Errorf("an empty description should leave no separator, got %q", candidate("id", ""))
+	if cmdkit.Candidate("id", "") != "id" {
+		t.Errorf("an empty description should leave no separator, got %q", cmdkit.Candidate("id", ""))
 	}
 }
 
 func TestByPositionAsksADifferentQuestionPerArgument(t *testing.T) {
-	first := staticCompletions("farm-a")
-	second := staticCompletions("active", "retired")
-	fn := byPosition(first, second)
+	first := cmdkit.StaticCompletions("farm-a")
+	second := cmdkit.StaticCompletions("active", "retired")
+	fn := cmdkit.ByPosition(first, second)
 
 	got, _ := fn(nil, nil, "")
 	if len(got) != 1 || got[0] != "farm-a" {

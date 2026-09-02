@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ghdwlsgur/vctl/internal/authz"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
 )
 
@@ -244,7 +245,7 @@ func TestKVExecIsGatedAsReadWithFlagParsingOff(t *testing.T) {
 	if ex == nil {
 		t.Fatal("kv exec missing")
 	}
-	if ex.Annotations["rbac.command"] != "kv" || ex.Annotations["rbac.class"] != string(classRead) {
+	if ex.Annotations["rbac.command"] != "kv" || ex.Annotations["rbac.class"] != string(authz.ClassRead) {
 		t.Errorf("annotations = %v, want a read gate named kv", ex.Annotations)
 	}
 	if !ex.DisableFlagParsing {

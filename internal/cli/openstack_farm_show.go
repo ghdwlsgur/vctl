@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 	"github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -20,7 +21,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
+func openstackFarmShowCmd(env cmdkit.Env) *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "show [deployment]",
@@ -31,13 +32,13 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 			"The deployment can be named by its display name or its Keystone endpoint. With no\n" +
 			"argument it is picked from a list.",
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: byPosition(completeFarm(env)),
+		ValidArgsFunction: cmdkit.ByPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := commandOutput(cmd, asJSON)
+			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {
 				return err
 			}
-			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				farms, ok, err := farmChoicesForPick(ctx, a, st)
 				if err != nil || !ok {
@@ -52,8 +53,8 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if format != outputTable {
-					return writeStructured(format, assessment)
+				if format != cmdkit.OutputTable {
+					return cmdkit.WriteStructured(format, assessment)
 				}
 				renderFarmShow(os.Stdout, assessment, now)
 				return nil
@@ -61,7 +62,7 @@ func openstackFarmShowCmd(env CommandEnv) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	return supportsStructuredOutput(cmd)
+	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
 // farmStaleWindow is how old a successful reconcile may be before this view
@@ -258,7 +259,7 @@ func declaredStateLine(a openstack.Assessment, now time.Time) string {
 	if a.State == "" || a.State == store.StateActive {
 		return ""
 	}
-	s := stateCell(a.State)
+	s := cmdkit.StateCell(a.State)
 	if a.StateSince != nil {
 		s += ui.Muted(" for " + strutil.CompactDuration(now.Sub(*a.StateSince)))
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -33,7 +34,7 @@ import (
 //
 // The bootstrap connection uses the operator's normal SSH auth (agent/key/
 // password) — not a Vault certificate, which the host does not trust yet.
-func injectCmd(env CommandEnv) *cobra.Command {
+func injectCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		identity string
 		useSudo  bool
@@ -62,7 +63,7 @@ up over the bootstrap connection to fetch sshd's own reason.
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}
@@ -134,7 +135,7 @@ up over the bootstrap connection to fetch sshd's own reason.
 				},
 				HostKey: access.HostKeyAcceptNew,
 			}
-			if err := execStep(newConnector(a).Execute(ctx, verify, "true", 0)); err != nil {
+			if err := execStep(cmdkit.NewConnector(a).Execute(ctx, verify, "true", 0)); err != nil {
 				ui.Errorf(os.Stderr, "certificate login failed: %v", err)
 				injectDiagnose(ctx, dest, portStr, identity, useSudo)
 				return fmt.Errorf("CA trust installed but a certificate login still fails — see the sshd log above")

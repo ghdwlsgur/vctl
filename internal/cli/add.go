@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -31,7 +32,7 @@ import (
 // Mutate class, and writing the inventory needs a Vault role the baseline user
 // policy no longer carries, so this is an operator command by construction
 // rather than by convention.
-func addCmd(env CommandEnv) *cobra.Command {
+func addCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		sv    store.Server
 		force bool
@@ -48,7 +49,7 @@ A later sync will not undo this: sync refreshes probe-derived columns only and
 leaves ssh_user, dc and jump_via as entered here.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return withStorePort(env, ctx, true, func(_ *app.App, st addStore) error {
+			return cmdkit.WithStorePort(env, ctx, true, func(_ *app.App, st addStore) error {
 				if err := completeServer(ctx, st, &sv); err != nil {
 					return err
 				}
@@ -93,25 +94,14 @@ leaves ssh_user, dc and jump_via as entered here.`,
 	// shells complete and quote on their own.
 	f.StringSliceVar(&sv.ExtraIPs, "extra-ip", nil, "additional address the host answers on (repeatable)")
 	f.BoolVar(&force, "force", false, "if the hostname exists, refresh it instead of failing")
-	return gate(cmd, "add")
-}
-
-// inventoryLister is the slice of *store.Store that add reads.
-//
-// The jump-host check and the datacenter suggestions are the parts of this
-// command most likely to be wrong, and both were reachable only with a live
-// database behind them. Narrowing the dependency to the one method they use
-// puts those branches under test; the alternative is trusting the branch that
-// decides whether a host is reachable at all.
-type inventoryLister interface {
-	ListInventory(ctx context.Context, dc string) ([]store.InventoryRow, error)
+	return cmdkit.Gate(cmd, "add")
 }
 
 // addStore is what `vctl add` may do to the inventory: read it to validate
 // the new host, and write that one host. The command used to receive the
 // whole store, with every other write along for the ride.
 type addStore interface {
-	inventoryLister
+	cmdkit.InventoryLister
 	Insert(ctx context.Context, sv store.Server) (bool, error)
 	Upsert(ctx context.Context, sv store.Server) error
 }
@@ -120,11 +110,11 @@ var _ addStore = (*store.Store)(nil)
 
 // completeServer fills whatever the flags left empty, asking only when there is
 // a terminal to ask at.
-func completeServer(ctx context.Context, st inventoryLister, sv *store.Server) error {
+func completeServer(ctx context.Context, st cmdkit.InventoryLister, sv *store.Server) error {
 	if sv.Hostname != "" && sv.IP != "" && sv.User != "" && sv.DC != "" {
 		return nil
 	}
-	if !isTerminal() {
+	if !cmdkit.IsTerminal() {
 		return fmt.Errorf("--host, --ip, --user and --dc are required when there is no terminal to prompt at")
 	}
 
@@ -138,7 +128,7 @@ func completeServer(ctx context.Context, st inventoryLister, sv *store.Server) e
 		huh.NewInput().Title("Hostname").
 			Description("the name `vctl ssh` will take").
 			Value(&sv.Hostname).
-			Validate(nonEmpty("hostname")),
+			Validate(cmdkit.NonEmpty("hostname")),
 		huh.NewInput().Title("Address").
 			Description("IP to connect to").
 			Value(&sv.IP).
@@ -148,7 +138,7 @@ func completeServer(ctx context.Context, st inventoryLister, sv *store.Server) e
 				}
 				return nil
 			}),
-		huh.NewInput().Title("SSH user").Value(&sv.User).Validate(nonEmpty("user")),
+		huh.NewInput().Title("SSH user").Value(&sv.User).Validate(cmdkit.NonEmpty("user")),
 		dcField(dcs, &sv.DC),
 		huh.NewInput().Title("Jump host").
 			Description("leave empty for a direct connection").
@@ -197,7 +187,7 @@ func splitIPList(v string) []string {
 // text on a fresh inventory where there is nothing to choose from yet.
 func dcField(dcs []string, target *string) huh.Field {
 	if len(dcs) == 0 {
-		return huh.NewInput().Title("Datacenter").Value(target).Validate(nonEmpty("datacenter"))
+		return huh.NewInput().Title("Datacenter").Value(target).Validate(cmdkit.NonEmpty("datacenter"))
 	}
 	opts := make([]huh.Option[string], 0, len(dcs))
 	for _, dc := range dcs {
@@ -213,18 +203,9 @@ func dcField(dcs []string, target *string) huh.Field {
 		Inline(true)
 }
 
-func nonEmpty(what string) func(string) error {
-	return func(s string) error {
-		if strings.TrimSpace(s) == "" {
-			return fmt.Errorf("%s is required", what)
-		}
-		return nil
-	}
-}
-
 // knownDCs returns the datacenter labels already in use, best effort: the form
 // is still usable without them.
-func knownDCs(ctx context.Context, st inventoryLister) []string {
+func knownDCs(ctx context.Context, st cmdkit.InventoryLister) []string {
 	if st == nil {
 		return nil
 	}
@@ -246,7 +227,7 @@ func knownDCs(ctx context.Context, st inventoryLister) []string {
 
 // validateServer rejects what the database would accept but `vctl ssh` could
 // not use. A row that parses is not the same as a host anyone can reach.
-func validateServer(ctx context.Context, st inventoryLister, sv store.Server) error {
+func validateServer(ctx context.Context, st cmdkit.InventoryLister, sv store.Server) error {
 	if strings.TrimSpace(sv.Hostname) == "" {
 		return fmt.Errorf("--host is required")
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -28,7 +29,7 @@ import (
 // rewrote every field from its defaults would silently blank the ones the
 // operator did not mention, which is the failure a partial edit exists to
 // avoid.
-func editCmd(env CommandEnv) *cobra.Command {
+func editCmd(env cmdkit.Env) *cobra.Command {
 	var e hostEdits
 	cmd := &cobra.Command{
 		Use:   "edit [hostname]",
@@ -41,14 +42,14 @@ are written; with none, the fields are asked for interactively.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return withStorePort(env, ctx, true, func(_ *app.App, st editStore) error {
-				cur, err := resolveHost(ctx, st, args, "Edit which host?")
+			return cmdkit.WithStorePort(env, ctx, true, func(_ *app.App, st editStore) error {
+				cur, err := cmdkit.ResolveHost(ctx, st, args, "Edit which host?")
 				if err != nil {
 					return err
 				}
 				host := cur.Hostname
 				if e.empty() {
-					if !isTerminal() {
+					if !cmdkit.IsTerminal() {
 						return fmt.Errorf("nothing to change: pass at least one of --dc, --user, --jump, --extra-ip, --name, --state")
 					}
 					if err := e.prompt(cur); err != nil {
@@ -78,13 +79,13 @@ are written; with none, the fields are asked for interactively.`,
 	f.StringVar(&e.State, "state", "", "operator-declared state: "+strings.Join(store.HostStates, "|"))
 	f.StringSliceVar(&e.ExtraIPs, "extra-ip", nil, "replace the extra addresses (repeatable; pass none to clear)")
 	f.BoolVar(&e.clearIPs, "clear-extra-ips", false, "remove every extra address")
-	return gate(cmd, "edit")
+	return cmdkit.Gate(cmd, "edit")
 }
 
 // editStore is what `vctl edit` may do: read the inventory to resolve and
 // validate, and write the operator-managed columns of one host.
 type editStore interface {
-	inventoryLister
+	cmdkit.InventoryLister
 	SetDC(ctx context.Context, hostname, dc string) (bool, error)
 	SetUser(ctx context.Context, hostname, user string) (bool, error)
 	SetJumpVia(ctx context.Context, hostname, jump string) (bool, error)
@@ -202,7 +203,7 @@ func warnAgentAfterRename(cur store.InventoryRow, newName string) {
 
 // validate rejects edits the database would take but `vctl ssh` could not use,
 // mirroring what add checks at creation time.
-func (e hostEdits) validate(ctx context.Context, st inventoryLister, host string) error {
+func (e hostEdits) validate(ctx context.Context, st cmdkit.InventoryLister, host string) error {
 	for _, ip := range e.ExtraIPs {
 		if net.ParseIP(strings.TrimSpace(ip)) == nil {
 			return fmt.Errorf("invalid --extra-ip: %q", ip)
@@ -221,7 +222,7 @@ func (e hostEdits) validate(ctx context.Context, st inventoryLister, host string
 	// constraint violation naming an index. Catching it here says which host
 	// already has the name, which is the thing the operator needs to know.
 	if e.Name != "" {
-		if _, err := findHost(ctx, st, e.Name); err == nil {
+		if _, err := cmdkit.FindHost(ctx, st, e.Name); err == nil {
 			return fmt.Errorf("%q is already in the inventory", e.Name)
 		}
 	}
@@ -242,24 +243,9 @@ func (e hostEdits) validate(ctx context.Context, st inventoryLister, host string
 // "leave it alone", so clearing needs a word.
 const jumpDirect = "direct"
 
-// findHost resolves the hostname before anything is written, so a typo fails
-// with a name rather than a silent no-op on every step.
-func findHost(ctx context.Context, st inventoryLister, host string) (store.InventoryRow, error) {
-	rows, err := st.ListInventory(ctx, "")
-	if err != nil {
-		return store.InventoryRow{}, err
-	}
-	for _, r := range rows {
-		if r.Hostname == host {
-			return r, nil
-		}
-	}
-	return store.InventoryRow{}, fmt.Errorf("no host named %q in the inventory", host)
-}
-
 // jumpHostExists is shared with add: a jump host that is not registered makes a
 // row that stores cleanly and fails at connect time.
-func jumpHostExists(ctx context.Context, st inventoryLister, jump string) error {
+func jumpHostExists(ctx context.Context, st cmdkit.InventoryLister, jump string) error {
 	if st == nil {
 		return nil
 	}
@@ -291,8 +277,8 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 		// Last, not first. The name is the inventory key and the field least
 		// often being changed, so it should not be what the cursor lands on when
 		// someone opens the form to fix a datacenter label.
-		huh.NewInput().Title("Datacenter").Value(&dc).Validate(nonEmpty("datacenter")),
-		huh.NewInput().Title("SSH user").Value(&user).Validate(nonEmpty("user")),
+		huh.NewInput().Title("Datacenter").Value(&dc).Validate(cmdkit.NonEmpty("datacenter")),
+		huh.NewInput().Title("SSH user").Value(&user).Validate(cmdkit.NonEmpty("user")),
 		huh.NewInput().Title("Jump host").
 			Description(`an inventory hostname, or "direct"`).
 			Value(&jump),
@@ -312,13 +298,13 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 		// rather than after the other edits have already been written.
 		huh.NewSelect[string]().Title("State").
 			Description("what you are declaring; liveness stays observed and is shown next to it\n"+stateMeanings()).
-			Options(stateOptions()...).
+			Options(cmdkit.StateOptions()...).
 			Value(&state).
 			Inline(true),
 		huh.NewInput().Title("Hostname").
 			Description("renaming carries the agent heartbeat and jump chains; audit history keeps the old name").
 			Value(&name).
-			Validate(nonEmpty("hostname")),
+			Validate(cmdkit.NonEmpty("hostname")),
 	))
 	if err := form.WithTheme(ui.FormTheme()).WithKeyMap(ui.FormKeyMap()).Run(); err != nil {
 		return err
@@ -351,25 +337,6 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 		e.State = state
 	}
 	return nil
-}
-
-// stateOptions labels each state with what it means for the listing, because
-// the words alone do not say which of them silence a red row and which do not.
-//
-// Nothing here marks the current value: the field is bound to a variable already
-// holding it, and huh selects the option matching that. Setting it twice would
-// be two mechanisms for one behaviour, and they can disagree.
-// stateOptions are the words the database accepts, and only the words.
-//
-// The meanings live in stateMeanings rather than in the labels because the
-// field is inline: it renders one value at a time, so a label carrying its own
-// explanation would show one state's meaning and hide the other three.
-func stateOptions() []huh.Option[string] {
-	opts := make([]huh.Option[string], 0, len(store.HostStates))
-	for _, s := range store.HostStates {
-		opts = append(opts, huh.NewOption(s, s))
-	}
-	return opts
 }
 
 // stateMeanings is the whole set at once, under the field.

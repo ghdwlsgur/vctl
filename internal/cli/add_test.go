@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -60,7 +61,7 @@ func TestValidateServerAcceptsADirectHost(t *testing.T) {
 // as blank — a hostname of " " is accepted by every string check that only
 // tests for "" and produces an inventory entry nobody can type.
 func TestNonEmptyTreatsWhitespaceAsBlank(t *testing.T) {
-	check := nonEmpty("hostname")
+	check := cmdkit.NonEmpty("hostname")
 	for _, s := range []string{"", " ", "\t", "\n  "} {
 		if err := check(s); err == nil {
 			t.Errorf("nonEmpty accepted %q", s)

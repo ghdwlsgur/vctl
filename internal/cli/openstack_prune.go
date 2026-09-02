@@ -8,18 +8,19 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func openStackPruneCmd(env CommandEnv) *cobra.Command {
+func openStackPruneCmd(env cmdkit.Env) *cobra.Command {
 	var days, batchSize int
 	cmd := &cobra.Command{
 		Use:    "openstack-prune-missing",
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return env.withPurposeStore(cmd.Context(), app.PurposeOpenStackPrune, func(a *app.App, st *store.Store) error {
+			return env.WithPurposeStore(cmd.Context(), app.PurposeOpenStackPrune, func(a *app.App, st *store.Store) error {
 				if !cmd.Flags().Changed("days") {
 					days = a.Cfg.OpenStackMissingRetentionDays
 				}

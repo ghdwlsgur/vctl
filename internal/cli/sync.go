@@ -8,11 +8,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/syncx"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func syncCmd(env CommandEnv) *cobra.Command {
+func syncCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		prefix    string
 		path      string
@@ -23,7 +24,7 @@ func syncCmd(env CommandEnv) *cobra.Command {
 		Short: "Sync central inventory from ~/.ssh/config and probes",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}

@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
@@ -27,34 +28,34 @@ import (
 // One line per farm, and the line says whether it is being kept up: the last
 // successful reconcile is what makes every other number on the row worth
 // trusting.
-func openstackFarmListCmd(env CommandEnv) *cobra.Command {
+func openstackFarmListCmd(env cmdkit.Env) *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "Every deployment, with how recently anything confirmed it",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := commandOutput(cmd, asJSON)
+			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {
 				return err
 			}
-			return env.withApp(func(a *app.App) error {
+			return env.WithApp(func(a *app.App) error {
 				ctx := cmd.Context()
 				st := &openLater{app: a}
 				defer st.Close()
-				rows, err := farmSummaries(ctx, a, st, mustBeLive(cmd, format != outputTable))
+				rows, err := farmSummaries(ctx, a, st, mustBeLive(cmd, format != cmdkit.OutputTable))
 				if err != nil {
 					return err
 				}
-				if format != outputTable {
-					return writeStructured(format, rows)
+				if format != cmdkit.OutputTable {
+					return cmdkit.WriteStructured(format, rows)
 				}
 				return renderFarmList(os.Stdout, rows, time.Now())
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
-	return supportsStructuredOutput(cmd)
+	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
 // farmSummary is one deployment as an operator scans it.
@@ -136,7 +137,7 @@ func renderFarmListWidth(w io.Writer, rows []farmSummary, now time.Time, width i
 			name,
 			ui.Muted(f.ID),
 			ui.Muted(f.Region),
-			stateCell(f.State),
+			cmdkit.StateCell(f.State),
 			fmt.Sprintf("%d", f.Hosts),
 			fmt.Sprintf("%d", f.VMs),
 			farmReconciledCell(f, now),

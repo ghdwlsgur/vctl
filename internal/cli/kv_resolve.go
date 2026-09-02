@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 )
 
 // resolveKVPath answers "which secret?" the way `vctl ssh` answers "which
@@ -30,7 +32,7 @@ func resolveKVPath(ctx context.Context, kv kvReader, root string, args []string)
 	if strings.Contains(query, "/") {
 		return query, nil
 	}
-	if query == "" && !isTerminal() {
+	if query == "" && !cmdkit.IsTerminal() {
 		return "", fmt.Errorf("a secret path is required when there is no terminal to pick at")
 	}
 	walk, err := walkKV(ctx, kv, root, kvWalkLimit)
@@ -53,7 +55,7 @@ func resolveKVPath(ctx context.Context, kv kvReader, root string, args []string)
 	case len(cands) == 1:
 		return cands[0], nil
 	}
-	if !isTerminal() {
+	if !cmdkit.IsTerminal() {
 		return "", fmt.Errorf("%q matches %d secrets and there is no terminal to pick at — give the full path:\n  %s",
 			query, len(cands), strings.Join(firstN(cands, 15), "\n  "))
 	}
@@ -94,7 +96,7 @@ func firstN(list []string, n int) []string {
 // Typing filters by every word at once, as search does; ←/→ narrows by folder.
 func pickKVPath(paths []string, root, title string) (string, error) {
 	match := func(i int, q string) bool { return matchesAllFold(paths[i], strings.Fields(q)) }
-	i, err := pickIndexMatch(paths, kvPickGroups(paths, root), match, title)
+	i, err := cmdkit.PickIndexMatch(paths, kvPickGroups(paths, root), match, title)
 	if err != nil {
 		return "", err
 	}
@@ -102,12 +104,12 @@ func pickKVPath(paths []string, root, title string) (string, error) {
 }
 
 // kvPickGroups is the folder each secret sits under, for the picker's tabs.
-func kvPickGroups(paths []string, root string) *listGroups {
+func kvPickGroups(paths []string, root string) *cmdkit.ListGroups {
 	of := make([]string, 0, len(paths))
 	for _, p := range paths {
 		of = append(of, kvPickGroup(p, root))
 	}
-	return &listGroups{name: "folder", of: of}
+	return cmdkit.NewListGroups("folder", of)
 }
 
 // kvPickGroup names a secret's tab: two segments below the mount when there
@@ -133,41 +135,41 @@ func kvPickGroup(path, root string) string {
 // already on disk: a completion must never be what opens a login. A folder
 // completes with its slash and no space, so the next Tab descends into it; once
 // a secret is among the candidates the space comes back.
-func completeKVPath(env CommandEnv) completer {
+func completeKVPath(env cmdkit.Env) cmdkit.Completer {
 	return func(cmd *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		defer silenceStderr()()
-		a, err := env.newApp()
+		defer cmdkit.SilenceStderr()()
+		a, err := env.App()
 		if err != nil || a.WouldPromptForLogin() {
-			return noCompletions()
+			return cmdkit.NoCompletions()
 		}
 		parent := cmd.Context()
 		if parent == nil {
 			parent = context.Background()
 		}
-		ctx, cancel := context.WithTimeout(parent, completionBudget)
+		ctx, cancel := context.WithTimeout(parent, cmdkit.CompletionBudget)
 		defer cancel()
 		if err := a.EnsureLogin(ctx); err != nil {
-			return noCompletions()
+			return cmdkit.NoCompletions()
 		}
 		root := kvRoot(a.Cfg)
 		typed := strings.TrimLeft(toComplete, "/")
 		cut := strings.LastIndex(typed, "/")
 		if cut < 0 {
 			// Still typing the mount.
-			if hasPrefixFold(root, typed) {
+			if cmdkit.HasPrefixFold(root, typed) {
 				return []string{root + "/"}, cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
 			}
-			return noCompletions()
+			return cmdkit.NoCompletions()
 		}
 		dir, partial := typed[:cut], typed[cut+1:]
 		keys, err := a.Vault.ListKV(ctx, dir)
 		if err != nil {
-			return noCompletions()
+			return cmdkit.NoCompletions()
 		}
 		var out []string
 		directive := cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
 		for _, k := range keys {
-			if !hasPrefixFold(k, partial) {
+			if !cmdkit.HasPrefixFold(k, partial) {
 				continue
 			}
 			out = append(out, dir+"/"+k)
@@ -176,18 +178,18 @@ func completeKVPath(env CommandEnv) completer {
 			}
 		}
 		if len(out) == 0 {
-			return noCompletions()
+			return cmdkit.NoCompletions()
 		}
 		return out, directive
 	}
 }
 
-// firstArgOnly limits a positional completer to the first argument, for
+// firstArgOnly limits a positional cmdkit.Completer to the first argument, for
 // commands that take exactly one: past it there is nothing to offer.
-func firstArgOnly(fn completer) completer {
+func firstArgOnly(fn cmdkit.Completer) cmdkit.Completer {
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) > 0 {
-			return noCompletions()
+			return cmdkit.NoCompletions()
 		}
 		return fn(cmd, args, toComplete)
 	}

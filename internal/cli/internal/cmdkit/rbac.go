@@ -1,4 +1,4 @@
-package cli
+package cmdkit
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 
 // The RBAC decision logic lives in internal/authz. This file holds only the
 // cobra wiring: tagging commands with their class (gate), the persistent gate
-// hook (enforceRBAC), and the constructor that adapts an *app.App into an
+// hook (EnforceRBAC), and the constructor that adapts an *app.App into an
 // authz.Authorizer for the CLI (lazy store). The MCP server wires its own in
 // internal/mcp, over the store a tool call already holds.
 
@@ -38,7 +38,7 @@ const (
 // An unknown name panics. The tree is wired on every invocation and under
 // root_test, so a typo dies in CI, never in a release — the same contract as
 // regexp.MustCompile.
-func gate(cmd *cobra.Command, name string) *cobra.Command {
+func Gate(cmd *cobra.Command, name string) *cobra.Command {
 	class, ok := authz.ClassOf(name)
 	if !ok {
 		panic(fmt.Sprintf("rbac: gate %q is not in the authz catalog", name))
@@ -49,7 +49,7 @@ func gate(cmd *cobra.Command, name string) *cobra.Command {
 // gateReadView tags a read-only view of a resource whose grant name is
 // mutate-classed — `vctl ip` lists the ledger that a granted `ip set` writes.
 // The gate still requires login; past that, read is default-allowed.
-func gateReadView(cmd *cobra.Command, name string) *cobra.Command {
+func GateReadView(cmd *cobra.Command, name string) *cobra.Command {
 	if _, ok := authz.ClassOf(name); !ok {
 		panic(fmt.Sprintf("rbac: gate %q is not in the authz catalog", name))
 	}
@@ -67,36 +67,36 @@ func tagRBAC(cmd *cobra.Command, name string, class authz.Class) *cobra.Command 
 	return cmd
 }
 
-// enforceRBAC is the persistent pre-run gate. It authenticates, then asks the
+// EnforceRBAC is the persistent pre-run gate. It authenticates, then asks the
 // authorizer whether the current identity may run this command. Ungated
 // commands carry no annotation and pass straight through.
-func enforceRBAC(env CommandEnv, cmd *cobra.Command) error {
+func EnforceRBAC(env Env, cmd *cobra.Command) error {
 	name := cmd.Annotations["rbac.command"]
 	if name == "" {
 		return nil
 	}
 	ctx := cmd.Context()
-	a, err := env.newApp()
+	a, err := env.App()
 	if err != nil {
 		return err
 	}
 	if err := a.EnsureLogin(ctx); err != nil {
 		return err
 	}
-	return newAuthorizer(a).Check(ctx, authz.Command{
+	return NewAuthorizer(a).Check(ctx, authz.Command{
 		Name:  name,
 		Class: authz.Class(cmd.Annotations["rbac.class"]),
 	})
 }
 
-// newAuthorizer wires the CLI's lazy authorizer: Vault supplies policies, and
+// NewAuthorizer wires the CLI's lazy authorizer: Vault supplies policies, and
 // the read-only inventory store — the source of command grants — is opened only
 // if a decision actually needs it (a non-admin mutate), then closed.
 //
 // It also carries the degraded-mode configuration, so a mutate decision made
 // while Postgres is down falls back to the last grants Postgres confirmed,
 // inside the configured window. Vault policies stay a live lookup either way.
-func newAuthorizer(a *app.App) *authz.Authorizer {
+func NewAuthorizer(a *app.App) *authz.Authorizer {
 	return authz.New(a.Vault, func(ctx context.Context) (authz.GrantSource, func(), error) {
 		st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
 		if err != nil {
@@ -106,11 +106,11 @@ func newAuthorizer(a *app.App) *authz.Authorizer {
 	}).WithOffline(offlineConfig(a)).WithAdminPolicies(a.Cfg.AdminPolicies)
 }
 
-// cachedGrant translates a stored grant into the authorization layer's view of
+// CachedGrant translates a stored grant into the authorization layer's view of
 // it. authz deliberately depends on nothing but the standard library, so the
 // two types stay separate and this is the seam between them — one place, so the
 // gate and `vctl cache status` cannot disagree about what they are looking at.
-func cachedGrant(g invcache.GrantRecord) authz.CachedGrant {
+func CachedGrant(g invcache.GrantRecord) authz.CachedGrant {
 	return authz.CachedGrant{Commands: g.Commands, ConfirmedAt: g.CapturedAt}
 }
 
@@ -127,7 +127,7 @@ func offlineConfig(a *app.App) *authz.Offline {
 			if !ok {
 				return authz.CachedGrant{}, false
 			}
-			return cachedGrant(g), true
+			return CachedGrant(g), true
 		},
 		Record: a.RecordGrants,
 		Window: a.Cfg.CacheOfflineWindow(),

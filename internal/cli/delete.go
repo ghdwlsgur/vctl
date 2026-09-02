@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -24,7 +25,7 @@ import (
 // What does not stay is any jump chain pointing at this host, and that is why
 // the command refuses rather than cascades: silently rewriting other hosts to
 // "direct" would leave them unreachable with no sign of why.
-func deleteCmd(env CommandEnv) *cobra.Command {
+func deleteCmd(env cmdkit.Env) *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:     "delete [hostname]",
@@ -40,8 +41,8 @@ repointing them silently would leave them unreachable.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return withStorePort(env, ctx, true, func(_ *app.App, st deleteStore) error {
-				cur, err := resolveHost(ctx, st, args, "Delete which host?")
+			return cmdkit.WithStorePort(env, ctx, true, func(_ *app.App, st deleteStore) error {
+				cur, err := cmdkit.ResolveHost(ctx, st, args, "Delete which host?")
 				if err != nil {
 					return err
 				}
@@ -78,20 +79,20 @@ repointing them silently would leave them unreachable.`,
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
-	return gate(cmd, "delete")
+	return cmdkit.Gate(cmd, "delete")
 }
 
 // deleteStore is what `vctl delete` may do: read the inventory to resolve
 // the host and find its dependents, and remove that one row.
 type deleteStore interface {
-	inventoryLister
+	cmdkit.InventoryLister
 	Delete(ctx context.Context, hostname string) (bool, error)
 }
 
 var _ deleteStore = (*store.Store)(nil)
 
 // jumpDependents lists the hosts that reach the network through this one.
-func jumpDependents(ctx context.Context, st inventoryLister, host string) ([]string, error) {
+func jumpDependents(ctx context.Context, st cmdkit.InventoryLister, host string) ([]string, error) {
 	rows, err := st.ListInventory(ctx, "")
 	if err != nil {
 		return nil, err
@@ -109,7 +110,7 @@ func jumpDependents(ctx context.Context, st inventoryLister, host string) ([]str
 // A delete that proceeds unattended because there was no terminal is the same
 // mistake as one that proceeds because nobody read the prompt.
 func confirmDelete(cur store.InventoryRow) (bool, error) {
-	if !isTerminal() {
+	if !cmdkit.IsTerminal() {
 		return false, fmt.Errorf("refusing to delete without confirmation: pass --yes to proceed non-interactively")
 	}
 	desc := fmt.Sprintf("%s in %s, reached as %s@%s", cur.IP, cur.DC, cur.User, cur.Hostname)

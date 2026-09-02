@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/agent"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 )
 
 // CommandExitError carries a child exit status through Cobra without terminating
@@ -28,7 +29,7 @@ func ChildExitCode(err error) (int, bool) {
 	return exitErr.Code, true
 }
 
-func execCmd(env CommandEnv) *cobra.Command {
+func execCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "exec -- <command> [args...]",
 		Short: "Run a child process with VAULT_TOKEN and VAULT_ADDR",
@@ -42,7 +43,7 @@ vctl renews or re-authenticates the token while the child process is alive.
 			if len(args) == 0 {
 				return fmt.Errorf("missing command: vctl exec -- <command>")
 			}
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}

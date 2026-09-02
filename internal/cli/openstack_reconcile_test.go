@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 )
 
 // A farm with sixty confirmed hosts should not print sixty names to say it
@@ -35,7 +37,7 @@ func TestCountAndNamesAFewAndCountsTheRest(t *testing.T) {
 // Vault is the boundary instead: kv/teams/sre/vctl-* and database/creds/vctl-rw.
 func TestReconcileIsNotAppGated(t *testing.T) {
 	var found *cobra.Command
-	for _, c := range openstackCmd(CommandEnv{}).Commands() {
+	for _, c := range openstackCmd(cmdkit.Env{}).Commands() {
 		if c.Name() == "reconcile" {
 			found = c
 		}

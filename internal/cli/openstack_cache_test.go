@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -245,7 +246,7 @@ func TestAVMListingIsNotServedFromAFarmsReading(t *testing.T) {
 // it then abandoned.
 func TestFarmCompletionAnswersFromDiskWithoutADatabase(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeFarms, time.Now().Add(-2*time.Hour))
-	env := CommandEnv{NewApp: func() (*app.App, error) { return a, nil }}
+	env := cmdkit.Env{NewApp: func() (*app.App, error) { return a, nil }}
 
 	got, directive := completeFarm(env, unassignedFarm)(nil, nil, "seoul")
 	if directive != 4 && len(got) == 0 {

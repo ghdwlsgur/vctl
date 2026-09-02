@@ -11,13 +11,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/timing"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func openstackFarmCmd(env CommandEnv) *cobra.Command {
+func openstackFarmCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "farm",
 		Short: "Name the deployments so the listing reads as something other than endpoints",
@@ -35,11 +36,11 @@ func openstackFarmCmd(env CommandEnv) *cobra.Command {
 	// deployed is allowed to any authenticated user, and only the two that write
 	// are mutations. Same grant name as before, so grants already issued still
 	// apply.
-	cmd.AddCommand(gate(openstackFarmNameCmd(env), "openstack-farm"))
+	cmd.AddCommand(cmdkit.Gate(openstackFarmNameCmd(env), "openstack-farm"))
 	cmd.AddCommand(openstackFarmDoctorCmd(env))
 	cmd.AddCommand(openstackFarmListCmd(env))
 	cmd.AddCommand(openstackFarmShowCmd(env))
-	cmd.AddCommand(gate(openstackFarmStateCmd(env), "openstack-farm"))
+	cmd.AddCommand(cmdkit.Gate(openstackFarmStateCmd(env), "openstack-farm"))
 	return cmd
 }
 
@@ -55,7 +56,7 @@ type farmDeclareStore interface {
 
 var _ farmDeclareStore = (*store.Store)(nil)
 
-func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
+func openstackFarmNameCmd(env cmdkit.Env) *cobra.Command {
 	var region string
 	var clearRegion bool
 	cmd := &cobra.Command{
@@ -69,9 +70,9 @@ func openstackFarmNameCmd(env CommandEnv) *cobra.Command {
 		Args: cobra.MaximumNArgs(2),
 		// Only the first argument. The second is the new name — nothing knows
 		// it yet, which is the whole point of the command.
-		ValidArgsFunction: byPosition(completeFarm(env)),
+		ValidArgsFunction: cmdkit.ByPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStorePort(env, cmd.Context(), true, func(a *app.App, st farmDeclareStore) error {
+			return cmdkit.WithStorePort(env, cmd.Context(), true, func(a *app.App, st farmDeclareStore) error {
 				ctx := cmd.Context()
 				farms, ok, err := farmChoicesForPick(ctx, a, st)
 				if err != nil || !ok {
@@ -259,10 +260,10 @@ func pickFarm(farms []farmChoice, selector, title string) (farmChoice, error) {
 	if selector != "" {
 		return resolveFarm(farms, selector)
 	}
-	if !isTerminal() {
+	if !cmdkit.IsTerminal() {
 		return farmChoice{}, fmt.Errorf("a deployment is required when there is no terminal to pick at")
 	}
-	i, err := pickIndex(farmPickLabels(farms), nil, title)
+	i, err := cmdkit.PickIndex(farmPickLabels(farms), nil, title)
 	if err != nil {
 		return farmChoice{}, err
 	}
@@ -319,7 +320,7 @@ func farmPickLabels(farms []farmChoice) []string {
 		label := ui.Value(ui.PadRight(ui.Truncate(lead, 22), 22))
 		label += "  " + ui.Muted(ui.PadRight(rest, 22))
 		if f.State != "" && f.State != store.StateActive {
-			label += "  " + stateCell(f.State)
+			label += "  " + cmdkit.StateCell(f.State)
 		}
 		if n := len(f.Hosts); n > 0 {
 			label += "  " + ui.Muted(pluralHosts(n)+" · "+ui.Truncate(farmShape(f.Hosts, false), 44))
@@ -330,7 +331,7 @@ func farmPickLabels(farms []farmChoice) []string {
 }
 
 func farmNameForm(f farmChoice, region string) (string, string, string, error) {
-	if !isTerminal() {
+	if !cmdkit.IsTerminal() {
 		return "", "", "", fmt.Errorf("a name is required when there is no terminal to ask at")
 	}
 	name := f.Name
@@ -342,7 +343,7 @@ func farmNameForm(f farmChoice, region string) (string, string, string, error) {
 		huh.NewInput().Title("Name").
 			Description(desc).
 			Value(&name).
-			Validate(nonEmpty("name")),
+			Validate(cmdkit.NonEmpty("name")),
 		// Optional, and last. Most deployments here have no region worth
 		// recording, and a required field for something usually empty turns
 		// naming a farm into filling in a form.
@@ -356,7 +357,7 @@ func farmNameForm(f farmChoice, region string) (string, string, string, error) {
 	return f.ID, strings.TrimSpace(name), strings.TrimSpace(region), nil
 }
 
-func openstackFarmStateCmd(env CommandEnv) *cobra.Command {
+func openstackFarmStateCmd(env cmdkit.Env) *cobra.Command {
 	var note string
 	cmd := &cobra.Command{
 		Use:   "state [deployment] [state]",
@@ -370,9 +371,9 @@ func openstackFarmStateCmd(env CommandEnv) *cobra.Command {
 			"expected rather than as news.\n\n" +
 			"With no arguments the deployment is picked from a list and the state asked for in a form.",
 		Args:              cobra.MaximumNArgs(2),
-		ValidArgsFunction: byPosition(completeFarm(env), staticCompletions(store.HostStates...)),
+		ValidArgsFunction: cmdkit.ByPosition(completeFarm(env), cmdkit.StaticCompletions(store.HostStates...)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withStorePort(env, cmd.Context(), true, func(a *app.App, st farmDeclareStore) error {
+			return cmdkit.WithStorePort(env, cmd.Context(), true, func(a *app.App, st farmDeclareStore) error {
 				ctx := cmd.Context()
 				farms, ok, err := farmChoicesForPick(ctx, a, st)
 				if err != nil || !ok {
@@ -423,7 +424,7 @@ func resolveFarmState(farms []farmChoice, id, state, note string) (string, strin
 }
 
 func farmStateForm(f farmChoice, note string) (string, string, string, error) {
-	if !isTerminal() {
+	if !cmdkit.IsTerminal() {
 		return "", "", "", fmt.Errorf("a state is required when there is no terminal to ask at")
 	}
 	state := f.State
@@ -440,7 +441,7 @@ func farmStateForm(f farmChoice, note string) (string, string, string, error) {
 		// else. See ui.FormKeyMap.
 		huh.NewSelect[string]().Title("State").
 			Description(desc+"\n"+farmStateMeanings()).
-			Options(stateOptions()...).
+			Options(cmdkit.StateOptions()...).
 			Value(&state).
 			Inline(true),
 		huh.NewInput().Title("Note").

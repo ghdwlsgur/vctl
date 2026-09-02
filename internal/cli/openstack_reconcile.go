@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/openstack/farmcreds"
 	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
@@ -26,7 +27,7 @@ const reconcileTimeout = 60 * time.Second
 // the two membership calls put together.
 const instanceTimeout = 180 * time.Second
 
-func openstackReconcileCmd(env CommandEnv) *cobra.Command {
+func openstackReconcileCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		only           string
 		self           bool
@@ -53,7 +54,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 			// install uses. vault_farm_prefix moves the runtime read.
 			"Credentials are read from Vault under " + config.Defaults().VaultFarmPrefix + "/vctl-<host_port>, at use time.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := commandOutput(cmd, asJSON)
+			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {
 				return err
 			}
@@ -64,7 +65,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 			// (servers, rbac, ipam, wg). The reconcile role can touch exactly
 			// what a reconcile writes: memberships, run history, control
 			// hosts, and the VM snapshot.
-			return env.withPurposeStore(cmd.Context(), app.PurposeOpenStackReconcile, func(a *app.App, st *store.Store) error {
+			return env.WithPurposeStore(cmd.Context(), app.PurposeOpenStackReconcile, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				farms, err := st.LocalOnlyFarms(ctx)
 				if err != nil {
@@ -121,7 +122,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 					}
 					ids = append(ids, id)
 				}
-				if skipped > 0 && format == outputTable {
+				if skipped > 0 && format == cmdkit.OutputTable {
 					ui.Infof(os.Stderr, "skipping %d retired deployment(s); --include-retired to reconcile them", skipped)
 				}
 				sort.Strings(ids)
@@ -144,7 +145,7 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 					return err
 				}
 				startedAt := time.Now()
-				if format == outputTable {
+				if format == cmdkit.OutputTable {
 					ui.Section(os.Stdout, "openstack reconcile")
 				}
 				rep, runErr := svc.Run(ctx, req)
@@ -156,8 +157,8 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 				if !dryRun {
 					forgetReadings(ctx, a, st)
 				}
-				if format != outputTable {
-					if err := writeStructured(format, reconcileReportJSON(rep, startedAt, took, dryRun)); err != nil {
+				if format != cmdkit.OutputTable {
+					if err := cmdkit.WriteStructured(format, reconcileReportJSON(rep, startedAt, took, dryRun)); err != nil {
 						return err
 					}
 				} else {
@@ -193,13 +194,13 @@ func openstackReconcileCmd(env CommandEnv) *cobra.Command {
 	cmd.Flags().StringVar(&failOn, "fail-on", "",
 		"exit non-zero when any of these occurred: unreachable, no-credentials, partial, warning")
 	cmd.MarkFlagsMutuallyExclusive("self", "farm")
-	registerCompletion(cmd, "farm", completeFarm(env))
-	registerCompletion(cmd, "hostname", completeInventoryHost(env))
+	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env))
+	cmdkit.RegisterCompletion(cmd, "hostname", cmdkit.CompleteInventoryHost(env))
 	// A closed set, and the only completion here that needs nothing from the
 	// database: these four words are the contract.
-	registerCompletion(cmd, "fail-on", staticCompletions(
+	cmdkit.RegisterCompletion(cmd, "fail-on", cmdkit.StaticCompletions(
 		"unreachable", "no-credentials", "partial", "warning"))
-	return supportsStructuredOutput(cmd)
+	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
 // farmOfHost finds which deployment this machine belongs to.

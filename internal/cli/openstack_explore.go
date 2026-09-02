@@ -12,6 +12,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -35,7 +36,7 @@ import (
 // The detail screens are the individual commands' own renderers, so this and
 // `openstack host` / `vm show` cannot drift into showing different facts about
 // the same machine.
-func openstackExploreCmd(env CommandEnv) *cobra.Command {
+func openstackExploreCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "explore [deployment]",
 		Aliases: []string{"browse", "ui"},
@@ -55,7 +56,7 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 			"`vctl openstack farm doctor <deployment>`.\n\n" +
 			"An argument selects that deployment at startup.",
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: byPosition(completeFarm(env)),
+		ValidArgsFunction: cmdkit.ByPosition(completeFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runOpenStackExplore(cmd, env, args)
 		},
@@ -63,17 +64,17 @@ func openstackExploreCmd(env CommandEnv) *cobra.Command {
 	return cmd
 }
 
-func runOpenStackExplore(cmd *cobra.Command, env CommandEnv, args []string) error {
+func runOpenStackExplore(cmd *cobra.Command, env cmdkit.Env, args []string) error {
 	// A full-screen program needs a screen. Naming the commands that answer the
 	// same questions without one is more useful than reporting its absence.
-	if !isTerminal() {
+	if !cmdkit.IsTerminal() {
 		return fmt.Errorf("openstack is a full-screen browser and there is no terminal; " +
 			"use 'vctl openstack list', 'vctl openstack list --farm <f>' and " +
 			"'vctl openstack vm --farm <f>' instead")
 	}
 	// withApp, not withStore: opening the store is the expensive part and the
 	// screen may not need it at all. See openLater.
-	return env.withApp(func(a *app.App) error {
+	return env.WithApp(func(a *app.App) error {
 		return runExplore(cmd.Context(), a, args, wantsFresh(cmd))
 	})
 }
@@ -109,7 +110,7 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 	// a fresh Vault-signed certificate and an audit row per command, the same
 	// pipeline `vctl ssh --vm` exec and the MCP tool use. The connector is the
 	// audited path; wiring anything rawer here would open an unrecorded door.
-	conn := newConnector(a)
+	conn := cmdkit.NewConnector(a)
 	nets := a.Cfg.OperatorNetworks // the loaded config, not a per-command re-parse
 	m.execVM = func(v *store.Instance, user, command string) (string, int, error) {
 		t, err := access.VMTarget(nameOrID(*v), v.Addresses, access.VMPolicy{

@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
@@ -31,7 +32,7 @@ import (
 // the other.
 const staleProbeWindow = 3 * time.Hour
 
-func openstackCmd(env CommandEnv) *cobra.Command {
+func openstackCmd(env cmdkit.Env) *cobra.Command {
 	var legacy openStackListOptions
 	cmd := &cobra.Command{
 		Use:     "openstack [deployment]",
@@ -57,9 +58,9 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 	// listings answer from the last reading when it is fresh, which is most of
 	// what makes them quick — this is how somebody says they would rather wait.
 	cmd.PersistentFlags().Bool("fresh", false, "read the database instead of the last stored reading")
-	registerCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
-	registerCompletion(cmd, "role", completeRole(env))
-	cmd.ValidArgsFunction = byPosition(completeFarm(env))
+	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
+	cmdkit.RegisterCompletion(cmd, "role", completeRole(env))
+	cmd.ValidArgsFunction = cmdkit.ByPosition(completeFarm(env))
 	cmd.AddCommand(openstackListCmd(env))
 	cmd.AddCommand(openstackHostCmd(env))
 	// Deliberately not app-gated, for the same reason `vctl migrate` is not.
@@ -82,7 +83,7 @@ func openstackCmd(env CommandEnv) *cobra.Command {
 	// The farm subtree gates its own leaves — see openstackFarmCmd. Annotating
 	// the parent did nothing but require mutate permission to read its help.
 	cmd.AddCommand(openstackFarmCmd(env))
-	return supportsStructuredOutput(cmd)
+	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
 type openStackListOptions struct {
@@ -114,7 +115,7 @@ func registerOpenStackListFlags(cmd *cobra.Command, o *openStackListOptions, hid
 	}
 }
 
-func openstackListCmd(env CommandEnv) *cobra.Command {
+func openstackListCmd(env cmdkit.Env) *cobra.Command {
 	var opts openStackListOptions
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -125,21 +126,21 @@ func openstackListCmd(env CommandEnv) *cobra.Command {
 		},
 	}
 	registerOpenStackListFlags(cmd, &opts, false)
-	registerCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
-	registerCompletion(cmd, "role", completeRole(env))
-	return supportsStructuredOutput(cmd)
+	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
+	cmdkit.RegisterCompletion(cmd, "role", completeRole(env))
+	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
-func runOpenStackList(cmd *cobra.Command, env CommandEnv, opts openStackListOptions) error {
-	format, err := commandOutput(cmd, opts.json)
+func runOpenStackList(cmd *cobra.Command, env cmdkit.Env, opts openStackListOptions) error {
+	format, err := cmdkit.CommandOutput(cmd, opts.json)
 	if err != nil {
 		return err
 	}
-	return env.withApp(func(a *app.App) error {
+	return env.WithApp(func(a *app.App) error {
 		ctx := cmd.Context()
 		st := &openLater{app: a}
 		defer st.Close()
-		rd, err := listingReading(ctx, a, st, fleet.ShapeFarms, mustBeLive(cmd, format != outputTable), fleetSnapshot)
+		rd, err := listingReading(ctx, a, st, fleet.ShapeFarms, mustBeLive(cmd, format != cmdkit.OutputTable), fleetSnapshot)
 		if err != nil {
 			return err
 		}
@@ -158,8 +159,8 @@ func runOpenStackList(cmd *cobra.Command, env CommandEnv, opts openStackListOpti
 			selector = f.ID
 		}
 		hosts = filterOpenStack(hosts, selector, opts.role, opts.all)
-		if format != outputTable {
-			return writeStructured(format, openStackExport{Hosts: hosts, Coverage: cov})
+		if format != cmdkit.OutputTable {
+			return cmdkit.WriteStructured(format, openStackExport{Hosts: hosts, Coverage: cov})
 		}
 		renderOpenStack(os.Stdout, hosts, cov, opts.wide, time.Now())
 		return nil
@@ -679,7 +680,7 @@ func openStackNoteCell(h store.OpenStackHost, now time.Time) string {
 	if h.LastError != "" {
 		notes = append(notes, ui.Fail("probe: "+ui.Truncate(h.LastError, 40)))
 	}
-	if s := stateCell(h.HostState); s != "" {
+	if s := cmdkit.StateCell(h.HostState); s != "" {
 		notes = append(notes, s)
 	}
 	// Only worth saying once the reading is stale anyway. A fresh probe that
@@ -710,7 +711,7 @@ func coverageLine(c store.OpenStackCoverage) string {
 	return s
 }
 
-func openstackHostCmd(env CommandEnv) *cobra.Command {
+func openstackHostCmd(env cmdkit.Env) *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "host [hostname]",
@@ -720,13 +721,13 @@ func openstackHostCmd(env CommandEnv) *cobra.Command {
 		// found nothing" is an answer this command exists to show.
 		ValidArgsFunction: completeOpenStackHost(env, false),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := commandOutput(cmd, asJSON)
+			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {
 				return err
 			}
-			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
-				row, err := resolveHost(ctx, st, args, "OpenStack detail")
+				row, err := cmdkit.ResolveHost(ctx, st, args, "OpenStack detail")
 				if err != nil {
 					return err
 				}
@@ -738,14 +739,14 @@ func openstackHostCmd(env CommandEnv) *cobra.Command {
 					if h.Hostname != row.Hostname {
 						continue
 					}
-					if format != outputTable {
-						return writeStructured(format, h)
+					if format != cmdkit.OutputTable {
+						return cmdkit.WriteStructured(format, h)
 					}
 					renderOpenStackHost(os.Stdout, h, time.Now())
 					return nil
 				}
-				if format != outputTable {
-					return writeStructured(format, map[string]any{"hostname": row.Hostname, "probed": false})
+				if format != cmdkit.OutputTable {
+					return cmdkit.WriteStructured(format, map[string]any{"hostname": row.Hostname, "probed": false})
 				}
 				// Not an error: the host exists, nothing has looked at it. Saying
 				// "not found" would send someone looking for a missing inventory
@@ -756,7 +757,7 @@ func openstackHostCmd(env CommandEnv) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	return supportsStructuredOutput(cmd)
+	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
 func renderOpenStackHost(w io.Writer, h store.OpenStackHost, now time.Time) {

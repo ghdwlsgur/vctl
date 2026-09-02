@@ -12,6 +12,8 @@ import (
 
 	vault "github.com/hashicorp/vault/api"
 
+	"github.com/ghdwlsgur/vctl/internal/authz"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
 )
@@ -182,7 +184,7 @@ func TestKVCommandsAreWiredAsReadsWithStructuredOutput(t *testing.T) {
 		t.Errorf("kv is in group %q, want access", kv.GroupID)
 	}
 	// The bare command reads too, so it carries the same gate and output contract.
-	if kv.Annotations["rbac.command"] != "kv" || kv.Annotations["rbac.class"] != string(classRead) || kv.Annotations[structuredOutputAnnotation] != "true" {
+	if kv.Annotations["rbac.command"] != "kv" || kv.Annotations["rbac.class"] != string(authz.ClassRead) || kv.Annotations[cmdkit.StructuredOutputAnnotation] != "true" {
 		t.Errorf("bare kv annotations = %v, want a read gate with structured output", kv.Annotations)
 	}
 	for _, name := range []string{"list", "get", "search"} {
@@ -191,10 +193,10 @@ func TestKVCommandsAreWiredAsReadsWithStructuredOutput(t *testing.T) {
 			t.Errorf("kv %s missing", name)
 			continue
 		}
-		if sub.Annotations["rbac.command"] != "kv" || sub.Annotations["rbac.class"] != string(classRead) {
+		if sub.Annotations["rbac.command"] != "kv" || sub.Annotations["rbac.class"] != string(authz.ClassRead) {
 			t.Errorf("kv %s annotations = %v, want a read gate named kv", name, sub.Annotations)
 		}
-		if sub.Annotations[structuredOutputAnnotation] != "true" {
+		if sub.Annotations[cmdkit.StructuredOutputAnnotation] != "true" {
 			t.Errorf("kv %s does not offer -o json", name)
 		}
 	}

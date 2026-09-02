@@ -3,21 +3,20 @@ package cli
 import (
 	"fmt"
 	"io"
-	"net"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func lsCmd(env CommandEnv) *cobra.Command {
+func lsCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		dc     string
 		allIPs bool
@@ -28,7 +27,7 @@ func lsCmd(env CommandEnv) *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List accessible inventory hosts",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withInventory(cmd.Context(), func(_ *app.App, inv *app.Inventory) error {
+			return env.WithInventory(cmd.Context(), func(_ *app.App, inv *app.Inventory) error {
 				servers, err := inv.ListInventory(cmd.Context(), dc)
 				if err != nil {
 					return err
@@ -67,61 +66,16 @@ func lsCmd(env CommandEnv) *cobra.Command {
 // would hide real ones too, and which ranges are noise differs per site.
 func ipCell(r store.InventoryRow, allIPs bool) string {
 	if len(r.Addresses) <= 1 {
-		return addrCell(r.IP, r.Port)
+		return cmdkit.AddrCell(r.IP, r.Port)
 	}
 	// Only the primary carries the port: it is the one `vctl ssh` dials. The
 	// extras are addresses the same daemon answers on, so repeating the port on
 	// each would state the same fact several times.
-	first := addrCell(r.Addresses[0], r.Port)
+	first := cmdkit.AddrCell(r.Addresses[0], r.Port)
 	if allIPs {
 		return first + " " + ui.Muted("+"+strings.Join(r.Addresses[1:], " +"))
 	}
 	return first + " " + ui.Muted(fmt.Sprintf("(+%d)", len(r.Addresses)-1))
-}
-
-// stateCell renders what an operator declared about a host, and renders nothing
-// when that is "active".
-//
-// Same trade as the port: active is the overwhelming majority, and labelling
-// every row with it would bury the handful that are not. What is left is a
-// column that is blank unless somebody has something to say.
-//
-// The colours encode whether a down reading on that row is news. broken is red
-// because it is a fault; maintenance is amber because it is planned and
-// temporary; retired is muted because nothing is expected of it any more.
-func stateCell(state string) string {
-	switch store.StateOrActive(state) {
-	case store.StateBroken:
-		return ui.Fail(store.StateBroken)
-	case store.StateMaintenance:
-		return ui.Warn("maint")
-	case store.StateRetired:
-		return ui.Muted(store.StateRetired)
-	default:
-		return ""
-	}
-}
-
-// defaultSSHPort is the port a bare address implies, and the one worth omitting.
-const defaultSSHPort = 22
-
-// addrCell renders the address a connection would actually use, showing the
-// port only when it is not 22.
-//
-// Non-default ports are common enough to matter and rare enough that printing
-// all of them would be the wrong trade: in the inventory this was written
-// against, 18 of 123 hosts differ, across four values. Rendering ":22" on the
-// other 105 to surface those 18 puts the noise on the majority of rows and
-// makes the exceptions no easier to find — the eye is scanning for a
-// difference, and a column where every cell has a suffix has none.
-//
-// Omitting it is only safe because the omission is unambiguous: nothing else
-// puts a colon in this column, so a bare address means 22 rather than "unknown".
-func addrCell(ip string, port int) string {
-	if port == 0 || port == defaultSSHPort {
-		return ip
-	}
-	return net.JoinHostPort(ip, strconv.Itoa(port))
 }
 
 // agentCell reports node-agent liveness for the inventory listing: a fresh
@@ -175,11 +129,11 @@ func renderInventoryMode(w io.Writer, servers []store.InventoryRow, cached, allI
 		}
 		row := []string{
 			s.Hostname,
-			strings.TrimSpace(agentCell(s, cached) + " " + stateCell(s.State)),
+			strings.TrimSpace(agentCell(s, cached) + " " + cmdkit.StateCell(s.State)),
 			ipCell(s, allIPs), jump,
 		}
 		if wide {
-			row = []string{s.Hostname, agentCell(s, cached), stateCell(s.State), ipCell(s, allIPs), s.User, jump}
+			row = []string{s.Hostname, agentCell(s, cached), cmdkit.StateCell(s.State), ipCell(s, allIPs), s.User, jump}
 		}
 		current.Rows = append(current.Rows, row)
 	}

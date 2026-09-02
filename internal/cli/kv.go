@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
@@ -36,7 +37,7 @@ type kvReader interface {
 
 var _ kvReader = (*vaultc.Client)(nil)
 
-func kvCmd(env CommandEnv) *cobra.Command {
+func kvCmd(env cmdkit.Env) *cobra.Command {
 	var opts kvGetOpts
 	cmd := &cobra.Command{
 		Use:   "kv [word|path]",
@@ -81,13 +82,13 @@ Every read lands in Vault's own audit log under your identity.`,
 	}
 	addKVGetFlags(cmd, &opts)
 	cmd.AddCommand(kvListCmd(env), kvGetCmd(env), kvSearchCmd(env), kvExecCmd(env))
-	return supportsStructuredOutput(gate(cmd, "kv"))
+	return cmdkit.SupportsStructuredOutput(cmdkit.Gate(cmd, "kv"))
 }
 
 // withKV builds the app, makes sure of a login, and hands fn the KV port.
 // Vault only — none of these commands opens Postgres.
-func (e CommandEnv) withKV(ctx context.Context, fn func(*app.App, kvReader) error) error {
-	return e.withApp(func(a *app.App) error {
+func withKV(env cmdkit.Env, ctx context.Context, fn func(*app.App, kvReader) error) error {
+	return env.WithApp(func(a *app.App) error {
 		if err := a.EnsureLogin(ctx); err != nil {
 			return err
 		}

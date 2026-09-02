@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -83,7 +84,7 @@ func TestMigrationStatusExplainsAnEmptyLedger(t *testing.T) {
 // still works so runbooks do not break, but it is marked deprecated so nobody
 // learns it fresh.
 func TestSyncMigrateFlagIsDeprecatedButStillPresent(t *testing.T) {
-	f := syncCmd(CommandEnv{}).Flags().Lookup("migrate")
+	f := syncCmd(cmdkit.Env{}).Flags().Lookup("migrate")
 	if f == nil {
 		t.Fatal("sync --migrate was removed rather than deprecated; runbooks would break")
 	}
@@ -96,7 +97,7 @@ func TestSyncMigrateFlagIsDeprecatedButStillPresent(t *testing.T) {
 }
 
 func TestMigrateCommandTakesNoArgumentsAndOffersStatus(t *testing.T) {
-	cmd := migrateCmd(CommandEnv{})
+	cmd := migrateCmd(cmdkit.Env{})
 	if err := cmd.Args(cmd, []string{"something"}); err == nil {
 		t.Error("migrate accepted a positional argument")
 	}
@@ -116,12 +117,12 @@ func TestMigrateCommandTakesNoArgumentsAndOffersStatus(t *testing.T) {
 // which only vctl-admin and the migration Job's policy carry. Verified against
 // the live Vault — the vctl-user baseline is vctl-ro and vctl-identity only.
 func TestMigrateIsNotAppGatedBecauseVaultDecides(t *testing.T) {
-	if got := migrateCmd(CommandEnv{}).Annotations["rbac.command"]; got != "" {
+	if got := migrateCmd(cmdkit.Env{}).Annotations["rbac.command"]; got != "" {
 		t.Errorf("migrate carries an app-layer gate (%q); it cannot be satisfied before the schema exists", got)
 	}
 	// sync keeps its gate. It writes inventory, which is exactly what the grant
 	// table is for, and it does not have the bootstrap problem.
-	if got := syncCmd(CommandEnv{}).Annotations["rbac.command"]; got != "" && got != "sync" {
+	if got := syncCmd(cmdkit.Env{}).Annotations["rbac.command"]; got != "" && got != "sync" {
 		t.Errorf("sync gate changed to %q", got)
 	}
 }

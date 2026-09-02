@@ -11,6 +11,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/wireguard"
@@ -21,7 +22,7 @@ import (
 // addresses. sudo is tried first since `wg show` needs root; a plain fallback
 // covers root logins. Both are silenced so a non-WG host yields empty output.
 
-func wgCmd(env CommandEnv) *cobra.Command {
+func wgCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "wg",
 		Short: "Collect and inspect the WireGuard topology (from vctl-postgres)",
@@ -34,7 +35,7 @@ gateways and running 'wg show'. No secrets are stored — only public keys.`,
 }
 
 // wgSyncCmd collects WireGuard state from gateways into postgres.
-func wgSyncCmd(env CommandEnv) *cobra.Command {
+func wgSyncCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		dc          string
 		all         bool
@@ -50,7 +51,7 @@ each host's WireGuard interfaces, peers and runtime status. Hosts without
 WireGuard are skipped. --dry-run parses and prints without writing.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}
@@ -72,7 +73,7 @@ WireGuard are skipped. --dry-run parses and prints without writing.`,
 				return fmt.Errorf("no target hosts: pass host names, --all, or --dc")
 			}
 
-			conn := newConnector(a)
+			conn := cmdkit.NewConnector(a)
 			timeout := time.Duration(timeoutSec) * time.Second
 			targets := make([]wireguard.Host, 0, len(hosts))
 			for i := range hosts {
@@ -133,7 +134,7 @@ WireGuard are skipped. --dry-run parses and prints without writing.`,
 	f.BoolVar(&dryRun, "dry-run", false, "parse and report without writing to the DB")
 	f.IntVar(&timeoutSec, "timeout", 20, "per-host SSH command timeout (seconds)")
 	f.IntVar(&concurrency, "concurrency", 6, "max concurrent gateway probes")
-	return gate(cmd, "wg-sync")
+	return cmdkit.Gate(cmd, "wg-sync")
 }
 
 // wgTargetHosts resolves the set of gateways to probe: explicit args, else the

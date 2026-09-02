@@ -13,6 +13,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
@@ -26,7 +27,7 @@ import (
 // Node.spec.providerID. It is the join between a cluster and the farm under it.
 const providerIDPrefix = "openstack:///"
 
-func openstackVMCmd(env CommandEnv) *cobra.Command {
+func openstackVMCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		farm     string
 		host     string
@@ -51,11 +52,11 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 			"  vctl openstack vm 10.3.1         every VM answering on an address that starts there",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := commandOutput(cmd, asJSON)
+			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {
 				return err
 			}
-			return env.withApp(func(a *app.App) error {
+			return env.WithApp(func(a *app.App) error {
 				ctx := cmd.Context()
 				lazy := &openLater{app: a}
 				defer lazy.Close()
@@ -93,7 +94,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 				// reading was stored under.
 				narrowed := search != "" || address != "" || id != "" || project != "" || host != ""
 				if !narrowed {
-					rd, err := vmCatalog(ctx, a, lazy, mustBeLive(cmd, format != outputTable))
+					rd, err := vmCatalog(ctx, a, lazy, mustBeLive(cmd, format != cmdkit.OutputTable))
 					if err != nil {
 						return err
 					}
@@ -102,8 +103,8 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 					if err != nil {
 						return err
 					}
-					if format != outputTable {
-						return writeStructured(format, vms)
+					if format != cmdkit.OutputTable {
+						return cmdkit.WriteStructured(format, vms)
 					}
 					renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), wide)
 					return nil
@@ -115,7 +116,7 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 					// and the second was issued after the VMs had already been
 					// fetched.
 					var cat fleet.Catalog
-					if farm != "" || format == outputTable {
+					if farm != "" || format == cmdkit.OutputTable {
 						c, err := loadFarmCatalog(ctx, a, st)
 						if err != nil {
 							return err
@@ -152,8 +153,8 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 					if err != nil {
 						return err
 					}
-					if format != outputTable {
-						return writeStructured(format, vms)
+					if format != cmdkit.OutputTable {
+						return cmdkit.WriteStructured(format, vms)
 					}
 					renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), wide)
 					return nil
@@ -170,14 +171,14 @@ func openstackVMCmd(env CommandEnv) *cobra.Command {
 	cmd.AddCommand(openstackVMShowCmd(env))
 	cmd.Flags().BoolVar(&wide, "wide", false, "full UUIDs and the rest of what was collected")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	registerCompletion(cmd, "farm", completeFarm(env))
-	registerCompletion(cmd, "host", completeOpenStackHost(env, true))
-	registerCompletion(cmd, "project", completeProject(env))
-	registerCompletion(cmd, "id", completeVM(env))
+	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env))
+	cmdkit.RegisterCompletion(cmd, "host", completeOpenStackHost(env, true))
+	cmdkit.RegisterCompletion(cmd, "project", completeProject(env))
+	cmdkit.RegisterCompletion(cmd, "id", completeVM(env))
 	// The positional is a search, so it completes to names rather than to the
 	// uuids --id takes. Somebody who has the uuid is not searching for it.
 	cmd.ValidArgsFunction = completeVMName(env)
-	return supportsStructuredOutput(cmd)
+	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
 // vmCatalog is the whole reading for an unnarrowed listing, and where it came
@@ -623,7 +624,7 @@ func oneVM(ctx context.Context, st *store.Store, id, deploymentID string) (store
 // addresses rather than the best one, when it was last seen, and whether SSH
 // will work — and, having found it, the line to run next. Printing that line
 // rather than describing it is the difference between one step and three.
-func openstackVMShowCmd(env CommandEnv) *cobra.Command {
+func openstackVMShowCmd(env cmdkit.Env) *cobra.Command {
 	var farm string
 	var asJSON bool
 	cmd := &cobra.Command{
@@ -632,7 +633,7 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeVM(env),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := commandOutput(cmd, asJSON)
+			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {
 				return err
 			}
@@ -641,7 +642,7 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 				return fmt.Errorf("show takes a Nova instance id or openstack:///<id>, not %q; "+
 					"run 'vctl openstack vm' to find it", args[0])
 			}
-			return env.withStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
 				ctx := cmd.Context()
 				// One reading answers both questions this command asks about
 				// deployments: which one --farm means, and what to call the one
@@ -665,8 +666,8 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 				// The sibling `openstack host <name>` exports; a VM described in
 				// full is the same contract, and store.Instance already carries
 				// its wire tags.
-				if format != outputTable {
-					return writeStructured(format, v)
+				if format != cmdkit.OutputTable {
+					return cmdkit.WriteStructured(format, v)
 				}
 				renderVMShow(os.Stdout, v, cat.Names(), operatorNetworks(), time.Now())
 				return nil
@@ -675,8 +676,8 @@ func openstackVMShowCmd(env CommandEnv) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&farm, "farm", "", "deployment holding the VM, when its id is in more than one")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	registerCompletion(cmd, "farm", completeFarm(env))
-	return supportsStructuredOutput(cmd)
+	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env))
+	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
 func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets []string, now time.Time) {

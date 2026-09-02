@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 )
 
 // A queued record and a lost one need different words. Saying "not recorded"
@@ -14,7 +15,7 @@ import (
 func TestAuditErrorMessageDistinguishesQueuedFromLost(t *testing.T) {
 	cause := errors.New("dial tcp 127.0.0.1:5432: connection refused")
 
-	queued := auditErrorMessage(&app.SpooledError{Cause: cause, Pending: 3})
+	queued := cmdkit.AuditErrorMessage(&app.SpooledError{Cause: cause, Pending: 3})
 	if strings.Contains(queued, "not recorded") {
 		t.Errorf("a queued record was reported as lost: %q", queued)
 	}
@@ -24,7 +25,7 @@ func TestAuditErrorMessageDistinguishesQueuedFromLost(t *testing.T) {
 		}
 	}
 
-	lost := auditErrorMessage(cause)
+	lost := cmdkit.AuditErrorMessage(cause)
 	if !strings.Contains(lost, "not recorded") {
 		t.Errorf("a genuinely lost record was not reported as lost: %q", lost)
 	}

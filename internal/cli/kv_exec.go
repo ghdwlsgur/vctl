@@ -15,11 +15,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/vaultc"
 )
 
-func kvExecCmd(env CommandEnv) *cobra.Command {
+func kvExecCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "exec <word|path> <command> [args...]",
 		Aliases: []string{"run"},
@@ -59,7 +60,7 @@ the shorter spelling of the curl case.`,
 			if err != nil {
 				return err
 			}
-			return env.withKV(cmd.Context(), func(a *app.App, kv kvReader) error {
+			return withKV(env, cmd.Context(), func(a *app.App, kv kvReader) error {
 				ctx := cmd.Context()
 				path, err := resolveKVPath(ctx, kv, kvRoot(a.Cfg), []string{secret})
 				if err != nil {
@@ -73,7 +74,7 @@ the shorter spelling of the curl case.`,
 			})
 		},
 	}
-	return gate(cmd, "kv")
+	return cmdkit.Gate(cmd, "kv")
 }
 
 // wantsHelp is the -h/--help check a command with flag parsing disabled has

@@ -6,10 +6,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func loginCmd(env CommandEnv) *cobra.Command {
+func loginCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		method   string
 		register bool
@@ -29,7 +30,7 @@ identity — once it takes over, audit attributes to the approle, not the person
 so use it only for automation/bootstrap, never for day-to-day human access.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}
@@ -72,12 +73,12 @@ so use it only for automation/bootstrap, never for day-to-day human access.`,
 	return cmd
 }
 
-func logoutCmd(env CommandEnv) *cobra.Command {
+func logoutCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
 		Short: "Remove the cached Vault token",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}

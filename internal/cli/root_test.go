@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/authz"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 )
 
 // fakeDeps injects an app factory that never touches Vault, so building and
@@ -48,7 +50,7 @@ func TestGatedCommandsCarryAnnotations(t *testing.T) {
 	if ssh == nil {
 		t.Fatal("ssh command missing")
 	}
-	if ssh.Annotations["rbac.command"] != "ssh" || ssh.Annotations["rbac.class"] != string(classMutate) {
+	if ssh.Annotations["rbac.command"] != "ssh" || ssh.Annotations["rbac.class"] != string(authz.ClassMutate) {
 		t.Fatalf("ssh gate annotations = %+v, want mutate", ssh.Annotations)
 	}
 
@@ -133,7 +135,7 @@ func TestStructuredOutputCommandsAcceptJSONAndYAML(t *testing.T) {
 		if err := list.ParseFlags([]string{"--output", format}); err != nil {
 			t.Fatalf("parse -o %s: %v", format, err)
 		}
-		if err := validateOutputSelection(list); err != nil {
+		if err := cmdkit.ValidateOutputSelection(list); err != nil {
 			t.Errorf("openstack list -o %s: %v", format, err)
 		}
 	}

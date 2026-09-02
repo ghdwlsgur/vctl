@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -20,7 +21,7 @@ import (
 //
 // server_status keeps the latest report, not a series, so the dashboard shows
 // current state stamped with the agent's clock rather than a history.
-func logCmd(env CommandEnv) *cobra.Command {
+func logCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "log [host]",
 		Short: "Show one host's node-agent healthcheck as a dashboard",
@@ -32,7 +33,7 @@ self-observability numbers.
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			a, err := env.newApp()
+			a, err := env.App()
 			if err != nil {
 				return err
 			}

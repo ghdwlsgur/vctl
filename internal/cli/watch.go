@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/audit"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
@@ -34,7 +35,7 @@ type sessionRecorder interface {
 	EndSession(context.Context, int64, time.Time, string) error
 }
 
-func watchSessionsCmd(env CommandEnv) *cobra.Command {
+func watchSessionsCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		dir      string
 		hostname string
@@ -57,7 +58,7 @@ name differs from its inventory name (aio01 vs incheon-aio01) gets its audit row
 to line up with the rest of the inventory. This mirrors node-agent --hostname.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, adb, err := env.audit()
+			_, adb, err := env.Audit()
 			if err != nil {
 				return err
 			}
@@ -93,7 +94,7 @@ to line up with the rest of the inventory. This mirrors node-agent --hostname.`,
 	}
 	cmd.Flags().StringVar(&dir, "dir", "/run/vctl/sessions", "marker directory")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname to record sessions under; defaults to the marker's os hostname")
-	registerCompletion(cmd, "hostname", completeInventoryHost(env))
+	cmdkit.RegisterCompletion(cmd, "hostname", cmdkit.CompleteInventoryHost(env))
 	cmd.Flags().DurationVar(&interval, "interval", 5*time.Second, "scan interval")
 	cmd.Flags().BoolVar(&once, "once", false, "process current markers once and exit")
 	return cmd

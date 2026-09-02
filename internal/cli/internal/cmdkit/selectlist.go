@@ -1,4 +1,4 @@
-package cli
+package cmdkit
 
 import (
 	"bufio"
@@ -30,14 +30,14 @@ import (
 const pickerViewport = 10 // visible rows in the scrolling area
 
 var (
-	pickCursorStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	pickSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	pickDimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	PickCursorStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	PickSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	PickDimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
-// pickOne returns the chosen value, or "" if cancelled.
-func pickOne(items []string, title string) (string, error) {
-	idx, _, err := runListPicker(items, nil, nil, title, false)
+// PickOne returns the chosen value, or "" if cancelled.
+func PickOne(items []string, title string) (string, error) {
+	idx, _, err := RunListPicker(items, nil, nil, title, false)
 	if err != nil {
 		return "", err
 	}
@@ -47,29 +47,37 @@ func pickOne(items []string, title string) (string, error) {
 	return items[idx[0]], nil
 }
 
-// listGroups is an optional filter dimension for the picker: the group each
+// ListGroups is an optional filter dimension for the picker: the group each
 // candidate belongs to, plus the name of the dimension for the tab row. It is a
 // struct rather than a bare slice so the picker never has to assume what the
 // grouping means — the host picker groups by datacenter, and a later caller
 // that groups by something else should not have to render "DC".
-type listGroups struct {
+type ListGroups struct {
 	name string   // shown in the tab row, e.g. "DC"
 	of   []string // group of each candidate, positionally
 }
 
-// pickIndex is single-select for callers that need the row's position rather
-// than its text. g may be nil, which means no tabs.
-func pickIndex(items []string, g *listGroups, title string) (int, error) {
-	return pickIndexMatch(items, g, nil, title)
+// NewListGroups builds the grouping: the dimension's name for the tab row and
+// the group of each candidate, positionally. A constructor rather than exported
+// fields so the two cannot be supplied separately drifted — of's length is the
+// candidate list's length or the tabs point at the wrong rows.
+func NewListGroups(name string, of []string) *ListGroups {
+	return &ListGroups{name: name, of: of}
 }
 
-// pickIndexMatch is pickIndex with a caller-supplied query matcher, for lists
+// PickIndex is single-select for callers that need the row's position rather
+// than its text. g may be nil, which means no tabs.
+func PickIndex(items []string, g *ListGroups, title string) (int, error) {
+	return PickIndexMatch(items, g, nil, title)
+}
+
+// PickIndexMatch is PickIndex with a caller-supplied query matcher, for lists
 // whose rows are richer than their labels. The server picker matches the
 // underlying fields — whole-word state and port, so "a" does not select every
 // active host — and matching the rendered label would undo exactly that.
 // match receives the row index and the lowered, trimmed query.
-func pickIndexMatch(items []string, g *listGroups, match func(i int, q string) bool, title string) (int, error) {
-	idxs, cancelled, err := runListPicker(items, g, match, title, false)
+func PickIndexMatch(items []string, g *ListGroups, match func(i int, q string) bool, title string) (int, error) {
+	idxs, cancelled, err := RunListPicker(items, g, match, title, false)
 	if err != nil {
 		return -1, err
 	}
@@ -79,9 +87,9 @@ func pickIndexMatch(items []string, g *listGroups, match func(i int, q string) b
 	return idxs[0], nil
 }
 
-// pickMany returns the chosen values (possibly empty if nothing toggled).
-func pickMany(items []string, title string) ([]string, error) {
-	idxs, cancelled, err := runListPicker(items, nil, nil, title, true)
+// PickMany returns the chosen values (possibly empty if nothing toggled).
+func PickMany(items []string, title string) ([]string, error) {
+	idxs, cancelled, err := RunListPicker(items, nil, nil, title, true)
 	if err != nil {
 		return nil, err
 	}
@@ -95,11 +103,11 @@ func pickMany(items []string, title string) ([]string, error) {
 	return out, nil
 }
 
-func runListPicker(items []string, g *listGroups, match func(i int, q string) bool, title string, multi bool) (chosen []int, cancelled bool, err error) {
+func RunListPicker(items []string, g *ListGroups, match func(i int, q string) bool, title string, multi bool) (chosen []int, cancelled bool, err error) {
 	if len(items) == 0 {
 		return nil, false, fmt.Errorf("nothing to choose from")
 	}
-	if !isTerminal() {
+	if !IsTerminal() {
 		return numberListPick(items, title, multi)
 	}
 	m := newListModel(items, g, match, title, multi)
@@ -130,7 +138,7 @@ func runListPicker(items []string, g *listGroups, match func(i int, q string) bo
 type listModel struct {
 	title     string
 	cands     []string
-	groups    *listGroups                // nil when the caller passed no grouping
+	groups    *ListGroups                // nil when the caller passed no grouping
 	match     func(i int, q string) bool // nil means label-contains
 	tabs      []string                   // distinct groups; index 0 is "" = all
 	tabIdx    int                        // selected tab (←/→)
@@ -146,7 +154,7 @@ type listModel struct {
 	cancelled bool
 }
 
-func newListModel(items []string, g *listGroups, match func(i int, q string) bool, title string, multi bool) listModel {
+func newListModel(items []string, g *ListGroups, match func(i int, q string) bool, title string, multi bool) listModel {
 	m := listModel{
 		title:    title,
 		cands:    items,
@@ -170,7 +178,7 @@ func newListModel(items []string, g *listGroups, match func(i int, q string) boo
 // mirroring the server picker's DC tabs. A caller with no grouping, or with one
 // group covering everything, gets a single entry and no tab row: cycling
 // between "all" and "all but named" is a control that does nothing.
-func distinctGroups(g *listGroups) []string {
+func distinctGroups(g *ListGroups) []string {
 	if g == nil {
 		return []string{""}
 	}
@@ -318,20 +326,20 @@ func (m listModel) View() string {
 	b.WriteString(title)
 	if ruleLen > 0 {
 		b.WriteString(" ")
-		b.WriteString(pickDimStyle.Render(strings.Repeat("─", ruleLen)))
+		b.WriteString(PickDimStyle.Render(strings.Repeat("─", ruleLen)))
 	}
 	b.WriteString("\n")
-	b.WriteString(pickDimStyle.Render("Search: "))
+	b.WriteString(PickDimStyle.Render("Search: "))
 	b.WriteString(m.query)
 	b.WriteString("\n")
 	grouped := len(m.tabs) > 2
 	switch {
 	case m.multi:
-		b.WriteString(pickDimStyle.Render(fmt.Sprintf("↑↓ move, space toggle, type filter, enter confirm, esc cancel  (%d selected)", len(m.selected))))
+		b.WriteString(PickDimStyle.Render(fmt.Sprintf("↑↓ move, space toggle, type filter, enter confirm, esc cancel  (%d selected)", len(m.selected))))
 	case grouped:
-		b.WriteString(pickDimStyle.Render("↑↓ move, ←→ " + m.groupName() + ", type to filter, enter confirm, esc cancel"))
+		b.WriteString(PickDimStyle.Render("↑↓ move, ←→ " + m.groupName() + ", type to filter, enter confirm, esc cancel"))
 	default:
-		b.WriteString(pickDimStyle.Render("↑↓ move, type to filter, enter confirm, esc cancel"))
+		b.WriteString(PickDimStyle.Render("↑↓ move, type to filter, enter confirm, esc cancel"))
 	}
 	b.WriteString("\n")
 	if grouped {
@@ -339,15 +347,15 @@ func (m listModel) View() string {
 		if label == "" {
 			label = "all " + m.groupName() + "s"
 		}
-		b.WriteString(pickDimStyle.Render(m.groupName() + " ‹ "))
-		b.WriteString(pickCursorStyle.Render(label))
-		b.WriteString(pickDimStyle.Render(fmt.Sprintf(" ›  %d/%d", m.tabIdx+1, len(m.tabs))))
+		b.WriteString(PickDimStyle.Render(m.groupName() + " ‹ "))
+		b.WriteString(PickCursorStyle.Render(label))
+		b.WriteString(PickDimStyle.Render(fmt.Sprintf(" ›  %d/%d", m.tabIdx+1, len(m.tabs))))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
 
 	if len(m.filtered) == 0 {
-		b.WriteString(pickDimStyle.Render("  (no matches)"))
+		b.WriteString(PickDimStyle.Render("  (no matches)"))
 		b.WriteString("\n")
 		return b.String()
 	}
@@ -357,11 +365,11 @@ func (m listModel) View() string {
 		b.WriteString("\n")
 	}
 	if m.offset > 0 {
-		b.WriteString(pickDimStyle.Render(fmt.Sprintf("↑ %d more", m.offset)))
+		b.WriteString(PickDimStyle.Render(fmt.Sprintf("↑ %d more", m.offset)))
 		b.WriteString("\n")
 	}
 	if below := len(m.filtered) - end; below > 0 {
-		b.WriteString(pickDimStyle.Render(fmt.Sprintf("↓ %d more", below)))
+		b.WriteString(PickDimStyle.Render(fmt.Sprintf("↓ %d more", below)))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -384,9 +392,9 @@ func (m listModel) renderRow(i int) string {
 		mark = "●"
 	}
 	if i == m.cursor {
-		return pickCursorStyle.Render("› "+mark) + " " + pickSelectedStyle.Render(label)
+		return PickCursorStyle.Render("› "+mark) + " " + PickSelectedStyle.Render(label)
 	}
-	return pickDimStyle.Render("  "+mark+" ") + label
+	return PickDimStyle.Render("  "+mark+" ") + label
 }
 
 // numberListPick is the non-TTY fallback. Single: one number. Multi: a

@@ -1,4 +1,4 @@
-package cli
+package cmdkit
 
 import (
 	"strings"
@@ -28,7 +28,7 @@ func visibleLabels(m listModel) []string {
 // know part of the name, and the tabs are for when what you know is the site.
 func TestListPickerFiltersByGroupWithLeftAndRight(t *testing.T) {
 	items := []string{"seoul-a", "seoul-b", "incheon-a"}
-	g := &listGroups{name: "DC", of: []string{"seoul", "seoul", "incheon"}}
+	g := NewListGroups("DC", []string{"seoul", "seoul", "incheon"})
 	m := newListModel(items, g, nil, "pick", false)
 	m.width = 80
 
@@ -67,7 +67,7 @@ func TestListPickerFiltersByGroupWithLeftAndRight(t *testing.T) {
 // One group covering every row is the same case: cycling between "all" and
 // "all, named" moves no rows.
 func TestListPickerHidesTheTabRowWithoutGroups(t *testing.T) {
-	for name, g := range map[string]*listGroups{
+	for name, g := range map[string]*ListGroups{
 		"none": nil,
 		"one":  {name: "DC", of: []string{"seoul", "seoul"}},
 	} {

@@ -12,12 +12,13 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/authz"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func rbacCmd(env CommandEnv) *cobra.Command {
+func rbacCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rbac",
 		Short: "Manage app-layer command RBAC (groups, members, grants)",
@@ -35,13 +36,13 @@ grant. Admins (the configured admin_policies) bypass.`,
 
 // rbacUsersCmd lists everyone who has logged in, with the vctl version they last
 // used and when — so an admin can see who is behind. Read (default-allow).
-func rbacUsersCmd(env CommandEnv) *cobra.Command {
-	return gate(&cobra.Command{
+func rbacUsersCmd(env cmdkit.Env) *cobra.Command {
+	return cmdkit.Gate(&cobra.Command{
 		Use:   "users",
 		Short: "List known users with their vctl version and last login",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				users, err := st.SeenUsers(cmd.Context())
 				if err != nil {
 					if authz.IsUninitializedRBAC(err) {
@@ -71,14 +72,14 @@ func rbacUsersCmd(env CommandEnv) *cobra.Command {
 // rbacAssignCmd is the convenient interactive assigner: pick a group, then
 // multi-select users to add as members. Candidate users come from seen_users +
 // existing members (RBACCandidateUsers). Admin-only.
-func rbacAssignCmd(env CommandEnv) *cobra.Command {
-	return gate(&cobra.Command{
+func rbacAssignCmd(env cmdkit.Env) *cobra.Command {
+	return cmdkit.Gate(&cobra.Command{
 		Use:   "assign [group]",
 		Short: "Interactively add users to a group (pick group → select users)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return env.withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(ctx, true, func(_ *app.App, st *store.Store) error {
 				// 1) group: arg, or pick from the list.
 				group := ""
 				if len(args) == 1 {
@@ -95,7 +96,7 @@ func rbacAssignCmd(env CommandEnv) *cobra.Command {
 					for i, g := range groups {
 						names[i] = g.Name
 					}
-					if group, err = pickOne(names, "Select a group"); err != nil {
+					if group, err = cmdkit.PickOne(names, "Select a group"); err != nil {
 						return err
 					}
 				}
@@ -131,7 +132,7 @@ func rbacAssignCmd(env CommandEnv) *cobra.Command {
 				}
 
 				// 3) multi-select and assign.
-				picked, err := pickMany(avail, fmt.Sprintf("Add users to %q (space to select)", group))
+				picked, err := cmdkit.PickMany(avail, fmt.Sprintf("Add users to %q (space to select)", group))
 				if err != nil {
 					return err
 				}
@@ -151,24 +152,24 @@ func rbacAssignCmd(env CommandEnv) *cobra.Command {
 	}, "admin")
 }
 
-func rbacGroupCmd(env CommandEnv) *cobra.Command {
+func rbacGroupCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{Use: "group", Short: "Manage RBAC groups"}
 	cmd.AddCommand(
-		gate(rbacGroupListCmd(env), "list"),
-		gate(rbacGroupShowCmd(env), "list"),
-		gate(rbacGroupCreateCmd(env), "admin"),
-		gate(rbacGroupDeleteCmd(env), "admin"),
+		cmdkit.Gate(rbacGroupListCmd(env), "list"),
+		cmdkit.Gate(rbacGroupShowCmd(env), "list"),
+		cmdkit.Gate(rbacGroupCreateCmd(env), "admin"),
+		cmdkit.Gate(rbacGroupDeleteCmd(env), "admin"),
 	)
 	return cmd
 }
 
-func rbacGroupListCmd(env CommandEnv) *cobra.Command {
+func rbacGroupListCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List RBAC groups",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				groups, err := st.RBACGroups(cmd.Context())
 				if err != nil {
 					return err
@@ -188,13 +189,13 @@ func rbacGroupListCmd(env CommandEnv) *cobra.Command {
 	}
 }
 
-func rbacGroupShowCmd(env CommandEnv) *cobra.Command {
+func rbacGroupShowCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show <group>",
 		Short: "Show a group's members and granted commands",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				g := args[0]
 				ok, err := st.RBACGroupExists(cmd.Context(), g)
 				if err != nil {
@@ -220,13 +221,13 @@ func rbacGroupShowCmd(env CommandEnv) *cobra.Command {
 	}
 }
 
-func rbacGroupCreateCmd(env CommandEnv) *cobra.Command {
+func rbacGroupCreateCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "create <group> [description...]",
 		Short: "Create (or update) an RBAC group",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				name := args[0]
 				desc := strings.Join(args[1:], " ")
 				if err := st.RBACGroupUpsert(cmd.Context(), name, desc); err != nil {
@@ -239,13 +240,13 @@ func rbacGroupCreateCmd(env CommandEnv) *cobra.Command {
 	}
 }
 
-func rbacGroupDeleteCmd(env CommandEnv) *cobra.Command {
+func rbacGroupDeleteCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <group>",
 		Short: "Delete an RBAC group (members/grants cascade)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				if err := st.RBACGroupDelete(cmd.Context(), args[0]); err != nil {
 					return err
 				}
@@ -256,22 +257,22 @@ func rbacGroupDeleteCmd(env CommandEnv) *cobra.Command {
 	}
 }
 
-func rbacMemberCmd(env CommandEnv) *cobra.Command {
+func rbacMemberCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{Use: "member", Short: "Manage group membership"}
 	cmd.AddCommand(
-		gate(rbacMemberAddCmd(env), "admin"),
-		gate(rbacMemberRemoveCmd(env), "admin"),
+		cmdkit.Gate(rbacMemberAddCmd(env), "admin"),
+		cmdkit.Gate(rbacMemberRemoveCmd(env), "admin"),
 	)
 	return cmd
 }
 
-func rbacMemberAddCmd(env CommandEnv) *cobra.Command {
+func rbacMemberAddCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "add <group> <user>",
 		Short: "Add a user to a group",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				ok, err := st.RBACGroupExists(cmd.Context(), args[0])
 				if err != nil {
 					return err
@@ -289,13 +290,13 @@ func rbacMemberAddCmd(env CommandEnv) *cobra.Command {
 	}
 }
 
-func rbacMemberRemoveCmd(env CommandEnv) *cobra.Command {
+func rbacMemberRemoveCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "remove <group> <user>",
 		Short: "Remove a user from a group",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				if err := st.RBACMemberRemove(cmd.Context(), args[0], args[1]); err != nil {
 					return err
 				}
@@ -312,14 +313,14 @@ func grantableList() []string {
 	return authz.Grantable()
 }
 
-func rbacGrantCmd(env CommandEnv) *cobra.Command {
-	return gate(&cobra.Command{
+func rbacGrantCmd(env cmdkit.Env) *cobra.Command {
+	return cmdkit.Gate(&cobra.Command{
 		Use:   "grant [group] [command]",
 		Short: "Grant command(s) to a group; with no command, pick interactively",
 		Args:  cobra.RangeArgs(0, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return env.withStore(ctx, true, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(ctx, true, func(_ *app.App, st *store.Store) error {
 				// 1) group: arg or picker.
 				group := ""
 				if len(args) >= 1 {
@@ -336,7 +337,7 @@ func rbacGrantCmd(env CommandEnv) *cobra.Command {
 					for i, g := range groups {
 						names[i] = g.Name
 					}
-					if group, err = pickOne(names, "Select a group"); err != nil {
+					if group, err = cmdkit.PickOne(names, "Select a group"); err != nil {
 						return err
 					}
 				}
@@ -357,13 +358,13 @@ func rbacGrantCmd(env CommandEnv) *cobra.Command {
 						// to any authenticated user and admin follows the Vault
 						// policy, so granting either records a row that changes
 						// nothing — and reads as if it had.
-						if class, known := authz.ClassOf(c); !known || class != classMutate {
+						if class, known := authz.ClassOf(c); !known || class != authz.ClassMutate {
 							return fmt.Errorf("cannot grant %q. Grantable: %s, or '*'", c, knownCommands())
 						}
 					}
 					commands = []string{c}
 				} else {
-					picked, err := pickMany(grantableList(), fmt.Sprintf("Grant commands to %q (space to select)", group))
+					picked, err := cmdkit.PickMany(grantableList(), fmt.Sprintf("Grant commands to %q (space to select)", group))
 					if err != nil {
 						return err
 					}
@@ -386,13 +387,13 @@ func rbacGrantCmd(env CommandEnv) *cobra.Command {
 	}, "admin")
 }
 
-func rbacRevokeCmd(env CommandEnv) *cobra.Command {
-	return gate(&cobra.Command{
+func rbacRevokeCmd(env cmdkit.Env) *cobra.Command {
+	return cmdkit.Gate(&cobra.Command{
 		Use:   "revoke <group> <command>",
 		Short: "Revoke a command grant from a group",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				if err := st.RBACRevoke(cmd.Context(), args[0], args[1]); err != nil {
 					return err
 				}
@@ -403,14 +404,14 @@ func rbacRevokeCmd(env CommandEnv) *cobra.Command {
 	}, "admin")
 }
 
-func rbacWhoamiCmd(env CommandEnv) *cobra.Command {
-	return gate(&cobra.Command{
+func rbacWhoamiCmd(env cmdkit.Env) *cobra.Command {
+	return cmdkit.Gate(&cobra.Command{
 		Use:   "whoami",
 		Short: "Show your identity, admin status, groups, and effective commands",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			return env.withStore(ctx, false, func(a *app.App, st *store.Store) error {
+			return env.WithStore(ctx, false, func(a *app.App, st *store.Store) error {
 				info, err := a.Vault.LookupToken(ctx)
 				if err != nil {
 					return err
@@ -441,14 +442,14 @@ func rbacWhoamiCmd(env CommandEnv) *cobra.Command {
 	}, "whoami")
 }
 
-func rbacCheckCmd(env CommandEnv) *cobra.Command {
-	return gate(&cobra.Command{
+func rbacCheckCmd(env cmdkit.Env) *cobra.Command {
+	return cmdkit.Gate(&cobra.Command{
 		Use:   "check <command>",
 		Short: "Check whether you may run a command",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return env.withStore(ctx, false, func(a *app.App, st *store.Store) error {
+			return env.WithStore(ctx, false, func(a *app.App, st *store.Store) error {
 				want := args[0]
 				info, err := a.Vault.LookupToken(ctx)
 				if err != nil {
@@ -468,10 +469,10 @@ func rbacCheckCmd(env CommandEnv) *cobra.Command {
 					return nil
 				}
 				switch class {
-				case classRead:
+				case authz.ClassRead:
 					fmt.Fprintf(os.Stdout, "%s %q (read — default allow)\n", ui.OK("allow"), want)
 					return nil
-				case classAdmin:
+				case authz.ClassAdmin:
 					fmt.Fprintf(os.Stdout, "%s %q (admin-only — needs %s)\n",
 						ui.Fail("deny"), want, strings.Join(a.Cfg.AdminPolicies, " or "))
 					return nil

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -18,14 +19,14 @@ func TestResolveHostPrefersTheArgument(t *testing.T) {
 		store.Server{Hostname: "web-01", IP: "192.0.2.10"},
 		store.Server{Hostname: "web-02", IP: "192.0.2.11"},
 	)}
-	got, err := resolveHost(context.Background(), st, []string{"web-02"}, "pick")
+	got, err := cmdkit.ResolveHost(context.Background(), st, []string{"web-02"}, "pick")
 	if err != nil {
 		t.Fatalf("resolveHost: %v", err)
 	}
 	if got.Hostname != "web-02" {
 		t.Errorf("resolveHost = %q, want web-02", got.Hostname)
 	}
-	if _, err := resolveHost(context.Background(), st, []string{"web-99"}, "pick"); err == nil {
+	if _, err := cmdkit.ResolveHost(context.Background(), st, []string{"web-99"}, "pick"); err == nil {
 		t.Error("resolveHost accepted a hostname that is not in the inventory")
 	}
 }
@@ -35,7 +36,7 @@ func TestResolveHostPrefersTheArgument(t *testing.T) {
 // prevent; the test runs without a TTY, which is the condition itself.
 func TestResolveHostRefusesToGuessWithoutATerminal(t *testing.T) {
 	st := &fakeLister{rows: rowsFull(store.Server{Hostname: "web-01"})}
-	_, err := resolveHost(context.Background(), st, nil, "pick")
+	_, err := cmdkit.ResolveHost(context.Background(), st, nil, "pick")
 	if err == nil {
 		t.Fatal("resolveHost picked a host with no argument and no terminal")
 	}
@@ -47,7 +48,7 @@ func TestResolveHostRefusesToGuessWithoutATerminal(t *testing.T) {
 // An empty inventory has nothing to pick, and "nothing to choose from" does not
 // tell an operator that the fix is `vctl add`.
 func TestPickHostRefusesAnEmptyInventory(t *testing.T) {
-	_, err := pickHost(nil, "pick")
+	_, err := cmdkit.PickHost(nil, "pick")
 	if err == nil {
 		t.Fatal("pickHost ran on an empty inventory")
 	}
@@ -64,7 +65,7 @@ func TestHostPickLabelsAlignColumns(t *testing.T) {
 		store.Server{Hostname: "db-1", IP: "192.0.2.10", DC: "seoul-onprem"},
 		store.Server{Hostname: "web-server-01", IP: "192.0.2.11", DC: "incheon", JumpVia: "bastion-01"},
 	)
-	labels := hostPickLabels(rows)
+	labels := cmdkit.HostPickLabels(rows)
 	if len(labels) != 2 {
 		t.Fatalf("hostPickLabels returned %d labels for 2 rows", len(labels))
 	}
@@ -95,15 +96,15 @@ func TestHostPickLabelsAlignColumns(t *testing.T) {
 // breaks the grid for every row below it.
 func TestHostPickLabelsCapTheHostnameColumn(t *testing.T) {
 	long := "incheon-vm-tenant-a-kubernetes-worker-gpu-new-01"
-	labels := hostPickLabels(rowsFull(store.Server{Hostname: long, IP: "192.0.2.10"}))
+	labels := cmdkit.HostPickLabels(rowsFull(store.Server{Hostname: long, IP: "192.0.2.10"}))
 	if strings.Contains(labels[0], long) {
 		t.Errorf("label %q kept the full %d-column hostname", labels[0], lipgloss.Width(long))
 	}
 	if !strings.Contains(labels[0], "…") {
 		t.Errorf("label %q was cut without an ellipsis", labels[0])
 	}
-	if w := lipgloss.Width(strings.Split(labels[0], "  ")[0]); w > hostPickNameWidth {
-		t.Errorf("hostname column is %d columns, over the %d cap", w, hostPickNameWidth)
+	if w := lipgloss.Width(strings.Split(labels[0], "  ")[0]); w > cmdkit.HostPickNameWidth {
+		t.Errorf("hostname column is %d columns, over the %d cap", w, cmdkit.HostPickNameWidth)
 	}
 }
 
@@ -112,8 +113,8 @@ func TestHostPickLabelsCapTheHostnameColumn(t *testing.T) {
 // second.
 func TestEditAndDeleteTakeAtMostOneHostname(t *testing.T) {
 	for name, cmd := range map[string]*cobra.Command{
-		"edit":   editCmd(CommandEnv{}),
-		"delete": deleteCmd(CommandEnv{}),
+		"edit":   editCmd(cmdkit.Env{}),
+		"delete": deleteCmd(cmdkit.Env{}),
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, args := range [][]string{nil, {"web-01"}} {

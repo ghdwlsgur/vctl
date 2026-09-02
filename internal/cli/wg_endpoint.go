@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/ui"
 	"github.com/ghdwlsgur/vctl/internal/wireguard"
@@ -16,7 +17,7 @@ import (
 
 var wgEndpointKinds = []string{"vm", "physical-host", "device", "gateway"}
 
-func wgEndpointCmd(env CommandEnv) *cobra.Command {
+func wgEndpointCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "endpoint",
 		Short: "Manage endpoint identity and VM-to-physical-host placement",
@@ -28,13 +29,13 @@ VM, allowing 'wg serve' to draw the endpoint together with its host network.`,
 	return cmd
 }
 
-func wgEndpointListCmd(env CommandEnv) *cobra.Command {
+func wgEndpointListCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List endpoint annotations",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return env.withStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				items, err := st.WGEndpointAnnotations(cmd.Context())
 				if err != nil {
 					return err
@@ -53,10 +54,10 @@ func wgEndpointListCmd(env CommandEnv) *cobra.Command {
 			})
 		},
 	}
-	return gate(cmd, "wg")
+	return cmdkit.Gate(cmd, "wg")
 }
 
-func wgEndpointSetCmd(env CommandEnv) *cobra.Command {
+func wgEndpointSetCmd(env cmdkit.Env) *cobra.Command {
 	var a store.WGEndpointAnnotation
 	cmd := &cobra.Command{
 		Use:   "set <public-key>",
@@ -73,7 +74,7 @@ func wgEndpointSetCmd(env CommandEnv) *cobra.Command {
 				return fmt.Errorf("invalid --tunnel-ip: %q", a.TunnelIP)
 			}
 			a.PublicKey = args[0]
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				if err := st.WGEndpointAnnotationUpsert(cmd.Context(), a); err != nil {
 					return err
 				}
@@ -91,17 +92,17 @@ func wgEndpointSetCmd(env CommandEnv) *cobra.Command {
 	f.StringVar(&a.InventoryHost, "inventory-host", "", "linked servers.hostname for the endpoint")
 	f.StringVar(&a.ParentHostname, "parent", "", "physical servers.hostname that runs this VM")
 	f.StringVar(&a.Note, "note", "", "operator note")
-	return gate(cmd, "wg-sync")
+	return cmdkit.Gate(cmd, "wg-sync")
 }
 
-func wgEndpointRmCmd(env CommandEnv) *cobra.Command {
+func wgEndpointRmCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rm <public-key>",
 		Aliases: []string{"delete"},
 		Short:   "Remove an endpoint annotation",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.withStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
+			return env.WithStore(cmd.Context(), true, func(_ *app.App, st *store.Store) error {
 				if err := st.WGEndpointAnnotationDelete(cmd.Context(), args[0]); err != nil {
 					return err
 				}
@@ -110,5 +111,5 @@ func wgEndpointRmCmd(env CommandEnv) *cobra.Command {
 			})
 		},
 	}
-	return gate(cmd, "wg-sync")
+	return cmdkit.Gate(cmd, "wg-sync")
 }

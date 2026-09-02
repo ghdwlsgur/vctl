@@ -1,4 +1,4 @@
-package cli
+package cmdkit
 
 import (
 	"encoding/json"
@@ -11,79 +11,79 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type outputFormat string
+type Format string
 
 const (
-	outputTable outputFormat = "table"
-	outputJSON  outputFormat = "json"
-	outputYAML  outputFormat = "yaml"
+	OutputTable Format = "table"
+	OutputJSON  Format = "json"
+	OutputYAML  Format = "yaml"
 
-	structuredOutputAnnotation = "vctl.output.structured"
+	StructuredOutputAnnotation = "vctl.output.structured"
 )
 
-// supportsStructuredOutput marks the commands whose result has a stable data
+// SupportsStructuredOutput marks the commands whose result has a stable data
 // shape. The root validates -o before the command opens Vault or Postgres, so a
 // command can never silently print a human table after accepting -o json.
-func supportsStructuredOutput(cmd *cobra.Command) *cobra.Command {
+func SupportsStructuredOutput(cmd *cobra.Command) *cobra.Command {
 	if cmd.Annotations == nil {
 		cmd.Annotations = map[string]string{}
 	}
-	cmd.Annotations[structuredOutputAnnotation] = "true"
+	cmd.Annotations[StructuredOutputAnnotation] = "true"
 	return cmd
 }
 
-func validateOutputSelection(cmd *cobra.Command) error {
-	format, err := requestedOutput(cmd)
+func ValidateOutputSelection(cmd *cobra.Command) error {
+	format, err := RequestedOutput(cmd)
 	if err != nil {
 		return err
 	}
-	if format != outputTable && cmd.Annotations[structuredOutputAnnotation] != "true" {
+	if format != OutputTable && cmd.Annotations[StructuredOutputAnnotation] != "true" {
 		return fmt.Errorf("%s does not support --output %s", cmd.CommandPath(), format)
 	}
 	return nil
 }
 
-func requestedOutput(cmd *cobra.Command) (outputFormat, error) {
+func RequestedOutput(cmd *cobra.Command) (Format, error) {
 	raw, err := cmd.Flags().GetString("output")
 	if err != nil || raw == "" {
-		raw = string(outputTable)
+		raw = string(OutputTable)
 	}
-	format := outputFormat(strings.ToLower(raw))
+	format := Format(strings.ToLower(raw))
 	switch format {
-	case outputTable, outputJSON, outputYAML:
+	case OutputTable, OutputJSON, OutputYAML:
 		return format, nil
 	default:
 		return "", fmt.Errorf("unsupported output %q; choose table, json, or yaml", raw)
 	}
 }
 
-// commandOutput translates the old --json switch at the compatibility seam.
+// CommandOutput translates the old --json switch at the compatibility seam.
 // New callers use -o; existing scripts keep getting byte-for-byte JSON.
-func commandOutput(cmd *cobra.Command, legacyJSON bool) (outputFormat, error) {
-	format, err := requestedOutput(cmd)
+func CommandOutput(cmd *cobra.Command, legacyJSON bool) (Format, error) {
+	format, err := RequestedOutput(cmd)
 	if err != nil {
 		return "", err
 	}
 	if legacyJSON {
-		if cmd.Flags().Changed("output") && format != outputJSON {
+		if cmd.Flags().Changed("output") && format != OutputJSON {
 			return "", fmt.Errorf("--json and --output %s cannot be used together", format)
 		}
-		return outputJSON, nil
+		return OutputJSON, nil
 	}
 	return format, nil
 }
 
-func writeStructured(format outputFormat, value any) error {
+func WriteStructured(format Format, value any) error {
 	return encodeStructured(os.Stdout, format, value)
 }
 
-func encodeStructured(w io.Writer, format outputFormat, value any) error {
+func encodeStructured(w io.Writer, format Format, value any) error {
 	switch format {
-	case outputJSON:
+	case OutputJSON:
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		return enc.Encode(value)
-	case outputYAML:
+	case OutputYAML:
 		// Marshal through JSON so YAML is a second encoding of the same public
 		// data contract, including json field names and omitempty behaviour.
 		data, err := json.Marshal(value)
