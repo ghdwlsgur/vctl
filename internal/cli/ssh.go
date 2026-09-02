@@ -14,6 +14,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/access"
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
+	"github.com/ghdwlsgur/vctl/internal/cli/openstack"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/invcache"
 	"github.com/ghdwlsgur/vctl/internal/sshc"
@@ -123,8 +124,8 @@ the configured default.`,
 	cmd.Flags().BoolVar(&allowStale, "allow-stale", false, "connect to a --vm whose record is older than the collector's schedule")
 	cmd.Flags().StringVar(&vmFarm, "farm", "", "deployment holding the --vm instance, when its id is in more than one")
 	cmdkit.RegisterCompletion(cmd, "server", cmdkit.CompleteInventoryHost(env))
-	cmdkit.RegisterCompletion(cmd, "vm", completeVM(env))
-	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env))
+	cmdkit.RegisterCompletion(cmd, "vm", openstack.CompleteVM(env))
+	cmdkit.RegisterCompletion(cmd, "farm", openstack.CompleteFarm(env))
 	// The positional takes an inventory name or user@addr, and only the first
 	// of those is something anything here knows. The direct form needs no
 	// inventory, which is the point of it.
@@ -259,13 +260,13 @@ func sshVM(ctx context.Context, env cmdkit.Env, selector, user, farm string, all
 	return env.WithStore(ctx, false, func(a *app.App, st *store.Store) error {
 		deployment := ""
 		if farm != "" {
-			resolved, err := resolveFarmID(ctx, a, st, farm)
+			resolved, err := openstack.ResolveFarmID(ctx, a, st, farm)
 			if err != nil {
 				return err
 			}
 			deployment = resolved
 		}
-		v, err := oneVM(ctx, st, id, deployment)
+		v, err := openstack.OneVM(ctx, st, id, deployment)
 		if err != nil {
 			return err
 		}
@@ -281,21 +282,21 @@ func sshVM(ctx context.Context, env cmdkit.Env, selector, user, farm string, all
 		// for days sets nothing: the rows keep their addresses, look exactly
 		// like fresh ones, and the address in them is where some VM used to be.
 		// On a tenant range that gets reused, that is somebody else's machine.
-		if age := time.Since(v.ObservedAt); age > staleProbeWindow && !allowStale {
+		if age := time.Since(v.ObservedAt); age > openstack.StaleProbeWindow && !allowStale {
 			when := "never collected"
 			if !v.ObservedAt.IsZero() {
 				when = strutil.CompactDuration(age) + " ago"
 			}
 			if !cmdkit.IsTerminal() {
 				return fmt.Errorf("%s was last collected %s, older than the collector's schedule; "+
-					"run 'vctl openstack reconcile' or pass --allow-stale", nameOrID(v), when)
+					"run 'vctl openstack reconcile' or pass --allow-stale", openstack.NameOrID(v), when)
 			}
 			ui.Warnf(os.Stderr, "%s in %s was last collected %s — its address may not be current",
-				nameOrID(v), v.DeploymentID, when)
+				openstack.NameOrID(v), v.DeploymentID, when)
 			var ok bool
 			if err := huh.NewForm(huh.NewGroup(
 				huh.NewConfirm().
-					Title("Connect to " + nameOrID(v) + " on a stale record?").
+					Title("Connect to " + openstack.NameOrID(v) + " on a stale record?").
 					Description(fmt.Sprintf("%s in %s, last collected %s", id, v.DeploymentID, when)).
 					Affirmative("Connect").
 					Negative("Cancel").

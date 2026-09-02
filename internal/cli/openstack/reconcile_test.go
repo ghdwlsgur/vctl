@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"strings"
@@ -37,7 +37,7 @@ func TestCountAndNamesAFewAndCountsTheRest(t *testing.T) {
 // Vault is the boundary instead: kv/teams/sre/vctl-* and database/creds/vctl-rw.
 func TestReconcileIsNotAppGated(t *testing.T) {
 	var found *cobra.Command
-	for _, c := range openstackCmd(cmdkit.Env{}).Commands() {
+	for _, c := range Cmd(cmdkit.Env{}).Commands() {
 		if c.Name() == "reconcile" {
 			found = c
 		}

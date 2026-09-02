@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"fmt"
@@ -27,7 +27,10 @@ const reconcileTimeout = 60 * time.Second
 // the two membership calls put together.
 const instanceTimeout = 180 * time.Second
 
-func openstackReconcileCmd(env cmdkit.Env) *cobra.Command {
+// ReconcileCmd is `openstack reconcile`, exported on its own because it is
+// wired into both binaries: under this package's Cmd for operators, and under
+// the agent root so a controller host can run it as a unit.
+func ReconcileCmd(env cmdkit.Env) *cobra.Command {
 	var (
 		only           string
 		self           bool
@@ -87,7 +90,7 @@ func openstackReconcileCmd(env cmdkit.Env) *cobra.Command {
 				// takes one spelling in one command and another elsewhere is a
 				// flag somebody has to remember the shape of.
 				if only != "" {
-					id, err := resolveFarmID(ctx, a, st, only)
+					id, err := ResolveFarmID(ctx, a, st, only)
 					if err != nil {
 						return err
 					}
@@ -194,7 +197,7 @@ func openstackReconcileCmd(env cmdkit.Env) *cobra.Command {
 	cmd.Flags().StringVar(&failOn, "fail-on", "",
 		"exit non-zero when any of these occurred: unreachable, no-credentials, partial, warning")
 	cmd.MarkFlagsMutuallyExclusive("self", "farm")
-	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env))
+	cmdkit.RegisterCompletion(cmd, "farm", CompleteFarm(env))
 	cmdkit.RegisterCompletion(cmd, "hostname", cmdkit.CompleteInventoryHost(env))
 	// A closed set, and the only completion here that needs nothing from the
 	// database: these four words are the contract.

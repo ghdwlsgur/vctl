@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"bytes"
@@ -132,7 +132,7 @@ func TestEmptyListingSaysWhetherAnythingHasLooked(t *testing.T) {
 // carries it.
 func TestStaleProbeIsMarkedOnTheRow(t *testing.T) {
 	h := osHost("srv-01", "farm-a", "compute")
-	h.ObservedAt = time.Now().Add(-staleProbeWindow - time.Hour)
+	h.ObservedAt = time.Now().Add(-StaleProbeWindow - time.Hour)
 
 	var buf bytes.Buffer
 	renderOpenStack(&buf, []store.OpenStackHost{h}, store.OpenStackCoverage{Hosts: 1, Probed: 1, Running: 1}, false, time.Now())
@@ -436,7 +436,7 @@ func TestAStaleHostKeepsTheAgeColumnOnEveryRow(t *testing.T) {
 	renderOpenStack(&buf, osFarm("f",
 		farmSpec{"srv-01", "2025.1", 10 * time.Minute},
 		farmSpec{"srv-02", "2025.1", 10 * time.Minute},
-		farmSpec{"srv-03", "2025.1", staleProbeWindow + time.Hour},
+		farmSpec{"srv-03", "2025.1", StaleProbeWindow + time.Hour},
 	), store.OpenStackCoverage{Hosts: 3, Probed: 3, Running: 3}, false, time.Now())
 
 	out := buf.String()

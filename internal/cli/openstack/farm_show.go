@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"context"
@@ -15,7 +15,9 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
-	"github.com/ghdwlsgur/vctl/internal/openstack"
+	// The domain model this package presents; aliased because this command
+	// package answers to the same name.
+	osdomain "github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/strutil"
 	"github.com/ghdwlsgur/vctl/internal/ui"
@@ -32,7 +34,7 @@ func openstackFarmShowCmd(env cmdkit.Env) *cobra.Command {
 			"The deployment can be named by its display name or its Keystone endpoint. With no\n" +
 			"argument it is picked from a list.",
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: cmdkit.ByPosition(completeFarm(env)),
+		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {
@@ -81,16 +83,16 @@ const farmStaleWindow = 13 * time.Hour
 // state off that — values read *before* the snapshot — so a `farm state` landing
 // between the two put the old state on screen beside the new note. One read, one
 // instant, and that has to mean all of it.
-func collectAssessment(ctx context.Context, st *store.Store, id string, now time.Time) (openstack.Assessment, error) {
+func collectAssessment(ctx context.Context, st *store.Store, id string, now time.Time) (osdomain.Assessment, error) {
 	// One read, one instant. This was five separate reads, and a reconcile
 	// landing between the second and the third put a host count from before it
 	// beside a run result from after it. Nothing on the screen says which number
 	// came from when, so it is not something a reader can catch.
 	snap, err := st.FarmSnapshot(ctx, id)
 	if err != nil {
-		return openstack.Assessment{}, err
+		return osdomain.Assessment{}, err
 	}
-	in := openstack.Input{
+	in := osdomain.Input{
 		ID:    id,
 		Hosts: snap.Hosts, Instances: snap.Instances, Ghosts: snap.Ghosts,
 		Run:        snap.Run,
@@ -105,10 +107,10 @@ func collectAssessment(ctx context.Context, st *store.Store, id string, now time
 		in.Name, in.Region, in.State = d.DisplayName, d.Region, d.State
 		in.StateNote, in.StateSince = d.StateNote, d.StateChangedAt
 	}
-	return openstack.Assess(in), nil
+	return osdomain.Assess(in), nil
 }
 
-func renderFarmShow(w io.Writer, a openstack.Assessment, now time.Time) {
+func renderFarmShow(w io.Writer, a osdomain.Assessment, now time.Time) {
 	title := a.ID
 	if a.Name != "" {
 		title = a.Name + " · " + a.ID
@@ -198,7 +200,7 @@ func renderFarmShow(w io.Writer, a openstack.Assessment, now time.Time) {
 // Read from the deployed config, so a farm whose config landed but whose
 // container has not been restarted yet still reads as on. The word is "config"
 // rather than something stronger for exactly that reason.
-func caTrustLine(c openstack.CATrust) string {
+func caTrustLine(c osdomain.CATrust) string {
 	if c.State == "" {
 		return ""
 	}
@@ -216,7 +218,7 @@ func caTrustLine(c openstack.CATrust) string {
 }
 
 // caTrustOdd names the hosts that are not simply on, worst first.
-func caTrustOdd(c openstack.CATrust) []string {
+func caTrustOdd(c osdomain.CATrust) []string {
 	out := make([]string, 0, len(c.Hosts))
 	for host, state := range c.Hosts {
 		if state != hoststatus.VendordataOn {
@@ -230,14 +232,14 @@ func caTrustOdd(c openstack.CATrust) []string {
 // renderAnomalies puts everything worth a second look in one block. Scattered
 // through the sections above they are each a footnote; together they are the
 // answer to "what is wrong with this farm".
-func renderAnomalies(w io.Writer, anomalies []openstack.Anomaly, state string) {
+func renderAnomalies(w io.Writer, anomalies []osdomain.Anomaly, state string) {
 	if len(anomalies) == 0 {
 		return
 	}
 	fmt.Fprintf(w, "\n  %s\n", ui.Value("anomalies"))
 	for _, an := range anomalies {
 		mark := ui.Warn("!")
-		if an.Severity == openstack.SeverityError {
+		if an.Severity == osdomain.SeverityError {
 			mark = ui.Fail("!!")
 		}
 		detail := an.Detail
@@ -255,7 +257,7 @@ func renderAnomalies(w io.Writer, anomalies []openstack.Anomaly, state string) {
 // declaredStateLine renders what an operator said about the farm, and how long
 // ago. A farm broken for an hour and one broken for a month are different
 // situations and the word alone does not say which.
-func declaredStateLine(a openstack.Assessment, now time.Time) string {
+func declaredStateLine(a osdomain.Assessment, now time.Time) string {
 	if a.State == "" || a.State == store.StateActive {
 		return ""
 	}
@@ -269,7 +271,7 @@ func declaredStateLine(a openstack.Assessment, now time.Time) string {
 	return s
 }
 
-func vmLine(a openstack.Assessment) string {
+func vmLine(a osdomain.Assessment) string {
 	s := fmt.Sprintf("%d", a.Architecture.VMs)
 	if a.Health.VMsMissing > 0 {
 		s += " " + ui.Warn(fmt.Sprintf("(+%d no longer listed)", a.Health.VMsMissing))
@@ -283,7 +285,7 @@ func vmLine(a openstack.Assessment) string {
 // Without it "local-only" cannot be read. It could mean the control plane
 // disagreed an hour ago, or that nothing has asked in three weeks — and those
 // call for opposite responses.
-func reconcileLine(f openstack.Freshness, now time.Time) string {
+func reconcileLine(f osdomain.Freshness, now time.Time) string {
 	if f.LastAttempt == nil {
 		return ui.Warn("never — no run has been recorded for this deployment")
 	}
@@ -306,7 +308,7 @@ func reconcileLine(f openstack.Freshness, now time.Time) string {
 
 // releaseLine says in one line whether the farm is on one release or drifting —
 // which is the question a farm view usually exists to answer.
-func releaseLine(v openstack.Versions) string {
+func releaseLine(v osdomain.Versions) string {
 	if !v.Drifting {
 		for r, n := range v.ByRelease {
 			return fmt.Sprintf("%s %s", r, ui.Muted(fmt.Sprintf("(all %d)", n)))
@@ -333,7 +335,7 @@ func releaseLine(v openstack.Versions) string {
 
 // allRepeats returns the compact membership line for a section whose every
 // host was already shown, and "" when the section introduces anyone new.
-func allRepeats(sec openstack.RoleSection) string {
+func allRepeats(sec osdomain.RoleSection) string {
 	names := make([]string, 0, len(sec.Hosts))
 	for _, m := range sec.Hosts {
 		if m.AlsoIn == "" {

@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ghdwlsgur/vctl/internal/app"
+	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -59,7 +60,7 @@ func assertReadsOnly(t *testing.T, filename, what string) {
 }
 
 func TestExploreWritesNothing(t *testing.T) {
-	assertReadsOnly(t, "openstack_explore.go", "explore")
+	assertReadsOnly(t, "explore.go", "explore")
 }
 
 // explore reads the database and nothing else.
@@ -71,7 +72,7 @@ func TestExploreWritesNothing(t *testing.T) {
 // apart is what lets this one promise it cannot make a farm's day worse.
 func TestExploreNeverContactsAControlPlane(t *testing.T) {
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "openstack_explore.go", nil, 0)
+	f, err := parser.ParseFile(fset, "explore.go", nil, 0)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -103,8 +104,8 @@ func TestExploreNeverContactsAControlPlane(t *testing.T) {
 // on a login prompt that could not have been used is a worse error than the one
 // it replaces.
 func TestExploreRefusesWithoutATerminalAndNamesWhatToRunInstead(t *testing.T) {
-	root := NewRoot(Dependencies{})
-	cmd, _, err := root.Find([]string{"openstack", "explore"})
+	root := Cmd(cmdkit.Env{})
+	cmd, _, err := root.Find([]string{"explore"})
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -122,8 +123,8 @@ func TestExploreRefusesWithoutATerminalAndNamesWhatToRunInstead(t *testing.T) {
 // Browsing is the default human path. The old tabular listing remains an
 // explicit subcommand for scripts and for terminals that cannot run a TUI.
 func TestBareOpenStackBrowsesAndListPreservesTheTable(t *testing.T) {
-	root := NewRoot(Dependencies{})
-	openstack, _, err := root.Find([]string{"openstack"})
+	root := Cmd(cmdkit.Env{})
+	openstack, _, err := root.Find([]string{})
 	if err != nil {
 		t.Fatalf("find openstack: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestBareOpenStackBrowsesAndListPreservesTheTable(t *testing.T) {
 		t.Fatalf("bare openstack did not enter the browser path: %v", err)
 	}
 
-	list, _, err := root.Find([]string{"openstack", "list"})
+	list, _, err := root.Find([]string{"list"})
 	if err != nil {
 		t.Fatalf("the old table has no list command: %v", err)
 	}
@@ -152,11 +153,11 @@ func TestLegacyBareListingFlagsStillChooseTheTable(t *testing.T) {
 	} {
 		t.Run(strings.Join(flags, "_"), func(t *testing.T) {
 			called := false
-			root := NewRoot(Dependencies{NewApp: func() (*app.App, error) {
+			root := Cmd(cmdkit.Env{NewApp: func() (*app.App, error) {
 				called = true
 				return nil, errors.New("listing sentinel")
 			}})
-			cmd, _, err := root.Find([]string{"openstack"})
+			cmd, _, err := root.Find([]string{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -464,8 +465,8 @@ func TestExploreShowsOnlyTheVMsNovaStillLists(t *testing.T) {
 
 // Explore is a listing, and listings are open to any authenticated user.
 func TestExploreIsWiredUnderOpenstackAndUngated(t *testing.T) {
-	root := NewRoot(Dependencies{})
-	cmd, _, err := root.Find([]string{"openstack", "explore"})
+	root := Cmd(cmdkit.Env{})
+	cmd, _, err := root.Find([]string{"explore"})
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -476,7 +477,7 @@ func TestExploreIsWiredUnderOpenstackAndUngated(t *testing.T) {
 		t.Error("the deployment argument does not complete")
 	}
 	for _, alias := range []string{"browse", "ui"} {
-		if _, _, err := root.Find([]string{"openstack", alias}); err != nil {
+		if _, _, err := root.Find([]string{alias}); err != nil {
 			t.Errorf("the %s alias does not resolve: %v", alias, err)
 		}
 	}
@@ -707,7 +708,7 @@ func TestExploreOpensFromTheStoredReadingWithoutADatabase(t *testing.T) {
 // to put back.
 func TestExploreDoesNotOpenTheStoreBeforeTheScreen(t *testing.T) {
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "openstack_explore.go", nil, 0)
+	f, err := parser.ParseFile(fset, "explore.go", nil, 0)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -826,7 +827,7 @@ func fmtInt(n int) string {
 // it, so a window resize would move the selection under the cursor.
 func TestTheRendererCannotMoveTheCursor(t *testing.T) {
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "openstack_explore_view.go", nil, 0)
+	f, err := parser.ParseFile(fset, "explore_view.go", nil, 0)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

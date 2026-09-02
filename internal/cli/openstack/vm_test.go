@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"bytes"
@@ -100,8 +100,8 @@ func TestMissingVMShowsHowLongItHasBeenGone(t *testing.T) {
 // A VM with no name still has to be identifiable, and the UUID is the only
 // thing it definitely has.
 func TestUnnamedVMFallsBackToItsUUID(t *testing.T) {
-	if got := nameOrID(store.Instance{InstanceID: "uuid-y"}); got != "uuid-y" {
-		t.Errorf("nameOrID = %q", got)
+	if got := NameOrID(store.Instance{InstanceID: "uuid-y"}); got != "uuid-y" {
+		t.Errorf("NameOrID = %q", got)
 	}
 }
 

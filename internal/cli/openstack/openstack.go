@@ -1,4 +1,17 @@
-package cli
+// Package openstack is the `vctl openstack` command tree: the farm listings,
+// the VM listing and detail, the explore TUI, farm naming and state, doctor,
+// reconcile, and the completions for their values. It builds on the command
+// framework in cmdkit and keeps one export per outside caller: Cmd, PruneCmd
+// and ReconcileCmd for the two binaries' roots, and the VM resolution that
+// `vctl ssh --vm` connects through (ResolveFarmID, OneVM, NameOrID,
+// StaleProbeWindow, CompleteFarm, CompleteVM).
+//
+// It was a third of internal/cli by volume, fourteen files answering to one
+// name prefix — a package boundary drawn as a filename convention, which is
+// the kind nothing enforces. The move makes it a real one: what the rest of
+// the CLI may reach for is now the export list rather than whatever happened
+// to be in scope.
+package openstack
 
 import (
 	"fmt"
@@ -19,7 +32,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// staleProbeWindow is how old a collector's answer may be before the listing
+// StaleProbeWindow is how old a collector's answer may be before the listing
 // stops presenting it as current.
 //
 // Both collectors run hourly — the node agent's capability probe and the
@@ -30,9 +43,10 @@ import (
 // on purpose: the host and VM windows carried the same number for the same
 // reasoning as prose cross-references, which is how one gets changed without
 // the other.
-const staleProbeWindow = 3 * time.Hour
+const StaleProbeWindow = 3 * time.Hour
 
-func openstackCmd(env cmdkit.Env) *cobra.Command {
+// Cmd is the `vctl openstack` tree, wired into the root by internal/cli.
+func Cmd(env cmdkit.Env) *cobra.Command {
 	var legacy openStackListOptions
 	cmd := &cobra.Command{
 		Use:     "openstack [deployment]",
@@ -58,9 +72,9 @@ func openstackCmd(env cmdkit.Env) *cobra.Command {
 	// listings answer from the last reading when it is fresh, which is most of
 	// what makes them quick — this is how somebody says they would rather wait.
 	cmd.PersistentFlags().Bool("fresh", false, "read the database instead of the last stored reading")
-	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
+	cmdkit.RegisterCompletion(cmd, "farm", CompleteFarm(env, unassignedFarm))
 	cmdkit.RegisterCompletion(cmd, "role", completeRole(env))
-	cmd.ValidArgsFunction = cmdkit.ByPosition(completeFarm(env))
+	cmd.ValidArgsFunction = cmdkit.ByPosition(CompleteFarm(env))
 	cmd.AddCommand(openstackListCmd(env))
 	cmd.AddCommand(openstackHostCmd(env))
 	// Deliberately not app-gated, for the same reason `vctl migrate` is not.
@@ -75,7 +89,7 @@ func openstackCmd(env cmdkit.Env) *cobra.Command {
 	// to satisfy a check is the wrong shape. The gate also opened the store
 	// with vctl-ro, a role this Job has no reason to hold, so the check failed
 	// before the command it guards could run at all.
-	cmd.AddCommand(openstackReconcileCmd(env))
+	cmd.AddCommand(ReconcileCmd(env))
 	cmd.AddCommand(openstackVMCmd(env))
 	// Read-only and interactive, so it is gated by neither RBAC nor a flag: it
 	// shows what the ungated listings already show, through a picker.
@@ -126,7 +140,7 @@ func openstackListCmd(env cmdkit.Env) *cobra.Command {
 		},
 	}
 	registerOpenStackListFlags(cmd, &opts, false)
-	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env, unassignedFarm))
+	cmdkit.RegisterCompletion(cmd, "farm", CompleteFarm(env, unassignedFarm))
 	cmdkit.RegisterCompletion(cmd, "role", completeRole(env))
 	return cmdkit.SupportsStructuredOutput(cmd)
 }
@@ -305,7 +319,7 @@ func sharedColumns(hosts []store.OpenStackHost, cells [][]string, now time.Time,
 	// folding can never make a farm look fresher than its worst host.
 	var oldest time.Time
 	for _, h := range hosts {
-		if h.ObservedAt.IsZero() || now.Sub(h.ObservedAt) > staleProbeWindow {
+		if h.ObservedAt.IsZero() || now.Sub(h.ObservedAt) > StaleProbeWindow {
 			return out
 		}
 		if oldest.IsZero() || h.ObservedAt.Before(oldest) {
@@ -667,7 +681,7 @@ func ageCell(h store.OpenStackHost, now time.Time) string {
 		return ui.Muted("-")
 	}
 	age := strutil.CompactDuration(now.Sub(h.ObservedAt))
-	if now.Sub(h.ObservedAt) > staleProbeWindow {
+	if now.Sub(h.ObservedAt) > StaleProbeWindow {
 		return ui.Warn(age)
 	}
 	return ui.Muted(age)
@@ -686,7 +700,7 @@ func openStackNoteCell(h store.OpenStackHost, now time.Time) string {
 	// Only worth saying once the reading is stale anyway. A fresh probe that
 	// dropped a role is a change that happened; an old one is a question about
 	// whether anything is reporting at all.
-	if len(h.Dropped) > 0 && now.Sub(h.ObservedAt) > staleProbeWindow {
+	if len(h.Dropped) > 0 && now.Sub(h.ObservedAt) > StaleProbeWindow {
 		notes = append(notes, ui.Muted("roles last seen "+strutil.CompactDuration(now.Sub(h.Dropped[0].LastSeen))+" ago"))
 	}
 	return strings.Join(notes, ui.Muted(" · "))
@@ -780,7 +794,7 @@ func renderOpenStackHost(w io.Writer, h store.OpenStackHost, now time.Time) {
 		rows = append(rows, ui.KV{Key: "Probed", Value: "never"})
 	} else {
 		st := ui.StateOK
-		if now.Sub(h.ObservedAt) > staleProbeWindow {
+		if now.Sub(h.ObservedAt) > StaleProbeWindow {
 			st = ui.StateWarn
 		}
 		rows = append(rows, ui.KV{Key: "Probed", Value: strutil.CompactDuration(now.Sub(h.ObservedAt)) + " ago", State: st})

@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"fmt"
@@ -345,7 +345,7 @@ func (m exploreModel) rowCells() (exploreColumns, [][]string) {
 	out := make([][]string, 0, len(vms))
 	for _, v := range vms {
 		out = append(out, []string{
-			nameOrID(v),
+			NameOrID(v),
 			ui.Muted(vmProjectLabel(v)),
 			vmStateCell(v),
 			primaryAddress(v, m.data.Nets),
@@ -396,7 +396,7 @@ func (m exploreModel) detailView() string {
 // connectPromptLine is the login-user prompt, shared by the detail view and
 // the list footer. Only rendered while a connect is pending (connectVM set).
 func (m exploreModel) connectPromptLine() string {
-	return exploreCursorStyle.Render("connect "+nameOrID(*m.connectVM)+" as: "+m.userInput+"█") +
+	return exploreCursorStyle.Render("connect "+NameOrID(*m.connectVM)+" as: "+m.userInput+"█") +
 		ui.Muted("   enter connect · esc cancel")
 }
 
@@ -422,7 +422,7 @@ func (m exploreModel) detailHint(h, end int) string {
 func (m exploreModel) consolePane(height int) string {
 	c := m.console
 	var b strings.Builder
-	title := fmt.Sprintf("─ %s@%s ", c.user, ui.Truncate(nameOrID(*c.vm), 40))
+	title := fmt.Sprintf("─ %s@%s ", c.user, ui.Truncate(NameOrID(*c.vm), 40))
 	rule := m.width - lipgloss.Width(title) - 1
 	if rule < 0 {
 		rule = 0

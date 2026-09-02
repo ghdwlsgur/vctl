@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"fmt"
@@ -13,7 +13,9 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-func openStackPruneCmd(env cmdkit.Env) *cobra.Command {
+// PruneCmd is the hidden `vctl openstack-prune-missing`, run on a schedule
+// rather than by a person.
+func PruneCmd(env cmdkit.Env) *cobra.Command {
 	var days, batchSize int
 	cmd := &cobra.Command{
 		Use:    "openstack-prune-missing",

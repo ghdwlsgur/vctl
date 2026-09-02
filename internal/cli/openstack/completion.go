@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"context"
@@ -10,24 +10,6 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
-
-// Shell completion for the values that are typed most and remembered least: a
-// deployment's Keystone endpoint, a Nova uuid, the project a VM belongs to.
-//
-// Three rules hold for everything in this file, and they come from where a
-// completion runs. It is a hidden process spawned by a keystroke, in the middle
-// of a line somebody is still typing.
-//
-//   - It never asks anything. Authenticating here would put a password prompt,
-//     or a browser, behind a Tab — so a completion that would need one produces
-//     nothing instead.
-//   - It never waits. cmdkit.CompletionBudget is the whole cost of a keypress, and an
-//     unreachable database has to cost that and no more.
-//   - It never speaks. Anything written to stderr lands in the middle of the
-//     command being typed, so stderr is closed for the duration.
-//
-// Every failure means the same thing: no candidates. A shell that gets nothing
-// falls back to the user typing the value, which is where they were anyway.
 
 // fromStoredFleet answers a completion out of the last stored reading.
 //
@@ -52,7 +34,7 @@ func fromStoredFleet(env cmdkit.Env, shape fleet.Shape, fn func(fleet.Catalog, s
 	}
 }
 
-// completeFarm offers the deployments, by whichever of their two names is being
+// CompleteFarm offers the deployments, by whichever of their two names is being
 // typed.
 //
 // A farm has an id — its Keystone endpoint — and usually a display name, and
@@ -74,7 +56,7 @@ func fromStoredFleet(env cmdkit.Env, shape fleet.Shape, fn func(fleet.Catalog, s
 // decision — the worst a day-old list can do is fail to offer a farm somebody
 // renamed this morning, and typing it still works. Every command that takes the
 // value resolves it against the database anyway.
-func completeFarm(env cmdkit.Env, extra ...string) cmdkit.Completer {
+func CompleteFarm(env cmdkit.Env, extra ...string) cmdkit.Completer {
 	return cmdkit.StoredThenStore(env,
 		fromStoredFleet(env, fleet.ShapeFarms, func(cat fleet.Catalog, tc string) []string {
 			return farmCompletions(cat.Farms(), extra, tc)
@@ -280,7 +262,7 @@ func farmLabelOf(id string, farms map[string]string) string {
 	return id
 }
 
-// completeVM offers Nova uuids, described by the VM they belong to.
+// CompleteVM offers Nova uuids, described by the VM they belong to.
 //
 // This is the completion the review was really about. `vctl ssh --vm` takes a
 // uuid and nothing else, because a name that fits two VMs must not be resolved
@@ -291,7 +273,7 @@ func farmLabelOf(id string, farms map[string]string) string {
 //
 // Missing VMs are left out: nova no longer lists them, and nothing good comes
 // of completing a connection to one.
-func completeVM(env cmdkit.Env) cmdkit.Completer {
+func CompleteVM(env cmdkit.Env) cmdkit.Completer {
 	return cmdkit.StoredThenStore(env, fromStoredFleet(env, fleet.ShapeVMs, func(cat fleet.Catalog, tc string) []string {
 		return vmCompletions(cat.AllVMs(), cat.Names(), tc)
 	}), func(ctx context.Context, st *store.Store, toComplete string) []string {
@@ -316,7 +298,7 @@ func vmCompletions(vms []store.Instance, farms map[string]string, toComplete str
 		if !cmdkit.HasPrefixFold(v.InstanceID, toComplete) {
 			continue
 		}
-		desc := nameOrID(v)
+		desc := NameOrID(v)
 		if desc == v.InstanceID {
 			desc = "unnamed"
 		}

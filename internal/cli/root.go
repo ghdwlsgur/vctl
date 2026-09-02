@@ -12,6 +12,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
+	"github.com/ghdwlsgur/vctl/internal/cli/openstack"
 	"github.com/ghdwlsgur/vctl/internal/timing"
 )
 
@@ -135,7 +136,7 @@ Start here:
 		cmdkit.Gate(injectCmd(env), "inject"), cmdkit.Gate(installCmd(env), "install"), caCmd(env), sessionCmd(env),
 	)
 	addCommandGroup(root, "infrastructure",
-		lsCmd(env), ipCmd(env), wgCmd(env), openstackCmd(env), statusCmd(env), logCmd(env),
+		lsCmd(env), ipCmd(env), wgCmd(env), openstack.Cmd(env), statusCmd(env), logCmd(env),
 	)
 	addCommandGroup(root, "operations",
 		cmdkit.Gate(syncCmd(env), "sync"),
@@ -145,7 +146,7 @@ Start here:
 	addCommandGroup(root, "administration", migrateCmd(env), rbacCmd(env))
 	addCommandGroup(root, "automation",
 		agentCmd(env), sessionStartCmd(env), collectCmd(env), pruneCmd(env),
-		openStackPruneCmd(env), watchSessionsCmd(env), nodeAgentCmd(env), mcpCmd(env),
+		openstack.PruneCmd(env), watchSessionsCmd(env), nodeAgentCmd(env), mcpCmd(env),
 	)
 	root.SetHelpCommandGroupID("automation")
 	root.SetCompletionCommandGroupID("automation")

@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 // internal/openstack/doctor, where no walker is needed: its ports expose
 // exactly ForFarm and ReconcileRuns, so a write would not compile.
 func TestFarmDoctorWritesNothing(t *testing.T) {
-	assertReadsOnly(t, "openstack_farm_doctor.go", "doctor")
+	assertReadsOnly(t, "farm_doctor.go", "doctor")
 }
 
 // The checks are what somebody reads; each has to name itself and say what came

@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"context"
@@ -56,7 +56,7 @@ func openstackExploreCmd(env cmdkit.Env) *cobra.Command {
 			"`vctl openstack farm doctor <deployment>`.\n\n" +
 			"An argument selects that deployment at startup.",
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: cmdkit.ByPosition(completeFarm(env)),
+		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runOpenStackExplore(cmd, env, args)
 		},
@@ -113,7 +113,7 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 	conn := cmdkit.NewConnector(a)
 	nets := a.Cfg.OperatorNetworks // the loaded config, not a per-command re-parse
 	m.execVM = func(v *store.Instance, user, command string) (string, int, error) {
-		t, err := access.VMTarget(nameOrID(*v), v.Addresses, access.VMPolicy{
+		t, err := access.VMTarget(NameOrID(*v), v.Addresses, access.VMPolicy{
 			User: user, CARole: a.Cfg.CARole, OperatorNets: nets,
 		})
 		if err != nil {

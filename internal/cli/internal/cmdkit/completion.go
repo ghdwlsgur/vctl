@@ -1,5 +1,23 @@
 package cmdkit
 
+// Shell completion for the values that are typed most and remembered least: a
+// deployment's Keystone endpoint, a Nova uuid, the project a VM belongs to.
+//
+// Three rules hold for everything here and for every completion built on it,
+// and they come from where a completion runs: a hidden process spawned by a
+// keystroke, in the middle of a line somebody is still typing.
+//
+//   - It never asks anything. Authenticating here would put a password prompt,
+//     or a browser, behind a Tab — so a completion that would need one produces
+//     nothing instead.
+//   - It never waits. CompletionBudget is the whole cost of a keypress, and
+//     an unreachable database has to cost that and no more.
+//   - It never speaks. Anything written to stderr lands in the middle of the
+//     command being typed, so stderr is closed for the duration.
+//
+// Every failure means the same thing: no candidates. A shell that gets nothing
+// falls back to the user typing the value, which is where they were anyway.
+
 import (
 	"context"
 	"fmt"

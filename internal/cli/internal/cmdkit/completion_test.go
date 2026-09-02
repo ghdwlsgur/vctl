@@ -37,3 +37,41 @@ func values(candidates []string) []string {
 	}
 	return out
 }
+
+// A description is display text and the value is a protocol field. cobra splits
+// them on a tab and the shell splits candidates on newlines, so a VM named with
+// either — nova accepts both — would move the boundary.
+func TestCandidateFlattensWhatWouldBreakTheProtocol(t *testing.T) {
+	got := Candidate("id", "na\tme\nfarm")
+	if strings.Count(got, "\t") != 1 {
+		t.Errorf("description tab survived: %q", got)
+	}
+	if strings.Contains(got, "\n") {
+		t.Errorf("description newline survived: %q", got)
+	}
+	if value(got) != "id" {
+		t.Errorf("value became %q", value(got))
+	}
+	if Candidate("id", "") != "id" {
+		t.Errorf("an empty description should leave no separator, got %q", Candidate("id", ""))
+	}
+}
+
+func TestByPositionAsksADifferentQuestionPerArgument(t *testing.T) {
+	first := StaticCompletions("farm-a")
+	second := StaticCompletions("active", "retired")
+	fn := ByPosition(first, second)
+
+	got, _ := fn(nil, nil, "")
+	if len(got) != 1 || got[0] != "farm-a" {
+		t.Fatalf("first argument got %v", got)
+	}
+	got, _ = fn(nil, []string{"farm-a"}, "")
+	if len(got) != 2 {
+		t.Fatalf("second argument got %v, want the states", got)
+	}
+	// Past the end there is no question left to answer.
+	if got, _ = fn(nil, []string{"farm-a", "active"}, ""); len(got) != 0 {
+		t.Fatalf("third argument got %v, want nothing", got)
+	}
+}

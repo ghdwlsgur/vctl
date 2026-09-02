@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"context"
@@ -15,7 +15,9 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/config"
-	"github.com/ghdwlsgur/vctl/internal/openstack"
+	// The domain model this package presents; aliased because this command
+	// package answers to the same name.
+	osdomain "github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -171,10 +173,10 @@ func openstackVMCmd(env cmdkit.Env) *cobra.Command {
 	cmd.AddCommand(openstackVMShowCmd(env))
 	cmd.Flags().BoolVar(&wide, "wide", false, "full UUIDs and the rest of what was collected")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env))
+	cmdkit.RegisterCompletion(cmd, "farm", CompleteFarm(env))
 	cmdkit.RegisterCompletion(cmd, "host", completeOpenStackHost(env, true))
 	cmdkit.RegisterCompletion(cmd, "project", completeProject(env))
-	cmdkit.RegisterCompletion(cmd, "id", completeVM(env))
+	cmdkit.RegisterCompletion(cmd, "id", CompleteVM(env))
 	// The positional is a search, so it completes to names rather than to the
 	// uuids --id takes. Somebody who has the uuid is not searching for it.
 	cmd.ValidArgsFunction = completeVMName(env)
@@ -272,9 +274,9 @@ func isInstanceID(v string) bool {
 	return true
 }
 
-// resolveFarmID turns a name people use into the deployment id rows carry, for
+// ResolveFarmID turns a name people use into the deployment id rows carry, for
 // the callers that need nothing else from the reading.
-func resolveFarmID(ctx context.Context, a *app.App, st *store.Store, v string) (string, error) {
+func ResolveFarmID(ctx context.Context, a *app.App, st *store.Store, v string) (string, error) {
 	cat, err := loadFarmCatalog(ctx, a, st)
 	if err != nil {
 		return "", err
@@ -445,7 +447,7 @@ func renderVMs(w io.Writer, vms []store.Instance, farms map[string]string, opera
 		for _, v := range group {
 			cells = append(cells, []string{
 				ui.Muted(vmIDCell(v, wide)),
-				ui.Truncate(nameOrID(v), 32),
+				ui.Truncate(NameOrID(v), 32),
 				vmStateCell(v),
 				ui.Muted(ui.Truncate(vmProjectLabel(v), 22)),
 				ui.Truncate(v.HypervisorHostname, 20),
@@ -476,7 +478,7 @@ func vmProjectLabel(v store.Instance) string {
 	return v.ProjectID
 }
 
-func nameOrID(v store.Instance) string {
+func NameOrID(v store.Instance) string {
 	if v.Name != "" {
 		return v.Name
 	}
@@ -520,12 +522,12 @@ func vmStateCell(v store.Instance) string {
 // open, and the address column is the column people copy out of.
 //
 // Order: a floating address, then one on an operator network, then anything —
-// and that ranking is openstack.ReachableAddress, the same function the SSH
+// and that ranking is osdomain.ReachableAddress, the same function the SSH
 // path resolves a VM with, so the address on screen is the address a connection
 // will use. It was inline here, decoration and all, which is why the two could
 // not share it.
 func primaryAddress(v store.Instance, operatorNets []string) string {
-	best := openstack.PreferredAddress(v.Addresses, operatorNets)
+	best := osdomain.PreferredAddress(v.Addresses, operatorNets)
 	if extra := len(v.Addresses) - 1; extra > 0 && best != "" {
 		return best + ui.Muted(fmt.Sprintf(" (+%d)", extra))
 	}
@@ -582,13 +584,13 @@ func vmSeenCell(v store.Instance, now time.Time) string {
 	}
 	age := now.Sub(v.ObservedAt)
 	s := strutil.CompactDuration(age)
-	if age > staleProbeWindow {
+	if age > StaleProbeWindow {
 		return ui.Warn(s)
 	}
 	return ui.Muted(s)
 }
 
-// oneVM fetches the single VM an id names, missing ones included — the
+// OneVM fetches the single VM an id names, missing ones included — the
 // caller decides what a missing VM means. deploymentID narrows when --farm
 // was given; without it, an id two deployments share is refused rather than
 // resolved by sort order. A uuid is the identity within a deployment, not
@@ -596,7 +598,7 @@ func vmSeenCell(v store.Instance, now time.Time) string {
 // farms' VMs are different machines. The ssh path and `vm show` carried this
 // sequence as separate copies, identical down to both error strings — the
 // state a copy drifts out of.
-func oneVM(ctx context.Context, st *store.Store, id, deploymentID string) (store.Instance, error) {
+func OneVM(ctx context.Context, st *store.Store, id, deploymentID string) (store.Instance, error) {
 	vms, err := st.Instances(ctx, store.InstanceFilter{
 		InstanceID: id, DeploymentID: deploymentID, IncludeMissing: true,
 	})
@@ -631,7 +633,7 @@ func openstackVMShowCmd(env cmdkit.Env) *cobra.Command {
 		Use:               "show <nova-uuid>",
 		Short:             "One VM in full, and how to reach it",
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: completeVM(env),
+		ValidArgsFunction: CompleteVM(env),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {
@@ -659,7 +661,7 @@ func openstackVMShowCmd(env cmdkit.Env) *cobra.Command {
 					}
 					deployment = resolved.ID
 				}
-				v, err := oneVM(ctx, st, id, deployment)
+				v, err := OneVM(ctx, st, id, deployment)
 				if err != nil {
 					return err
 				}
@@ -676,12 +678,12 @@ func openstackVMShowCmd(env cmdkit.Env) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&farm, "farm", "", "deployment holding the VM, when its id is in more than one")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	cmdkit.RegisterCompletion(cmd, "farm", completeFarm(env))
+	cmdkit.RegisterCompletion(cmd, "farm", CompleteFarm(env))
 	return cmdkit.SupportsStructuredOutput(cmd)
 }
 
 func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets []string, now time.Time) {
-	ui.Section(w, nameOrID(v))
+	ui.Section(w, NameOrID(v))
 	rows := []ui.KV{
 		{Key: "UUID", Value: v.InstanceID},
 		{Key: "Farm", Value: farmLabelOf(v.DeploymentID, farms)},
@@ -731,7 +733,7 @@ func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets [
 	// The next command, ready to run. Naming the flags and leaving somebody to
 	// assemble them is where the flow broke in the first place.
 	fmt.Fprintln(w)
-	if addr := openstack.ConnectableAddress(v.Addresses, nets); addr != "" {
+	if addr := osdomain.ConnectableAddress(v.Addresses, nets); addr != "" {
 		fmt.Fprintf(w, "  %s\n", ui.Muted("vctl ssh --vm "+v.InstanceID+" --user <login>"))
 		return
 	}
@@ -746,7 +748,7 @@ func vmSeenLine(v store.Instance, now time.Time) string {
 	}
 	age := now.Sub(v.ObservedAt)
 	s := strutil.CompactDuration(age) + " ago"
-	if age > staleProbeWindow {
+	if age > StaleProbeWindow {
 		return s + " — older than the collector's schedule, so the address may not be current"
 	}
 	return s

@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"bytes"
@@ -132,8 +132,8 @@ func TestJSONAndFreshBothRefuseTheStoredReading(t *testing.T) {
 		t.Error("a run that asked for the database was answered from disk")
 	}
 
-	root := NewRoot(Dependencies{})
-	cmd, _, err := root.Find([]string{"openstack", "farm", "list"})
+	root := Cmd(cmdkit.Env{})
+	cmd, _, err := root.Find([]string{"farm", "list"})
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -160,24 +160,24 @@ func TestJSONAndFreshBothRefuseTheStoredReading(t *testing.T) {
 // --fresh is one flag on `openstack`, so it means the same thing on every
 // listing under it. Registering it per command is how they drift.
 func TestFreshIsAvailableOnEveryListingUnderOpenstack(t *testing.T) {
-	root := NewRoot(Dependencies{})
+	root := Cmd(cmdkit.Env{})
 	for _, path := range [][]string{
-		{"openstack"},
-		{"openstack", "list"},
-		{"openstack", "vm"},
-		{"openstack", "farm", "list"},
-		{"openstack", "explore"},
+		{},
+		{"list"},
+		{"vm"},
+		{"farm", "list"},
+		{"explore"},
 	} {
 		cmd, _, err := root.Find(path)
 		if err != nil {
 			t.Fatalf("%v: %v", path, err)
 		}
 		if err := cmd.ParseFlags([]string{"--fresh"}); err != nil {
-			t.Errorf("%s does not take --fresh: %v", strings.Join(path, " "), err)
+			t.Errorf("openstack %s does not take --fresh: %v", strings.Join(path, " "), err)
 			continue
 		}
 		if !wantsFresh(cmd) {
-			t.Errorf("%s parsed --fresh and did not see it", strings.Join(path, " "))
+			t.Errorf("openstack %s parsed --fresh and did not see it", strings.Join(path, " "))
 		}
 	}
 }
@@ -248,7 +248,7 @@ func TestFarmCompletionAnswersFromDiskWithoutADatabase(t *testing.T) {
 	a := appWithStoredReading(t, fleet.ShapeFarms, time.Now().Add(-2*time.Hour))
 	env := cmdkit.Env{NewApp: func() (*app.App, error) { return a, nil }}
 
-	got, directive := completeFarm(env, unassignedFarm)(nil, nil, "seoul")
+	got, directive := CompleteFarm(env, unassignedFarm)(nil, nil, "seoul")
 	if directive != 4 && len(got) == 0 {
 		t.Fatalf("no candidates: %v", got)
 	}
@@ -312,11 +312,14 @@ func TestNothingThatConnectsOrChangesReadsTheStoredReading(t *testing.T) {
 	// call any more. It would have passed forever. Every local name here has to
 	// still be declared in this package, so the next rename fails here.
 	assertDeclaredInPackage(t, "storedReader", "fleetReader", "listingReading", "vmCatalog")
+	// ssh.go lives in the parent package: `vctl ssh --vm` resolves through this
+	// package's exported surface, and the rule that it never reads the stored
+	// reading holds across that boundary too.
 	for _, tc := range []struct{ file, what string }{
-		{file: "ssh.go", what: "ssh connects to the machine it resolved"},
-		{file: "openstack_reconcile.go", what: "reconcile compares what is recorded against a control plane"},
-		{file: "openstack_farm_doctor.go", what: "doctor asks a farm's control plane about itself"},
-		{file: "openstack_farm.go", what: "naming and declaring the state of a deployment are writes"},
+		{file: "../ssh.go", what: "ssh connects to the machine it resolved"},
+		{file: "reconcile.go", what: "reconcile compares what is recorded against a control plane"},
+		{file: "farm_doctor.go", what: "doctor asks a farm's control plane about itself"},
+		{file: "farm.go", what: "naming and declaring the state of a deployment are writes"},
 	} {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, tc.file, nil, 0)
@@ -383,9 +386,9 @@ func TestChangingADeploymentDropsTheStoredReading(t *testing.T) {
 // completing to the old name for a day.
 func TestEveryCommandThatChangesADeploymentForgetsTheReading(t *testing.T) {
 	for _, tc := range []struct{ file, fn string }{
-		{"openstack_farm.go", "openstackFarmNameCmd"},
-		{"openstack_farm.go", "openstackFarmStateCmd"},
-		{"openstack_reconcile.go", "openstackReconcileCmd"},
+		{"farm.go", "openstackFarmNameCmd"},
+		{"farm.go", "openstackFarmStateCmd"},
+		{"reconcile.go", "ReconcileCmd"},
 	} {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, tc.file, nil, 0)
@@ -445,7 +448,7 @@ func TestTheDetailSaysHowOldTheRowsBehindItAre(t *testing.T) {
 // Which is why `vctl ssh --vm` checks the second and not the first, and why a
 // stored reading cannot quiet the warning.
 func TestAFreshReadingDoesNotMakeAStaleVMLookCurrent(t *testing.T) {
-	stale := time.Now().Add(-staleProbeWindow - time.Hour)
+	stale := time.Now().Add(-StaleProbeWindow - time.Hour)
 	v := store.Instance{
 		DeploymentID: "10.0.0.1:5000", InstanceID: "u-1", Name: "bastion",
 		Status: "ACTIVE", ObservedAt: stale,

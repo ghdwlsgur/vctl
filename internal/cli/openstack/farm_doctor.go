@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"fmt"
@@ -25,7 +25,7 @@ func openstackFarmDoctorCmd(env cmdkit.Env) *cobra.Command {
 		Use:               "doctor [deployment]",
 		Short:             "Check what a reconcile would need, without changing anything",
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: cmdkit.ByPosition(completeFarm(env)),
+		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := cmdkit.CommandOutput(cmd, asJSON)
 			if err != nil {

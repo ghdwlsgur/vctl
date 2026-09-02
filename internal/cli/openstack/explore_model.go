@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"bytes"
@@ -520,7 +520,7 @@ func (m exploreModel) connectCmd(v *store.Instance, user string) tea.Cmd {
 		args = append(args, "--farm", v.DeploymentID)
 	}
 	return tea.ExecProcess(exec.Command(exe, args...), func(err error) tea.Msg {
-		return exploreConnectDone{vm: nameOrID(*v), err: err}
+		return exploreConnectDone{vm: NameOrID(*v), err: err}
 	})
 }
 
@@ -583,7 +583,7 @@ func (m exploreModel) onConsoleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // consolePrompt is the echoed prompt for the scrollback, shaped like the shell
 // the pane stands in for.
 func consolePrompt(c *exploreConsole) string {
-	return c.user + "@" + nameOrID(*c.vm) + " $ "
+	return c.user + "@" + NameOrID(*c.vm) + " $ "
 }
 
 // consoleRun executes one command off the key path. Each command goes through
@@ -792,7 +792,7 @@ func (m *exploreModel) openDetail() {
 		}
 		v := vms[clampIndex(m.rowCur, len(vms))]
 		renderVMShow(&buf, v, m.data.Names, m.data.Nets, now)
-		m.detailOf = nameOrID(v)
+		m.detailOf = NameOrID(v)
 		m.detailVM = &v
 	}
 	m.detail = strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")

@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"context"
@@ -70,7 +70,7 @@ func openstackFarmNameCmd(env cmdkit.Env) *cobra.Command {
 		Args: cobra.MaximumNArgs(2),
 		// Only the first argument. The second is the new name — nothing knows
 		// it yet, which is the whole point of the command.
-		ValidArgsFunction: cmdkit.ByPosition(completeFarm(env)),
+		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmdkit.WithStorePort(env, cmd.Context(), true, func(a *app.App, st farmDeclareStore) error {
 				ctx := cmd.Context()
@@ -371,7 +371,7 @@ func openstackFarmStateCmd(env cmdkit.Env) *cobra.Command {
 			"expected rather than as news.\n\n" +
 			"With no arguments the deployment is picked from a list and the state asked for in a form.",
 		Args:              cobra.MaximumNArgs(2),
-		ValidArgsFunction: cmdkit.ByPosition(completeFarm(env), cmdkit.StaticCompletions(store.HostStates...)),
+		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env), cmdkit.StaticCompletions(store.HostStates...)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmdkit.WithStorePort(env, cmd.Context(), true, func(a *app.App, st farmDeclareStore) error {
 				ctx := cmd.Context()

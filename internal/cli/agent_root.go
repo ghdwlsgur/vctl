@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
+	"github.com/ghdwlsgur/vctl/internal/cli/openstack"
 	"github.com/ghdwlsgur/vctl/internal/timing"
 )
 
@@ -60,18 +61,18 @@ runs under systemd, without the operator commands.
 
 	// The reconcile keeps its `openstack` parent so the unit's command line is
 	// the same words on either binary.
-	openstack := &cobra.Command{
+	openstackParent := &cobra.Command{
 		Use:   "openstack",
 		Short: "Farm control-plane tasks a controller host runs",
 	}
-	openstack.AddCommand(openstackReconcileCmd(env))
+	openstackParent.AddCommand(openstack.ReconcileCmd(env))
 
 	root.AddCommand(
 		nodeAgentCmd(env),
 		collectCmd(env),
 		watchSessionsCmd(env),
 		sessionStartCmd(env),
-		openstack,
+		openstackParent,
 	)
 	return root
 }

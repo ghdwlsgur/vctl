@@ -1,4 +1,4 @@
-package cli
+package openstack
 
 import (
 	"bytes"
@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ghdwlsgur/vctl/internal/openstack"
+	// The domain model this package presents; aliased because this command
+	// package answers to the same name.
+	osdomain "github.com/ghdwlsgur/vctl/internal/openstack"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -15,12 +17,12 @@ import (
 // here is rendering, so these check what a reader sees rather than what was
 // decided.
 
-func assessed(hosts []store.OpenStackHost, in openstack.Input) openstack.Assessment {
+func assessed(hosts []store.OpenStackHost, in osdomain.Input) osdomain.Assessment {
 	in.Hosts = hosts
 	if in.ID == "" {
 		in.ID = "172.16.0.10:5000"
 	}
-	return openstack.Assess(in)
+	return osdomain.Assess(in)
 }
 
 func aioHost(name string, roles []string, active []string, release, conf string) store.OpenStackHost {
@@ -40,7 +42,7 @@ func TestFarmShowCollapsesAllRepeatSections(t *testing.T) {
 		aioHost("aio-01", []string{"controller", "compute", "identity"},
 			[]string{"controller", "compute", "identity"}, "2025.1", store.ConfidenceConfirmed),
 		aioHost("gpu-01", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
-	}, openstack.Input{})
+	}, osdomain.Input{})
 
 	var buf bytes.Buffer
 	renderFarmShow(&buf, a, time.Now())
@@ -67,7 +69,7 @@ func TestFarmShowMarksOutageWithoutShrinkingTheSection(t *testing.T) {
 	a := assessed([]store.OpenStackHost{
 		aioHost("n1", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
 		aioHost("n2", []string{"compute"}, nil, "2025.1", store.ConfidenceConfirmed),
-	}, openstack.Input{})
+	}, osdomain.Input{})
 
 	var buf bytes.Buffer
 	renderFarmShow(&buf, a, time.Now())
@@ -86,7 +88,7 @@ func TestFarmShowStatesDriftAndItsAbsence(t *testing.T) {
 	drift := assessed([]store.OpenStackHost{
 		aioHost("a", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
 		aioHost("b", []string{"compute"}, []string{"compute"}, "2024.2", store.ConfidenceConfirmed),
-	}, openstack.Input{})
+	}, osdomain.Input{})
 	var buf bytes.Buffer
 	renderFarmShow(&buf, drift, time.Now())
 	if !strings.Contains(buf.String(), "drift") {
@@ -95,7 +97,7 @@ func TestFarmShowStatesDriftAndItsAbsence(t *testing.T) {
 
 	same := assessed([]store.OpenStackHost{
 		aioHost("a", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
-	}, openstack.Input{})
+	}, osdomain.Input{})
 	buf.Reset()
 	renderFarmShow(&buf, same, time.Now())
 	out := buf.String()
@@ -110,7 +112,7 @@ func TestFarmShowGathersAnomalies(t *testing.T) {
 	gone := time.Now().Add(-72 * time.Hour)
 	a := assessed([]store.OpenStackHost{
 		aioHost("n1", []string{"compute"}, nil, "2025.1", store.ConfidenceLocalOnly),
-	}, openstack.Input{
+	}, osdomain.Input{
 		Ghosts: []store.GhostHost{{NovaHostname: "sre-svr-0032", FirstSeenAt: gone}},
 	})
 
@@ -129,7 +131,7 @@ func TestFarmShowGathersAnomalies(t *testing.T) {
 // empty tree that reads like a rendering fault — and it still says nothing has
 // reconciled it.
 func TestFarmShowSaysWhenNothingHasReported(t *testing.T) {
-	a := openstack.Assess(openstack.Input{ID: "10.0.0.9:5000", Name: "new-farm"})
+	a := osdomain.Assess(osdomain.Input{ID: "10.0.0.9:5000", Name: "new-farm"})
 
 	var buf bytes.Buffer
 	renderFarmShow(&buf, a, time.Now())
@@ -152,7 +154,7 @@ func TestFarmShowReportsFailingSinceTheLastSuccess(t *testing.T) {
 	}
 	a := assessed([]store.OpenStackHost{
 		aioHost("n1", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
-	}, openstack.Input{Run: &run, StaleAfter: 13 * time.Hour})
+	}, osdomain.Input{Run: &run, StaleAfter: 13 * time.Hour})
 
 	var buf bytes.Buffer
 	renderFarmShow(&buf, a, time.Now())
@@ -166,7 +168,7 @@ func TestFarmShowReportsFailingSinceTheLastSuccess(t *testing.T) {
 func TestFarmShowCountsVMsPerHost(t *testing.T) {
 	a := assessed([]store.OpenStackHost{
 		aioHost("gpu01", []string{"compute"}, []string{"compute"}, "2025.1", store.ConfidenceConfirmed),
-	}, openstack.Input{Instances: []store.Instance{
+	}, osdomain.Input{Instances: []store.Instance{
 		{InstanceID: "u1", HypervisorHostname: "gpu01"},
 		{InstanceID: "u2", HypervisorHostname: "gpu01"},
 	}})
