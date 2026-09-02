@@ -89,18 +89,11 @@ up over the bootstrap connection to fetch sshd's own reason.
 			dest := user + "@" + host
 			ui.Infof(os.Stderr, "installing Vault SSH CA trust on %s (port %s)", dest, portStr)
 
-			sshArgs := injectSSHArgs(dest, portStr, identity, useSudo)
-
 			// The installer also reports the host's clock (first line), so the
 			// skew check costs no extra connection — and no extra password
 			// prompt when the bootstrap is password-authenticated.
-			var out bytes.Buffer
-			c := exec.CommandContext(ctx, "ssh", sshArgs...)
-			c.Stdin = strings.NewReader(injectScript(caPub))
-			c.Stdout = &out
-			c.Stderr = os.Stderr
-			runErr := c.Run()
-			remoteEpoch := printInstallOutput(out.String())
+			out, runErr := runBootstrap(ctx, dest, portStr, identity, useSudo, injectScript(caPub))
+			remoteEpoch := printInstallOutput(out)
 			if runErr != nil {
 				return fmt.Errorf("remote install on %s failed: %w", dest, runErr)
 			}
@@ -157,6 +150,20 @@ up over the bootstrap connection to fetch sshd's own reason.
 	cmd.Flags().BoolVar(&fixClock, "fix-clock", false,
 		"when the host clock is too skewed for certificates, set it from this machine's clock over the bootstrap connection")
 	return cmd
+}
+
+// runBootstrap feeds one script to `sh` on the far side over the operator's
+// own ssh — the pre-trust channel every inject step uses — returning captured
+// stdout. Stderr always streams through: during bootstrap the remote's voice
+// (password prompts, sshd complaints) belongs on the operator's screen.
+func runBootstrap(ctx context.Context, dest, portStr, identity string, useSudo bool, script string) (string, error) {
+	var out bytes.Buffer
+	c := exec.CommandContext(ctx, "ssh", injectSSHArgs(dest, portStr, identity, useSudo)...)
+	c.Stdin = strings.NewReader(script)
+	c.Stdout = &out
+	c.Stderr = os.Stderr
+	err := c.Run()
+	return out.String(), err
 }
 
 // injectSSHArgs builds the argv for the bootstrap ssh. Options come first and
@@ -227,15 +234,11 @@ func clockSkewProblem(localNow time.Time, remoteEpoch int64) string {
 // and chronyd enabled when the host has it. It reports the host's clock after
 // the fix and whether an NTP daemon is now running.
 func injectFixClock(ctx context.Context, dest, portStr, identity string, useSudo bool) (epoch int64, hasNTP bool, err error) {
-	var out bytes.Buffer
-	c := exec.CommandContext(ctx, "ssh", injectSSHArgs(dest, portStr, identity, useSudo)...)
-	c.Stdin = strings.NewReader(injectFixClockScript(time.Now()))
-	c.Stdout = &out
-	c.Stderr = os.Stderr
-	if err := c.Run(); err != nil {
+	out, err := runBootstrap(ctx, dest, portStr, identity, useSudo, injectFixClockScript(time.Now()))
+	if err != nil {
 		return 0, false, err
 	}
-	for _, ln := range strings.Split(out.String(), "\n") {
+	for _, ln := range strings.Split(out, "\n") {
 		if v, ok := strings.CutPrefix(ln, "VCTL_REMOTE_EPOCH="); ok {
 			epoch, _ = strconv.ParseInt(strings.TrimSpace(v), 10, 64)
 		}
@@ -269,11 +272,8 @@ func injectDiagnose(ctx context.Context, dest, portStr, identity string, useSudo
 	ui.Infof(os.Stderr, "fetching sshd's reason over the bootstrap connection")
 	script := `journalctl -u sshd -u ssh -n 40 --no-pager 2>/dev/null | grep -iE "cert|denied|invalid|error" | tail -5
 sshd -T 2>/dev/null | grep -i trusteduserca || echo "sshd -T reports no TrustedUserCAKeys (config not applied?)"`
-	c := exec.CommandContext(ctx, "ssh", injectSSHArgs(dest, portStr, identity, useSudo)...)
-	c.Stdin = strings.NewReader(script)
-	c.Stdout = os.Stderr
-	c.Stderr = os.Stderr
-	_ = c.Run()
+	out, _ := runBootstrap(ctx, dest, portStr, identity, useSudo, script)
+	fmt.Fprint(os.Stderr, out)
 }
 
 // injectScript is the idempotent remote installer, read by `sh` over stdin.
