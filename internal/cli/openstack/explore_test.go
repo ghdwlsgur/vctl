@@ -752,6 +752,56 @@ func TestNoRenderedLineOverflowsTheTerminal(t *testing.T) {
 	}
 }
 
+// The focused row is a band across its pane, not two characters at its edge —
+// and the band has to survive the row's own styling: every styled cell ends
+// with a reset, each of which would end the band with it.
+func TestSelectionBandSurvivesStyledCells(t *testing.T) {
+	was := colorless
+	colorless = false
+	defer func() { colorless = was }()
+
+	const bg = "\x1b[48;5;237m"
+	got := selectionBand("a \x1b[1mstyled\x1b[0m cell", 20)
+	if !strings.HasPrefix(got, bg) || !strings.HasSuffix(got, "\x1b[0m") {
+		t.Fatalf("band does not enclose the row: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[0m"+bg) {
+		t.Errorf("band is not re-armed after the cell's reset: %q", got)
+	}
+	// Padded to the pane, so the band is the row's width and not the text's.
+	if w := lipgloss.Width(got); w != 20 {
+		t.Errorf("band spans %d columns, want 20", w)
+	}
+
+	// A colorless terminal gets no raw SGR sequences to print as garbage.
+	colorless = true
+	if got := selectionBand("plain", 20); got != "plain" {
+		t.Errorf("colorless band = %q, want untouched", got)
+	}
+}
+
+// The detail's own first line names the machine, so the overlay's top line
+// carries what the detail does not: where it is and how old the reading is.
+// The same words twice in two lines read as a rendering fault.
+func TestDetailHeadIsABreadcrumbNotTheNameAgain(t *testing.T) {
+	m := testExploreModel()
+	m.focus = paneRows
+	m.openDetail()
+	lines := strings.Split(ui.StripANSI(m.View()), "\n")
+	if len(lines) < 2 {
+		t.Fatal("detail view too short")
+	}
+	if strings.Contains(lines[0], m.detailOf) {
+		t.Errorf("top line repeats the name the next line carries: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "seoul-a") || !strings.Contains(lines[0], "read") {
+		t.Errorf("top line carries no farm or freshness: %q", lines[0])
+	}
+	if !strings.Contains(lines[1], m.detailOf) {
+		t.Errorf("the detail no longer leads with the name: %q", lines[1])
+	}
+}
+
 // The frame is both panes at once — that is the whole point of it, and a
 // regression that drops one would still render something plausible.
 func TestTheFrameShowsBothPanesAndTheKeys(t *testing.T) {
