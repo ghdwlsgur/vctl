@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-const sampleZone = `192.168.201.12       harbor.sre.local
-192.168.201.12       gitlab.sre.local
-101.202.128.12       pub-k8s-master-01 ingress.prometheus.innogrid.com
+const sampleZone = `192.0.2.10           harbor.example.com
+192.0.2.10           gitlab.example.com
+198.51.100.20        k8s-master-01 ingress.metrics.example.com
 `
 
 func TestParseSkipsWhatItCannotRead(t *testing.T) {
@@ -15,35 +15,35 @@ func TestParseSkipsWhatItCannotRead(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("parsed %d records, want 3", len(got))
 	}
-	if got[2].IP != "101.202.128.12" || len(got[2].Hostnames) != 2 {
+	if got[2].IP != "198.51.100.20" || len(got[2].Hostnames) != 2 {
 		t.Errorf("multi-name line parsed as %+v", got[2])
 	}
 }
 
 func TestLookupIsExact(t *testing.T) {
-	if ip, ok := Lookup(sampleZone, "gitlab.sre.local"); !ok || ip != "192.168.201.12" {
+	if ip, ok := Lookup(sampleZone, "gitlab.example.com"); !ok || ip != "192.0.2.10" {
 		t.Errorf("lookup = %q %v", ip, ok)
 	}
-	// A substring is not a name: "gitlab.sre" must not answer.
-	if _, ok := Lookup(sampleZone, "gitlab.sre"); ok {
+	// A substring is not a name: "gitlab.exam" must not answer.
+	if _, ok := Lookup(sampleZone, "gitlab.exam"); ok {
 		t.Error("a partial name resolved")
 	}
 }
 
 func TestAddRefusesWhatWouldCorruptTheZone(t *testing.T) {
-	if _, err := Add(sampleZone, "not-an-ip", "x.sre.local"); err == nil {
+	if _, err := Add(sampleZone, "not-an-ip", "x.example.com"); err == nil {
 		t.Error("a bad address was accepted")
 	}
 	// A duplicate name is refused even with a different IP — the same name
 	// answering from two lines is a coin flip per query.
-	if _, err := Add(sampleZone, "10.0.0.9", "gitlab.sre.local"); err == nil {
+	if _, err := Add(sampleZone, "10.0.0.9", "gitlab.example.com"); err == nil {
 		t.Error("a duplicate hostname was accepted")
 	}
-	out, err := Add(sampleZone, "192.168.201.140", "new.sre.local")
+	out, err := Add(sampleZone, "192.0.2.40", "new.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(out, "192.168.201.140      new.sre.local\n") {
+	if !strings.HasSuffix(out, "192.0.2.40           new.example.com\n") {
 		t.Errorf("the new record is not the last line:\n%s", out)
 	}
 	// The lines that were there are untouched, byte for byte.
@@ -53,36 +53,36 @@ func TestAddRefusesWhatWouldCorruptTheZone(t *testing.T) {
 }
 
 func TestRemoveKeepsTheRestOfAMultiNameLine(t *testing.T) {
-	out, ok := Remove(sampleZone, "pub-k8s-master-01")
+	out, ok := Remove(sampleZone, "k8s-master-01")
 	if !ok {
 		t.Fatal("nothing removed")
 	}
-	if _, found := Lookup(out, "pub-k8s-master-01"); found {
+	if _, found := Lookup(out, "k8s-master-01"); found {
 		t.Error("the removed name still answers")
 	}
-	if ip, found := Lookup(out, "ingress.prometheus.innogrid.com"); !found || ip != "101.202.128.12" {
+	if ip, found := Lookup(out, "ingress.metrics.example.com"); !found || ip != "198.51.100.20" {
 		t.Error("the surviving name on the same line was lost")
 	}
 	// Removing the only name on a line removes the line.
-	out, _ = Remove(out, "harbor.sre.local")
+	out, _ = Remove(out, "harbor.example.com")
 	if strings.Contains(out, "harbor") {
 		t.Errorf("an empty line survived:\n%s", out)
 	}
-	if _, ok := Remove(sampleZone, "absent.sre.local"); ok {
+	if _, ok := Remove(sampleZone, "absent.example.com"); ok {
 		t.Error("removing an absent name claimed success")
 	}
 }
 
-const sampleCorefile = `sre.local:53 {
-    hosts /etc/coredns/hosts/sre.hosts {
+const sampleCorefile = `corp.internal:53 {
+    hosts /etc/coredns/hosts/corp.hosts {
         ttl 60
         fallthrough
     }
     log
 }
 
-innogrid.com:53 {
-    hosts /etc/coredns/hosts/innogrid.hosts {
+example.com:53 {
+    hosts /etc/coredns/hosts/example.hosts {
         fallthrough
     }
 }
@@ -99,7 +99,7 @@ innogrid.com:53 {
 // holds because a server block says so, not because the names rhyme.
 func TestZoneBindingsComeFromTheCorefile(t *testing.T) {
 	b := ZoneBindings(sampleCorefile)
-	want := map[string]string{"sre.local": "sre.hosts", "innogrid.com": "innogrid.hosts", ".": "misc.hosts"}
+	want := map[string]string{"corp.internal": "corp.hosts", "example.com": "example.hosts", ".": "misc.hosts"}
 	for z, key := range want {
 		if b[z] != key {
 			t.Errorf("zone %q → %q, want %q", z, b[z], key)
@@ -108,13 +108,13 @@ func TestZoneBindingsComeFromTheCorefile(t *testing.T) {
 }
 
 func TestZoneKeyForMatchesTheLongestSuffix(t *testing.T) {
-	b := map[string]string{"sre.local": "sre.hosts", "innogrid.com": "innogrid.hosts", ".": "misc.hosts"}
+	b := map[string]string{"corp.internal": "corp.hosts", "example.com": "example.hosts", ".": "misc.hosts"}
 	for _, tc := range []struct{ host, zone, key string }{
-		{"vault.sre.local", "sre.local", "sre.hosts"},
-		{"gitlab.innogrid.com", "innogrid.com", "innogrid.hosts"},
-		// Not a suffix match on the string: presre.local is a different name.
-		{"presre.local", ".", "misc.hosts"},
-		{"grafana.hwabul-saas.com", ".", "misc.hosts"},
+		{"vault.corp.internal", "corp.internal", "corp.hosts"},
+		{"gitlab.example.com", "example.com", "example.hosts"},
+		// Not a suffix match on the string: precorp.internal is a different name.
+		{"precorp.internal", ".", "misc.hosts"},
+		{"grafana.other.example.org", ".", "misc.hosts"},
 	} {
 		if zone, key := ZoneKeyFor(tc.host, b); zone != tc.zone || key != tc.key {
 			t.Errorf("ZoneKeyFor(%q) = (%q, %q), want (%q, %q)", tc.host, zone, key, tc.zone, tc.key)
@@ -126,8 +126,8 @@ func TestZoneKeyForMatchesTheLongestSuffix(t *testing.T) {
 // one format, two writers, or a vctl commit and a hand sync fight forever.
 func TestRenderMatchesTheMakeSyncFormat(t *testing.T) {
 	got := RenderConfigMapYAML(map[string]string{
-		"sre.hosts":      "192.168.201.12       vault.sre.local\n",
-		"innogrid.hosts": "192.168.190.101      harbor.innogrid.com\n",
+		"sre.hosts":      "192.0.2.10           vault.corp.internal\n",
+		"innogrid.hosts": "192.0.2.11           harbor.example.com\n",
 		"misc.hosts":     "10.0.0.1             x.example.com\n",
 	})
 	want := `# ============================================================
@@ -145,15 +145,68 @@ metadata:
     app.kubernetes.io/component: dns-records
 data:
   innogrid.hosts: |
-    192.168.190.101      harbor.innogrid.com
+    192.0.2.11           harbor.example.com
 
   sre.hosts: |
-    192.168.201.12       vault.sre.local
+    192.0.2.10           vault.corp.internal
 
   misc.hosts: |
     10.0.0.1             x.example.com
 `
 	if got != want {
 		t.Errorf("rendered file differs from make sync's format:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// Parse is the inverse of Render on Render's own output: a write path reads the
+// repo file back into the map it will edit, so any drift between the two would
+// corrupt a round-trip. Also checks a multi-name line, an empty zone, and an
+// extra (non-canonical) key survive the trip.
+func TestParseRenderRoundTrip(t *testing.T) {
+	data := map[string]string{
+		"sre.hosts":      "192.0.2.10           vault.corp.internal\n192.0.2.10           gitlab.corp.internal\n",
+		"innogrid.hosts": "192.0.2.11           a.example.com b.example.com\n",
+		"misc.hosts":     "",
+		"extra.hosts":    "10.0.0.1             x.example.com\n",
+	}
+	rendered := RenderConfigMapYAML(data)
+	got := ParseConfigMapYAML(rendered)
+	if len(got) != len(data) {
+		t.Fatalf("round-trip changed the key set: %v", got)
+	}
+	for k, v := range data {
+		if got[k] != v {
+			t.Errorf("key %q: round-trip gave %q, want %q", k, got[k], v)
+		}
+	}
+	// And Render is stable across the trip — the byte output is identical, so a
+	// vctl commit of unchanged data produces no diff.
+	if RenderConfigMapYAML(got) != rendered {
+		t.Error("Render(Parse(Render(x))) != Render(x)")
+	}
+}
+
+// A hostname that only appears inside a comment is not a record: rm must not
+// rewrite or drop the comment line.
+func TestRemoveLeavesCommentsAlone(t *testing.T) {
+	text := "192.0.2.10           real.example.com\n# 192.0.2.99 ghost.example.com\n"
+	out, ok := Remove(text, "ghost.example.com")
+	if ok {
+		t.Error("claimed to remove a name that only appears in a comment")
+	}
+	if out != text {
+		t.Errorf("the comment was altered:\n%s", out)
+	}
+}
+
+// The stored line uses the canonical address, so a mixed-case or non-compressed
+// IPv6 add is found by a later lookup and verified against the same spelling.
+func TestAddCanonicalizesIPv6(t *testing.T) {
+	out, err := Add("", "2001:DB8::0:1", "v6.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ip, _ := Lookup(out, "v6.example.com"); ip != "2001:db8::1" {
+		t.Errorf("stored address = %q, want canonical 2001:db8::1", ip)
 	}
 }

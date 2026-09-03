@@ -1,6 +1,9 @@
 package openstack
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // DefaultVMUser is what a VM connection tries first when nobody named a user.
 //
@@ -20,7 +23,7 @@ const DefaultVMUser = "root"
 func LoginCandidates(imageName, configured string) []string {
 	out := []string{DefaultVMUser}
 	for _, u := range []string{ImageLoginUser(imageName), configured} {
-		if u != "" && !contains(out, u) {
+		if u != "" && !slices.Contains(out, u) {
 			out = append(out, u)
 		}
 	}
@@ -58,13 +61,4 @@ var imageUsers = []struct{ marker, user string }{
 	{"opensuse", "opensuse"},
 	{"cirros", "cirros"},
 	{"vyos", "vyos"},
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -73,7 +74,11 @@ type ConfigMap struct {
 }
 
 func (c *Client) cmURL(namespace, name string) string {
-	return fmt.Sprintf("%s/api/v1/namespaces/%s/configmaps/%s", c.base, namespace, name)
+	// Escaped, like gitlabapi's project path: every caller passes a constant
+	// today, but an unescaped segment lets a value with `/` or `?` escape the
+	// intended resource path against the API server.
+	return fmt.Sprintf("%s/api/v1/namespaces/%s/configmaps/%s",
+		c.base, url.PathEscape(namespace), url.PathEscape(name))
 }
 
 // GetConfigMap reads one ConfigMap.
