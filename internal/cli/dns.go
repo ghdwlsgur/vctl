@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	osuser "os/user"
+	"sort"
 	"strings"
 	"time"
 
@@ -67,7 +69,11 @@ then verified with a real query against the fleet resolver.`,
 	}
 	cmd.AddCommand(cmdkit.Gate(dnsAddCmd(env), "dns"))
 	cmd.AddCommand(cmdkit.Gate(dnsRmCmd(env), "dns"))
-	return cmd
+	// The listing is a read-only view of a resource whose grant name is
+	// mutate-classed, so it self-gates as a read view — the same shape `vctl
+	// ip` uses for the ledger that a granted `ip set` writes. This keeps login
+	// enforcement on the gate rather than only in openDNS's in-body call.
+	return cmdkit.GateReadView(cmd, "dns")
 }
 
 func argOr(args []string, i int) string {
@@ -126,7 +132,7 @@ func runDNSList(ctx context.Context, a *app.App, filter string) error {
 	}
 	w := os.Stdout
 	shown := 0
-	for _, key := range dnsZoneKeys(cm.Data) {
+	for _, key := range dnshosts.OrderedKeys(cm.Data) {
 		var cells [][]string
 		for _, r := range dnshosts.Parse(cm.Data[key]) {
 			names := strings.Join(r.Hostnames, " ")
@@ -160,18 +166,6 @@ func runDNSList(ctx context.Context, a *app.App, filter string) error {
 	return nil
 }
 
-// dnsZoneKeys orders the zone files the way the repo file does, extras after.
-func dnsZoneKeys(data map[string]string) []string {
-	rendered := dnshosts.RenderConfigMapYAML(data)
-	var keys []string
-	for _, line := range strings.Split(rendered, "\n") {
-		if strings.HasPrefix(line, "  ") && strings.HasSuffix(line, ": |") {
-			keys = append(keys, strings.TrimSuffix(strings.TrimSpace(line), ": |"))
-		}
-	}
-	return keys
-}
-
 func dnsAddCmd(env cmdkit.Env) *cobra.Command {
 	var zone string
 	cmd := &cobra.Command{
@@ -193,33 +187,62 @@ func runDNSAdd(ctx context.Context, a *app.App, hostname, ip, zoneFlag string) e
 	if err != nil {
 		return err
 	}
-	return dnsMutate(ctx, s, "add "+hostname+" "+ip,
-		func(cm *kubeapi.ConfigMap) (string, error) {
-			key, zone, err := s.zoneKey(ctx, cm, hostname, zoneFlag)
+	// Canonicalize once, up front: the stored line, the duplicate check, and
+	// the post-write verification then all compare the one spelling of the
+	// address. dnshosts.Add canonicalizes what it stores; this makes the
+	// value the command reports and verifies match it.
+	if addr, perr := netip.ParseAddr(ip); perr == nil {
+		ip = addr.String()
+	}
+	verified := ""
+	err = dnsMutate(ctx, s, "add "+hostname+" "+ip,
+		func(data map[string]string) error {
+			key, zone, err := s.zoneKey(ctx, data, hostname, zoneFlag)
 			if err != nil {
-				return "", err
+				return err
 			}
-			// Against every zone file, not just the target: the same name
-			// answering from two files is a coin flip per query.
-			for k, text := range cm.Data {
-				if have, ok := dnshosts.Lookup(text, hostname); ok {
-					if have == ip {
-						ui.Infof(os.Stderr, "%s → %s is already registered in %s.", hostname, ip, k)
-						return "", errDNSNoChange
+			// Every zone file, in sorted order, so the verdict is the same on
+			// every run: the same name answering from two files is a coin flip
+			// per query, and a name already present exactly as asked is a
+			// no-op — but a conflict anywhere outranks a match anywhere.
+			var matchKey string
+			for _, k := range sortedKeys(data) {
+				if have, ok := dnshosts.Lookup(data[k], hostname); ok {
+					if have != ip {
+						return fmt.Errorf("%s already answers with %s (in %s); remove it first", hostname, have, k)
 					}
-					return "", fmt.Errorf("%s already answers with %s (in %s); remove it first", hostname, have, k)
+					matchKey = k
 				}
 			}
-			next, err := dnshosts.Add(cm.Data[key], ip, hostname)
+			if matchKey != "" {
+				ui.Infof(os.Stderr, "%s → %s is already registered in %s.", hostname, ip, matchKey)
+				return errDNSNoChange
+			}
+			next, err := dnshosts.Add(data[key], ip, hostname)
 			if err != nil {
-				return "", err
+				return err
 			}
 			ui.Infof(os.Stderr, "filing %s → %s under %s (zone %s)", hostname, ip, key, zone)
-			cm.Data[key] = next
-			return key, nil
+			data[key] = next
+			verified = hostname
+			return nil
 		},
-		func() error { return dnsVerifyAnswers(ctx, s.cfg.DNSResolver, hostname, ip) },
 	)
+	if err != nil || verified == "" {
+		return err
+	}
+	return dnsVerifyAnswers(ctx, s.cfg.DNSResolver, hostname, ip)
+}
+
+// sortedKeys returns a map's keys in a stable order, so an iteration whose
+// outcome depends on which key is seen first is reproducible.
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func dnsRmCmd(env cmdkit.Env) *cobra.Command {
@@ -242,18 +265,17 @@ func runDNSRm(ctx context.Context, a *app.App, hostname string) error {
 		return err
 	}
 	return dnsMutate(ctx, s, "rm "+hostname,
-		func(cm *kubeapi.ConfigMap) (string, error) {
-			for key, text := range cm.Data {
-				if next, ok := dnshosts.Remove(text, hostname); ok {
-					ip, _ := dnshosts.Lookup(text, hostname)
+		func(data map[string]string) error {
+			for _, key := range sortedKeys(data) {
+				if next, ok := dnshosts.Remove(data[key], hostname); ok {
+					ip, _ := dnshosts.Lookup(data[key], hostname)
 					ui.Infof(os.Stderr, "removing %s (was %s, in %s)", hostname, ip, key)
-					cm.Data[key] = next
-					return key, nil
+					data[key] = next
+					return nil
 				}
 			}
-			return "", fmt.Errorf("%s is not registered in any zone file (Corefile template wildcards are not records — see the Corefile)", hostname)
+			return fmt.Errorf("%s is not registered in any zone file (Corefile template wildcards are not records — see the Corefile)", hostname)
 		},
-		nil,
 	)
 }
 
@@ -261,37 +283,44 @@ func runDNSRm(ctx context.Context, a *app.App, hostname string) error {
 // done — an add that is already present exactly as asked.
 var errDNSNoChange = errors.New("no change")
 
-// dnsMutate is the one write path: read the live ConfigMap, apply the edit,
-// commit the whole file to the IaC repo, then patch the cluster — in that
-// order, because the repo is what a sync reasserts. Conflicts on either side
-// re-read and reapply; after three the operator sees the contention instead
-// of a clobbered write.
-func dnsMutate(ctx context.Context, s *dnsSession, action string,
-	edit func(*kubeapi.ConfigMap) (string, error), verify func() error) error {
+// dnsMutate is the one write path, and the repo is its source of truth. The
+// edit is applied to what the IaC repo holds — not to the live ConfigMap — so
+// the record is committed to the repo first and the cluster is a projection of
+// it. That order is not a preference: an ArgoCD sync reasserts the repo, so a
+// record that reached the cluster but not the repo is removed by the next
+// sync. Committing first means a crash between the two writes leaves the repo
+// ahead, which the sync then repairs in the safe direction.
+//
+// The edit runs against the repo's own content on every attempt, so the
+// GitLab last_commit_id precondition guards both the version and the value:
+// two concurrent writers serialize through it, and a retry re-reads and
+// re-applies onto the winner rather than overwriting it. The earlier design
+// rendered the commit from a separately-read ConfigMap, so the precondition
+// guarded a version unrelated to the content and a concurrent record could be
+// silently reverted.
+func dnsMutate(ctx context.Context, s *dnsSession, action string, edit func(map[string]string) error) error {
+	// Phase 1 — commit to the repo (the source of truth), retrying on its own
+	// conflict. `data` is the committed state, carried into phase 2.
+	var data map[string]string
+	msg := fmt.Sprintf("dns: %s (vctl by %s)", action, dnsActor())
 	for attempt := 1; ; attempt++ {
-		cm, err := s.kube.GetConfigMap(ctx, dnsNamespace, dnsHostsCM)
+		file, err := s.git.GetFile(ctx, s.cfg.DNSGitProject, dnsRepoFile, dnsRepoBranch)
 		if err != nil {
-			return err
+			return fmt.Errorf("read %s from the IaC repo: %w", dnsRepoFile, err)
 		}
-		if _, err := edit(cm); err != nil {
+		data = dnshosts.ParseConfigMapYAML(file.Content)
+		if err := edit(data); err != nil {
 			if errors.Is(err, errDNSNoChange) {
 				return nil
 			}
 			return err
 		}
-
-		// Repo first. The rendered file is the whole ConfigMap in the repo's
-		// canonical format, so a commit also captures any out-of-band edits
-		// the live object accumulated — they become history instead of drift.
-		file, err := s.git.GetFile(ctx, s.cfg.DNSGitProject, dnsRepoFile, dnsRepoBranch)
-		if err != nil {
-			return fmt.Errorf("read %s from the IaC repo: %w", dnsRepoFile, err)
-		}
-		rendered := dnshosts.RenderConfigMapYAML(cm.Data)
-		msg := fmt.Sprintf("dns: %s (vctl by %s)", action, dnsActor())
+		rendered := dnshosts.RenderConfigMapYAML(data)
 		if rendered == file.Content {
-			ui.Infof(os.Stderr, "IaC repo already carries this state; skipping the commit.")
-		} else if err := s.git.UpdateFile(ctx, s.cfg.DNSGitProject, dnsRepoFile, dnsRepoBranch,
+			ui.Infof(os.Stderr, "IaC repo already carries this state; reasserting the cluster.")
+			break
+		}
+		if err := s.git.UpdateFile(ctx, s.cfg.DNSGitProject, dnsRepoFile, dnsRepoBranch,
 			rendered, msg, file.LastCommitID); err != nil {
 			if errors.Is(err, gitlabapi.ErrConflict) && attempt < 3 {
 				ui.Warnf(os.Stderr, "the repo file moved; re-reading and retrying (%d/3)", attempt)
@@ -299,27 +328,31 @@ func dnsMutate(ctx context.Context, s *dnsSession, action string,
 			}
 			return fmt.Errorf("commit to the IaC repo: %w", err)
 		}
+		break
+	}
 
-		ann := map[string]string{
-			dnsStampAnn: fmt.Sprintf("%s %s %s", time.Now().UTC().Format(time.RFC3339), dnsActor(), action),
+	// Phase 2 — project the committed state onto the live ConfigMap so it
+	// answers now instead of at the next sync. The repo already has the truth,
+	// so a conflict here only needs a fresh resourceVersion, not a re-edit.
+	ann := map[string]string{
+		dnsStampAnn: fmt.Sprintf("%s %s %s", time.Now().UTC().Format(time.RFC3339), dnsActor(), action),
+	}
+	for attempt := 1; ; attempt++ {
+		cm, err := s.kube.GetConfigMap(ctx, dnsNamespace, dnsHostsCM)
+		if err != nil {
+			return fmt.Errorf("the change is committed to the IaC repo but reading the live ConfigMap failed (%w) — an ArgoCD sync will apply it", err)
 		}
-		if err := s.kube.PatchConfigMapData(ctx, dnsNamespace, dnsHostsCM, cm.ResourceVersion, cm.Data, ann); err != nil {
+		if err := s.kube.PatchConfigMapData(ctx, dnsNamespace, dnsHostsCM, cm.ResourceVersion, data, ann); err != nil {
 			if errors.Is(err, kubeapi.ErrConflict) && attempt < 3 {
 				ui.Warnf(os.Stderr, "the ConfigMap moved; re-reading and retrying (%d/3)", attempt)
 				continue
 			}
-			// The repo is now ahead of the cluster. Said loudly, with the way
-			// out: the truth is committed, only the fast path failed.
 			return fmt.Errorf("the change is committed to the IaC repo but the live ConfigMap patch failed (%w) — retry, or apply via ArgoCD sync", err)
 		}
 		break
 	}
-	ui.Successf(os.Stdout, "recorded in the IaC repo and the live ConfigMap.")
-	if verify == nil {
-		ui.Infof(os.Stdout, "propagation: kubelet re-syncs the mounted file within about a minute.")
-		return nil
-	}
-	return verify()
+	ui.Successf(os.Stderr, "recorded in the IaC repo and the live ConfigMap.")
+	return nil
 }
 
 // dnsActor names who made the change in the commit and the annotation. The
@@ -382,8 +415,10 @@ func dnsResolveVia(ctx context.Context, resolver, name string) ([]string, error)
 
 // zoneKey resolves which hosts file a record belongs in: the Corefile's own
 // zone→file bindings, longest-suffix matched — or the operator's --zone,
-// validated against the same bindings.
-func (s *dnsSession) zoneKey(ctx context.Context, cm *kubeapi.ConfigMap, hostname, zoneFlag string) (key, zone string, err error) {
+// validated against the same bindings. The key must already exist in data
+// (the repo's zone set); a binding the repo file has no key for is a
+// Corefile↔repo mismatch, reported rather than papered over with a new key.
+func (s *dnsSession) zoneKey(ctx context.Context, data map[string]string, hostname, zoneFlag string) (key, zone string, err error) {
 	core, err := s.kube.GetConfigMap(ctx, dnsNamespace, dnsCorefileCM)
 	if err != nil {
 		return "", "", err
@@ -396,16 +431,22 @@ func (s *dnsSession) zoneKey(ctx context.Context, cm *kubeapi.ConfigMap, hostnam
 			for z := range bindings {
 				zones = append(zones, z)
 			}
+			sort.Strings(zones)
 			return "", "", fmt.Errorf("no zone %q in the Corefile (have: %s)", zoneFlag, strings.Join(zones, ", "))
 		}
-		return k, zoneFlag, nil
+		zone, key = zoneFlag, k
+	} else {
+		zone, key = dnshosts.ZoneKeyFor(hostname, bindings)
+		if key == "" {
+			return "", "", fmt.Errorf("the Corefile has no hosts file for zone %q", zone)
+		}
 	}
-	zone, key = dnshosts.ZoneKeyFor(hostname, bindings)
-	if key == "" {
-		return "", "", fmt.Errorf("the Corefile has no hosts file for zone %q", zone)
-	}
-	if _, ok := cm.Data[key]; !ok {
-		return "", "", fmt.Errorf("the Corefile serves zone %q from %s, but the ConfigMap has no such key", zone, key)
+	// Checked against the repo's zones (data), not the live ConfigMap, and for
+	// both the inferred and the --zone path — so no branch can reach the edit
+	// with a key the repo file does not carry (which would create a new zone
+	// key silently, or assign into a nil map).
+	if _, ok := data[key]; !ok {
+		return "", "", fmt.Errorf("the Corefile serves zone %q from %s, but the IaC repo file has no such key", zone, key)
 	}
 	return key, zone, nil
 }

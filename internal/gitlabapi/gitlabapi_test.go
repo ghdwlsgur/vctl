@@ -15,7 +15,7 @@ func testClient(t *testing.T, h http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	c, err := New(srv.URL, "glpat-test", nil)
+	c, err := New(srv.URL, "token-placeholder", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func testClient(t *testing.T, h http.HandlerFunc) *Client {
 
 func TestGetFileDecodesAndCarriesTheCommit(t *testing.T) {
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("PRIVATE-TOKEN") != "glpat-test" {
+		if r.Header.Get("PRIVATE-TOKEN") != "token-placeholder" {
 			t.Error("no token on the request")
 		}
 		// The project path arrives URL-encoded — GitLab addresses projects by

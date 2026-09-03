@@ -51,7 +51,23 @@ func New(base, token string, caPEM []byte) (*Client, error) {
 	return &Client{
 		base:  strings.TrimRight(base, "/"),
 		token: token,
-		http:  &http.Client{Timeout: 20 * time.Second, Transport: tr},
+		http: &http.Client{
+			Timeout:   20 * time.Second,
+			Transport: tr,
+			// Go strips Authorization on a cross-host redirect but not custom
+			// headers, so a redirect to another host would carry PRIVATE-TOKEN
+			// with it. This client only ever talks to one GitLab; refuse a
+			// redirect that leaves its host rather than hand the token away.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if req.URL.Host != via[0].URL.Host {
+					return fmt.Errorf("refusing cross-host redirect to %s", req.URL.Host)
+				}
+				if len(via) >= 10 {
+					return fmt.Errorf("stopped after 10 redirects")
+				}
+				return nil
+			},
+		},
 	}, nil
 }
 
