@@ -93,7 +93,7 @@ func openDNS(ctx context.Context, a *app.App, forWrite bool) (*dnsSession, error
 	if err != nil {
 		return nil, fmt.Errorf("no DNS credentials at %s (%w) — see the coredns repo's vctl-dns-rbac.yaml", a.Cfg.DNSKubeKVPath, err)
 	}
-	kube, err := kubeapi.New(sec["server"], sec["token"], []byte(sec["ca"]))
+	kube, err := kubeapi.New(sec["server"], sec["token"], []byte(sec["ca"]), sec["server_name"])
 	if err != nil {
 		return nil, err
 	}

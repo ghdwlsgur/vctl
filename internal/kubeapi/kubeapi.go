@@ -38,7 +38,13 @@ type Client struct {
 // bearer token. The CA is required: this client exists to mutate the fleet's
 // DNS, and a write that cannot verify who it is talking to is a write that
 // can be redirected.
-func New(server, token string, caPEM []byte) (*Client, error) {
+//
+// serverName overrides TLS verification's expected name — the same seam the
+// Postgres path calls DBServerName. The fleet fronts its API server with a
+// load balancer whose address is not in the serving certificate's SANs;
+// kubeconfigs carry tls-server-name for exactly this, and so does the Vault
+// secret this client's inputs come from.
+func New(server, token string, caPEM []byte, serverName string) (*Client, error) {
 	if server == "" || token == "" {
 		return nil, fmt.Errorf("kubernetes server and token are both required")
 	}
@@ -50,8 +56,10 @@ func New(server, token string, caPEM []byte) (*Client, error) {
 		base:  strings.TrimRight(server, "/"),
 		token: token,
 		http: &http.Client{
-			Timeout:   15 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}},
+			Timeout: 15 * time.Second,
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{
+				RootCAs: pool, ServerName: serverName, MinVersion: tls.VersionTLS12,
+			}},
 		},
 	}, nil
 }
