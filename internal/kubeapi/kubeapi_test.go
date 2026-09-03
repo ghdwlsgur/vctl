@@ -17,7 +17,7 @@ func testClient(t *testing.T, h http.HandlerFunc) *Client {
 	srv := httptest.NewTLSServer(h)
 	t.Cleanup(srv.Close)
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
-	c, err := New(srv.URL, "test-token", ca)
+	c, err := New(srv.URL, "test-token", ca, "")
 	if err != nil {
 		t.Fatal(err)
 	}
