@@ -47,9 +47,18 @@ type Config struct {
 	// live under (kv/<team>/vctl-<host_port>). It names a team's mount, which
 	// is organization surface — see internal/openstack/farmcreds.
 	VaultFarmPrefix string `yaml:"vault_farm_prefix"`
-	AuthMethod      string `yaml:"auth_method"` // userpass | oidc | approle | kubernetes
-	OIDCRole        string `yaml:"oidc_role"`   // Vault OIDC role (phase 2)
-	OIDCMount       string `yaml:"oidc_mount"`  // Vault OIDC auth mount path
+
+	// The fleet DNS surface (`vctl dns`). All organization surface: where the
+	// CoreDNS editor credentials and the IaC repo live is a fact about the
+	// fleet, not about the code — see internal/cli/dns.go for the flow.
+	DNSResolver       string `yaml:"dns_resolver"`          // the resolver records are verified against, host:port
+	DNSKubeKVPath     string `yaml:"dns_kube_kv_path"`      // KV secret holding server/token/ca for the coredns editor SA
+	DNSGitTokenKVPath string `yaml:"dns_git_token_kv_path"` // KV secret holding the IaC repo token (field: token)
+	DNSGitBase        string `yaml:"dns_git_base"`          // GitLab base URL
+	DNSGitProject     string `yaml:"dns_git_project"`       // IaC repo project path
+	AuthMethod        string `yaml:"auth_method"`           // userpass | oidc | approle | kubernetes
+	OIDCRole          string `yaml:"oidc_role"`             // Vault OIDC role (phase 2)
+	OIDCMount         string `yaml:"oidc_mount"`            // Vault OIDC auth mount path
 
 	DBHost               string `yaml:"db_host"`
 	DBServerName         string `yaml:"db_server_name"` // TLS SNI override; defaults to DBHost. Use for port-forward/proxy where dial host != cert name.

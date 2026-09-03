@@ -382,6 +382,9 @@ claude mcp add vctl -- vctl mcp
 | `vctl inject <host\|user@addr> [--sudo] [-i <key>]` | vctl ssh를 위한 호스트 준비: Vault SSH CA 신뢰를 설치하고 실제 인증서 로그인으로 검증까지 합니다 (별칭: `trust-ca`) |
 | `vctl install <host> [--motd=false] [--binary <path>]` | Vault 인증서 연결로 node-agent를 설치합니다 (바이너리·AppRole 자격증명·systemd 유닛) |
 | `vctl log <host>` | 호스트 한 대의 node-agent 헬스체크를 대시보드로 보여줍니다 (하트비트 신선도·load·메모리·디스크) |
+| `vctl dns [name]` | 함대 DNS 레코드를 zone별로 보여줍니다. 이름·주소 조각으로 필터하고, 정확한 이름이면 함대 리졸버의 실제 응답도 함께 보여줍니다 |
+| `vctl dns add <hostname> <ip> [--zone <z>]` | 레코드 등록: IaC 저장소에 먼저 커밋하고(sync가 되돌리는 기준은 저장소) 라이브 CoreDNS ConfigMap을 패치한 뒤 실제 쿼리로 검증합니다. zone은 Corefile의 바인딩으로 호스트명에서 추론합니다 |
+| `vctl dns rm <hostname>` | 레코드 삭제. 같은 저장소→클러스터 경로를 지납니다 |
 | `vctl node-agent [--interval 5m] [--probe-interval 1h]` | 이미 등록된 인벤토리 호스트의 가벼운 런타임 상태를 보고합니다. 주기가 긴 probe는 그 호스트가 어떤 플랫폼의 무슨 역할인지 기록합니다 |
 | `vctl cache status\|refresh\|clear` | Postgres 불통 시 쓰이는 로컬 인벤토리 스냅샷을 확인·제어합니다 |
 | `vctl status` | 로그인, SSH CA, inventory DB 연결 상태를 확인합니다 |

@@ -17,6 +17,11 @@ func Defaults() *Config {
 		VaultAddr:                     "https://vault.sre.local",
 		AdminPolicies:                 []string{"vctl-admin", "sre-admin"},
 		VaultFarmPrefix:               "kv/teams/sre",
+		DNSResolver:                   "192.168.201.12:53",
+		DNSKubeKVPath:                 "kv/teams/sre/vctl-dns",
+		DNSGitTokenKVPath:             "kv/teams/sre/gitlab-albert",
+		DNSGitBase:                    "https://gitlab.sre.local",
+		DNSGitProject:                 "sre/system/internal/devtools/coredns",
 		AuthMethod:                    "oidc", // people: GitLab SSO by default; --method userpass for bootstrap
 		OIDCRole:                      "vctl",
 		OIDCMount:                     "oidc",
