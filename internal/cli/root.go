@@ -137,6 +137,8 @@ Start here:
 	)
 	addCommandGroup(root, "infrastructure",
 		lsCmd(env), ipCmd(env), wgCmd(env), openstack.Cmd(env), statusCmd(env), logCmd(env),
+		// dns gates its own leaves — the listing is read-only, add/rm mutate.
+		dnsCmd(env),
 	)
 	addCommandGroup(root, "operations",
 		cmdkit.Gate(syncCmd(env), "sync"),

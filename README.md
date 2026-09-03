@@ -490,6 +490,9 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl inject <host\|user@addr> [--sudo] [-i <key>]` | Prepare a host for vctl ssh: install Vault SSH CA trust, then verify with a real certificate login (alias: `trust-ca`) |
 | `vctl install <host> [--motd=false] [--binary <path>]` | Install the node-agent on an inventory host over a Vault-certificate connection (binary, AppRole creds, systemd unit) |
 | `vctl log <host>` | Show one host's node-agent healthcheck as a dashboard (heartbeat freshness, load, memory, disk, agent vitals) |
+| `vctl dns [name]` | The fleet DNS records, grouped by zone — filtered by a name or address fragment, with a live answer from the fleet resolver for an exact name |
+| `vctl dns add <hostname> <ip> [--zone <z>]` | Register a record: committed to the IaC repo first (the source of truth a sync reasserts), patched into the live CoreDNS ConfigMap, then verified with a real query. Zone inferred from the hostname via the Corefile's own bindings |
+| `vctl dns rm <hostname>` | Deregister a record, through the same repo-then-cluster path |
 | `vctl ca install\|remove\|print` | Trust the embedded root CA in this machine's OS store so browsers/curl accept the organization's internal hostnames (clears HSTS errors); platform auto-detected |
 | `vctl node-agent [--interval 5m] [--probe-interval 1h]` | Report lightweight host runtime status for already registered inventory. A slower probe pass records what platform the host is part of and in what role |
 | `vctl session [<serial>\|--list\|--json]` | Show what a person did inside an SSH session (host kernel-audit timeline) |

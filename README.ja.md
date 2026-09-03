@@ -411,6 +411,9 @@ claude mcp add vctl -- vctl mcp
 | `vctl inject <host\|user@addr> [--sudo] [-i <key>]` | vctl ssh のためにホストを準備する: Vault SSH CA の信頼をインストールし、実際の証明書ログインで検証する(エイリアス: `trust-ca`) |
 | `vctl install <host> [--motd=false] [--binary <path>]` | Vault 証明書接続で node-agent をインストールする(バイナリ、AppRole 資格情報、systemd ユニット) |
 | `vctl log <host>` | ホストの node-agent ヘルスチェックをダッシュボードで表示する |
+| `vctl dns [name]` | フリートの DNS レコードを zone ごとに表示。名前・アドレスの断片で絞り込み、完全一致の名前にはフリートリゾルバの実応答も併記 |
+| `vctl dns add <hostname> <ip> [--zone <z>]` | レコード登録: まず IaC リポジトリへコミットし(sync が再適用する基準はリポジトリ)、ライブの CoreDNS ConfigMap をパッチしてから実クエリで検証。zone は Corefile のバインディングからホスト名で推論 |
+| `vctl dns rm <hostname>` | レコード削除。同じリポジトリ→クラスタ経路を通る |
 | `vctl ca install\|remove\|print` | このマシンの OS ストアで埋め込みルート CA を信頼し、ブラウザ/curl が組織の内部ホスト名を受け入れるようにする(HSTS エラーを解消)。プラットフォームは自動検出 |
 | `vctl node-agent [--interval 5m] [--probe-interval 1h]` | すでに登録済みのインベントリについて軽量なホストのランタイム状態を報告する。間隔の長い probe はそのホストがどのプラットフォームのどの役割かを記録する |
 | `vctl session [<serial>\|--list\|--json]` | SSH セッション内で誰が何をしたかを表示する(ホストのカーネル監査タイムライン) |

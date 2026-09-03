@@ -48,6 +48,7 @@ var gated = map[string]Class{
 	"ssh":     ClassMutate,
 	"exec":    ClassMutate,
 	"inject":  ClassMutate,
+	"dns":     ClassMutate,
 	"install": ClassMutate,
 	// Inventory writes.
 	"add":    ClassMutate,
