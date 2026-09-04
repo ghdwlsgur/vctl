@@ -404,6 +404,7 @@ func rbacRevokeCmd(env cmdkit.Env) *cobra.Command {
 	}, "admin")
 }
 
+// rbacWhoamiCmd wires `rbac whoami`; the body is runRBACWhoami.
 func rbacWhoamiCmd(env cmdkit.Env) *cobra.Command {
 	return cmdkit.Gate(&cobra.Command{
 		Use:   "whoami",
@@ -412,34 +413,40 @@ func rbacWhoamiCmd(env cmdkit.Env) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			return env.WithStore(ctx, false, func(a *app.App, st *store.Store) error {
-				info, err := a.Vault.LookupToken(ctx)
-				if err != nil {
-					return err
-				}
-				user := info.Identity
-				isAdmin := authz.HasAdminPolicy(info.Policies, a.Cfg.AdminPolicies)
-				groups, err := st.RBACGroupsForUser(ctx, user)
-				if err != nil && !authz.IsUninitializedRBAC(err) {
-					return err
-				}
-				cmds, err := st.RBACCommandsForUser(ctx, user)
-				if err != nil && !authz.IsUninitializedRBAC(err) {
-					return err
-				}
-				ui.Section(os.Stdout, "rbac whoami")
-				fmt.Fprintf(os.Stdout, "identity: %s\n", ui.OrDash(user))
-				if isAdmin {
-					fmt.Fprintf(os.Stdout, "admin:    %s (%s — bypasses command RBAC)\n",
-						ui.OK("yes"), strings.Join(a.Cfg.AdminPolicies, "/"))
-				} else {
-					fmt.Fprintf(os.Stdout, "admin:    no\n")
-				}
-				fmt.Fprintf(os.Stdout, "groups:   %s\n", joinOrDash(groups))
-				fmt.Fprintf(os.Stdout, "granted:  %s\n", joinOrDash(slices.Sorted(maps.Keys(cmds))))
-				return nil
+				return runRBACWhoami(ctx, a, st)
 			})
 		},
 	}, "whoami")
+}
+
+// runRBACWhoami prints the caller's identity, admin status, groups and
+// effective command grants.
+func runRBACWhoami(ctx context.Context, a *app.App, st *store.Store) error {
+	info, err := a.Vault.LookupToken(ctx)
+	if err != nil {
+		return err
+	}
+	user := info.Identity
+	isAdmin := authz.HasAdminPolicy(info.Policies, a.Cfg.AdminPolicies)
+	groups, err := st.RBACGroupsForUser(ctx, user)
+	if err != nil && !authz.IsUninitializedRBAC(err) {
+		return err
+	}
+	cmds, err := st.RBACCommandsForUser(ctx, user)
+	if err != nil && !authz.IsUninitializedRBAC(err) {
+		return err
+	}
+	ui.Section(os.Stdout, "rbac whoami")
+	fmt.Fprintf(os.Stdout, "identity: %s\n", ui.OrDash(user))
+	if isAdmin {
+		fmt.Fprintf(os.Stdout, "admin:    %s (%s — bypasses command RBAC)\n",
+			ui.OK("yes"), strings.Join(a.Cfg.AdminPolicies, "/"))
+	} else {
+		fmt.Fprintf(os.Stdout, "admin:    no\n")
+	}
+	fmt.Fprintf(os.Stdout, "groups:   %s\n", joinOrDash(groups))
+	fmt.Fprintf(os.Stdout, "granted:  %s\n", joinOrDash(slices.Sorted(maps.Keys(cmds))))
+	return nil
 }
 
 // rbacCheckCmd wires `rbac check`; the body is runRBACCheck.

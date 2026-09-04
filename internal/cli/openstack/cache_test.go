@@ -387,7 +387,7 @@ func TestChangingADeploymentDropsTheStoredReading(t *testing.T) {
 func TestEveryCommandThatChangesADeploymentForgetsTheReading(t *testing.T) {
 	for _, tc := range []struct{ file, fn string }{
 		{"farm.go", "runOpenStackFarmName"},
-		{"farm.go", "openstackFarmStateCmd"},
+		{"farm.go", "runOpenStackFarmState"},
 		{"reconcile.go", "runReconcile"},
 	} {
 		fset := token.NewFileSet()

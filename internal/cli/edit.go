@@ -17,18 +17,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// editCmd changes the operator-managed fields of a host already in inventory.
-//
-// These are exactly the columns `vctl sync` refuses to touch — dc, ssh_user,
-// jump_via, extra_ips — because sync derives its view from ssh config and
-// probes, and would otherwise overwrite decisions a person made. That makes
-// them unreachable except through a separate maintenance binary nobody had on
-// the machine where they notice the problem.
-//
-// Each flag is optional and only what is passed gets written. A command that
-// rewrote every field from its defaults would silently blank the ones the
-// operator did not mention, which is the failure a partial edit exists to
-// avoid.
+// editCmd wires `edit`; the body is runEdit.
 func editCmd(env cmdkit.Env) *cobra.Command {
 	var e hostEdits
 	cmd := &cobra.Command{
@@ -43,31 +32,7 @@ are written; with none, the fields are asked for interactively.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			return cmdkit.WithStorePort(env, ctx, true, func(_ *app.App, st editStore) error {
-				cur, err := cmdkit.ResolveHost(ctx, st, args, "Edit which host?")
-				if err != nil {
-					return err
-				}
-				host := cur.Hostname
-				if e.empty() {
-					if !cmdkit.IsTerminal() {
-						return fmt.Errorf("nothing to change: pass at least one of --dc, --user, --jump, --extra-ip, --name, --state")
-					}
-					if err := e.prompt(cur); err != nil {
-						return err
-					}
-				}
-				if e.empty() {
-					ui.Infof(os.Stdout, "no changes")
-					return nil
-				}
-				if err := e.validate(ctx, st, host); err != nil {
-					return err
-				}
-				if err := e.apply(ctx, st, host); err != nil {
-					return err
-				}
-				warnAgentAfterRename(cur, e.Name)
-				return nil
+				return runEdit(ctx, st, args, e)
 			})
 		},
 	}
@@ -80,6 +45,46 @@ are written; with none, the fields are asked for interactively.`,
 	f.StringSliceVar(&e.ExtraIPs, "extra-ip", nil, "replace the extra addresses (repeatable; pass none to clear)")
 	f.BoolVar(&e.clearIPs, "clear-extra-ips", false, "remove every extra address")
 	return cmdkit.Gate(cmd, "edit")
+}
+
+// runEdit changes the operator-managed fields of a host already in inventory.
+//
+// These are exactly the columns `vctl sync` refuses to touch — dc, ssh_user,
+// jump_via, extra_ips — because sync derives its view from ssh config and
+// probes, and would otherwise overwrite decisions a person made. That makes
+// them unreachable except through a separate maintenance binary nobody had on
+// the machine where they notice the problem.
+//
+// Each flag is optional and only what is passed gets written. A command that
+// rewrote every field from its defaults would silently blank the ones the
+// operator did not mention, which is the failure a partial edit exists to
+// avoid.
+func runEdit(ctx context.Context, st editStore, args []string, e hostEdits) error {
+	cur, err := cmdkit.ResolveHost(ctx, st, args, "Edit which host?")
+	if err != nil {
+		return err
+	}
+	host := cur.Hostname
+	if e.empty() {
+		if !cmdkit.IsTerminal() {
+			return fmt.Errorf("nothing to change: pass at least one of --dc, --user, --jump, --extra-ip, --name, --state")
+		}
+		if err := e.prompt(cur); err != nil {
+			return err
+		}
+	}
+	if e.empty() {
+		ui.Infof(os.Stdout, "no changes")
+		return nil
+	}
+	if err := e.validate(ctx, st, host); err != nil {
+		return err
+	}
+	if err := e.apply(ctx, st, host); err != nil {
+		return err
+	}
+	warnAgentAfterRename(cur, e.Name)
+	return nil
 }
 
 // editStore is what `vctl edit` may do: read the inventory to resolve and
@@ -128,13 +133,6 @@ func (e hostEdits) apply(ctx context.Context, st editStore, host string) error {
 	type step struct {
 		label string
 		run   func() (bool, error)
-	}
-	if e.User != "" {
-		// ssh_user reaches an external ssh argv via `vctl trust-ca`; a value that
-		// could be read as an option must not enter the inventory. See validLoginUser.
-		if err := validLoginUser(e.User); err != nil {
-			return fmt.Errorf("invalid --user: %w", err)
-		}
 	}
 	var steps []step
 	if e.DC != "" {
@@ -274,9 +272,6 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 	extra := strings.Join(cur.ExtraIPs, ", ")
 
 	form := huh.NewForm(huh.NewGroup(
-		// Last, not first. The name is the inventory key and the field least
-		// often being changed, so it should not be what the cursor lands on when
-		// someone opens the form to fix a datacenter label.
 		huh.NewInput().Title("Datacenter").Value(&dc).Validate(cmdkit.NonEmpty("datacenter")),
 		huh.NewInput().Title("SSH user").Value(&user).Validate(cmdkit.NonEmpty("user")),
 		huh.NewInput().Title("Jump host").
@@ -301,6 +296,9 @@ func (e *hostEdits) prompt(cur store.InventoryRow) error {
 			Options(cmdkit.StateOptions()...).
 			Value(&state).
 			Inline(true),
+		// Last, not first. The name is the inventory key and the field least
+		// often being changed, so it should not be what the cursor lands on when
+		// someone opens the form to fix a datacenter label.
 		huh.NewInput().Title("Hostname").
 			Description("renaming carries the agent heartbeat and jump chains; audit history keeps the old name").
 			Value(&name).
