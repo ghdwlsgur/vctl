@@ -147,6 +147,11 @@ var osServices = []struct {
 // agree on.
 var versionRe = regexp.MustCompile(`\b(\d+\.\d+(?:\.\d+)?)\b`)
 
+// Collect reads what OpenStack this host runs, in phases that each answer one
+// question: which services are deployed and running, and so which roles the
+// host holds; what hypervisor and container runtime sit under them; and the
+// facts about the deployment that only the host can see. Each phase is its
+// own method so the reasoning that belongs to it stays beside it.
 func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 	res := hoststatus.ProbeResult{
 		Kind:       p.Kind(),
@@ -155,111 +160,13 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		ObservedAt: time.Now(),
 	}
 
-	// One listing per engine for the whole pass, not one per service. Asking
-	// podman about each of two dozen services separately was ~50 forks a pass on
-	// a host whose agent runs under CPUQuota=2%.
-	// An engine that is installed and would not answer is not the same as a host
-	// with no containers on it, and the difference is the whole probe: reporting
-	// "none found" here once told us a full Kolla controller runs no OpenStack.
-	//
-	// But refusing outright threw away evidence this pass had not looked for
-	// yet. Services deployed as systemd units are visible without asking any
-	// container engine, and a host that has them is not a host we failed to
-	// read — it is a host we read another way. Returning here reported it as
-	// unprobed, which is the same sentence as "we could not tell" for a machine
-	// we could.
-	//
-	// So the failure is carried, not thrown: keep going, and decide at the end.
-	// On a Kolla host systemd finds nothing, so the refusal still stands exactly
-	// where it was written to stand.
-	containers, containerErr := p.containerIndex(ctx)
-
-	units := make([]string, 0, len(osServices))
-	for _, s := range osServices {
-		units = append(units, s.name+".service")
-	}
-	systemd := p.systemdIndex(ctx, units)
-
-	roles := map[string]bool{}
-	active := map[string]bool{}
-	for _, s := range osServices {
-		isActive, found, image := serviceState(systemd, containers, s.name)
-		if !found {
-			continue
-		}
-		comp := hoststatus.Component{Active: isActive, Service: true}
-		// For a containerised service the deployed image tag is the version:
-		// it is what was actually rolled out, and it is already in the listing.
-		// Asking the container itself would mean `podman exec`, which is the
-		// fork this probe cannot afford — it aborts inside the agent's cgroup.
-		if v := versionFromImage(image); v != "" {
-			comp.Version = v
-		}
-		res.Components[s.name] = comp
-		if s.role == "" {
-			continue
-		}
-		// Deployed claims the role; running claims it as active. A stopped
-		// nova-compute means a compute node that is down, not a host that
-		// stopped being one — and the farm view has to keep showing it or the
-		// topology shrinks whenever something breaks.
-		roles[s.role] = true
-		if isActive {
-			active[s.role] = true
-		}
-	}
-
+	roles, active, containerErr := p.collectServices(ctx, &res)
 	// Hypervisor facts matter for a compute node and are meaningless elsewhere,
 	// so they are only gathered when one was found.
 	if roles["compute"] {
-		if v := p.commandVersion(ctx, "libvirtd", "--version"); v != "" {
-			// libvirtd is a daemon, and it was reached by asking the daemon's own
-			// binary for its version — which only answers when it is installed.
-			res.Components["libvirt"] = hoststatus.Component{Version: v, Active: true, Service: true}
-		}
-		if v := p.commandVersion(ctx, "qemu-system-x86_64", "--version"); v != "" {
-			// Not a service: qemu is exec'd per instance. Marking it as one made
-			// every healthy compute node carry a stopped component.
-			res.Components["qemu"] = hoststatus.Component{Version: v}
-		}
-		if p.exists("/dev/kvm") {
-			res.Details["hypervisor"] = "kvm"
-		}
+		p.collectHypervisor(ctx, &res)
 	}
-
-	// The container runtime the whole deployment runs inside.
-	//
-	// Recorded because a runtime version was the entire cause of a real incident
-	// and nothing in the fleet held it. One host ran crun 1.23.1 while the rest
-	// ran 1.27; the old one leaked 16,383 mount entries into the host's mount
-	// table and the agent on it burned a core for 57 days. Same distro family,
-	// same Kolla containers, same bind mounts — the only difference was this
-	// number, and finding it meant logging into two hosts and running rpm -q.
-	//
-	// Not a Service. Reporting the engine as a systemd unit here would put a
-	// second, differently-derived opinion about podman.service beside the one
-	// the socket already gives.
-	for _, sock := range containerSockets {
-		if !p.exists(sock.path) {
-			continue
-		}
-		v := p.socketVersions(ctx, sock.path)
-		if v["engine"] != "" {
-			res.Components[sock.engine] = hoststatus.Component{Version: v["engine"]}
-		}
-		if v["oci-runtime"] != "" {
-			res.Components["oci-runtime"] = hoststatus.Component{Version: v["oci-runtime"]}
-			if n := v["oci-runtime-name"]; n != "" {
-				res.Details["oci_runtime"] = n
-			}
-		}
-		// One engine is enough. A host with both sockets is answered by whichever
-		// comes first in containerSockets, the same order the listing uses.
-		if len(v) > 0 {
-			break
-		}
-	}
-
+	p.collectRuntime(ctx, &res)
 	if c, ok := res.Components["nova-compute"]; ok && c.Version == "" {
 		if v := p.novaVersion(ctx); v != "" {
 			c.Version = v
@@ -291,11 +198,136 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		res.Details["container_probe_error"] = containerErr.Error()
 	}
 
+	p.collectDeploymentFacts(&res)
+	return res
+}
+
+// collectServices indexes the OpenStack services on this host — from the
+// container engine and from systemd, each asked once — and files one
+// Component per service found. It returns the roles those services imply
+// (deployed claims the role, running claims it as active) and the container
+// engine's error, if it had one, for Collect to judge once it knows whether
+// anything else was found.
+//
+// One listing per engine for the whole pass, not one per service. Asking
+// podman about each of two dozen services separately was ~50 forks a pass on
+// a host whose agent runs under CPUQuota=2%.
+// An engine that is installed and would not answer is not the same as a host
+// with no containers on it, and the difference is the whole probe: reporting
+// "none found" here once told us a full Kolla controller runs no OpenStack.
+//
+// But refusing outright threw away evidence this pass had not looked for
+// yet. Services deployed as systemd units are visible without asking any
+// container engine, and a host that has them is not a host we failed to
+// read — it is a host we read another way. Returning early reported it as
+// unprobed, which is the same sentence as "we could not tell" for a machine
+// we could.
+//
+// So the failure is carried, not thrown: keep going, and let Collect decide
+// at the end. On a Kolla host systemd finds nothing, so the refusal still
+// stands exactly where it was written to stand.
+func (p *OpenStack) collectServices(ctx context.Context, res *hoststatus.ProbeResult) (roles, active map[string]bool, containerErr error) {
+	containers, containerErr := p.containerIndex(ctx)
+
+	units := make([]string, 0, len(osServices))
+	for _, s := range osServices {
+		units = append(units, s.name+".service")
+	}
+	systemd := p.systemdIndex(ctx, units)
+
+	roles = map[string]bool{}
+	active = map[string]bool{}
+	for _, s := range osServices {
+		isActive, found, image := serviceState(systemd, containers, s.name)
+		if !found {
+			continue
+		}
+		comp := hoststatus.Component{Active: isActive, Service: true}
+		// For a containerised service the deployed image tag is the version:
+		// it is what was actually rolled out, and it is already in the listing.
+		// Asking the container itself would mean `podman exec`, which is the
+		// fork this probe cannot afford — it aborts inside the agent's cgroup.
+		if v := versionFromImage(image); v != "" {
+			comp.Version = v
+		}
+		res.Components[s.name] = comp
+		if s.role == "" {
+			continue
+		}
+		// Deployed claims the role; running claims it as active. A stopped
+		// nova-compute means a compute node that is down, not a host that
+		// stopped being one — and the farm view has to keep showing it or the
+		// topology shrinks whenever something breaks.
+		roles[s.role] = true
+		if isActive {
+			active[s.role] = true
+		}
+	}
+	return roles, active, containerErr
+}
+
+// collectHypervisor records the virtualisation stack under a compute node.
+func (p *OpenStack) collectHypervisor(ctx context.Context, res *hoststatus.ProbeResult) {
+	if v := p.commandVersion(ctx, "libvirtd", "--version"); v != "" {
+		// libvirtd is a daemon, and it was reached by asking the daemon's own
+		// binary for its version — which only answers when it is installed.
+		res.Components["libvirt"] = hoststatus.Component{Version: v, Active: true, Service: true}
+	}
+	if v := p.commandVersion(ctx, "qemu-system-x86_64", "--version"); v != "" {
+		// Not a service: qemu is exec'd per instance. Marking it as one made
+		// every healthy compute node carry a stopped component.
+		res.Components["qemu"] = hoststatus.Component{Version: v}
+	}
+	if p.exists("/dev/kvm") {
+		res.Details["hypervisor"] = "kvm"
+	}
+}
+
+// collectRuntime records the container runtime the whole deployment runs
+// inside — the engine and the OCI runtime under it.
+//
+// Recorded because a runtime version was the entire cause of a real incident
+// and nothing in the fleet held it. One host ran crun 1.23.1 while the rest
+// ran 1.27; the old one leaked 16,383 mount entries into the host's mount
+// table and the agent on it burned a core for 57 days. Same distro family,
+// same Kolla containers, same bind mounts — the only difference was this
+// number, and finding it meant logging into two hosts and running rpm -q.
+//
+// Not a Service. Reporting the engine as a systemd unit here would put a
+// second, differently-derived opinion about podman.service beside the one
+// the socket already gives.
+func (p *OpenStack) collectRuntime(ctx context.Context, res *hoststatus.ProbeResult) {
+	for _, sock := range containerSockets {
+		if !p.exists(sock.path) {
+			continue
+		}
+		v := p.socketVersions(ctx, sock.path)
+		if v["engine"] != "" {
+			res.Components[sock.engine] = hoststatus.Component{Version: v["engine"]}
+		}
+		if v["oci-runtime"] != "" {
+			res.Components["oci-runtime"] = hoststatus.Component{Version: v["oci-runtime"]}
+			if n := v["oci-runtime-name"]; n != "" {
+				res.Details["oci_runtime"] = n
+			}
+		}
+		// One engine is enough. A host with both sockets is answered by whichever
+		// comes first in containerSockets, the same order the listing uses.
+		if len(v) > 0 {
+			break
+		}
+	}
+}
+
+// collectDeploymentFacts records what the host can say about the deployment
+// it belongs to: where it authenticates, where its dashboard is, whether its
+// VMs will trust the fleet's SSH CA, and — only if somebody declared it —
+// which deployment it is.
+func (p *OpenStack) collectDeploymentFacts(res *hoststatus.ProbeResult) {
 	// Which Keystone this host authenticates against. It is evidence of
 	// membership, not proof: two deployments behind one proxy share an endpoint.
 	// The reader decides what to do with it and labels the result local-only.
-	keystone := p.keystoneURL()
-	if keystone != "" {
+	if keystone := p.keystoneURL(); keystone != "" {
 		res.Details["keystone_url"] = keystone
 	}
 
@@ -328,7 +360,6 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		res.Details["deployment"] = id
 		res.Details["deployment_source"] = "declared"
 	}
-	return res
 }
 
 // deploymentIDPath is where a deployment stamps its immutable identifier, if it
