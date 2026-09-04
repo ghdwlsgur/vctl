@@ -79,20 +79,15 @@ type RunResult struct {
 	ExitCode int
 }
 
-// Run executes a single command on the target non-interactively, capturing
-// stdout/stderr/exit code. It reuses dialTarget, so the jump chain and
-// Vault-signed-cert auth are identical to Connect — this is the path automation
-// and AI agents (vctl mcp) use instead of an interactive shell. A non-zero exit
-// is returned in RunResult.ExitCode with a nil error (the command ran); only a
+// RunWithInput executes a single command on the target non-interactively,
+// capturing stdout/stderr/exit code, with the command's stdin wired to input
+// — how an installer streams a file into `cat > path` on the far side without
+// a second transport, a temp file, or shell-quoting the payload; nil means no
+// stdin. It reuses dialTarget, so the jump chain and Vault-signed-cert auth
+// are identical to Connect — this is the path automation and AI agents (vctl
+// mcp) use instead of an interactive shell. A non-zero exit is returned in
+// RunResult.ExitCode with a nil error (the command ran); only a
 // transport/connection failure returns a non-nil error.
-func Run(ctx context.Context, t *Target, sign SignFunc, command string) (RunResult, ConnectionInfo, error) {
-	return RunWithInput(ctx, t, sign, command, nil)
-}
-
-// RunWithInput is Run with the command's stdin wired to input — how an
-// installer streams a file into `cat > path` on the far side without a second
-// transport, a temp file, or shell-quoting the payload. A nil input behaves
-// exactly like Run.
 func RunWithInput(ctx context.Context, t *Target, sign SignFunc, command string, input io.Reader) (RunResult, ConnectionInfo, error) {
 	client, cleanup, info, err := dialTarget(ctx, t, sign)
 	if err != nil {

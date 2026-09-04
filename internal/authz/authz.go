@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -90,12 +91,7 @@ func ClassOf(name string) (class Class, ok bool) {
 
 // GatedCommands returns the gated command names, sorted.
 func GatedCommands() []string {
-	out := make([]string, 0, len(gated))
-	for c := range gated {
-		out = append(out, c)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(gated))
 }
 
 // GrantableCommands returns the sorted names a grant can meaningfully target:

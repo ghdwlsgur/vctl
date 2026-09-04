@@ -15,6 +15,8 @@
 package openstack
 
 import (
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -469,11 +471,7 @@ func ReleaseOf(h store.OpenStackHost) string {
 	if c, ok := h.Components["nova-compute"]; ok && c.Version != "" {
 		return c.Version
 	}
-	names := make([]string, 0, len(h.Components))
-	for name := range h.Components {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(h.Components))
 	// A running component before a stopped one: taking the first name
 	// alphabetically summarised a healthy controller by the only service on it
 	// that was down.
@@ -531,9 +529,5 @@ func releaseSummary(byRelease map[string]int) string {
 		}
 		return keys[i] < keys[j]
 	})
-	parts := make([]string, 0, len(keys))
-	for _, r := range keys {
-		parts = append(parts, r)
-	}
-	return strings.Join(parts, ", ")
+	return strings.Join(keys, ", ")
 }

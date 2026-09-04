@@ -585,14 +585,6 @@ func TestATimedOutAttemptReleasesTheLock(t *testing.T) {
 	}
 }
 
-// testLog swallows the two lines the agent prints. What they say is asserted
-// where it matters — the healthy-transition tests read the flag rather than the
-// output.
-type testLog struct{}
-
-func (testLog) warnf(string, ...any) {}
-func (testLog) infof(string, ...any) {}
-
 // runSink counts what a run wrote, so the ordering can be asserted from
 // outside.
 type runSink struct {

@@ -46,7 +46,7 @@ func loadDashboardSnapshot(ctx context.Context, st *store.Store, warn func(forma
 		return nil, err
 	}
 	if len(ifaces) == 0 {
-		return nil, fmt.Errorf("no WireGuard data. Run 'vctl wg sync' first.")
+		return nil, fmt.Errorf("no WireGuard data; run 'vctl wg sync' first")
 	}
 	peers, err := st.WGPeers(ctx)
 	if err != nil {

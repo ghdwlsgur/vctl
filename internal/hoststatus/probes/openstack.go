@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -266,8 +267,8 @@ func (p *OpenStack) Collect(ctx context.Context) hoststatus.ProbeResult {
 		}
 	}
 
-	res.Roles = sortedKeys(roles)
-	res.ActiveRoles = sortedKeys(active)
+	res.Roles = slices.Sorted(maps.Keys(roles))
+	res.ActiveRoles = slices.Sorted(maps.Keys(active))
 	// Detected means "this host is part of a deployment", which requires a
 	// service, not a package. Components with no active service still count —
 	// a stopped nova-compute is a compute node that is down, not a host with no
@@ -625,16 +626,4 @@ func (p *OpenStack) path(abs string) string {
 		return abs
 	}
 	return p.root + abs
-}
-
-func sortedKeys(m map[string]bool) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

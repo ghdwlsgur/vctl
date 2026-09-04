@@ -141,9 +141,10 @@ func (e Env) Audit() (*app.App, *audit.Store, error) {
 	}
 	return a, audit.New(func(ctx context.Context, p audit.Purpose) (audit.Conn, error) {
 		purpose := app.PurposeAuditRead
-		if p == audit.Ingest {
+		switch p {
+		case audit.Ingest:
 			purpose = app.PurposeAuditIngest
-		} else if p == audit.Prune {
+		case audit.Prune:
 			purpose = app.PurposeAuditPrune
 		}
 		return a.OpenStore(ctx, purpose)

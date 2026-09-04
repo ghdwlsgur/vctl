@@ -51,7 +51,6 @@ func (m exploreModel) farmPaneWidth() int {
 }
 
 var (
-	exploreTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	exploreHeadingStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("245"))
 	exploreCursorStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	exploreFocusStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))

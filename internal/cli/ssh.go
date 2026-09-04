@@ -26,8 +26,7 @@ import (
 )
 
 func sshCmd(env cmdkit.Env) *cobra.Command {
-	var server, vm, user, vmFarm string
-	var allowStale bool
+	var opts sshOptions
 	cmd := &cobra.Command{
 		Use:   "ssh [host|user@addr]",
 		Short: "Connect to an inventory host, or to an address directly",
@@ -57,74 +56,14 @@ there is no jump chain (direct connection only) and the CA role falls back to
 the configured default.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			if server != "" && len(args) > 0 {
-				return fmt.Errorf("pass the host via --server or as a positional argument, not both")
-			}
-			if vm != "" && (server != "" || len(args) > 0) {
-				return fmt.Errorf("pass a VM via --vm, or a host, not both")
-			}
-			// --user is the VM path's flag. On a host the login comes from the
-			// inventory, and on user@addr it is already in the argument, so a
-			// --user there is silently doing nothing.
-			if vm == "" && cmd.Flags().Changed("user") {
-				return fmt.Errorf("--user goes with --vm; a host's login user comes from the inventory, and a direct target carries it in user@addr")
-			}
-			if vm != "" {
-				return sshVM(ctx, env, vm, user, vmFarm, allowStale)
-			}
-			query := server
-			if query == "" && len(args) > 0 {
-				query = args[0]
-			}
-
-			// A terminal session may confirm an unknown host key; --server is
-			// non-interactive (scripts/agents) so it is strict instead.
-			policy := access.HostKeyPrompt
-			if server != "" {
-				policy = access.HostKeyStrict
-			}
-
-			// A direct address needs nothing from the inventory, so it does not
-			// open it. That also makes this the way in when the inventory
-			// database itself is unreachable and the snapshot cannot help.
-			if ep, ok := parseUserAtAddr(query); ok {
-				return env.WithApp(func(a *app.App) error {
-					tgt := ep.target(a.Cfg)
-					ui.Infof(os.Stderr, "connecting to %s@%s (direct, not from inventory)", tgt.User, tgt.Addr)
-					return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
-				})
-			}
-
-			return env.WithInventory(ctx, func(a *app.App, inv *app.Inventory) error {
-				var (
-					target *store.Server
-					err    error
-				)
-				if server != "" {
-					target, err = access.ResolveServer(ctx, inv, server)
-				} else {
-					target, err = pick(ctx, inv, args)
-				}
-				if err != nil {
-					return err
-				}
-
-				tgt, err := access.BuildTarget(ctx, inv, target, a.Cfg.SSHDirectFirst)
-				if err != nil {
-					return err
-				}
-
-				ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
-				return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
-			})
+			return runSSH(cmd, env, args, opts)
 		},
 	}
-	cmd.Flags().StringVar(&server, "server", "", "exact inventory host, or user@addr, to connect to (non-interactive; for scripts/agents)")
-	cmd.Flags().StringVar(&vm, "vm", "", "a Nova instance id, or a Kubernetes providerID (openstack:///<uuid>)")
-	cmd.Flags().StringVar(&user, "user", "", "login user for --vm (Nova does not record one)")
-	cmd.Flags().BoolVar(&allowStale, "allow-stale", false, "connect to a --vm whose record is older than the collector's schedule")
-	cmd.Flags().StringVar(&vmFarm, "farm", "", "deployment holding the --vm instance, when its id is in more than one")
+	cmd.Flags().StringVar(&opts.server, "server", "", "exact inventory host, or user@addr, to connect to (non-interactive; for scripts/agents)")
+	cmd.Flags().StringVar(&opts.vm, "vm", "", "a Nova instance id, or a Kubernetes providerID (openstack:///<uuid>)")
+	cmd.Flags().StringVar(&opts.user, "user", "", "login user for --vm (Nova does not record one)")
+	cmd.Flags().BoolVar(&opts.allowStale, "allow-stale", false, "connect to a --vm whose record is older than the collector's schedule")
+	cmd.Flags().StringVar(&opts.vmFarm, "farm", "", "deployment holding the --vm instance, when its id is in more than one")
 	cmdkit.RegisterCompletion(cmd, "server", cmdkit.CompleteInventoryHost(env))
 	cmdkit.RegisterCompletion(cmd, "vm", openstack.CompleteVM(env))
 	cmdkit.RegisterCompletion(cmd, "farm", openstack.CompleteFarm(env))
@@ -133,6 +72,77 @@ the configured default.`,
 	// inventory, which is the point of it.
 	cmd.ValidArgsFunction = cmdkit.CompleteInventoryHost(env)
 	return cmd
+}
+
+type sshOptions struct {
+	server, vm, user, vmFarm string
+	allowStale               bool
+}
+
+// runSSH validates the flag/argument combination, then hands off to the VM
+// path, the direct user@addr path, or the inventory path.
+func runSSH(cmd *cobra.Command, env cmdkit.Env, args []string, opts sshOptions) error {
+	ctx := cmd.Context()
+	if opts.server != "" && len(args) > 0 {
+		return fmt.Errorf("pass the host via --server or as a positional argument, not both")
+	}
+	if opts.vm != "" && (opts.server != "" || len(args) > 0) {
+		return fmt.Errorf("pass a VM via --vm, or a host, not both")
+	}
+	// --user is the VM path's flag. On a host the login comes from the
+	// inventory, and on user@addr it is already in the argument, so a
+	// --user there is silently doing nothing.
+	if opts.vm == "" && cmd.Flags().Changed("user") {
+		return fmt.Errorf("--user goes with --vm; a host's login user comes from the inventory, and a direct target carries it in user@addr")
+	}
+	if opts.vm != "" {
+		return sshVM(ctx, env, opts.vm, opts.user, opts.vmFarm, opts.allowStale)
+	}
+	query := opts.server
+	if query == "" && len(args) > 0 {
+		query = args[0]
+	}
+
+	// A terminal session may confirm an unknown host key; --server is
+	// non-interactive (scripts/agents) so it is strict instead.
+	policy := access.HostKeyPrompt
+	if opts.server != "" {
+		policy = access.HostKeyStrict
+	}
+
+	// A direct address needs nothing from the inventory, so it does not
+	// open it. That also makes this the way in when the inventory
+	// database itself is unreachable and the snapshot cannot help.
+	if ep, ok := parseUserAtAddr(query); ok {
+		return env.WithApp(func(a *app.App) error {
+			tgt := ep.target(a.Cfg)
+			ui.Infof(os.Stderr, "connecting to %s@%s (direct, not from inventory)", tgt.User, tgt.Addr)
+			return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+		})
+	}
+
+	return env.WithInventory(ctx, func(a *app.App, inv *app.Inventory) error {
+		var (
+			target *store.Server
+			err    error
+		)
+		if opts.server != "" {
+			target, err = access.ResolveServer(ctx, inv, opts.server)
+		} else {
+			target, err = pick(ctx, inv, args)
+		}
+		if err != nil {
+			return err
+		}
+
+		tgt, err := access.BuildTarget(ctx, inv, target, a.Cfg.SSHDirectFirst)
+		if err != nil {
+			return err
+		}
+
+		ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
+		return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+	})
 }
 
 // sshEndpoint is a target given as an address on the command line instead of a

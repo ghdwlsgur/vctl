@@ -28,25 +28,9 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// installCmd puts the node-agent on an inventory host over a Vault-signed SSH
-// connection: the agent binary, its AppRole credentials, and the systemd units,
-// then starts it and confirms it is running.
-//
-// It is the single-host, on-demand form of what deploy/ansible does for the
-// fleet. The fleet path stays authoritative for waves and for the audit stack;
-// this exists for the host that just joined the inventory — the operator has
-// run `vctl inject`, sees "no-agent" in the listing, and should not need an
-// ansible checkout to fix that.
-//
-// The workstation downloads the release binary and pushes it over SSH, because
-// the hosts that need this most are the ones without outbound internet. Every
-// remote step goes through access.Connector, so each connection leaves the
-// same audit row a `vctl ssh` would.
+// installCmd wires the flags for `vctl install`; the work is runInstall.
 func installCmd(env cmdkit.Env) *cobra.Command {
-	var (
-		binPath string
-		motd    bool
-	)
+	var opts installOptions
 	cmd := &cobra.Command{
 		Use:   "install [host]",
 		Short: "Install the node-agent on an inventory host (binary, AppRole creds, systemd unit)",
@@ -66,76 +50,99 @@ is rotated, and the agent restarts.
   vctl install sre-srv-0100 --binary ./vctl-agent   # push a local build`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			a, err := env.App()
-			if err != nil {
-				return err
-			}
-			if err := a.EnsureLogin(ctx); err != nil {
-				return err
-			}
-
-			sv, err := installTarget(ctx, a, args[0])
-			if err != nil {
-				return err
-			}
-			if sv.User != "root" {
-				return fmt.Errorf("install needs a root login; inventory user for %s is %q (set it with vctl edit)", sv.Hostname, sv.User)
-			}
-
-			// Credentials before the download: minting them is a quick Vault
-			// round trip that fails for anyone without the admin grant, and
-			// that person should not sit through a multi-MB download first.
-			ui.Infof(os.Stderr, "provisioning AppRole credentials (role %s)", nodeAppRole)
-			roleID, err := a.Vault.AppRoleRoleID(ctx, a.Cfg.AppRoleMount, nodeAppRole)
-			if err != nil {
-				return fmt.Errorf("role_id for %s: %w (an admin grant is required to mint agent credentials)", nodeAppRole, err)
-			}
-			secretID, accessor, err := a.Vault.GenerateSecretIDWithAccessor(ctx, a.Cfg.AppRoleMount, nodeAppRole)
-			if err != nil {
-				return fmt.Errorf("secret_id for %s: %w", nodeAppRole, err)
-			}
-
-			bin, err := agentBinary(ctx, binPath)
-			if err != nil {
-				return err
-			}
-			sum := sha256.Sum256(bin)
-			shaHex := hex.EncodeToString(sum[:])
-			ui.Infof(os.Stderr, "agent binary ready (%d bytes, sha256 %s…)", len(bin), shaHex[:12])
-
-			conn := cmdkit.NewConnector(a)
-			req := access.Request{
-				Target: &sshc.Target{
-					Name: sv.Hostname,
-					Addr: net.JoinHostPort(sv.IP, installPort(sv)),
-					User: sv.User,
-					Role: a.Cfg.CARole,
-				},
-				HostKey: access.HostKeyAcceptNew,
-			}
-
-			ui.Infof(os.Stderr, "pushing binary to %s", req.Target.Addr)
-			pushCmd := fmt.Sprintf(
-				"umask 022 && cat > /usr/local/bin/.vctl-agent.new && chmod 0755 /usr/local/bin/.vctl-agent.new"+
-					" && echo '%s  /usr/local/bin/.vctl-agent.new' | sha256sum -c - >/dev/null"+
-					" && mv -f /usr/local/bin/.vctl-agent.new /usr/local/bin/vctl-agent", shaHex)
-			if err := execStep(conn.ExecuteWithInput(ctx, req, pushCmd, 0, bytes.NewReader(bin))); err != nil {
-				return fmt.Errorf("binary push: %w", err)
-			}
-
-			ui.Infof(os.Stderr, "installing credentials and systemd units")
-			script := installScript(roleID, secretID, accessor, sv.Hostname, motd, controlPlanePins(a))
-			if err := execStep(conn.ExecuteWithInput(ctx, req, "sh", 0, strings.NewReader(script))); err != nil {
-				return fmt.Errorf("remote install: %w (check journalctl -u vctl-node-agent on the host)", err)
-			}
-			ui.Successf(os.Stderr, "node-agent running on %s — the heartbeat lands in vctl list within ~5m", sv.Hostname)
-			return nil
+			return runInstall(cmd, env, args[0], opts)
 		},
 	}
-	cmd.Flags().StringVar(&binPath, "binary", "", "push this local vctl-agent binary instead of downloading the release")
-	cmd.Flags().BoolVar(&motd, "motd", true, "render the /etc/motd login banner from inventory topology")
+	cmd.Flags().StringVar(&opts.binPath, "binary", "", "push this local vctl-agent binary instead of downloading the release")
+	cmd.Flags().BoolVar(&opts.motd, "motd", true, "render the /etc/motd login banner from inventory topology")
 	return cmd
+}
+
+type installOptions struct {
+	binPath string
+	motd    bool
+}
+
+// runInstall puts the node-agent on an inventory host over a Vault-signed SSH
+// connection: the agent binary, its AppRole credentials, and the systemd units,
+// then starts it and confirms it is running.
+//
+// It is the single-host, on-demand form of what deploy/ansible does for the
+// fleet. The fleet path stays authoritative for waves and for the audit stack;
+// this exists for the host that just joined the inventory — the operator has
+// run `vctl inject`, sees "no-agent" in the listing, and should not need an
+// ansible checkout to fix that.
+//
+// The workstation downloads the release binary and pushes it over SSH, because
+// the hosts that need this most are the ones without outbound internet. Every
+// remote step goes through access.Connector, so each connection leaves the
+// same audit row a `vctl ssh` would.
+func runInstall(cmd *cobra.Command, env cmdkit.Env, arg string, opts installOptions) error {
+	ctx := cmd.Context()
+	a, err := env.App()
+	if err != nil {
+		return err
+	}
+	if err := a.EnsureLogin(ctx); err != nil {
+		return err
+	}
+
+	sv, err := installTarget(ctx, a, arg)
+	if err != nil {
+		return err
+	}
+	if sv.User != "root" {
+		return fmt.Errorf("install needs a root login; inventory user for %s is %q (set it with vctl edit)", sv.Hostname, sv.User)
+	}
+
+	// Credentials before the download: minting them is a quick Vault
+	// round trip that fails for anyone without the admin grant, and
+	// that person should not sit through a multi-MB download first.
+	ui.Infof(os.Stderr, "provisioning AppRole credentials (role %s)", nodeAppRole)
+	roleID, err := a.Vault.AppRoleRoleID(ctx, a.Cfg.AppRoleMount, nodeAppRole)
+	if err != nil {
+		return fmt.Errorf("role_id for %s: %w (an admin grant is required to mint agent credentials)", nodeAppRole, err)
+	}
+	secretID, accessor, err := a.Vault.GenerateSecretIDWithAccessor(ctx, a.Cfg.AppRoleMount, nodeAppRole)
+	if err != nil {
+		return fmt.Errorf("secret_id for %s: %w", nodeAppRole, err)
+	}
+
+	bin, err := agentBinary(ctx, opts.binPath)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(bin)
+	shaHex := hex.EncodeToString(sum[:])
+	ui.Infof(os.Stderr, "agent binary ready (%d bytes, sha256 %s…)", len(bin), shaHex[:12])
+
+	conn := cmdkit.NewConnector(a)
+	req := access.Request{
+		Target: &sshc.Target{
+			Name: sv.Hostname,
+			Addr: net.JoinHostPort(sv.IP, installPort(sv)),
+			User: sv.User,
+			Role: a.Cfg.CARole,
+		},
+		HostKey: access.HostKeyAcceptNew,
+	}
+
+	ui.Infof(os.Stderr, "pushing binary to %s", req.Target.Addr)
+	pushCmd := fmt.Sprintf(
+		"umask 022 && cat > /usr/local/bin/.vctl-agent.new && chmod 0755 /usr/local/bin/.vctl-agent.new"+
+			" && echo '%s  /usr/local/bin/.vctl-agent.new' | sha256sum -c - >/dev/null"+
+			" && mv -f /usr/local/bin/.vctl-agent.new /usr/local/bin/vctl-agent", shaHex)
+	if err := execStep(conn.ExecuteWithInput(ctx, req, pushCmd, 0, bytes.NewReader(bin))); err != nil {
+		return fmt.Errorf("binary push: %w", err)
+	}
+
+	ui.Infof(os.Stderr, "installing credentials and systemd units")
+	script := installScript(roleID, secretID, accessor, sv.Hostname, opts.motd, controlPlanePins(a))
+	if err := execStep(conn.ExecuteWithInput(ctx, req, "sh", 0, strings.NewReader(script))); err != nil {
+		return fmt.Errorf("remote install: %w (check journalctl -u vctl-node-agent on the host)", err)
+	}
+	ui.Successf(os.Stderr, "node-agent running on %s — the heartbeat lands in vctl list within ~5m", sv.Hostname)
+	return nil
 }
 
 // nodeAppRole is the AppRole the node-agent authenticates as: status reporting
@@ -388,8 +395,8 @@ func archiveSumOK(blob []byte, want string) bool {
 	return hex.EncodeToString(got[:]) == want
 }
 
-func httpGet(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func httpGet(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}

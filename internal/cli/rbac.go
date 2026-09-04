@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"os"
@@ -69,9 +70,7 @@ func rbacUsersCmd(env cmdkit.Env) *cobra.Command {
 	}, "users")
 }
 
-// rbacAssignCmd is the convenient interactive assigner: pick a group, then
-// multi-select users to add as members. Candidate users come from seen_users +
-// existing members (RBACCandidateUsers). Admin-only.
+// rbacAssignCmd is the convenient interactive assigner. Admin-only.
 func rbacAssignCmd(env cmdkit.Env) *cobra.Command {
 	return cmdkit.Gate(&cobra.Command{
 		Use:   "assign [group]",
@@ -80,76 +79,93 @@ func rbacAssignCmd(env cmdkit.Env) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			return env.WithStore(ctx, true, func(_ *app.App, st *store.Store) error {
-				// 1) group: arg, or pick from the list.
-				group := ""
-				if len(args) == 1 {
-					group = args[0]
-				} else {
-					groups, err := st.RBACGroups(ctx)
-					if err != nil {
-						return err
-					}
-					if len(groups) == 0 {
-						return fmt.Errorf("no groups yet — create one: vctl rbac group create <name>")
-					}
-					names := make([]string, len(groups))
-					for i, g := range groups {
-						names[i] = g.Name
-					}
-					if group, err = cmdkit.PickOne(names, "Select a group"); err != nil {
-						return err
-					}
-				}
-				ok, err := st.RBACGroupExists(ctx, group)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return fmt.Errorf("group %q not found — create it first", group)
-				}
-
-				// 2) candidate users minus current members.
-				cands, err := st.RBACCandidateUsers(ctx)
-				if err != nil {
-					return err
-				}
-				members, err := st.RBACGroupMembers(ctx, group)
-				if err != nil {
-					return err
-				}
-				inGroup := map[string]bool{}
-				for _, m := range members {
-					inGroup[m] = true
-				}
-				avail := make([]string, 0, len(cands))
-				for _, u := range cands {
-					if !inGroup[u] {
-						avail = append(avail, u)
-					}
-				}
-				if len(avail) == 0 {
-					return fmt.Errorf("no candidate users to add — known users are already members, or nobody has used vctl yet. Add one explicitly: vctl rbac member add %s <user>", group)
-				}
-
-				// 3) multi-select and assign.
-				picked, err := cmdkit.PickMany(avail, fmt.Sprintf("Add users to %q (space to select)", group))
-				if err != nil {
-					return err
-				}
-				if len(picked) == 0 {
-					ui.Warnf(os.Stderr, "nothing selected")
-					return nil
-				}
-				for _, u := range picked {
-					if err := st.RBACMemberAdd(ctx, group, u); err != nil {
-						return fmt.Errorf("add %s: %w", u, err)
-					}
-				}
-				ui.Successf(os.Stderr, "added %d user(s) to %q: %s", len(picked), group, strings.Join(picked, ", "))
-				return nil
+				return runRBACAssign(ctx, st, args)
 			})
 		},
 	}, "admin")
+}
+
+// resolveRBACGroup is the group an rbac command acts on: the first argument
+// when one was given, otherwise picked from the list — and in either case one
+// that exists, because every caller's next step is a write against it.
+func resolveRBACGroup(ctx context.Context, st *store.Store, args []string) (string, error) {
+	group := ""
+	if len(args) >= 1 {
+		group = args[0]
+	} else {
+		groups, err := st.RBACGroups(ctx)
+		if err != nil {
+			return "", err
+		}
+		if len(groups) == 0 {
+			return "", fmt.Errorf("no groups yet — create one: vctl rbac group create <name>")
+		}
+		names := make([]string, len(groups))
+		for i, g := range groups {
+			names[i] = g.Name
+		}
+		if group, err = cmdkit.PickOne(names, "Select a group"); err != nil {
+			return "", err
+		}
+	}
+	ok, err := st.RBACGroupExists(ctx, group)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("group %q not found — create it first", group)
+	}
+	return group, nil
+}
+
+// runRBACAssign picks a group, then multi-selects users to add as members.
+// Candidate users come from seen_users + existing members (RBACCandidateUsers).
+func runRBACAssign(ctx context.Context, st *store.Store, args []string) error {
+	// 1) group: arg, or pick from the list.
+	group, err := resolveRBACGroup(ctx, st, args)
+	if err != nil {
+		return err
+	}
+
+	// 2) candidate users minus current members.
+	cands, err := st.RBACCandidateUsers(ctx)
+	if err != nil {
+		return err
+	}
+	members, err := st.RBACGroupMembers(ctx, group)
+	if err != nil {
+		return err
+	}
+	inGroup := map[string]bool{}
+	for _, m := range members {
+		inGroup[m] = true
+	}
+	avail := make([]string, 0, len(cands))
+	for _, u := range cands {
+		if !inGroup[u] {
+			avail = append(avail, u)
+		}
+	}
+	if len(avail) == 0 {
+		return fmt.Errorf("no candidate users to add — known users are already members, or nobody has used vctl yet. Add one explicitly: vctl rbac member add %s <user>", group)
+	}
+
+	// 3) multi-select and assign.
+	picked, err := cmdkit.PickMany(avail, fmt.Sprintf("Add users to %q (space to select)", group))
+	if err != nil {
+		return err
+	}
+	if len(picked) == 0 {
+		ui.Warnf(os.Stderr, "nothing selected")
+		return nil
+	}
+	for _, u := range picked {
+		if err := st.RBACMemberAdd(ctx, group, u); err != nil {
+			return fmt.Errorf("add %s: %w", u, err)
+		}
+	}
+	ui.Successf(os.Stderr, "added %d user(s) to %q: %s", len(picked), group, strings.Join(picked, ", "))
+	return nil
 }
 
 func rbacGroupCmd(env cmdkit.Env) *cobra.Command {
@@ -321,70 +337,54 @@ func rbacGrantCmd(env cmdkit.Env) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			return env.WithStore(ctx, true, func(_ *app.App, st *store.Store) error {
-				// 1) group: arg or picker.
-				group := ""
-				if len(args) >= 1 {
-					group = args[0]
-				} else {
-					groups, err := st.RBACGroups(ctx)
-					if err != nil {
-						return err
-					}
-					if len(groups) == 0 {
-						return fmt.Errorf("no groups yet — create one: vctl rbac group create <name>")
-					}
-					names := make([]string, len(groups))
-					for i, g := range groups {
-						names[i] = g.Name
-					}
-					if group, err = cmdkit.PickOne(names, "Select a group"); err != nil {
-						return err
-					}
-				}
-				ok, err := st.RBACGroupExists(ctx, group)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return fmt.Errorf("group %q not found — create it first", group)
-				}
-
-				// 2) command(s): arg or multi-select picker.
-				var commands []string
-				if len(args) == 2 {
-					c := args[1]
-					if c != "*" {
-						// Only mutate commands take grants: read is default-allowed
-						// to any authenticated user and admin follows the Vault
-						// policy, so granting either records a row that changes
-						// nothing — and reads as if it had.
-						if class, known := authz.ClassOf(c); !known || class != authz.ClassMutate {
-							return fmt.Errorf("cannot grant %q. Grantable: %s, or '*'", c, knownCommands())
-						}
-					}
-					commands = []string{c}
-				} else {
-					picked, err := cmdkit.PickMany(grantableList(), fmt.Sprintf("Grant commands to %q (space to select)", group))
-					if err != nil {
-						return err
-					}
-					if len(picked) == 0 {
-						ui.Warnf(os.Stderr, "nothing selected")
-						return nil
-					}
-					commands = picked
-				}
-
-				for _, c := range commands {
-					if err := st.RBACGrant(ctx, group, c); err != nil {
-						return fmt.Errorf("grant %s: %w", c, err)
-					}
-				}
-				ui.Successf(os.Stderr, "granted [%s] to %q", strings.Join(commands, ", "), group)
-				return nil
+				return runRBACGrant(ctx, st, args)
 			})
 		},
 	}, "admin")
+}
+
+// runRBACGrant resolves the group (arg or picker) and the command(s) (arg or
+// multi-select picker), then records one grant per command.
+func runRBACGrant(ctx context.Context, st *store.Store, args []string) error {
+	// 1) group: arg or picker.
+	group, err := resolveRBACGroup(ctx, st, args)
+	if err != nil {
+		return err
+	}
+
+	// 2) command(s): arg or multi-select picker.
+	var commands []string
+	if len(args) == 2 {
+		c := args[1]
+		if c != "*" {
+			// Only mutate commands take grants: read is default-allowed
+			// to any authenticated user and admin follows the Vault
+			// policy, so granting either records a row that changes
+			// nothing — and reads as if it had.
+			if class, known := authz.ClassOf(c); !known || class != authz.ClassMutate {
+				return fmt.Errorf("cannot grant %q. Grantable: %s, or '*'", c, knownCommands())
+			}
+		}
+		commands = []string{c}
+	} else {
+		picked, err := cmdkit.PickMany(grantableList(), fmt.Sprintf("Grant commands to %q (space to select)", group))
+		if err != nil {
+			return err
+		}
+		if len(picked) == 0 {
+			ui.Warnf(os.Stderr, "nothing selected")
+			return nil
+		}
+		commands = picked
+	}
+
+	for _, c := range commands {
+		if err := st.RBACGrant(ctx, group, c); err != nil {
+			return fmt.Errorf("grant %s: %w", c, err)
+		}
+	}
+	ui.Successf(os.Stderr, "granted [%s] to %q", strings.Join(commands, ", "), group)
+	return nil
 }
 
 func rbacRevokeCmd(env cmdkit.Env) *cobra.Command {
