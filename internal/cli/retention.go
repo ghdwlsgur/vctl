@@ -79,6 +79,14 @@ func runRetention(cmd *cobra.Command, env cmdkit.Env, opts retentionOptions) err
 		if opts.days <= 0 {
 			return fmt.Errorf("kernel retention days must be > 0 (got %d); set --days or kernel_retention_days", opts.days)
 		}
+		// The same guards prune has: a negative horizon here reported counts
+		// against a cutoff in the future, which read as "nothing to prune".
+		if opts.sessionDays < 0 {
+			return fmt.Errorf("session retention days must be >= 0 (got %d)", opts.sessionDays)
+		}
+		if opts.accessDays < 0 {
+			return fmt.Errorf("access retention days must be >= 0 (got %d)", opts.accessDays)
+		}
 
 		now := time.Now()
 		eventCut := now.AddDate(0, 0, -opts.days)
