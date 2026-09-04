@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/config"
 	"github.com/ghdwlsgur/vctl/internal/dnshosts"
@@ -341,5 +342,43 @@ func TestDNSZoneKeyValidatesBothPaths(t *testing.T) {
 	}
 	if _, ok := data["misc.hosts"]; ok {
 		t.Error("zone resolution created a key")
+	}
+}
+
+// The resolver is a VIP over several pods that catch up at different moments.
+// One answer is one pod; the verdict needs a streak, and a miss in the middle
+// of one starts it over.
+func TestDNSVerifyNeedsAStreakOfAnswers(t *testing.T) {
+	oldEvery, oldFor, oldResolve := dnsVerifyEvery, dnsVerifyFor, dnsResolve
+	t.Cleanup(func() { dnsVerifyEvery, dnsVerifyFor, dnsResolve = oldEvery, oldFor, oldResolve })
+	dnsVerifyEvery, dnsVerifyFor = time.Millisecond, time.Second
+
+	// pod A has it, pod B has not, then everyone has it.
+	script := []bool{true, false, true, true, false, true, true, true}
+	calls := 0
+	dnsResolve = func(context.Context, string, string) ([]string, error) {
+		i := min(calls, len(script)-1)
+		calls++
+		if script[i] {
+			return []string{"192.0.2.10"}, nil
+		}
+		return nil, nil
+	}
+	if err := dnsVerifyAnswers(t.Context(), "198.51.100.53:53", "x.example.com", "192.0.2.10"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != len(script) {
+		t.Errorf("verified after %d polls, want %d — a streak of %d broken by misses", calls, len(script), dnsVerifyStreak)
+	}
+}
+
+func TestDNSVerifyGivesUpAfterTheWindow(t *testing.T) {
+	oldEvery, oldFor, oldResolve := dnsVerifyEvery, dnsVerifyFor, dnsResolve
+	t.Cleanup(func() { dnsVerifyEvery, dnsVerifyFor, dnsResolve = oldEvery, oldFor, oldResolve })
+	dnsVerifyEvery, dnsVerifyFor = time.Millisecond, 20*time.Millisecond
+	dnsResolve = func(context.Context, string, string) ([]string, error) { return []string{"192.0.2.99"}, nil }
+	err := dnsVerifyAnswers(t.Context(), "198.51.100.53:53", "x.example.com", "192.0.2.10")
+	if err == nil || !strings.Contains(err.Error(), "still answers") {
+		t.Fatalf("err = %v, want the timeout verdict naming what it did answer", err)
 	}
 }
