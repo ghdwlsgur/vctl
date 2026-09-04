@@ -102,15 +102,7 @@ type tetraEvent struct {
 }
 
 func collectCmd(env cmdkit.Env) *cobra.Command {
-	var (
-		from           string
-		host           string
-		serial         string
-		batch          int
-		flushInterval  time.Duration
-		requireSession bool
-		grace          time.Duration
-	)
+	var opts collectOptions
 	cmd := &cobra.Command{
 		Use:   "collect",
 		Short: "Ingest Tetragon kernel events into the central audit store",
@@ -130,146 +122,160 @@ storing it buys nothing and costs everything. A miss is held for
 --attribution-grace and retried first, because a login's earliest commands arrive
 before watch-sessions has written the session row. Pass --require-session=false
 for full host capture.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, adb, err := env.Audit()
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runCollect(cmd, env, opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.from, "from", "", "read events from a file instead of stdin")
+	cmd.Flags().StringVar(&opts.host, "host", "", "inventory hostname to record events under (default: event node_name); must match what watch-sessions records or nothing attributes")
+	cmdkit.RegisterCompletion(cmd, "host", cmdkit.CompleteInventoryHost(env))
+	cmd.Flags().StringVar(&opts.serial, "serial", "", "attach events to a known cert serial")
+	cmd.Flags().IntVar(&opts.batch, "batch", 200, "insert batch size")
+	cmd.Flags().DurationVar(&opts.flushInterval, "flush-interval", 3*time.Second, "max time before flushing buffered events")
+	cmd.Flags().BoolVar(&opts.requireSession, "require-session", true, "store only events that link to a session; false captures all host activity")
+	cmd.Flags().DurationVar(&opts.grace, "attribution-grace", 30*time.Second, "how long to hold an unlinked event waiting for its session row")
+	return cmd
+}
+
+type collectOptions struct {
+	from           string
+	host           string
+	serial         string
+	batch          int
+	flushInterval  time.Duration
+	requireSession bool
+	grace          time.Duration
+}
+
+func runCollect(cmd *cobra.Command, env cmdkit.Env, opts collectOptions) error {
+	_, adb, err := env.Audit()
+	if err != nil {
+		return err
+	}
+	return adb.Ingesting(cmd.Context(), func(st audit.Ingestor) error {
+		ctx := cmd.Context()
+		var r io.Reader = os.Stdin
+		if opts.from != "" {
+			f, err := os.Open(opts.from)
 			if err != nil {
 				return err
 			}
-			return adb.Ingesting(cmd.Context(), func(st audit.Ingestor) error {
-				ctx := cmd.Context()
-				var r io.Reader = os.Stdin
-				if from != "" {
-					f, err := os.Open(from)
-					if err != nil {
-						return err
-					}
-					defer f.Close()
-					r = f
+			defer f.Close()
+			r = f
+		}
+
+		// Scan lines in a goroutine so we can flush on a timer too — a live
+		// `tetra getevents` stream never hits EOF, and on a quiet host events
+		// would otherwise sit in the buffer until a full batch accumulates.
+		lines := make(chan string, 4096)
+		var scanErr error // read after lines closes (close happens-after assignment)
+		go func() {
+			sc := bufio.NewScanner(r)
+			sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+			for sc.Scan() {
+				lines <- sc.Text()
+			}
+			scanErr = sc.Err()
+			close(lines)
+		}()
+
+		buf := make([]store.KernelEvent, 0, opts.batch)
+		total, skipped := 0, 0
+		held := newAttributionHold(opts.grace, opts.batch)
+		// flush writes the buffered batch (plus anything still held from
+		// earlier flushes). A write that fails must not throw the batch
+		// away: everything is re-held so the next flush retries it, bounded
+		// by the same cap and grace as an unattributed event. ctx is a
+		// parameter so the shutdown path can pass one that is not already
+		// cancelled.
+		flush := func(ctx context.Context) error {
+			pending := held.merge(buf)
+			buf = buf[:0]
+			if len(pending) == 0 {
+				return nil
+			}
+			var (
+				n      int
+				missed []int
+				err    error
+			)
+			if opts.requireSession {
+				n, missed, err = st.InsertKernelEventsAttributed(ctx, pending)
+			} else {
+				n, err = st.InsertKernelEvents(ctx, pending)
+			}
+			total += n
+			if err != nil {
+				// The write failed — retry the whole batch on the next flush
+				// rather than dropping events the operator was told are captured.
+				held.holdAll(pending)
+				return err
+			}
+			held.hold(pending, missed)
+			return nil
+		}
+
+		ticker := time.NewTicker(opts.flushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				// ctx is already cancelled (SIGTERM); a flush on it would fail
+				// instantly and throw the buffer away. Give the final write its
+				// own short deadline off a live context so a restart still lands
+				// what is buffered.
+				finalFlushOnShutdown(flush, held, st, opts.requireSession, &total)
+				return ctx.Err()
+			case <-ticker.C:
+				if err := flush(ctx); err != nil {
+					ui.Warnf(os.Stderr, "flush: %v", err)
 				}
-
-				// Scan lines in a goroutine so we can flush on a timer too — a live
-				// `tetra getevents` stream never hits EOF, and on a quiet host events
-				// would otherwise sit in the buffer until a full batch accumulates.
-				lines := make(chan string, 4096)
-				var scanErr error // read after lines closes (close happens-after assignment)
-				go func() {
-					sc := bufio.NewScanner(r)
-					sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
-					for sc.Scan() {
-						lines <- sc.Text()
-					}
-					scanErr = sc.Err()
-					close(lines)
-				}()
-
-				buf := make([]store.KernelEvent, 0, batch)
-				total, skipped := 0, 0
-				held := newAttributionHold(grace, batch)
-				// flush writes the buffered batch (plus anything still held from
-				// earlier flushes). A write that fails must not throw the batch
-				// away: everything is re-held so the next flush retries it, bounded
-				// by the same cap and grace as an unattributed event. ctx is a
-				// parameter so the shutdown path can pass one that is not already
-				// cancelled.
-				flush := func(ctx context.Context) error {
-					pending := held.merge(buf)
-					buf = buf[:0]
-					if len(pending) == 0 {
-						return nil
-					}
-					var (
-						n      int
-						missed []int
-						err    error
-					)
-					if requireSession {
-						n, missed, err = st.InsertKernelEventsAttributed(ctx, pending)
-					} else {
-						n, err = st.InsertKernelEvents(ctx, pending)
-					}
-					total += n
-					if err != nil {
-						// The write failed — retry the whole batch on the next flush
-						// rather than dropping events the operator was told are captured.
-						held.holdAll(pending)
+			case line, ok := <-lines:
+				if !ok {
+					if err := flush(ctx); err != nil {
 						return err
 					}
-					held.hold(pending, missed)
+					// Don't report success if the input stream errored (read
+					// failure, or a line over the 8MiB buffer) — that would
+					// silently mask dropped audit events.
+					if scanErr != nil {
+						return fmt.Errorf("input scan aborted after %d events: %w", total, scanErr)
+					}
+					// One last attempt for anything still inside its grace, so a
+					// clean shutdown does not throw away events whose session was
+					// about to appear.
+					if rest := held.drain(); len(rest) > 0 {
+						if n, _, err := st.InsertKernelEventsAttributed(ctx, rest); err == nil {
+							total += n
+						}
+					}
+					ui.Successf(os.Stderr, "ingested %d kernel events (%d unparsed, %d unattributable)",
+						total, skipped, held.Dropped())
 					return nil
 				}
-
-				ticker := time.NewTicker(flushInterval)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ctx.Done():
-						// ctx is already cancelled (SIGTERM); a flush on it would fail
-						// instantly and throw the buffer away. Give the final write its
-						// own short deadline off a live context so a restart still lands
-						// what is buffered.
-						finalFlushOnShutdown(flush, held, st, requireSession, &total)
-						return ctx.Err()
-					case <-ticker.C:
-						if err := flush(ctx); err != nil {
-							ui.Warnf(os.Stderr, "flush: %v", err)
-						}
-					case line, ok := <-lines:
-						if !ok {
-							if err := flush(ctx); err != nil {
-								return err
-							}
-							// Don't report success if the input stream errored (read
-							// failure, or a line over the 8MiB buffer) — that would
-							// silently mask dropped audit events.
-							if scanErr != nil {
-								return fmt.Errorf("input scan aborted after %d events: %w", total, scanErr)
-							}
-							// One last attempt for anything still inside its grace, so a
-							// clean shutdown does not throw away events whose session was
-							// about to appear.
-							if rest := held.drain(); len(rest) > 0 {
-								if n, _, err := st.InsertKernelEventsAttributed(ctx, rest); err == nil {
-									total += n
-								}
-							}
-							ui.Successf(os.Stderr, "ingested %d kernel events (%d unparsed, %d unattributable)",
-								total, skipped, held.Dropped())
-							return nil
-						}
-						line = strings.TrimSpace(line)
-						if line == "" {
-							continue
-						}
-						var te tetraEvent
-						if err := json.Unmarshal([]byte(line), &te); err != nil {
-							skipped++
-							continue
-						}
-						ev, ok := mapTetra(te, host, serial)
-						if !ok {
-							skipped++
-							continue
-						}
-						buf = append(buf, ev)
-						if len(buf) >= batch {
-							if err := flush(ctx); err != nil {
-								ui.Warnf(os.Stderr, "flush: %v", err)
-							}
-						}
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				var te tetraEvent
+				if err := json.Unmarshal([]byte(line), &te); err != nil {
+					skipped++
+					continue
+				}
+				ev, ok := mapTetra(te, opts.host, opts.serial)
+				if !ok {
+					skipped++
+					continue
+				}
+				buf = append(buf, ev)
+				if len(buf) >= opts.batch {
+					if err := flush(ctx); err != nil {
+						ui.Warnf(os.Stderr, "flush: %v", err)
 					}
 				}
-			})
-		},
-	}
-	cmd.Flags().StringVar(&from, "from", "", "read events from a file instead of stdin")
-	cmd.Flags().StringVar(&host, "host", "", "inventory hostname to record events under (default: event node_name); must match what watch-sessions records or nothing attributes")
-	cmdkit.RegisterCompletion(cmd, "host", cmdkit.CompleteInventoryHost(env))
-	cmd.Flags().StringVar(&serial, "serial", "", "attach events to a known cert serial")
-	cmd.Flags().IntVar(&batch, "batch", 200, "insert batch size")
-	cmd.Flags().DurationVar(&flushInterval, "flush-interval", 3*time.Second, "max time before flushing buffered events")
-	cmd.Flags().BoolVar(&requireSession, "require-session", true, "store only events that link to a session; false captures all host activity")
-	cmd.Flags().DurationVar(&grace, "attribution-grace", 30*time.Second, "how long to hold an unlinked event waiting for its session row")
-	return cmd
+			}
+		}
+	})
 }
 
 func mapTetra(te tetraEvent, hostOverride, serial string) (store.KernelEvent, bool) {

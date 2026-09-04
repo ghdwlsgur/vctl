@@ -1,7 +1,9 @@
 package openstack
 
 import (
+	"maps"
 	"net/netip"
+	"slices"
 	"sort"
 
 	"github.com/charmbracelet/lipgloss"
@@ -49,11 +51,7 @@ func newNetPalette(vms []store.Instance) netPalette {
 			seen[vmNetKey(v, a)] = true
 		}
 	}
-	keys := make([]string, 0, len(seen))
-	for k := range seen {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(seen))
 	out := netPalette{}
 	for i, k := range keys {
 		out[k] = lipgloss.NewStyle().Foreground(lipgloss.Color(netBandColors[i%len(netBandColors)]))

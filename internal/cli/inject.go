@@ -20,28 +20,9 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// injectCmd bootstraps a host to accept vctl's Vault-signed SSH certificates,
-// and does not report success until a certificate login has actually worked.
-//
-// Its predecessor (trust-ca) reported success after installing the CA file and
-// passing `sshd -t` — which proves the config parses, not that a certificate
-// authenticates. A fresh host with its clock nine hours behind installed
-// cleanly, printed OK, and rejected every certificate as "not yet valid"
-// (measured on a Rocky 10 host whose RTC held local time read as UTC). The
-// command's contract is "after this, vctl ssh works", so the verification has
-// to be a real certificate login, and the failure report has to carry the
-// server's reason, not the client's guess.
-//
-// The bootstrap connection uses the operator's normal SSH auth (agent/key/
-// password) — not a Vault certificate, which the host does not trust yet.
+// injectCmd wires the flags for `vctl inject`; the work is runInject.
 func injectCmd(env cmdkit.Env) *cobra.Command {
-	var (
-		identity string
-		useSudo  bool
-		port     int
-		loginAs  string
-		fixClock bool
-	)
+	var opts injectOptions
 	cmd := &cobra.Command{
 		Use:     "inject [host|user@addr]",
 		Aliases: []string{"trust-ca"},
@@ -62,95 +43,121 @@ up over the bootstrap connection to fetch sshd's own reason.
   vctl inject web01 --sudo           # non-root login, escalate for the install`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			a, err := env.App()
-			if err != nil {
-				return err
-			}
-
-			user, host, portStr, err := resolveTrustTarget(ctx, a, args[0], loginAs, port)
-			if err != nil {
-				return err
-			}
-			// The user may have come from the inventory, which anyone with edit
-			// rights can write. It is about to become part of an external ssh
-			// argv — see validLoginUser for what a hostile value does there.
-			if err := validLoginUser(user); err != nil {
-				return err
-			}
-
-			if err := a.EnsureLogin(ctx); err != nil {
-				return err
-			}
-			caPub, err := a.Vault.SSHCAPublicKey(ctx)
-			if err != nil {
-				return err
-			}
-
-			dest := user + "@" + host
-			ui.Infof(os.Stderr, "installing Vault SSH CA trust on %s (port %s)", dest, portStr)
-
-			// The installer also reports the host's clock (first line), so the
-			// skew check costs no extra connection — and no extra password
-			// prompt when the bootstrap is password-authenticated.
-			out, runErr := runBootstrap(ctx, dest, portStr, identity, useSudo, injectScript(caPub))
-			remoteEpoch := printInstallOutput(out)
-			if runErr != nil {
-				return fmt.Errorf("remote install on %s failed: %w", dest, runErr)
-			}
-
-			if msg := clockSkewProblem(time.Now(), remoteEpoch); msg != "" {
-				if !fixClock {
-					ui.Errorf(os.Stderr, "CA trust installed, but %s", msg)
-					return fmt.Errorf("certificate login cannot work until the host clock is fixed — re-run with --fix-clock to set it from this machine over the same bootstrap connection")
-				}
-				// Fresh installs arrive with the RTC in local time and no NTP
-				// daemon (measured five times in one onboarding week); the fix
-				// is carrying this machine's clock across, exactly what an
-				// operator does by hand. A second bootstrap connection — and a
-				// second password prompt when that is the auth — is the cost.
-				ui.Warnf(os.Stderr, "%s — fixing over the bootstrap connection", msg)
-				epoch, hasNTP, err := injectFixClock(ctx, dest, portStr, identity, useSudo)
-				if err != nil {
-					return fmt.Errorf("clock fix on %s failed: %w", dest, err)
-				}
-				if msg := clockSkewProblem(time.Now(), epoch); msg != "" {
-					return fmt.Errorf("clock still wrong after the fix: %s", msg)
-				}
-				if !hasNTP {
-					ui.Warnf(os.Stderr, "clock set manually and the RTC updated, but the host has no NTP daemon — install chrony so it stays right")
-				}
-			}
-
-			ui.Infof(os.Stderr, "verifying with a real certificate login as %s", user)
-			// Through the connector, not raw sshc: the verification IS an SSH
-			// into the host, and every certificate login leaves an audit row —
-			// including this one.
-			verify := access.Request{
-				Target: &sshc.Target{
-					Name: args[0],
-					Addr: net.JoinHostPort(host, portStr),
-					User: user,
-					Role: a.Cfg.CARole,
-				},
-				HostKey: access.HostKeyAcceptNew,
-			}
-			if err := execStep(cmdkit.NewConnector(a).Execute(ctx, verify, "true", 0)); err != nil {
-				ui.Errorf(os.Stderr, "certificate login failed: %v", err)
-				injectDiagnose(ctx, dest, portStr, identity, useSudo)
-				return fmt.Errorf("CA trust installed but a certificate login still fails — see the sshd log above")
-			}
-			ui.Successf(os.Stderr, "verified — vctl ssh %q works", args[0])
-			return nil
+			return runInject(cmd, env, args[0], opts)
 		},
 	}
-	cmd.Flags().StringVarP(&identity, "identity", "i", "", "SSH identity file for the bootstrap connection")
-	cmd.Flags().BoolVar(&useSudo, "sudo", false, "use sudo for the remote install (non-root login)")
-	cmd.Flags().IntVar(&port, "port", 0, "override SSH port (default: inventory value or 22)")
-	cmd.Flags().StringVar(&loginAs, "user", "", "override login user")
-	cmd.Flags().BoolVar(&fixClock, "fix-clock", false,
+	cmd.Flags().StringVarP(&opts.identity, "identity", "i", "", "SSH identity file for the bootstrap connection")
+	cmd.Flags().BoolVar(&opts.useSudo, "sudo", false, "use sudo for the remote install (non-root login)")
+	cmd.Flags().IntVar(&opts.port, "port", 0, "override SSH port (default: inventory value or 22)")
+	cmd.Flags().StringVar(&opts.loginAs, "user", "", "override login user")
+	cmd.Flags().BoolVar(&opts.fixClock, "fix-clock", false,
 		"when the host clock is too skewed for certificates, set it from this machine's clock over the bootstrap connection")
 	return cmd
+}
+
+type injectOptions struct {
+	identity string
+	useSudo  bool
+	port     int
+	loginAs  string
+	fixClock bool
+}
+
+// runInject bootstraps a host to accept vctl's Vault-signed SSH certificates,
+// and does not report success until a certificate login has actually worked.
+//
+// Its predecessor (trust-ca) reported success after installing the CA file and
+// passing `sshd -t` — which proves the config parses, not that a certificate
+// authenticates. A fresh host with its clock nine hours behind installed
+// cleanly, printed OK, and rejected every certificate as "not yet valid"
+// (measured on a Rocky 10 host whose RTC held local time read as UTC). The
+// command's contract is "after this, vctl ssh works", so the verification has
+// to be a real certificate login, and the failure report has to carry the
+// server's reason, not the client's guess.
+//
+// The bootstrap connection uses the operator's normal SSH auth (agent/key/
+// password) — not a Vault certificate, which the host does not trust yet.
+func runInject(cmd *cobra.Command, env cmdkit.Env, arg string, opts injectOptions) error {
+	ctx := cmd.Context()
+	a, err := env.App()
+	if err != nil {
+		return err
+	}
+
+	user, host, portStr, err := resolveTrustTarget(ctx, a, arg, opts.loginAs, opts.port)
+	if err != nil {
+		return err
+	}
+	// The user may have come from the inventory, which anyone with edit
+	// rights can write. It is about to become part of an external ssh
+	// argv — see validLoginUser for what a hostile value does there.
+	if err := validLoginUser(user); err != nil {
+		return err
+	}
+
+	if err := a.EnsureLogin(ctx); err != nil {
+		return err
+	}
+	caPub, err := a.Vault.SSHCAPublicKey(ctx)
+	if err != nil {
+		return err
+	}
+
+	dest := user + "@" + host
+	ui.Infof(os.Stderr, "installing Vault SSH CA trust on %s (port %s)", dest, portStr)
+
+	// The installer also reports the host's clock (first line), so the
+	// skew check costs no extra connection — and no extra password
+	// prompt when the bootstrap is password-authenticated.
+	out, runErr := runBootstrap(ctx, dest, portStr, opts.identity, opts.useSudo, injectScript(caPub))
+	remoteEpoch := printInstallOutput(out)
+	if runErr != nil {
+		return fmt.Errorf("remote install on %s failed: %w", dest, runErr)
+	}
+
+	if msg := clockSkewProblem(time.Now(), remoteEpoch); msg != "" {
+		if !opts.fixClock {
+			ui.Errorf(os.Stderr, "CA trust installed, but %s", msg)
+			return fmt.Errorf("certificate login cannot work until the host clock is fixed — re-run with --fix-clock to set it from this machine over the same bootstrap connection")
+		}
+		// Fresh installs arrive with the RTC in local time and no NTP
+		// daemon (measured five times in one onboarding week); the fix
+		// is carrying this machine's clock across, exactly what an
+		// operator does by hand. A second bootstrap connection — and a
+		// second password prompt when that is the auth — is the cost.
+		ui.Warnf(os.Stderr, "%s — fixing over the bootstrap connection", msg)
+		epoch, hasNTP, err := injectFixClock(ctx, dest, portStr, opts.identity, opts.useSudo)
+		if err != nil {
+			return fmt.Errorf("clock fix on %s failed: %w", dest, err)
+		}
+		if msg := clockSkewProblem(time.Now(), epoch); msg != "" {
+			return fmt.Errorf("clock still wrong after the fix: %s", msg)
+		}
+		if !hasNTP {
+			ui.Warnf(os.Stderr, "clock set manually and the RTC updated, but the host has no NTP daemon — install chrony so it stays right")
+		}
+	}
+
+	ui.Infof(os.Stderr, "verifying with a real certificate login as %s", user)
+	// Through the connector, not raw sshc: the verification IS an SSH
+	// into the host, and every certificate login leaves an audit row —
+	// including this one.
+	verify := access.Request{
+		Target: &sshc.Target{
+			Name: arg,
+			Addr: net.JoinHostPort(host, portStr),
+			User: user,
+			Role: a.Cfg.CARole,
+		},
+		HostKey: access.HostKeyAcceptNew,
+	}
+	if err := execStep(cmdkit.NewConnector(a).Execute(ctx, verify, "true", 0)); err != nil {
+		ui.Errorf(os.Stderr, "certificate login failed: %v", err)
+		injectDiagnose(ctx, dest, portStr, opts.identity, opts.useSudo)
+		return fmt.Errorf("CA trust installed but a certificate login still fails — see the sshd log above")
+	}
+	ui.Successf(os.Stderr, "verified — vctl ssh %q works", arg)
+	return nil
 }
 
 // runBootstrap feeds one script to `sh` on the far side over the operator's

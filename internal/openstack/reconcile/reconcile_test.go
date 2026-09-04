@@ -68,10 +68,9 @@ type write struct {
 // service decides that now — see membership.Decide — so what the tests assert
 // is derived from the hosts the fake cloud reports rather than injected here.
 type fakeRepo struct {
-	writes    []write
-	failOn    string // kind that returns an error
-	failOnID  string
-	instances int
+	writes   []write
+	failOn   string // kind that returns an error
+	failOnID string
 }
 
 func (r *fakeRepo) fail(kind, id string) error {

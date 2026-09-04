@@ -1,26 +1,10 @@
 package cli
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 )
-
-// value returns what a completion would put on the command line, dropping the
-// description the shell only displays.
-func value(candidate string) string {
-	v, _, _ := strings.Cut(candidate, "\t")
-	return v
-}
-
-func values(candidates []string) []string {
-	out := make([]string, 0, len(candidates))
-	for _, c := range candidates {
-		out = append(out, value(c))
-	}
-	return out
-}
 
 // fleetValueFlags are the flags whose values are things the fleet knows about,
 // rather than free text. Every one of them has to complete.
@@ -85,13 +69,4 @@ func TestCompletionsSurviveASecondCommandTree(t *testing.T) {
 	if vm.ValidArgsFunction == nil {
 		t.Error("the second tree's 'openstack vm' has no argument completion")
 	}
-}
-
-func contains(list []string, want string) bool {
-	for _, v := range list {
-		if v == want {
-			return true
-		}
-	}
-	return false
 }

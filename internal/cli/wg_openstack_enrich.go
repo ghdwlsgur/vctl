@@ -1,7 +1,8 @@
 package cli
 
 import (
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
 	"github.com/ghdwlsgur/vctl/internal/store"
@@ -99,11 +100,7 @@ func enrichWGAnnotations(
 	for i, a := range out {
 		index[a.PublicKey] = i
 	}
-	keys := make([]string, 0, len(candidates))
-	for key := range candidates {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(candidates))
 	for _, key := range keys {
 		cs := candidates[key]
 		first := cs[0]

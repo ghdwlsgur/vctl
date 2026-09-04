@@ -2,8 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -104,11 +105,7 @@ func renderCachedGrants(a *app.App, snap *invcache.Snapshot) {
 	now := time.Now()
 	fmt.Fprintf(os.Stdout, "  offline window  %s\n", window)
 
-	identities := make([]string, 0, len(snap.Grants))
-	for identity := range snap.Grants {
-		identities = append(identities, identity)
-	}
-	sort.Strings(identities) // map order would reshuffle the report between runs
+	identities := slices.Sorted(maps.Keys(snap.Grants)) // map order would reshuffle the report between runs
 
 	for _, identity := range identities {
 		g := cmdkit.CachedGrant(snap.Grants[identity])

@@ -170,7 +170,10 @@ func TestParseRenderRoundTrip(t *testing.T) {
 		"extra.hosts":    "10.0.0.1             x.example.com\n",
 	}
 	rendered := RenderConfigMapYAML(data)
-	got := ParseConfigMapYAML(rendered)
+	got, err := ParseConfigMapYAML(rendered)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != len(data) {
 		t.Fatalf("round-trip changed the key set: %v", got)
 	}
@@ -208,5 +211,70 @@ func TestAddCanonicalizesIPv6(t *testing.T) {
 	}
 	if ip, _ := Lookup(out, "v6.example.com"); ip != "2001:db8::1" {
 		t.Errorf("stored address = %q, want canonical 2001:db8::1", ip)
+	}
+}
+
+// A repo file an operator reformatted by hand still reads as the records it
+// holds. The shapes here are all valid YAML for the same content; a parser
+// that only knew Render's exact output would read each as an empty zone, and
+// the write path would then commit and project a file with the records gone.
+func TestParseReadsHandEditedShapesAsTheSameRecords(t *testing.T) {
+	want := map[string]string{
+		"sre.hosts":      "192.0.2.10           vault.corp.internal\n",
+		"innogrid.hosts": "192.0.2.11           harbor.example.com\n",
+		"misc.hosts":     "",
+	}
+	handEdited := `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-hosts
+  namespace: dns-system
+data:
+  "sre.hosts": |-
+    192.0.2.10           vault.corp.internal
+  innogrid.hosts: |+
+    192.0.2.11           harbor.example.com
+
+  misc.hosts: ""
+`
+	got, err := ParseConfigMapYAML(handEdited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("key %q: %q, want %q", k, got[k], v)
+		}
+	}
+	// And rendering it produces the canonical file — the commit normalises
+	// the hand edit instead of preserving it.
+	if RenderConfigMapYAML(got) != RenderConfigMapYAML(want) {
+		t.Error("a hand-edited file did not render canonically")
+	}
+}
+
+// Only the coredns-hosts ConfigMap is edited. Another object at the same path
+// — a renamed file, a different resource — is refused, not read as a zone map.
+func TestParseRefusesAnotherObject(t *testing.T) {
+	for name, doc := range map[string]string{
+		"a Secret":          "kind: Secret\nmetadata:\n  name: coredns-hosts\n  namespace: dns-system\ndata:\n  sre.hosts: x\n",
+		"another ConfigMap": "kind: ConfigMap\nmetadata:\n  name: coredns-corefile\n  namespace: dns-system\ndata: {}\n",
+		"another namespace": "kind: ConfigMap\nmetadata:\n  name: coredns-hosts\n  namespace: default\ndata: {}\n",
+		"not yaml":          "{{{",
+	} {
+		if _, err := ParseConfigMapYAML(doc); err == nil {
+			t.Errorf("%s was accepted as the hosts ConfigMap", name)
+		}
+	}
+}
+
+func TestRecordCountSpansEveryZone(t *testing.T) {
+	n := RecordCount(map[string]string{
+		"a.hosts": "192.0.2.1 x.example.com\n192.0.2.2 y.example.com z.example.com\n",
+		"b.hosts": "# only a comment\n",
+		"c.hosts": "192.0.2.3 w.example.com\n",
+	})
+	if n != 3 {
+		t.Errorf("RecordCount = %d, want 3 (lines, not names)", n)
 	}
 }

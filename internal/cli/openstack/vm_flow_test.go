@@ -141,8 +141,7 @@ func TestVMShowSaysWhenSSHWillRefuse(t *testing.T) {
 // The staleness window is the collector's schedule, not a number picked here —
 // three missed hourly passes, the same reasoning the capability probe uses.
 func TestStaleWindowMatchesTheCollectorsSchedule(t *testing.T) {
-	if StaleProbeWindow != StaleProbeWindow {
-		t.Errorf("StaleProbeWindow = %v, StaleProbeWindow = %v; two windows for the same question drift",
-			StaleProbeWindow, StaleProbeWindow)
+	if StaleProbeWindow != 3*time.Hour {
+		t.Errorf("StaleProbeWindow = %v, want 3h — three missed hourly passes", StaleProbeWindow)
 	}
 }

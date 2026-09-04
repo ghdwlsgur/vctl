@@ -16,6 +16,7 @@ package openstack
 import (
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"slices"
 	"sort"
@@ -617,11 +618,7 @@ func versionCell(h store.OpenStackHost, wide bool) string {
 		}
 		return ui.Muted("-")
 	}
-	names := make([]string, 0, len(h.Components))
-	for name := range h.Components {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(h.Components))
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
 		c := h.Components[name]
@@ -653,11 +650,7 @@ func versionCell(h store.OpenStackHost, wide bool) string {
 // controller, so the one number on the row described the only component that was
 // not working.
 func firstVersion(comps map[string]store.CapabilityComponent) string {
-	names := make([]string, 0, len(comps))
-	for name := range comps {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(comps))
 	fallback := ""
 	for _, name := range names {
 		c := comps[name]
@@ -812,11 +805,7 @@ func renderOpenStackHost(w io.Writer, h store.OpenStackHost, now time.Time) {
 		return
 	}
 	fmt.Fprintln(w)
-	names := make([]string, 0, len(h.Components))
-	for name := range h.Components {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(h.Components))
 	table := make([][]string, 0, len(names))
 	for _, name := range names {
 		c := h.Components[name]

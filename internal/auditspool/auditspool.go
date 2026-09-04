@@ -345,7 +345,7 @@ func (s *Spool) claim() (string, error) {
 		return "", err
 	}
 	name := tmp.Name()
-	tmp.Close()
+	_ = tmp.Close() // nothing was written; the name is all we wanted
 	if err := os.Rename(s.Path, name); err != nil {
 		_ = os.Remove(name)
 		if errors.Is(err, fs.ErrNotExist) {

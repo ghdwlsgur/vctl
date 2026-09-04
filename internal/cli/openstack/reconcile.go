@@ -31,16 +31,7 @@ const instanceTimeout = 180 * time.Second
 // wired into both binaries: under this package's Cmd for operators, and under
 // the agent root so a controller host can run it as a unit.
 func ReconcileCmd(env cmdkit.Env) *cobra.Command {
-	var (
-		only           string
-		self           bool
-		hostname       string
-		insecure       bool
-		dryRun         bool
-		asJSON         bool
-		failOn         string
-		includeRetired bool
-	)
+	var opts reconcileOptions
 	cmd := &cobra.Command{
 		Use:   "reconcile",
 		Short: "Ask each deployment's control plane which hosts it owns, and confirm membership",
@@ -56,145 +47,18 @@ func ReconcileCmd(env cmdkit.Env) *cobra.Command {
 			// loaded, and the path it teaches is the one an unconfigured
 			// install uses. vault_farm_prefix moves the runtime read.
 			"Credentials are read from Vault under " + config.Defaults().VaultFarmPrefix + "/vctl-<host_port>, at use time.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := cmdkit.CommandOutput(cmd, asJSON)
-			if err != nil {
-				return err
-			}
-			// The dedicated reconcile role, not the operator rw role. This
-			// command's credential lives on farm controllers (vctl-reconciler
-			// AppRole) and in the CronJob's policy — vctl-rw there meant every
-			// controller's root could write the whole operator surface
-			// (servers, rbac, ipam, wg). The reconcile role can touch exactly
-			// what a reconcile writes: memberships, run history, control
-			// hosts, and the VM snapshot.
-			return env.WithPurposeStore(cmd.Context(), app.PurposeOpenStackReconcile, func(a *app.App, st *store.Store) error {
-				ctx := cmd.Context()
-				farms, err := st.LocalOnlyFarms(ctx)
-				if err != nil {
-					return err
-				}
-				if len(farms) == 0 {
-					ui.Warnf(os.Stderr, "no deployments to reconcile. Run the node agents first.")
-					return nil
-				}
-				if self {
-					id, err := farmOfHost(farms, hostname)
-					if err != nil {
-						return err
-					}
-					only = id
-				}
-				// Accept the name people gave the deployment, not just its
-				// endpoint. `farm show` and `vm` both do, and a --farm that
-				// takes one spelling in one command and another elsewhere is a
-				// flag somebody has to remember the shape of.
-				if only != "" {
-					id, err := ResolveFarmID(ctx, a, st, only)
-					if err != nil {
-						return err
-					}
-					only = id
-				}
-				// A retired deployment is one somebody said is not operated any
-				// more. Asking its control plane every run spends a credential
-				// and a timeout on a farm nobody expects to answer, and files
-				// the failure as news. Naming it explicitly still works — that
-				// is somebody saying they mean this one.
-				retired := map[string]bool{}
-				if only == "" && !includeRetired {
-					deps, err := st.Deployments(ctx)
-					if err != nil {
-						return err
-					}
-					for _, d := range deps {
-						if d.State == store.StateRetired {
-							retired[d.ID] = true
-						}
-					}
-				}
-				ids := make([]string, 0, len(farms))
-				var skipped int
-				for id := range farms {
-					if only != "" && !strings.EqualFold(id, only) {
-						continue
-					}
-					if retired[id] {
-						skipped++
-						continue
-					}
-					ids = append(ids, id)
-				}
-				if skipped > 0 && format == cmdkit.OutputTable {
-					ui.Infof(os.Stderr, "skipping %d retired deployment(s); --include-retired to reconcile them", skipped)
-				}
-				sort.Strings(ids)
-				if len(ids) == 0 {
-					return fmt.Errorf("no deployment matches %q", only)
-				}
-				req := reconcile.Request{Insecure: insecure, DryRun: dryRun}
-				for _, id := range ids {
-					hosts := farms[id]
-					sort.Strings(hosts)
-					req.Farms = append(req.Farms, reconcile.Farm{ID: id, LocalHosts: hosts})
-				}
-				svc := &reconcile.Service{
-					Creds: farmcreds.Store{KV: a.Vault, Prefix: a.Cfg.VaultFarmPrefix},
-					Cloud: novaCloud{},
-					Repo:  storeRepo{st: st},
-				}
-				want, err := parseFailOn(failOn)
-				if err != nil {
-					return err
-				}
-				startedAt := time.Now()
-				if format == cmdkit.OutputTable {
-					ui.Section(os.Stdout, "openstack reconcile")
-				}
-				rep, runErr := svc.Run(ctx, req)
-				took := time.Since(startedAt)
-				// A reconcile is the thing most likely to make a stored reading
-				// wrong: it settles membership and replaces the VM rows. Dropped
-				// even on a partial run, because "some of it changed" is not a
-				// picture worth keeping.
-				if !dryRun {
-					forgetReadings(ctx, a, st)
-				}
-				if format != cmdkit.OutputTable {
-					if err := cmdkit.WriteStructured(format, reconcileReportJSON(rep, startedAt, took, dryRun)); err != nil {
-						return err
-					}
-				} else {
-					// Rendered before the error is returned: a run that reached
-					// nothing still has per-farm reasons worth reading.
-					renderReconcile(rep, dryRun)
-				}
-				if runErr != nil {
-					return runErr
-				}
-				// A run where one farm answered and seven did not is a success
-				// by the old measure, and a timer cannot tell it from a healthy
-				// one. What counts as failure is the caller's to say.
-				if hit := rep.FailOn(want); len(hit) > 0 {
-					names := make([]string, 0, len(hit))
-					for _, p := range hit {
-						names = append(names, string(p))
-					}
-					return fmt.Errorf("reconcile finished with %s; %d of %d deployments answered",
-						strings.Join(names, ", "), rep.Reached, len(rep.Outcomes))
-				}
-				return nil
-			})
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runReconcile(cmd, env, opts)
 		},
 	}
-	cmd.Flags().StringVar(&only, "farm", "", "reconcile only this deployment")
-	cmd.Flags().BoolVar(&self, "self", false, "reconcile only the deployment this host belongs to")
-	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname for --self; defaults to the os hostname")
-	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification against the control plane (self-signed endpoints)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what would change without writing")
-	cmd.Flags().BoolVar(&includeRetired, "include-retired", false, "also reconcile deployments declared retired")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable result, for timers and dashboards")
-	cmd.Flags().StringVar(&failOn, "fail-on", "",
+	cmd.Flags().StringVar(&opts.only, "farm", "", "reconcile only this deployment")
+	cmd.Flags().BoolVar(&opts.self, "self", false, "reconcile only the deployment this host belongs to")
+	cmd.Flags().StringVar(&opts.hostname, "hostname", "", "inventory hostname for --self; defaults to the os hostname")
+	cmd.Flags().BoolVar(&opts.insecure, "insecure", false, "skip TLS verification against the control plane (self-signed endpoints)")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "report what would change without writing")
+	cmd.Flags().BoolVar(&opts.includeRetired, "include-retired", false, "also reconcile deployments declared retired")
+	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "machine-readable result, for timers and dashboards")
+	cmd.Flags().StringVar(&opts.failOn, "fail-on", "",
 		"exit non-zero when any of these occurred: unreachable, no-credentials, partial, warning")
 	cmd.MarkFlagsMutuallyExclusive("self", "farm")
 	cmdkit.RegisterCompletion(cmd, "farm", CompleteFarm(env))
@@ -204,6 +68,151 @@ func ReconcileCmd(env cmdkit.Env) *cobra.Command {
 	cmdkit.RegisterCompletion(cmd, "fail-on", cmdkit.StaticCompletions(
 		"unreachable", "no-credentials", "partial", "warning"))
 	return cmdkit.SupportsStructuredOutput(cmd)
+}
+
+// reconcileOptions is the bound flag set of `openstack reconcile`.
+type reconcileOptions struct {
+	only           string
+	self           bool
+	hostname       string
+	insecure       bool
+	dryRun         bool
+	asJSON         bool
+	failOn         string
+	includeRetired bool
+}
+
+// runReconcile is the body of `openstack reconcile`, kept apart from the flag
+// wiring in ReconcileCmd.
+func runReconcile(cmd *cobra.Command, env cmdkit.Env, opts reconcileOptions) error {
+	format, err := cmdkit.CommandOutput(cmd, opts.asJSON)
+	if err != nil {
+		return err
+	}
+	// The dedicated reconcile role, not the operator rw role. This
+	// command's credential lives on farm controllers (vctl-reconciler
+	// AppRole) and in the CronJob's policy — vctl-rw there meant every
+	// controller's root could write the whole operator surface
+	// (servers, rbac, ipam, wg). The reconcile role can touch exactly
+	// what a reconcile writes: memberships, run history, control
+	// hosts, and the VM snapshot.
+	return env.WithPurposeStore(cmd.Context(), app.PurposeOpenStackReconcile, func(a *app.App, st *store.Store) error {
+		ctx := cmd.Context()
+		farms, err := st.LocalOnlyFarms(ctx)
+		if err != nil {
+			return err
+		}
+		if len(farms) == 0 {
+			ui.Warnf(os.Stderr, "no deployments to reconcile. Run the node agents first.")
+			return nil
+		}
+		if opts.self {
+			id, err := farmOfHost(farms, opts.hostname)
+			if err != nil {
+				return err
+			}
+			opts.only = id
+		}
+		// Accept the name people gave the deployment, not just its
+		// endpoint. `farm show` and `vm` both do, and a --farm that
+		// takes one spelling in one command and another elsewhere is a
+		// flag somebody has to remember the shape of.
+		if opts.only != "" {
+			id, err := ResolveFarmID(ctx, a, st, opts.only)
+			if err != nil {
+				return err
+			}
+			opts.only = id
+		}
+		// A retired deployment is one somebody said is not operated any
+		// more. Asking its control plane every run spends a credential
+		// and a timeout on a farm nobody expects to answer, and files
+		// the failure as news. Naming it explicitly still works — that
+		// is somebody saying they mean this one.
+		retired := map[string]bool{}
+		if opts.only == "" && !opts.includeRetired {
+			deps, err := st.Deployments(ctx)
+			if err != nil {
+				return err
+			}
+			for _, d := range deps {
+				if d.State == store.StateRetired {
+					retired[d.ID] = true
+				}
+			}
+		}
+		ids := make([]string, 0, len(farms))
+		var skipped int
+		for id := range farms {
+			if opts.only != "" && !strings.EqualFold(id, opts.only) {
+				continue
+			}
+			if retired[id] {
+				skipped++
+				continue
+			}
+			ids = append(ids, id)
+		}
+		if skipped > 0 && format == cmdkit.OutputTable {
+			ui.Infof(os.Stderr, "skipping %d retired deployment(s); --include-retired to reconcile them", skipped)
+		}
+		sort.Strings(ids)
+		if len(ids) == 0 {
+			return fmt.Errorf("no deployment matches %q", opts.only)
+		}
+		req := reconcile.Request{Insecure: opts.insecure, DryRun: opts.dryRun}
+		for _, id := range ids {
+			hosts := farms[id]
+			sort.Strings(hosts)
+			req.Farms = append(req.Farms, reconcile.Farm{ID: id, LocalHosts: hosts})
+		}
+		svc := &reconcile.Service{
+			Creds: farmcreds.Store{KV: a.Vault, Prefix: a.Cfg.VaultFarmPrefix},
+			Cloud: novaCloud{},
+			Repo:  storeRepo{st: st},
+		}
+		want, err := parseFailOn(opts.failOn)
+		if err != nil {
+			return err
+		}
+		startedAt := time.Now()
+		if format == cmdkit.OutputTable {
+			ui.Section(os.Stdout, "openstack reconcile")
+		}
+		rep, runErr := svc.Run(ctx, req)
+		took := time.Since(startedAt)
+		// A reconcile is the thing most likely to make a stored reading
+		// wrong: it settles membership and replaces the VM rows. Dropped
+		// even on a partial run, because "some of it changed" is not a
+		// picture worth keeping.
+		if !opts.dryRun {
+			forgetReadings(ctx, a, st)
+		}
+		if format != cmdkit.OutputTable {
+			if err := cmdkit.WriteStructured(format, reconcileReportJSON(rep, startedAt, took, opts.dryRun)); err != nil {
+				return err
+			}
+		} else {
+			// Rendered before the error is returned: a run that reached
+			// nothing still has per-farm reasons worth reading.
+			renderReconcile(rep, opts.dryRun)
+		}
+		if runErr != nil {
+			return runErr
+		}
+		// A run where one farm answered and seven did not is a success
+		// by the old measure, and a timer cannot tell it from a healthy
+		// one. What counts as failure is the caller's to say.
+		if hit := rep.FailOn(want); len(hit) > 0 {
+			names := make([]string, 0, len(hit))
+			for _, p := range hit {
+				names = append(names, string(p))
+			}
+			return fmt.Errorf("reconcile finished with %s; %d of %d deployments answered",
+				strings.Join(names, ", "), rep.Reached, len(rep.Outcomes))
+		}
+		return nil
+	})
 }
 
 // farmOfHost finds which deployment this machine belongs to.

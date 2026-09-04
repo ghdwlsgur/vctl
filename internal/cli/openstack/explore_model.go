@@ -655,7 +655,7 @@ func (m exploreModel) consoleRun(command string) tea.Cmd {
 	}
 	return func() tea.Msg {
 		res := run(vm, r, user, command)
-		return consoleOutput{out: res.out, code: res.code, user: res.user, err: res.err}
+		return consoleOutput(res)
 	}
 }
 

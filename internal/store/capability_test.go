@@ -385,7 +385,7 @@ func TestAFutureTimestampCannotPinStaleFactsOrInfectTheNextPass(t *testing.T) {
 	// these are two machines and they disagree by milliseconds even on one
 	// laptop. A minute is far tighter than the day this is guarding against and
 	// far looser than any drift between them.
-	if off := at.Sub(time.Now()).Abs(); off > time.Minute {
+	if off := time.Until(at).Abs(); off > time.Minute {
 		t.Errorf("new pass stamped %v, %v away from now — it is carrying somebody else's clock", at, off)
 	}
 	if pass < 1 {

@@ -96,8 +96,12 @@ func encodeStructured(w io.Writer, format Format, value any) error {
 		}
 		enc := yaml.NewEncoder(w)
 		enc.SetIndent(2)
-		defer enc.Close()
-		return enc.Encode(document)
+		if err := enc.Encode(document); err != nil {
+			return err
+		}
+		// Close flushes; a dropped error here is a truncated document that
+		// looked like a success.
+		return enc.Close()
 	default:
 		return fmt.Errorf("output %q is not structured", format)
 	}
