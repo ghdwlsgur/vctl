@@ -507,6 +507,7 @@ OIDC のセットアップは [deploy/vault/oidc-phase2.md](deploy/vault/oidc-ph
 make build
 make test
 make vet
+make lint
 make trivy
 ```
 

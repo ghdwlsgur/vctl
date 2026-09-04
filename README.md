@@ -595,6 +595,7 @@ OIDC setup is documented in [deploy/vault/oidc-phase2.md](deploy/vault/oidc-phas
 make build
 make test
 make vet
+make lint
 make trivy
 ```
 

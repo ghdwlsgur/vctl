@@ -54,6 +54,15 @@ vet: ## go vet
 test: ## Run unit tests
 	go test ./...
 
+.PHONY: lint
+# Run through `go run` at pinned versions so the tools are built against the
+# toolchain in use: a linter binary installed by an older Go dies on a newer
+# stdlib with "file requires newer Go version", and a silent linter is worse
+# than none. Not folded into `check` — it needs the module cache warm.
+lint: ## staticcheck + deadcode
+	go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+	go run golang.org/x/tools/cmd/deadcode@v0.49.0 -test ./...
+
 .PHONY: check
 check: fmt vet test ## fmt + vet + test
 
