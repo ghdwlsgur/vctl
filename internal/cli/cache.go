@@ -39,6 +39,7 @@ the inventory database cannot be reached. Writes always go to Postgres.
 	return cmd
 }
 
+// cacheStatusCmd wires `cache status`; the body is runCacheStatus.
 func cacheStatusCmd(env cmdkit.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
@@ -46,47 +47,53 @@ func cacheStatusCmd(env cmdkit.Env) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return env.WithApp(func(a *app.App) error {
-				ui.Section(os.Stdout, "Local inventory cache")
-				if a.Cfg.CacheDisabled {
-					ui.Warnf(os.Stdout, "disabled (VCTL_CACHE_DISABLE / cache_disabled)")
-					return nil
-				}
-				f := a.CacheFile()
-				fmt.Fprintf(os.Stdout, "  path            %s\n", f.Path)
-
-				snap, err := f.Load()
-				switch {
-				case err != nil:
-					ui.Warnf(os.Stdout, "no snapshot yet — run 'vctl cache refresh' while the database is reachable")
-				case !snap.HasInventory():
-					// Grants can be cached before any inventory has been. Saying
-					// "0 hosts, captured just now" would imply a usable snapshot.
-					ui.Warnf(os.Stdout, "no hosts captured yet — run 'vctl cache refresh' while the database is reachable")
-					renderCachedGrants(a, snap)
-				default:
-					now := time.Now()
-					age := snap.Age(now)
-					state := ""
-					if snap.Expired(now, a.Cfg.CacheStaleLimit()) {
-						state = "  " + ui.Fail("expired — will not be served")
-					}
-					fmt.Fprintf(os.Stdout, "  captured        %s ago (%s)%s\n",
-						strutil.CompactDuration(age), snap.CapturedAt.Local().Format(time.RFC3339), state)
-					fmt.Fprintf(os.Stdout, "  hosts           %d\n", len(snap.Servers))
-					fmt.Fprintf(os.Stdout, "  refresh after   %s\n", a.Cfg.CacheRefreshInterval())
-					if limit := a.Cfg.CacheStaleLimit(); limit > 0 {
-						fmt.Fprintf(os.Stdout, "  serve until     %s old\n", limit)
-					}
-					renderCachedGrants(a, snap)
-				}
-
-				if pending, err := a.Spool().Pending(); err == nil && pending > 0 {
-					ui.Warnf(os.Stdout, "%d access record(s) queued — they flush on the next successful audit write", pending)
-				}
-				return nil
+				return runCacheStatus(a)
 			})
 		},
 	}
+}
+
+// runCacheStatus prints the snapshot's path, age and host count, the cached
+// grants, and how many access records are still queued in the spool.
+func runCacheStatus(a *app.App) error {
+	ui.Section(os.Stdout, "Local inventory cache")
+	if a.Cfg.CacheDisabled {
+		ui.Warnf(os.Stdout, "disabled (VCTL_CACHE_DISABLE / cache_disabled)")
+		return nil
+	}
+	f := a.CacheFile()
+	fmt.Fprintf(os.Stdout, "  path            %s\n", f.Path)
+
+	snap, err := f.Load()
+	switch {
+	case err != nil:
+		ui.Warnf(os.Stdout, "no snapshot yet — run 'vctl cache refresh' while the database is reachable")
+	case !snap.HasInventory():
+		// Grants can be cached before any inventory has been. Saying
+		// "0 hosts, captured just now" would imply a usable snapshot.
+		ui.Warnf(os.Stdout, "no hosts captured yet — run 'vctl cache refresh' while the database is reachable")
+		renderCachedGrants(a, snap)
+	default:
+		now := time.Now()
+		age := snap.Age(now)
+		state := ""
+		if snap.Expired(now, a.Cfg.CacheStaleLimit()) {
+			state = "  " + ui.Fail("expired — will not be served")
+		}
+		fmt.Fprintf(os.Stdout, "  captured        %s ago (%s)%s\n",
+			strutil.CompactDuration(age), snap.CapturedAt.Local().Format(time.RFC3339), state)
+		fmt.Fprintf(os.Stdout, "  hosts           %d\n", len(snap.Servers))
+		fmt.Fprintf(os.Stdout, "  refresh after   %s\n", a.Cfg.CacheRefreshInterval())
+		if limit := a.Cfg.CacheStaleLimit(); limit > 0 {
+			fmt.Fprintf(os.Stdout, "  serve until     %s old\n", limit)
+		}
+		renderCachedGrants(a, snap)
+	}
+
+	if pending, err := a.Spool().Pending(); err == nil && pending > 0 {
+		ui.Warnf(os.Stdout, "%d access record(s) queued — they flush on the next successful audit write", pending)
+	}
+	return nil
 }
 
 // renderCachedGrants reports the offline authorization window per identity, so

@@ -610,71 +610,83 @@ func OneVM(ctx context.Context, st *store.Store, id, deploymentID string) (store
 	return vms[0], nil
 }
 
-// openstackVMShowCmd is one VM, in full, with the command to reach it.
-//
-// The listing is a table and a table has to leave things out. What somebody
-// needs when they have found the VM is the other half — the whole uuid, the
-// addresses rather than the best one, when it was last seen, and whether SSH
-// will work — and, having found it, the line to run next. Printing that line
-// rather than describing it is the difference between one step and three.
+// openstackVMShowCmd is one VM, in full, with the command to reach it. The
+// body is runOpenStackVMShow.
 func openstackVMShowCmd(env cmdkit.Env) *cobra.Command {
-	var farm string
-	var asJSON bool
+	var opts openstackVMShowOptions
 	cmd := &cobra.Command{
 		Use:               "show <nova-uuid>",
 		Short:             "One VM in full, and how to reach it",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: CompleteVM(env),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := cmdkit.CommandOutput(cmd, asJSON)
+			return runOpenStackVMShow(cmd, env, args, opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.farm, "farm", "", "deployment holding the VM, when its id is in more than one")
+	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "machine-readable output (for dataset/agent export)")
+	cmdkit.RegisterCompletion(cmd, "farm", CompleteFarm(env))
+	return cmdkit.SupportsStructuredOutput(cmd)
+}
+
+// openstackVMShowOptions is the bound flag set of `openstack vm show`.
+type openstackVMShowOptions struct {
+	farm   string
+	asJSON bool
+}
+
+// runOpenStackVMShow is the body of `openstack vm show`, kept apart from the
+// flag wiring in openstackVMShowCmd.
+//
+// The listing is a table and a table has to leave things out. What somebody
+// needs when they have found the VM is the other half — the whole uuid, the
+// addresses rather than the best one, when it was last seen, and whether SSH
+// will work — and, having found it, the line to run next. Printing that line
+// rather than describing it is the difference between one step and three.
+func runOpenStackVMShow(cmd *cobra.Command, env cmdkit.Env, args []string, opts openstackVMShowOptions) error {
+	format, err := cmdkit.CommandOutput(cmd, opts.asJSON)
+	if err != nil {
+		return err
+	}
+	id, ok := access.NovaID(args[0])
+	if !ok {
+		return fmt.Errorf("show takes a Nova instance id or openstack:///<id>, not %q; "+
+			"run 'vctl openstack vm' to find it", args[0])
+	}
+	return env.WithStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+		ctx := cmd.Context()
+		// One reading answers both questions this command asks about
+		// deployments: which one --farm means, and what to call the one
+		// the VM turns out to be in.
+		cat, err := loadFarmCatalog(ctx, a, st)
+		if err != nil {
+			return err
+		}
+		deployment := ""
+		if opts.farm != "" {
+			resolved, err := cat.Resolve(opts.farm)
 			if err != nil {
 				return err
 			}
-			id, ok := access.NovaID(args[0])
-			if !ok {
-				return fmt.Errorf("show takes a Nova instance id or openstack:///<id>, not %q; "+
-					"run 'vctl openstack vm' to find it", args[0])
-			}
-			return env.WithStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
-				ctx := cmd.Context()
-				// One reading answers both questions this command asks about
-				// deployments: which one --farm means, and what to call the one
-				// the VM turns out to be in.
-				cat, err := loadFarmCatalog(ctx, a, st)
-				if err != nil {
-					return err
-				}
-				deployment := ""
-				if farm != "" {
-					resolved, err := cat.Resolve(farm)
-					if err != nil {
-						return err
-					}
-					deployment = resolved.ID
-				}
-				v, err := OneVM(ctx, st, id, deployment)
-				if err != nil {
-					return err
-				}
-				// The sibling `openstack host <name>` exports; a VM described in
-				// full is the same contract, and store.Instance already carries
-				// its wire tags.
-				if format != cmdkit.OutputTable {
-					return cmdkit.WriteStructured(format, v)
-				}
-				// The palette here covers one VM, so its own networks stay
-				// told apart; farm-wide color agreement is the browser's job,
-				// where the farm is on screen to agree with.
-				renderVMShow(os.Stdout, v, cat.Names(), operatorNetworks(),
-					newNetPalette([]store.Instance{v}), time.Now())
-				return nil
-			})
-		},
-	}
-	cmd.Flags().StringVar(&farm, "farm", "", "deployment holding the VM, when its id is in more than one")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
-	cmdkit.RegisterCompletion(cmd, "farm", CompleteFarm(env))
-	return cmdkit.SupportsStructuredOutput(cmd)
+			deployment = resolved.ID
+		}
+		v, err := OneVM(ctx, st, id, deployment)
+		if err != nil {
+			return err
+		}
+		// The sibling `openstack host <name>` exports; a VM described in
+		// full is the same contract, and store.Instance already carries
+		// its wire tags.
+		if format != cmdkit.OutputTable {
+			return cmdkit.WriteStructured(format, v)
+		}
+		// The palette here covers one VM, so its own networks stay
+		// told apart; farm-wide color agreement is the browser's job,
+		// where the farm is on screen to agree with.
+		renderVMShow(os.Stdout, v, cat.Names(), operatorNetworks(),
+			newNetPalette([]store.Instance{v}), time.Now())
+		return nil
+	})
 }
 
 func renderVMShow(w io.Writer, v store.Instance, farms map[string]string, nets []string, pal netPalette, now time.Time) {

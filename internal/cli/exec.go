@@ -29,6 +29,7 @@ func ChildExitCode(err error) (int, bool) {
 	return exitErr.Code, true
 }
 
+// execCmd builds the exec command; the body is runExec.
 func execCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "exec -- <command> [args...]",
@@ -40,48 +41,54 @@ vctl renews or re-authenticates the token while the child process is alive.
   vctl exec -- env | grep VAULT`,
 		DisableFlagParsing: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return fmt.Errorf("missing command: vctl exec -- <command>")
-			}
-			a, err := env.App()
-			if err != nil {
-				return err
-			}
-			parent := cmd.Context()
-			if err := a.EnsureLogin(parent); err != nil {
-				return err
-			}
-
-			// Keep the token alive while the child process runs.
-			ctx, cancel := context.WithCancel(parent)
-			defer cancel()
-			go agent.Keepalive(ctx, a)
-
-			child := exec.CommandContext(parent, args[0], args[1:]...)
-			child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
-			child.Env = append(os.Environ(),
-				"VAULT_ADDR="+a.Cfg.VaultAddr,
-				"VAULT_TOKEN="+a.Vault.Token(),
-			)
-			// Let the child process receive SIGINT (^C at the terminal goes to the
-			// whole foreground group). signal.Ignore sets SIG_IGN, which the child
-			// inherits across exec and keeps — so a plain `sh`/`sleep`/python child
-			// would ignore ^C too, the opposite of the intent. signal.Notify only
-			// detaches vctl's own handler: the child inherits the default
-			// disposition and terminates on ^C, while vctl swallows it here rather
-			// than dying and orphaning the child.
-			sigint := make(chan os.Signal, 1)
-			signal.Notify(sigint, os.Interrupt)
-			defer signal.Stop(sigint)
-
-			if err := child.Run(); err != nil {
-				if ee, ok := err.(*exec.ExitError); ok {
-					return &CommandExitError{Code: ee.ExitCode()}
-				}
-				return err
-			}
-			return nil
+			return runExec(cmd, env, args)
 		},
 	}
 	return cmd
+}
+
+// runExec runs the child with VAULT_ADDR and VAULT_TOKEN injected, keeping
+// the token alive for as long as the child lives.
+func runExec(cmd *cobra.Command, env cmdkit.Env, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("missing command: vctl exec -- <command>")
+	}
+	a, err := env.App()
+	if err != nil {
+		return err
+	}
+	parent := cmd.Context()
+	if err := a.EnsureLogin(parent); err != nil {
+		return err
+	}
+
+	// Keep the token alive while the child process runs.
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	go agent.Keepalive(ctx, a)
+
+	child := exec.CommandContext(parent, args[0], args[1:]...)
+	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
+	child.Env = append(os.Environ(),
+		"VAULT_ADDR="+a.Cfg.VaultAddr,
+		"VAULT_TOKEN="+a.Vault.Token(),
+	)
+	// Let the child process receive SIGINT (^C at the terminal goes to the
+	// whole foreground group). signal.Ignore sets SIG_IGN, which the child
+	// inherits across exec and keeps — so a plain `sh`/`sleep`/python child
+	// would ignore ^C too, the opposite of the intent. signal.Notify only
+	// detaches vctl's own handler: the child inherits the default
+	// disposition and terminates on ^C, while vctl swallows it here rather
+	// than dying and orphaning the child.
+	sigint := make(chan os.Signal, 1)
+	signal.Notify(sigint, os.Interrupt)
+	defer signal.Stop(sigint)
+
+	if err := child.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return &CommandExitError{Code: ee.ExitCode()}
+		}
+		return err
+	}
+	return nil
 }

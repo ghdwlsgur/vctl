@@ -22,58 +22,64 @@ func statusCmd(env cmdkit.Env) *cobra.Command {
 		Short: "Check login and connection status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return env.WithApp(func(a *app.App) error {
-				ctx := cmd.Context()
-				ui.Section(os.Stdout, "vctl status")
-				rows := []ui.KV{
-					{Key: "Vault", Value: a.Cfg.VaultAddr},
-					authMethodRow(ctx, a),
-				}
-				tokenRow, authenticated := tokenStatus(ctx, a)
-				rows = append(rows, tokenRow)
-				if !authenticated {
-					// Still report the cache: whether host lookup would survive an
-					// outage is exactly what someone runs `vctl status` to find out,
-					// and it does not depend on being logged in.
-					rows = append(rows, cacheStatusRow(a))
-					ui.KVs(os.Stdout, rows)
-					return nil
-				}
-				ca, err := a.Vault.SSHCAPublicKey(ctx)
-				if err != nil {
-					rows = append(rows, ui.KV{Key: "SSH CA", Value: "read failed (" + err.Error() + ")", State: ui.StateFail})
-				} else {
-					rows = append(rows, ui.KV{Key: "SSH CA", Value: fmt.Sprintf("OK (%.40s...)", ca), State: ui.StateOK})
-				}
-				st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
-				if err != nil {
-					rows = append(rows, ui.KV{Key: "Inventory DB", Value: "connection failed (" + err.Error() + ")", State: ui.StateFail})
-					rows = append(rows, cacheStatusRow(a))
-					ui.KVs(os.Stdout, rows)
-					return nil
-				}
-				defer st.Close()
-				servers, err := st.ListWithStatus(ctx, "")
-				if err != nil {
-					rows = append(rows, ui.KV{Key: "Inventory DB", Value: "query failed (" + err.Error() + ")", State: ui.StateFail})
-					rows = append(rows, cacheStatusRow(a))
-					ui.KVs(os.Stdout, rows)
-					return nil
-				}
-				rows = append(rows, ui.KV{Key: "Inventory DB", Value: fmt.Sprintf("OK · %d hosts", len(servers)), State: ui.StateOK})
-				agents := summarizeAgents(servers, time.Now())
-				agentState := agents.State()
-				managed := agents.Reporting + agents.Stale
-				rows = append(rows, ui.KV{
-					Key:   "Node agents",
-					State: agentState,
-					Raw:   fmt.Sprintf("%s  %s", ui.Badge(agentState, agents.Text()), ui.Bar(agents.Reporting, managed, 12)),
-				})
-				rows = append(rows, cacheStatusRow(a))
-				ui.KVs(os.Stdout, rows)
-				return nil
+				return runStatus(cmd.Context(), a)
 			})
 		},
 	}
+}
+
+// runStatus prints the health rows: Vault, auth identity, token, SSH CA,
+// inventory DB, node agents, and the local cache. It reports and never
+// prompts; a failed check becomes a row, not an exit.
+func runStatus(ctx context.Context, a *app.App) error {
+	ui.Section(os.Stdout, "vctl status")
+	rows := []ui.KV{
+		{Key: "Vault", Value: a.Cfg.VaultAddr},
+		authMethodRow(ctx, a),
+	}
+	tokenRow, authenticated := tokenStatus(ctx, a)
+	rows = append(rows, tokenRow)
+	if !authenticated {
+		// Still report the cache: whether host lookup would survive an
+		// outage is exactly what someone runs `vctl status` to find out,
+		// and it does not depend on being logged in.
+		rows = append(rows, cacheStatusRow(a))
+		ui.KVs(os.Stdout, rows)
+		return nil
+	}
+	ca, err := a.Vault.SSHCAPublicKey(ctx)
+	if err != nil {
+		rows = append(rows, ui.KV{Key: "SSH CA", Value: "read failed (" + err.Error() + ")", State: ui.StateFail})
+	} else {
+		rows = append(rows, ui.KV{Key: "SSH CA", Value: fmt.Sprintf("OK (%.40s...)", ca), State: ui.StateOK})
+	}
+	st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
+	if err != nil {
+		rows = append(rows, ui.KV{Key: "Inventory DB", Value: "connection failed (" + err.Error() + ")", State: ui.StateFail})
+		rows = append(rows, cacheStatusRow(a))
+		ui.KVs(os.Stdout, rows)
+		return nil
+	}
+	defer st.Close()
+	servers, err := st.ListWithStatus(ctx, "")
+	if err != nil {
+		rows = append(rows, ui.KV{Key: "Inventory DB", Value: "query failed (" + err.Error() + ")", State: ui.StateFail})
+		rows = append(rows, cacheStatusRow(a))
+		ui.KVs(os.Stdout, rows)
+		return nil
+	}
+	rows = append(rows, ui.KV{Key: "Inventory DB", Value: fmt.Sprintf("OK · %d hosts", len(servers)), State: ui.StateOK})
+	agents := summarizeAgents(servers, time.Now())
+	agentState := agents.State()
+	managed := agents.Reporting + agents.Stale
+	rows = append(rows, ui.KV{
+		Key:   "Node agents",
+		State: agentState,
+		Raw:   fmt.Sprintf("%s  %s", ui.Badge(agentState, agents.Text()), ui.Bar(agents.Reporting, managed, 12)),
+	})
+	rows = append(rows, cacheStatusRow(a))
+	ui.KVs(os.Stdout, rows)
+	return nil
 }
 
 type agentSummary struct {

@@ -56,9 +56,10 @@ type farmDeclareStore interface {
 
 var _ farmDeclareStore = (*store.Store)(nil)
 
+// openstackFarmNameCmd wires `openstack farm name`; the body is
+// runOpenStackFarmName.
 func openstackFarmNameCmd(env cmdkit.Env) *cobra.Command {
-	var region string
-	var clearRegion bool
+	var opts openstackFarmNameOptions
 	cmd := &cobra.Command{
 		Use:   "name [deployment] [name]",
 		Short: "Give a deployment a name people can read",
@@ -73,55 +74,66 @@ func openstackFarmNameCmd(env cmdkit.Env) *cobra.Command {
 		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmdkit.WithStorePort(env, cmd.Context(), true, func(a *app.App, st farmDeclareStore) error {
-				ctx := cmd.Context()
-				farms, ok, err := farmChoicesForPick(ctx, a, st)
-				if err != nil || !ok {
-					return err
-				}
-				id, name := "", ""
-				if len(args) > 0 {
-					id = args[0]
-				}
-				if len(args) > 1 {
-					name = args[1]
-				}
-				id, name, region, err = resolveFarmName(farms, id, name, region)
-				if err != nil {
-					return err
-				}
-				// nil is "leave whatever is recorded". An omitted --region on a
-				// command that reads as a rename used to write an empty one and
-				// drop the region silently; removing one is its own flag.
-				//
-				// The interactive form asks for a region, so what it collected
-				// is an answer either way.
-				//
-				// Anything non-empty is an answer, whether it came from the flag
-				// or from the prompt the interactive form shows.
-				var write *string
-				if clearRegion {
-					empty := ""
-					write = &empty
-				} else if region != "" {
-					write = &region
-				}
-				if err := st.SetDeploymentName(ctx, id, name, write); err != nil {
-					return err
-				}
-				// The name is what every listing leads with and what shell
-				// completion offers, so a stored reading kept past this one
-				// would go on offering the old name — to the person who just
-				// changed it.
-				forgetReadings(ctx, a, st)
-				ui.Successf(os.Stdout, "%s is now %q", id, name)
-				return nil
+				return runOpenStackFarmName(cmd.Context(), a, st, args, opts)
 			})
 		},
 	}
-	cmd.Flags().StringVar(&region, "region", "", "the deployment's region, if it has one worth recording")
-	cmd.Flags().BoolVar(&clearRegion, "clear-region", false, "remove the recorded region instead of keeping it")
+	cmd.Flags().StringVar(&opts.region, "region", "", "the deployment's region, if it has one worth recording")
+	cmd.Flags().BoolVar(&opts.clearRegion, "clear-region", false, "remove the recorded region instead of keeping it")
 	cmd.MarkFlagsMutuallyExclusive("region", "clear-region")
 	return cmd
+}
+
+// openstackFarmNameOptions is the bound flag set of `openstack farm name`.
+type openstackFarmNameOptions struct {
+	region      string
+	clearRegion bool
+}
+
+// runOpenStackFarmName is the body of `openstack farm name`, kept apart from
+// the flag wiring in openstackFarmNameCmd.
+func runOpenStackFarmName(ctx context.Context, a *app.App, st farmDeclareStore, args []string, opts openstackFarmNameOptions) error {
+	farms, ok, err := farmChoicesForPick(ctx, a, st)
+	if err != nil || !ok {
+		return err
+	}
+	id, name := "", ""
+	if len(args) > 0 {
+		id = args[0]
+	}
+	if len(args) > 1 {
+		name = args[1]
+	}
+	id, name, opts.region, err = resolveFarmName(farms, id, name, opts.region)
+	if err != nil {
+		return err
+	}
+	// nil is "leave whatever is recorded". An omitted --region on a
+	// command that reads as a rename used to write an empty one and
+	// drop the region silently; removing one is its own flag.
+	//
+	// The interactive form asks for a region, so what it collected
+	// is an answer either way.
+	//
+	// Anything non-empty is an answer, whether it came from the flag
+	// or from the prompt the interactive form shows.
+	var write *string
+	if opts.clearRegion {
+		empty := ""
+		write = &empty
+	} else if opts.region != "" {
+		write = &opts.region
+	}
+	if err := st.SetDeploymentName(ctx, id, name, write); err != nil {
+		return err
+	}
+	// The name is what every listing leads with and what shell
+	// completion offers, so a stored reading kept past this one
+	// would go on offering the old name — to the person who just
+	// changed it.
+	forgetReadings(ctx, a, st)
+	ui.Successf(os.Stdout, "%s is now %q", id, name)
+	return nil
 }
 
 // farmChoice is what the picker shows, which is now the domain's own farm.
