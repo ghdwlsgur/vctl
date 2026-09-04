@@ -17,6 +17,17 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Namespace and ConfigMapName identify the one ConfigMap this package
+// renders and the write path edits. They are here rather than in the CLI
+// because the renderer bakes them into the repo file: the file and the live
+// object have to name the same thing, and one constant each is how they do.
+const (
+	Namespace     = "dns-system"
+	ConfigMapName = "coredns-hosts"
 )
 
 // Record is one line of a hosts file: an address and the names that answer
@@ -52,6 +63,18 @@ func Lookup(text, hostname string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// RecordCount is how many records the zone files in data carry between them.
+// The write path compares it before and after a commit: a repo that held
+// records when the commit landed and holds none by the time it is projected
+// onto the cluster was emptied by something else, and is not projected.
+func RecordCount(data map[string]string) int {
+	n := 0
+	for _, text := range data {
+		n += len(Parse(text))
+	}
+	return n
 }
 
 // Add appends one record line. The caller has already decided the zone; this
@@ -203,66 +226,52 @@ func OrderedKeys(data map[string]string) []string {
 	return append(keys, extra...)
 }
 
-// ParseConfigMapYAML is the inverse of RenderConfigMapYAML: it recovers the
-// zone→content map from the repo file's text. It exists because the IaC repo
-// is the source of truth for a write — the edit is applied to what git holds,
-// not to a possibly-newer live ConfigMap — so the write path has to read the
-// repo file back into the same shape RenderConfigMapYAML emits.
-//
-// It parses only the shape this package writes: a `data:` block of `  <key>: |`
-// entries whose content lines are indented four spaces. Round-trip identity
-// (Render∘Parse and Parse∘Render on Render's own output) is asserted by test;
-// blank lines between blocks are the separators Render writes and are dropped,
-// which is lossless for hosts-file content (a blank line is not a record).
-func ParseConfigMapYAML(y string) map[string]string {
-	out := map[string]string{}
-	inData := false
-	key := ""
-	var buf []string
-	flush := func() {
-		if key == "" {
-			return
-		}
-		if len(buf) == 0 {
-			out[key] = ""
-			return
-		}
-		out[key] = strings.Join(buf, "\n") + "\n"
-	}
-	for _, line := range strings.Split(y, "\n") {
-		if !inData {
-			if strings.TrimRight(line, " ") == "data:" {
-				inData = true
-			}
-			continue
-		}
-		// A `  <key>: |` line opens a new block.
-		if k, ok := blockKey(line); ok {
-			flush()
-			key, buf = k, nil
-			continue
-		}
-		if content, ok := strings.CutPrefix(line, "    "); ok {
-			buf = append(buf, content)
-		}
-		// Anything else (a blank separator, or trailing document lines) is not
-		// content and is skipped — the block ends at the next key or EOF.
-	}
-	flush()
-	return out
+// configMapDoc is the part of the repo file that matters to a parse: enough
+// to prove it is the object this package edits, and the zone files.
+type configMapDoc struct {
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Name      string `yaml:"name"`
+		Namespace string `yaml:"namespace"`
+	} `yaml:"metadata"`
+	Data map[string]string `yaml:"data"`
 }
 
-// blockKey matches a `  <key>: |` line and returns the key.
-func blockKey(line string) (string, bool) {
-	rest, ok := strings.CutPrefix(line, "  ")
-	if !ok || strings.HasPrefix(rest, " ") {
-		return "", false // deeper indent is content, not a key
+// ParseConfigMapYAML recovers the zone→content map from the repo file. It is
+// the read half of the write path — the edit is applied to what git holds,
+// not to a possibly-newer live ConfigMap — so what it returns is what gets
+// committed and then projected onto the cluster.
+//
+// It is a real YAML parse rather than a match on the shape this package
+// writes, and it refuses anything that is not the coredns-hosts ConfigMap.
+// Both for the same reason: a repo file an operator has reformatted by hand
+// (`|-` for `|`, a quoted key, a different indent) must still read as the
+// records it holds. A parser that only knew one shape would read such a file
+// as *no* records, and the write path would then commit — and project onto
+// the cluster — a file with every record gone.
+//
+// Zone content is normalised to end in exactly one newline (an empty zone to
+// the empty string), which is what RenderConfigMapYAML emits, so a parse of
+// a rendered file round-trips byte for byte and a parse of a hand-edited file
+// renders canonically.
+func ParseConfigMapYAML(y string) (map[string]string, error) {
+	var doc configMapDoc
+	if err := yaml.Unmarshal([]byte(y), &doc); err != nil {
+		return nil, fmt.Errorf("not valid YAML: %w", err)
 	}
-	name, ok := strings.CutSuffix(rest, ": |")
-	if !ok || name == "" || strings.ContainsAny(name, " \t") {
-		return "", false
+	if doc.Kind != "ConfigMap" || doc.Metadata.Name != ConfigMapName || doc.Metadata.Namespace != Namespace {
+		return nil, fmt.Errorf("not the %s/%s ConfigMap (got kind %q, %s/%s)",
+			Namespace, ConfigMapName, doc.Kind, doc.Metadata.Namespace, doc.Metadata.Name)
 	}
-	return name, true
+	out := make(map[string]string, len(doc.Data))
+	for k, v := range doc.Data {
+		if strings.TrimSpace(v) == "" {
+			out[k] = ""
+			continue
+		}
+		out[k] = strings.TrimRight(v, "\n") + "\n"
+	}
+	return out, nil
 }
 
 // RenderConfigMapYAML reproduces the repo's configmap-hosts.yaml exactly as
@@ -271,21 +280,21 @@ func blockKey(line string) (string, bool) {
 // formatting.
 func RenderConfigMapYAML(data map[string]string) string {
 	var b strings.Builder
-	b.WriteString(`# ============================================================
-# ConfigMap: coredns-hosts
+	fmt.Fprintf(&b, `# ============================================================
+# ConfigMap: %s
 # API가 수정하는 대상 — 레코드 추가/삭제/조회
 # 키 이름 = 파일명으로 /etc/coredns/hosts/ 에 마운트됨
 # ============================================================
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: coredns-hosts
-  namespace: dns-system
+  name: %s
+  namespace: %s
   labels:
     app.kubernetes.io/name: coredns
     app.kubernetes.io/component: dns-records
 data:
-`)
+`, ConfigMapName, ConfigMapName, Namespace)
 	for i, k := range OrderedKeys(data) {
 		if i > 0 {
 			b.WriteString("\n")
