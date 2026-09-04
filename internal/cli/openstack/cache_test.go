@@ -386,7 +386,7 @@ func TestChangingADeploymentDropsTheStoredReading(t *testing.T) {
 // completing to the old name for a day.
 func TestEveryCommandThatChangesADeploymentForgetsTheReading(t *testing.T) {
 	for _, tc := range []struct{ file, fn string }{
-		{"farm.go", "openstackFarmNameCmd"},
+		{"farm.go", "runOpenStackFarmName"},
 		{"farm.go", "openstackFarmStateCmd"},
 		{"reconcile.go", "runReconcile"},
 	} {

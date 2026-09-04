@@ -53,12 +53,9 @@ func inlineDashboardScripts() []byte {
 
 // --- command ---
 
+// wgServeCmd wires the dashboard flags; the body is runWGServe.
 func wgServeCmd(env cmdkit.Env) *cobra.Command {
-	var (
-		addr        string
-		intervalSec int
-		timeoutSec  int
-	)
+	var opts wgServeOptions
 	cmd := &cobra.Command{
 		Use:   "serve [host...]",
 		Short: "Web dashboard with live animated traffic flow over the WG topology",
@@ -66,57 +63,67 @@ func wgServeCmd(env cmdkit.Env) *cobra.Command {
 as a graph, with per-tunnel traffic animated as flowing packets (speed and
 density follow live rx/tx rates polled over SSH). The topology comes from the
 DB (run 'vctl wg sync' first); rates are read live and never written back.`,
-		// Three pieces, wired: what is drawn (wg_dashboard.go), what moves on it
-		// (wg_poller.go), and what serves it (wg_dashboard_http.go). What is left
-		// here is the part that genuinely belongs to a command — flags, the store
-		// it all hangs off, and shutdown.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			a, err := env.App()
-			if err != nil {
-				return err
-			}
-			st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
-			if err != nil {
-				return err
-			}
-			defer st.Close()
-
-			warn := func(format string, args ...any) { ui.Warnf(os.Stderr, format, args...) }
-			snap, err := loadDashboardSnapshot(ctx, st, warn)
-			if err != nil {
-				return err
-			}
-
-			targets, err := wgPollTargets(ctx, a, st, args, warn)
-			if err != nil {
-				return err
-			}
-			interval := time.Duration(intervalSec) * time.Second
-			live := newLivePoller(cmdkit.NewConnector(a).Monitor(), targets, snap.EdgeFor,
-				interval, time.Duration(timeoutSec)*time.Second)
-			stop, done := live.Start(ctx)
-			defer stop()
-
-			srv := &http.Server{Addr: addr, Handler: dashboardMux(snap, live.State(), interval, done)}
-			go func() {
-				<-ctx.Done()
-				shutdownCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
-				defer c()
-				srv.Shutdown(shutdownCtx)
-			}()
-			ui.Successf(os.Stderr, "wg dashboard: http://%s  (%d gateways, every %s; Ctrl-C to stop)",
-				displayAddr(addr), live.Gateways(), interval)
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				return err
-			}
-			return nil
+			return runWGServe(cmd, env, args, opts)
 		},
 	}
-	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8420", "listen address")
-	cmd.Flags().IntVar(&intervalSec, "interval", 2, "poll interval (seconds)")
-	cmd.Flags().IntVar(&timeoutSec, "timeout", 10, "per-poll SSH timeout (seconds)")
+	cmd.Flags().StringVar(&opts.addr, "addr", "127.0.0.1:8420", "listen address")
+	cmd.Flags().IntVar(&opts.intervalSec, "interval", 2, "poll interval (seconds)")
+	cmd.Flags().IntVar(&opts.timeoutSec, "timeout", 10, "per-poll SSH timeout (seconds)")
 	return cmdkit.Gate(cmd, "wg")
+}
+
+type wgServeOptions struct {
+	addr        string
+	intervalSec int
+	timeoutSec  int
+}
+
+// Three pieces, wired: what is drawn (wg_dashboard.go), what moves on it
+// (wg_poller.go), and what serves it (wg_dashboard_http.go). What is left
+// here is the part that genuinely belongs to a command — flags, the store
+// it all hangs off, and shutdown.
+func runWGServe(cmd *cobra.Command, env cmdkit.Env, args []string, opts wgServeOptions) error {
+	ctx := cmd.Context()
+	a, err := env.App()
+	if err != nil {
+		return err
+	}
+	st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	warn := func(format string, args ...any) { ui.Warnf(os.Stderr, format, args...) }
+	snap, err := loadDashboardSnapshot(ctx, st, warn)
+	if err != nil {
+		return err
+	}
+
+	targets, err := wgPollTargets(ctx, a, st, args, warn)
+	if err != nil {
+		return err
+	}
+	interval := time.Duration(opts.intervalSec) * time.Second
+	live := newLivePoller(cmdkit.NewConnector(a).Monitor(), targets, snap.EdgeFor,
+		interval, time.Duration(opts.timeoutSec)*time.Second)
+	stop, done := live.Start(ctx)
+	defer stop()
+
+	srv := &http.Server{Addr: opts.addr, Handler: dashboardMux(snap, live.State(), interval, done)}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		srv.Shutdown(shutdownCtx)
+	}()
+	ui.Successf(os.Stderr, "wg dashboard: http://%s  (%d gateways, every %s; Ctrl-C to stop)",
+		displayAddr(opts.addr), live.Gateways(), interval)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 // displayAddr turns a bind address into a clickable one (":8420" → "127.0.0.1:8420").

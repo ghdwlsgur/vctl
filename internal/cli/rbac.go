@@ -442,6 +442,7 @@ func rbacWhoamiCmd(env cmdkit.Env) *cobra.Command {
 	}, "whoami")
 }
 
+// rbacCheckCmd wires `rbac check`; the body is runRBACCheck.
 func rbacCheckCmd(env cmdkit.Env) *cobra.Command {
 	return cmdkit.Gate(&cobra.Command{
 		Use:   "check <command>",
@@ -450,46 +451,52 @@ func rbacCheckCmd(env cmdkit.Env) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			return env.WithStore(ctx, false, func(a *app.App, st *store.Store) error {
-				want := args[0]
-				info, err := a.Vault.LookupToken(ctx)
-				if err != nil {
-					return err
-				}
-				if authz.HasAdminPolicy(info.Policies, a.Cfg.AdminPolicies) {
-					fmt.Fprintf(os.Stdout, "%s %q (admin bypass)\n", ui.OK("allow"), want)
-					return nil
-				}
-				// The class decides the answer, so it must come from the catalog,
-				// not from guessing. An unknown name used to fall through to the
-				// grant lookup and report "deny" for commands that were never
-				// gated at all.
-				class, isGated := authz.ClassOf(want)
-				if !isGated {
-					fmt.Fprintf(os.Stdout, "%s %q (not RBAC-gated)\n", ui.OK("allow"), want)
-					return nil
-				}
-				switch class {
-				case authz.ClassRead:
-					fmt.Fprintf(os.Stdout, "%s %q (read — default allow)\n", ui.OK("allow"), want)
-					return nil
-				case authz.ClassAdmin:
-					fmt.Fprintf(os.Stdout, "%s %q (admin-only — needs %s)\n",
-						ui.Fail("deny"), want, strings.Join(a.Cfg.AdminPolicies, " or "))
-					return nil
-				}
-				cmds, err := st.RBACCommandsForUser(ctx, info.Identity)
-				if err != nil {
-					return err
-				}
-				if cmds["*"] || cmds[want] {
-					fmt.Fprintf(os.Stdout, "%s %q (granted)\n", ui.OK("allow"), want)
-				} else {
-					fmt.Fprintf(os.Stdout, "%s %q (no grant)\n", ui.Fail("deny"), want)
-				}
-				return nil
+				return runRBACCheck(ctx, a, st, args)
 			})
 		},
 	}, "check")
+}
+
+// runRBACCheck answers whether the caller may run args[0]: admin bypass first,
+// then the command's class, then the grant lookup.
+func runRBACCheck(ctx context.Context, a *app.App, st *store.Store, args []string) error {
+	want := args[0]
+	info, err := a.Vault.LookupToken(ctx)
+	if err != nil {
+		return err
+	}
+	if authz.HasAdminPolicy(info.Policies, a.Cfg.AdminPolicies) {
+		fmt.Fprintf(os.Stdout, "%s %q (admin bypass)\n", ui.OK("allow"), want)
+		return nil
+	}
+	// The class decides the answer, so it must come from the catalog,
+	// not from guessing. An unknown name used to fall through to the
+	// grant lookup and report "deny" for commands that were never
+	// gated at all.
+	class, isGated := authz.ClassOf(want)
+	if !isGated {
+		fmt.Fprintf(os.Stdout, "%s %q (not RBAC-gated)\n", ui.OK("allow"), want)
+		return nil
+	}
+	switch class {
+	case authz.ClassRead:
+		fmt.Fprintf(os.Stdout, "%s %q (read — default allow)\n", ui.OK("allow"), want)
+		return nil
+	case authz.ClassAdmin:
+		fmt.Fprintf(os.Stdout, "%s %q (admin-only — needs %s)\n",
+			ui.Fail("deny"), want, strings.Join(a.Cfg.AdminPolicies, " or "))
+		return nil
+	}
+	cmds, err := st.RBACCommandsForUser(ctx, info.Identity)
+	if err != nil {
+		return err
+	}
+	if cmds["*"] || cmds[want] {
+		fmt.Fprintf(os.Stdout, "%s %q (granted)\n", ui.OK("allow"), want)
+	} else {
+		fmt.Fprintf(os.Stdout, "%s %q (no grant)\n", ui.Fail("deny"), want)
+	}
+	return nil
 }
 
 func knownCommands() string {

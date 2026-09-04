@@ -482,6 +482,7 @@ OIDC 설정은 [deploy/vault/oidc-phase2.md](deploy/vault/oidc-phase2.md)에 문
 make build
 make test
 make vet
+make lint
 make trivy
 ```
 

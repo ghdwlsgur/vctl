@@ -22,20 +22,15 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
 
-// wireguard.DumpCmd is the lighter poll command for monitoring — just the runtime dump
-// (public data), no `ip addr`. sudo first, plain fallback for root logins.
-
 // monTarget is a resolved gateway to poll.
 type monTarget struct {
 	name string
 	tgt  *sshc.Target
 }
 
+// wgMonitorCmd wires the monitor flags; the body is runWGMonitor.
 func wgMonitorCmd(env cmdkit.Env) *cobra.Command {
-	var (
-		intervalSec, timeoutSec int
-		syncFirst, all          bool
-	)
+	var opts wgMonitorOptions
 	cmd := &cobra.Command{
 		Use:   "monitor [host...]",
 		Short: "Live WireGuard traffic monitor (per-tunnel throughput, handshakes)",
@@ -47,62 +42,73 @@ does not write to the DB. Non-interactive stdout prints a single snapshot.
 --sync runs one collection into the DB before monitoring (so the very first run
 has data). Because that writes, it additionally requires the 'wg-sync' grant.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			a, err := env.App()
-			if err != nil {
-				return err
-			}
-			st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
-			if err != nil {
-				return err
-			}
-			defer st.Close()
-
-			hosts, err := wgMonitorHosts(ctx, st, args, all)
-			if err != nil {
-				return err
-			}
-			if len(hosts) == 0 {
-				return fmt.Errorf("no gateways to monitor: pass host names, --all, or run 'vctl wg sync' first")
-			}
-			targets := make([]monTarget, 0, len(hosts))
-			for i := range hosts {
-				tgt, err := access.BuildTarget(ctx, st, &hosts[i], a.Cfg.SSHDirectFirst)
-				if err != nil {
-					ui.Warnf(os.Stderr, "%s: %v", hosts[i].Hostname, err)
-					continue
-				}
-				targets = append(targets, monTarget{name: hosts[i].Hostname, tgt: tgt})
-			}
-			if len(targets) == 0 {
-				return fmt.Errorf("no reachable gateways")
-			}
-
-			conn := cmdkit.NewConnector(a)
-			interval := time.Duration(intervalSec) * time.Second
-			timeout := time.Duration(timeoutSec) * time.Second
-
-			if syncFirst {
-				if err := wgSyncBeforeMonitor(ctx, a, conn, targets, timeout); err != nil {
-					return err
-				}
-			}
-
-			if !term.IsTerminal(int(os.Stdout.Fd())) {
-				return wgMonitorSnapshot(ctx, conn, targets, timeout)
-			}
-			// The TUI polls on a timer, so it audits transitions rather than
-			// every tick. The one-shot paths above keep auditing each run.
-			m := newMonitorModel(ctx, conn.Monitor(), targets, interval, timeout)
-			_, err = tea.NewProgram(m, tea.WithOutput(os.Stderr), tea.WithInput(os.Stdin)).Run()
-			return err
+			return runWGMonitor(cmd, env, args, opts)
 		},
 	}
-	cmd.Flags().IntVar(&intervalSec, "interval", 2, "poll interval (seconds)")
-	cmd.Flags().IntVar(&timeoutSec, "timeout", 10, "per-poll SSH timeout (seconds)")
-	cmd.Flags().BoolVar(&syncFirst, "sync", false, "collect into the DB once before monitoring (needs the wg-sync grant)")
-	cmd.Flags().BoolVar(&all, "all", false, "with no host args, target every inventory host")
+	cmd.Flags().IntVar(&opts.intervalSec, "interval", 2, "poll interval (seconds)")
+	cmd.Flags().IntVar(&opts.timeoutSec, "timeout", 10, "per-poll SSH timeout (seconds)")
+	cmd.Flags().BoolVar(&opts.syncFirst, "sync", false, "collect into the DB once before monitoring (needs the wg-sync grant)")
+	cmd.Flags().BoolVar(&opts.all, "all", false, "with no host args, target every inventory host")
 	return cmdkit.Gate(cmd, "wg")
+}
+
+type wgMonitorOptions struct {
+	intervalSec, timeoutSec int
+	syncFirst, all          bool
+}
+
+// runWGMonitor resolves the gateways, optionally collects them into the DB
+// first, then prints one snapshot (non-interactive stdout) or runs the TUI.
+func runWGMonitor(cmd *cobra.Command, env cmdkit.Env, args []string, opts wgMonitorOptions) error {
+	ctx := cmd.Context()
+	a, err := env.App()
+	if err != nil {
+		return err
+	}
+	st, err := a.OpenStore(ctx, app.PurposeInventoryRead)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	hosts, err := wgMonitorHosts(ctx, st, args, opts.all)
+	if err != nil {
+		return err
+	}
+	if len(hosts) == 0 {
+		return fmt.Errorf("no gateways to monitor: pass host names, --all, or run 'vctl wg sync' first")
+	}
+	targets := make([]monTarget, 0, len(hosts))
+	for i := range hosts {
+		tgt, err := access.BuildTarget(ctx, st, &hosts[i], a.Cfg.SSHDirectFirst)
+		if err != nil {
+			ui.Warnf(os.Stderr, "%s: %v", hosts[i].Hostname, err)
+			continue
+		}
+		targets = append(targets, monTarget{name: hosts[i].Hostname, tgt: tgt})
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("no reachable gateways")
+	}
+
+	conn := cmdkit.NewConnector(a)
+	interval := time.Duration(opts.intervalSec) * time.Second
+	timeout := time.Duration(opts.timeoutSec) * time.Second
+
+	if opts.syncFirst {
+		if err := wgSyncBeforeMonitor(ctx, a, conn, targets, timeout); err != nil {
+			return err
+		}
+	}
+
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return wgMonitorSnapshot(ctx, conn, targets, timeout)
+	}
+	// The TUI polls on a timer, so it audits transitions rather than
+	// every tick. The one-shot paths above keep auditing each run.
+	m := newMonitorModel(ctx, conn.Monitor(), targets, interval, timeout)
+	_, err = tea.NewProgram(m, tea.WithOutput(os.Stderr), tea.WithInput(os.Stdin)).Run()
+	return err
 }
 
 // wgSyncBeforeMonitor runs one collection of the monitor targets into the DB,
@@ -212,9 +218,6 @@ func pollHost(ctx context.Context, mon *access.Monitor, t monTarget, timeout tim
 }
 
 // --- rate math (pure, testable) ---
-
-// computeRate returns bytes/sec between two samples, guarding against counter
-// resets (restart) and zero/negative time deltas.
 
 // humanBytes formats a byte count with binary units.
 func humanBytes(n int64) string {

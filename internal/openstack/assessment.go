@@ -228,16 +228,38 @@ func Assess(in Input) Assessment {
 	}
 	a.Versions.ByRelease = map[string]int{}
 
+	vmsByHypervisor := assessVMs(in.Instances, &a)
+	byRole := assessHosts(in, &a)
+	assessRoles(byRole, vmsByHypervisor, &a)
+	sort.Strings(a.Membership.Unsettled)
+	aggregateAnomalies(in, &a, now)
+	finalizeAnomalies(&a)
+	return a
+}
+
+// assessVMs counts the deployment's VMs — live ones per hypervisor, missing
+// ones as a health fact — and returns the per-hypervisor tally the role
+// sections attribute to each host.
+func assessVMs(instances []store.Instance, a *Assessment) map[string]int {
 	vmsByHypervisor := map[string]int{}
-	for _, v := range in.Instances {
+	for _, v := range instances {
 		if v.MissingSince != nil {
 			a.Health.VMsMissing++
 			continue
 		}
 		vmsByHypervisor[v.HypervisorHostname]++
 	}
-	a.Architecture.VMs = len(in.Instances) - a.Health.VMsMissing
+	a.Architecture.VMs = len(instances) - a.Health.VMsMissing
+	return vmsByHypervisor
+}
 
+// assessHosts walks the hosts once and files everything a single host can
+// say: its membership confidence, whether it is down, its release, the
+// dashboard and CA-trust facts it carries, and the roles it holds — returned
+// grouped by role for the sections. Per-host anomalies (a membership
+// conflict, a CA-trust disagreement) are raised here; the aggregate ones
+// wait for aggregateAnomalies.
+func assessHosts(in Input, a *Assessment) map[string][]store.OpenStackHost {
 	byRole := map[string][]store.OpenStackHost{}
 	for _, h := range in.Hosts {
 		a.Membership.Total++
@@ -285,7 +307,14 @@ func Assess(in Input) Assessment {
 		})
 	}
 	a.Architecture.Hosts = a.Membership.Total
+	return byRole
+}
 
+// assessRoles builds one section per role, in the fleet's role order, with
+// each host's release and VM count — and raises a RoleDown anomaly for a
+// host that holds a role with nothing running behind it. A host seen in an
+// earlier section is cross-referenced rather than described twice.
+func assessRoles(byRole map[string][]store.OpenStackHost, vmsByHypervisor map[string]int, a *Assessment) {
 	firstSeen := map[string]string{}
 	for _, role := range orderedRoles(byRole) {
 		hs := byRole[role]
@@ -314,8 +343,13 @@ func Assess(in Input) Assessment {
 		}
 		a.Architecture.Sections = append(a.Architecture.Sections, sec)
 	}
-	sort.Strings(a.Membership.Unsettled)
+}
 
+// aggregateAnomalies raises the anomalies that follow from the deployment as
+// a whole rather than from one host: release drift, the state of the last
+// reconcile, hosts the control plane knows that the inventory does not, and
+// VMs it has stopped listing.
+func aggregateAnomalies(in Input, a *Assessment, now time.Time) {
 	a.Versions.Drifting = len(a.Versions.ByRelease) > 1
 	if a.Versions.Drifting {
 		a.Anomalies = append(a.Anomalies, Anomaly{
@@ -356,7 +390,11 @@ func Assess(in Input) Assessment {
 			Detail: "the control plane no longer lists VMs it listed before",
 		})
 	}
+}
 
+// finalizeAnomalies marks what a declared state already accounts for and puts
+// the list in its reading order.
+func finalizeAnomalies(a *Assessment) {
 	// A declared state accounts for what follows from it. The anomalies stay —
 	// somebody marking a farm broken still needs to see what is broken about it,
 	// and hiding them would make the farm look healthy — but they stop being
@@ -380,7 +418,6 @@ func Assess(in Input) Assessment {
 		}
 		return a.Anomalies[i].Subject < a.Anomalies[j].Subject
 	})
-	return a
 }
 
 // caTrustRank orders the states by how much they should worry somebody, so a

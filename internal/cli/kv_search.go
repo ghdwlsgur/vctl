@@ -144,9 +144,9 @@ type kvSearchOutput struct {
 	Capped  bool     `json:"capped,omitempty"`
 }
 
+// kvSearchCmd wires `kv search`; the body is runKVSearch.
 func kvSearchCmd(env cmdkit.Env) *cobra.Command {
-	var under string
-	var limit int
+	var opts kvSearchOpts
 	cmd := &cobra.Command{
 		Use:   "search <word> [word...]",
 		Short: "Find secrets whose path contains every word",
@@ -162,52 +162,64 @@ is what you can see, with a note about how much you could not.
   vctl kv search oidc --under kv/teams/sre`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := cmdkit.RequestedOutput(cmd)
-			if err != nil {
-				return err
-			}
-			var terms []string
-			for _, a := range args {
-				if t := strings.TrimSpace(a); t != "" {
-					terms = append(terms, t)
-				}
-			}
-			if len(terms) == 0 {
-				return fmt.Errorf("give at least one word to search for")
-			}
-			if limit <= 0 {
-				return fmt.Errorf("--limit must be positive")
-			}
-			return withKV(env, cmd.Context(), func(a *app.App, kv kvReader) error {
-				root := kvRoot(a.Cfg)
-				if u := normalizeKVPath(under); u != "" {
-					root = u
-				}
-				walk, err := walkKV(cmd.Context(), kv, root, limit)
-				if err != nil {
-					return kvError(err, root)
-				}
-				matches := []string{}
-				for _, p := range walk.Secrets {
-					if matchesAllFold(p, terms) {
-						matches = append(matches, p)
-					}
-				}
-				if format != cmdkit.OutputTable {
-					return cmdkit.WriteStructured(format, kvSearchOutput{
-						Terms: terms, Under: root, Matches: matches,
-						Folders: walk.Folders, Denied: walk.Denied, Capped: walk.Capped,
-					})
-				}
-				renderKVSearch(os.Stdout, os.Stderr, terms, root, matches, walk)
-				return nil
-			})
+			return runKVSearch(cmd, env, args, opts)
 		},
 	}
-	cmd.Flags().StringVar(&under, "under", "", "start the walk here instead of at the mount root")
-	cmd.Flags().IntVar(&limit, "limit", kvWalkLimit, "stop after this many entries have been seen")
+	cmd.Flags().StringVar(&opts.under, "under", "", "start the walk here instead of at the mount root")
+	cmd.Flags().IntVar(&opts.limit, "limit", kvWalkLimit, "stop after this many entries have been seen")
 	cmdkit.RegisterCompletion(cmd, "under", completeKVPath(env))
 	return cmdkit.SupportsStructuredOutput(cmdkit.Gate(cmd, "kv"))
+}
+
+// kvSearchOpts are the flags a search takes.
+type kvSearchOpts struct {
+	under string
+	limit int
+}
+
+// runKVSearch is the body of `kv search`, kept apart from the flag wiring in
+// kvSearchCmd.
+func runKVSearch(cmd *cobra.Command, env cmdkit.Env, args []string, opts kvSearchOpts) error {
+	format, err := cmdkit.RequestedOutput(cmd)
+	if err != nil {
+		return err
+	}
+	var terms []string
+	for _, a := range args {
+		if t := strings.TrimSpace(a); t != "" {
+			terms = append(terms, t)
+		}
+	}
+	if len(terms) == 0 {
+		return fmt.Errorf("give at least one word to search for")
+	}
+	if opts.limit <= 0 {
+		return fmt.Errorf("--limit must be positive")
+	}
+	return withKV(env, cmd.Context(), func(a *app.App, kv kvReader) error {
+		root := kvRoot(a.Cfg)
+		if u := normalizeKVPath(opts.under); u != "" {
+			root = u
+		}
+		walk, err := walkKV(cmd.Context(), kv, root, opts.limit)
+		if err != nil {
+			return kvError(err, root)
+		}
+		matches := []string{}
+		for _, p := range walk.Secrets {
+			if matchesAllFold(p, terms) {
+				matches = append(matches, p)
+			}
+		}
+		if format != cmdkit.OutputTable {
+			return cmdkit.WriteStructured(format, kvSearchOutput{
+				Terms: terms, Under: root, Matches: matches,
+				Folders: walk.Folders, Denied: walk.Denied, Capped: walk.Capped,
+			})
+		}
+		renderKVSearch(os.Stdout, os.Stderr, terms, root, matches, walk)
+		return nil
+	})
 }
 
 // renderKVSearch prints the matches with the words that matched picked out, and

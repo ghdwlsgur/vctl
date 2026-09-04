@@ -45,10 +45,24 @@ const (
 	// a conflict means another writer landed between the read and the write,
 	// and the fix is to re-read and reapply — but not forever.
 	dnsWriteAttempts = 3
-	dnsVerifyEvery   = 3 * time.Second
+	// dnsVerifyStreak is how many consecutive polls must carry the record
+	// before it is called live. The fleet resolver is a VIP over several
+	// CoreDNS pods that each pick the ConfigMap up on their own kubelet sync,
+	// so for about a minute after a write one pod answers and the others do
+	// not — and a single lucky poll would call that done.
+	dnsVerifyStreak = 3
+)
+
+// The verify cadence is a pair of variables rather than constants so a test
+// can run the loop in milliseconds; production never changes them.
+var (
+	dnsVerifyEvery = 3 * time.Second
 	// Propagation is kubelet's ConfigMap sync (up to a minute) plus the hosts
 	// plugin's re-read; two minutes is patient enough to be a verdict.
 	dnsVerifyFor = 2 * time.Minute
+	// dnsResolve is the query the verification polls with; a test swaps in a
+	// scripted resolver.
+	dnsResolve = dnsResolveVia
 )
 
 func dnsCmd(env cmdkit.Env) *cobra.Command {
@@ -448,16 +462,22 @@ func dnsActor() string {
 }
 
 // dnsVerifyAnswers polls the fleet resolver until the record answers with the
-// address that was just registered — the same contract inject holds: OK on
-// screen means the thing actually works, not that an API call succeeded.
+// address that was just registered, dnsVerifyStreak times in a row — the same
+// contract inject holds: OK on screen means the thing actually works, not
+// that an API call succeeded, and not that one of several pods has caught up.
 func dnsVerifyAnswers(ctx context.Context, resolver, hostname, ip string) error {
 	ui.Infof(os.Stderr, "verifying against %s (records propagate within about a minute)…", resolver)
 	deadline := time.Now().Add(dnsVerifyFor)
+	streak := 0
 	for {
-		addrs, err := dnsResolveVia(ctx, resolver, hostname)
+		addrs, err := dnsResolve(ctx, resolver, hostname)
 		if err == nil && slices.Contains(addrs, ip) {
-			ui.Successf(os.Stdout, "%s answers with %s.", hostname, ip)
-			return nil
+			if streak++; streak >= dnsVerifyStreak {
+				ui.Successf(os.Stdout, "%s answers with %s.", hostname, ip)
+				return nil
+			}
+		} else {
+			streak = 0
 		}
 		if time.Now().After(deadline) {
 			got := strings.Join(addrs, ", ")
