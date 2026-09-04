@@ -1,6 +1,7 @@
 package openstack
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -83,7 +84,10 @@ type reconcileOptions struct {
 }
 
 // runReconcile is the body of `openstack reconcile`, kept apart from the flag
-// wiring in ReconcileCmd.
+// wiring in ReconcileCmd. It runs in phases that each answer one question:
+// which deployment the flags name, what the run asks the service for, how the
+// report is shown, and whether the run counts as a failure. Each phase is its
+// own function so the reasoning that belongs to it stays beside it.
 func runReconcile(cmd *cobra.Command, env cmdkit.Env, opts reconcileOptions) error {
 	format, err := cmdkit.CommandOutput(cmd, opts.asJSON)
 	if err != nil {
@@ -106,65 +110,13 @@ func runReconcile(cmd *cobra.Command, env cmdkit.Env, opts reconcileOptions) err
 			ui.Warnf(os.Stderr, "no deployments to reconcile. Run the node agents first.")
 			return nil
 		}
-		if opts.self {
-			id, err := farmOfHost(farms, opts.hostname)
-			if err != nil {
-				return err
-			}
-			opts.only = id
+		only, err := reconcileTarget(ctx, a, st, farms, opts)
+		if err != nil {
+			return err
 		}
-		// Accept the name people gave the deployment, not just its
-		// endpoint. `farm show` and `vm` both do, and a --farm that
-		// takes one spelling in one command and another elsewhere is a
-		// flag somebody has to remember the shape of.
-		if opts.only != "" {
-			id, err := ResolveFarmID(ctx, a, st, opts.only)
-			if err != nil {
-				return err
-			}
-			opts.only = id
-		}
-		// A retired deployment is one somebody said is not operated any
-		// more. Asking its control plane every run spends a credential
-		// and a timeout on a farm nobody expects to answer, and files
-		// the failure as news. Naming it explicitly still works — that
-		// is somebody saying they mean this one.
-		retired := map[string]bool{}
-		if opts.only == "" && !opts.includeRetired {
-			deps, err := st.Deployments(ctx)
-			if err != nil {
-				return err
-			}
-			for _, d := range deps {
-				if d.State == store.StateRetired {
-					retired[d.ID] = true
-				}
-			}
-		}
-		ids := make([]string, 0, len(farms))
-		var skipped int
-		for id := range farms {
-			if opts.only != "" && !strings.EqualFold(id, opts.only) {
-				continue
-			}
-			if retired[id] {
-				skipped++
-				continue
-			}
-			ids = append(ids, id)
-		}
-		if skipped > 0 && format == cmdkit.OutputTable {
-			ui.Infof(os.Stderr, "skipping %d retired deployment(s); --include-retired to reconcile them", skipped)
-		}
-		sort.Strings(ids)
-		if len(ids) == 0 {
-			return fmt.Errorf("no deployment matches %q", opts.only)
-		}
-		req := reconcile.Request{Insecure: opts.insecure, DryRun: opts.dryRun}
-		for _, id := range ids {
-			hosts := farms[id]
-			sort.Strings(hosts)
-			req.Farms = append(req.Farms, reconcile.Farm{ID: id, LocalHosts: hosts})
+		req, err := reconcileRequest(ctx, st, farms, only, opts, format)
+		if err != nil {
+			return err
 		}
 		svc := &reconcile.Service{
 			Creds: farmcreds.Store{KV: a.Vault, Prefix: a.Cfg.VaultFarmPrefix},
@@ -188,31 +140,116 @@ func runReconcile(cmd *cobra.Command, env cmdkit.Env, opts reconcileOptions) err
 		if !opts.dryRun {
 			forgetReadings(ctx, a, st)
 		}
-		if format != cmdkit.OutputTable {
-			if err := cmdkit.WriteStructured(format, reconcileReportJSON(rep, startedAt, took, opts.dryRun)); err != nil {
-				return err
-			}
-		} else {
-			// Rendered before the error is returned: a run that reached
-			// nothing still has per-farm reasons worth reading.
-			renderReconcile(rep, opts.dryRun)
+		// Rendered before the error is returned: a run that reached
+		// nothing still has per-farm reasons worth reading.
+		if err := printReconcile(format, rep, startedAt, took, opts.dryRun); err != nil {
+			return err
 		}
 		if runErr != nil {
 			return runErr
 		}
-		// A run where one farm answered and seven did not is a success
-		// by the old measure, and a timer cannot tell it from a healthy
-		// one. What counts as failure is the caller's to say.
-		if hit := rep.FailOn(want); len(hit) > 0 {
-			names := make([]string, 0, len(hit))
-			for _, p := range hit {
-				names = append(names, string(p))
-			}
-			return fmt.Errorf("reconcile finished with %s; %d of %d deployments answered",
-				strings.Join(names, ", "), rep.Reached, len(rep.Outcomes))
-		}
-		return nil
+		return reconcileVerdict(rep, want)
 	})
+}
+
+// reconcileTarget is the deployment id --self or --farm names, or "" when the
+// run covers the fleet.
+func reconcileTarget(ctx context.Context, a *app.App, st *store.Store, farms map[string][]string, opts reconcileOptions) (string, error) {
+	if opts.self {
+		id, err := farmOfHost(farms, opts.hostname)
+		if err != nil {
+			return "", err
+		}
+		opts.only = id
+	}
+	// Accept the name people gave the deployment, not just its
+	// endpoint. `farm show` and `vm` both do, and a --farm that
+	// takes one spelling in one command and another elsewhere is a
+	// flag somebody has to remember the shape of.
+	if opts.only != "" {
+		id, err := ResolveFarmID(ctx, a, st, opts.only)
+		if err != nil {
+			return "", err
+		}
+		opts.only = id
+	}
+	return opts.only, nil
+}
+
+// reconcileRequest is what the run asks the service for: the deployments it
+// covers — the one named, or every one not declared retired — each with the
+// hosts the probe reported for it.
+func reconcileRequest(ctx context.Context, st *store.Store, farms map[string][]string, only string, opts reconcileOptions, format cmdkit.Format) (reconcile.Request, error) {
+	// A retired deployment is one somebody said is not operated any
+	// more. Asking its control plane every run spends a credential
+	// and a timeout on a farm nobody expects to answer, and files
+	// the failure as news. Naming it explicitly still works — that
+	// is somebody saying they mean this one.
+	retired := map[string]bool{}
+	if only == "" && !opts.includeRetired {
+		deps, err := st.Deployments(ctx)
+		if err != nil {
+			return reconcile.Request{}, err
+		}
+		for _, d := range deps {
+			if d.State == store.StateRetired {
+				retired[d.ID] = true
+			}
+		}
+	}
+	ids := make([]string, 0, len(farms))
+	var skipped int
+	for id := range farms {
+		if only != "" && !strings.EqualFold(id, only) {
+			continue
+		}
+		if retired[id] {
+			skipped++
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if skipped > 0 && format == cmdkit.OutputTable {
+		ui.Infof(os.Stderr, "skipping %d retired deployment(s); --include-retired to reconcile them", skipped)
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return reconcile.Request{}, fmt.Errorf("no deployment matches %q", only)
+	}
+	req := reconcile.Request{Insecure: opts.insecure, DryRun: opts.dryRun}
+	for _, id := range ids {
+		hosts := farms[id]
+		sort.Strings(hosts)
+		req.Farms = append(req.Farms, reconcile.Farm{ID: id, LocalHosts: hosts})
+	}
+	return req, nil
+}
+
+// printReconcile writes the report in the format asked for.
+func printReconcile(format cmdkit.Format, rep reconcile.Report, startedAt time.Time, took time.Duration, dry bool) error {
+	if format != cmdkit.OutputTable {
+		return cmdkit.WriteStructured(format, reconcileReportJSON(rep, startedAt, took, dry))
+	}
+	renderReconcile(rep, dry)
+	return nil
+}
+
+// reconcileVerdict is whether the run counts as a failure by the caller's
+// measure.
+//
+// A run where one farm answered and seven did not is a success by the old
+// measure, and a timer cannot tell it from a healthy one. What counts as
+// failure is the caller's to say.
+func reconcileVerdict(rep reconcile.Report, want []reconcile.Problem) error {
+	if hit := rep.FailOn(want); len(hit) > 0 {
+		names := make([]string, 0, len(hit))
+		for _, p := range hit {
+			names = append(names, string(p))
+		}
+		return fmt.Errorf("reconcile finished with %s; %d of %d deployments answered",
+			strings.Join(names, ", "), rep.Reached, len(rep.Outcomes))
+	}
+	return nil
 }
 
 // farmOfHost finds which deployment this machine belongs to.

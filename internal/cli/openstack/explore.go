@@ -86,7 +86,11 @@ func runOpenStackExplore(cmd *cobra.Command, env cmdkit.Env, args []string) erro
 	})
 }
 
-// runExplore puts a screen up and lets it re-read behind itself.
+// runExplore puts a screen up and lets it re-read behind itself, in phases
+// that each answer one question: what goes on screen first, how that screen
+// is wired to the database and to the VMs it shows, and what survives it.
+// Each phase is its own function so the reasoning that belongs to it stays
+// beside it.
 //
 // The database call is a tea.Cmd rather than a step in Update: a read on the
 // key path stops the whole screen for as long as it takes, with no way to say
@@ -110,18 +114,45 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 		ui.Warnf(os.Stderr, "no deployments yet. Run the node agents, then 'vctl openstack'.")
 		return nil
 	}
+	m := newExploreScreen(ctx, a, st, data)
+	if len(args) > 0 {
+		// Resolved against the first reading, so a typo fails before the screen
+		// opens rather than after.
+		f, err := resolveFarm(data.Farms, args[0])
+		if err != nil {
+			return err
+		}
+		m.selectFarmID(f.ID)
+	}
+	return runExploreScreen(m)
+}
+
+// newExploreScreen builds the model over the first reading and wires it to
+// what it cannot do alone: re-read the database, run a command on a VM, and
+// know whether the reading it opened with is one it should be refreshing.
+func newExploreScreen(ctx context.Context, a *app.App, st *openLater, data exploreData) exploreModel {
 	m := newExploreModel(data)
 	// root first, like every VM path — the prompt shows it and the executor
 	// below walks the image-implied fallback when a machine refuses it.
 	m.defaultUser = osdomain.DefaultVMUser
 	m.refresh = func() (exploreData, error) { return loadExploreData(ctx, a, st) }
-	// The inline console's executor: each submitted command is one Execute —
-	// a fresh Vault-signed certificate and an audit row per command, the same
-	// pipeline `vctl ssh --vm` exec and the MCP tool use. The connector is the
-	// audited path; wiring anything rawer here would open an unrecorded door.
+	m.execVM = vmExecutor(ctx, a)
+	// A stored reading is a starting point, not an answer: the screen is up
+	// immediately and the refresh that corrects it is already running.
+	// Not when a login is due: the prompt would open behind the alternate
+	// screen, where nobody can see or answer it.
+	m.refreshing = data.Cached && !data.NeedsLogin
+	return m
+}
+
+// vmExecutor is the inline console's executor: each submitted command is one
+// Execute — a fresh Vault-signed certificate and an audit row per command, the
+// same pipeline `vctl ssh --vm` exec and the MCP tool use. The connector is the
+// audited path; wiring anything rawer here would open an unrecorded door.
+func vmExecutor(ctx context.Context, a *app.App) func(v *store.Instance, r vmRoute, user, command string) vmExecResult {
 	conn := cmdkit.NewConnector(a)
 	nets := a.Cfg.OperatorNetworks // the loaded config, not a per-command re-parse
-	m.execVM = func(v *store.Instance, r vmRoute, user, command string) vmExecResult {
+	return func(v *store.Instance, r vmRoute, user, command string) vmExecResult {
 		attempt := func(u string) (string, int, error) {
 			p := access.VMPolicy{User: u, CARole: a.Cfg.CARole, OperatorNets: nets}
 			var t *sshc.Target
@@ -163,20 +194,11 @@ func runExplore(ctx context.Context, a *app.App, args []string, live bool) error
 		}, nil)
 		return vmExecResult{out: out, code: code, user: used, err: err}
 	}
-	// A stored reading is a starting point, not an answer: the screen is up
-	// immediately and the refresh that corrects it is already running.
-	// Not when a login is due: the prompt would open behind the alternate
-	// screen, where nobody can see or answer it.
-	m.refreshing = data.Cached && !data.NeedsLogin
-	if len(args) > 0 {
-		// Resolved against the first reading, so a typo fails before the screen
-		// opens rather than after.
-		f, err := resolveFarm(data.Farms, args[0])
-		if err != nil {
-			return err
-		}
-		m.selectFarmID(f.ID)
-	}
+}
+
+// runExploreScreen runs the program on the alternate screen and hands back
+// what was on it at the end.
+func runExploreScreen(m exploreModel) error {
 	// The alternate screen, so the terminal somebody was working in comes back
 	// exactly as they left it.
 	res, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
