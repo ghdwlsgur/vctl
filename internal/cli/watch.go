@@ -35,13 +35,9 @@ type sessionRecorder interface {
 	EndSession(context.Context, int64, time.Time, string) error
 }
 
+// watchSessionsCmd wires `watch-sessions`; the body is runWatchSessions.
 func watchSessionsCmd(env cmdkit.Env) *cobra.Command {
-	var (
-		dir      string
-		hostname string
-		interval time.Duration
-		once     bool
-	)
+	var opts watchSessionsOptions
 	cmd := &cobra.Command{
 		Use:   "watch-sessions [dir]",
 		Short: "Register SSH sessions from login markers (host collector use)",
@@ -63,41 +59,54 @@ to line up with the rest of the inventory. This mirrors node-agent --hostname.`,
 				return err
 			}
 			return adb.Ingesting(cmd.Context(), func(st audit.Ingestor) error {
-				ctx := cmd.Context()
-				if len(args) == 1 {
-					dir = args[0]
-				}
-				reconcileStaleSessions(ctx, st, hostname)
-
-				seen := map[string]int64{} // marker path -> session id
-				scan := func() error { return scanMarkers(ctx, st, dir, hostname, seen) }
-
-				if once {
-					return scan()
-				}
-
-				// A Vault/DB outage must not turn every pending marker into a retry
-				// storm. Emit at most one warning per minute and exponentially back
-				// off scans from the normal interval to five minutes. Any successful
-				// pass resets the interval immediately.
-				var lastWarn time.Time
-				return runWatchLoop(ctx, interval, 5*time.Minute, scan, func(err error) {
-					if time.Since(lastWarn) > time.Minute {
-						ui.Warnf(os.Stderr, "%v (retrying)", err)
-						lastWarn = time.Now()
-					}
-				}, func(ctx context.Context, delay time.Duration) bool {
-					return waitForContext(ctx, jitterWatchDelay(delay))
-				})
+				return runWatchSessions(cmd.Context(), st, args, opts)
 			})
 		},
 	}
-	cmd.Flags().StringVar(&dir, "dir", "/run/vctl/sessions", "marker directory")
-	cmd.Flags().StringVar(&hostname, "hostname", "", "inventory hostname to record sessions under; defaults to the marker's os hostname")
+	cmd.Flags().StringVar(&opts.dir, "dir", "/run/vctl/sessions", "marker directory")
+	cmd.Flags().StringVar(&opts.hostname, "hostname", "", "inventory hostname to record sessions under; defaults to the marker's os hostname")
 	cmdkit.RegisterCompletion(cmd, "hostname", cmdkit.CompleteInventoryHost(env))
-	cmd.Flags().DurationVar(&interval, "interval", 5*time.Second, "scan interval")
-	cmd.Flags().BoolVar(&once, "once", false, "process current markers once and exit")
+	cmd.Flags().DurationVar(&opts.interval, "interval", 5*time.Second, "scan interval")
+	cmd.Flags().BoolVar(&opts.once, "once", false, "process current markers once and exit")
 	return cmd
+}
+
+// watchSessionsOptions is the bound flag set of `watch-sessions`.
+type watchSessionsOptions struct {
+	dir      string
+	hostname string
+	interval time.Duration
+	once     bool
+}
+
+// runWatchSessions is the body of `watch-sessions`, kept apart from the flag
+// wiring in watchSessionsCmd.
+func runWatchSessions(ctx context.Context, st audit.Ingestor, args []string, opts watchSessionsOptions) error {
+	if len(args) == 1 {
+		opts.dir = args[0]
+	}
+	reconcileStaleSessions(ctx, st, opts.hostname)
+
+	seen := map[string]int64{} // marker path -> session id
+	scan := func() error { return scanMarkers(ctx, st, opts.dir, opts.hostname, seen) }
+
+	if opts.once {
+		return scan()
+	}
+
+	// A Vault/DB outage must not turn every pending marker into a retry
+	// storm. Emit at most one warning per minute and exponentially back
+	// off scans from the normal interval to five minutes. Any successful
+	// pass resets the interval immediately.
+	var lastWarn time.Time
+	return runWatchLoop(ctx, opts.interval, 5*time.Minute, scan, func(err error) {
+		if time.Since(lastWarn) > time.Minute {
+			ui.Warnf(os.Stderr, "%v (retrying)", err)
+			lastWarn = time.Now()
+		}
+	}, func(ctx context.Context, delay time.Duration) bool {
+		return waitForContext(ctx, jitterWatchDelay(delay))
+	})
 }
 
 // reconcileStaleSessions ends sessions this host left un-ended on a prior run

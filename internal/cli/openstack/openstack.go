@@ -718,8 +718,9 @@ func coverageLine(c store.OpenStackCoverage) string {
 	return s
 }
 
+// openstackHostCmd wires `openstack host`; the body is runOpenStackHost.
 func openstackHostCmd(env cmdkit.Env) *cobra.Command {
-	var asJSON bool
+	var opts openstackHostOptions
 	cmd := &cobra.Command{
 		Use:   "host [hostname]",
 		Short: "Show one host's OpenStack roles, components and farm",
@@ -728,43 +729,54 @@ func openstackHostCmd(env cmdkit.Env) *cobra.Command {
 		// found nothing" is an answer this command exists to show.
 		ValidArgsFunction: completeOpenStackHost(env, false),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := cmdkit.CommandOutput(cmd, asJSON)
-			if err != nil {
-				return err
-			}
-			return env.WithStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
-				ctx := cmd.Context()
-				row, err := cmdkit.ResolveHost(ctx, st, args, "OpenStack detail")
-				if err != nil {
-					return err
-				}
-				hosts, err := st.OpenStackHosts(ctx)
-				if err != nil {
-					return err
-				}
-				for _, h := range hosts {
-					if h.Hostname != row.Hostname {
-						continue
-					}
-					if format != cmdkit.OutputTable {
-						return cmdkit.WriteStructured(format, h)
-					}
-					renderOpenStackHost(os.Stdout, h, time.Now())
-					return nil
-				}
-				if format != cmdkit.OutputTable {
-					return cmdkit.WriteStructured(format, map[string]any{"hostname": row.Hostname, "probed": false})
-				}
-				// Not an error: the host exists, nothing has looked at it. Saying
-				// "not found" would send someone looking for a missing inventory
-				// entry instead of a missing agent.
-				ui.Warnf(os.Stderr, "%s: no capability probe has reported. Is the node agent running there?", row.Hostname)
-				return nil
-			})
+			return runOpenStackHost(cmd, env, args, opts)
 		},
 	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
+	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	return cmdkit.SupportsStructuredOutput(cmd)
+}
+
+// openstackHostOptions is the bound flag set of `openstack host`.
+type openstackHostOptions struct {
+	asJSON bool
+}
+
+// runOpenStackHost is the body of `openstack host`, kept apart from the flag
+// wiring in openstackHostCmd.
+func runOpenStackHost(cmd *cobra.Command, env cmdkit.Env, args []string, opts openstackHostOptions) error {
+	format, err := cmdkit.CommandOutput(cmd, opts.asJSON)
+	if err != nil {
+		return err
+	}
+	return env.WithStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+		ctx := cmd.Context()
+		row, err := cmdkit.ResolveHost(ctx, st, args, "OpenStack detail")
+		if err != nil {
+			return err
+		}
+		hosts, err := st.OpenStackHosts(ctx)
+		if err != nil {
+			return err
+		}
+		for _, h := range hosts {
+			if h.Hostname != row.Hostname {
+				continue
+			}
+			if format != cmdkit.OutputTable {
+				return cmdkit.WriteStructured(format, h)
+			}
+			renderOpenStackHost(os.Stdout, h, time.Now())
+			return nil
+		}
+		if format != cmdkit.OutputTable {
+			return cmdkit.WriteStructured(format, map[string]any{"hostname": row.Hostname, "probed": false})
+		}
+		// Not an error: the host exists, nothing has looked at it. Saying
+		// "not found" would send someone looking for a missing inventory
+		// entry instead of a missing agent.
+		ui.Warnf(os.Stderr, "%s: no capability probe has reported. Is the node agent running there?", row.Hostname)
+		return nil
+	})
 }
 
 func renderOpenStackHost(w io.Writer, h store.OpenStackHost, now time.Time) {

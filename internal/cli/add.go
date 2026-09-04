@@ -16,7 +16,50 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// addCmd registers a host that `vctl sync` will not discover on its own.
+// addCmd wires `add`; the body is runAdd.
+func addCmd(env cmdkit.Env) *cobra.Command {
+	var opts addOptions
+	cmd := &cobra.Command{
+		Use:   "add",
+		Short: "Register an inventory host that sync cannot discover",
+		Long: `add registers a host in the central inventory.
+
+Use it for machines that are not in ~/.ssh/config, which is what vctl sync
+reads. Run with no flags to fill the fields interactively.
+
+A later sync will not undo this: sync refreshes probe-derived columns only and
+leaves ssh_user, dc and jump_via as entered here.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
+			return cmdkit.WithStorePort(env, ctx, true, func(_ *app.App, st addStore) error {
+				return runAdd(ctx, st, opts)
+			})
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&opts.sv.Hostname, "host", "", "inventory hostname (the name vctl ssh takes)")
+	f.StringVar(&opts.sv.IP, "ip", "", "address to connect to")
+	f.StringVar(&opts.sv.User, "user", "", "SSH login user")
+	f.StringVar(&opts.sv.DC, "dc", "", "datacenter label, e.g. seoul-onprem")
+	f.StringVar(&opts.sv.JumpVia, "jump", "", "jump host (an existing inventory hostname); empty means direct")
+	f.IntVar(&opts.sv.Port, "port", 22, "SSH port")
+	f.StringVar(&opts.sv.CARole, "ca-role", "sre-core", "Vault SSH CA role")
+	// Repeatable rather than comma-separated. A --extra-ip that swallowed a list
+	// would have to define what a bad element does — reject the whole flag, or
+	// drop it — and repeating the flag makes each address its own argument that
+	// shells complete and quote on their own.
+	f.StringSliceVar(&opts.sv.ExtraIPs, "extra-ip", nil, "additional address the host answers on (repeatable)")
+	f.BoolVar(&opts.force, "force", false, "if the hostname exists, refresh it instead of failing")
+	return cmdkit.Gate(cmd, "add")
+}
+
+// addOptions is the bound flag set of `add`.
+type addOptions struct {
+	sv    store.Server
+	force bool
+}
+
+// runAdd registers a host that `vctl sync` will not discover on its own.
 //
 // sync reads ~/.ssh/config and probes what it finds there, which covers hosts
 // an operator already reaches. It cannot see a machine nobody has an entry for
@@ -32,69 +75,34 @@ import (
 // Mutate class, and writing the inventory needs a Vault role the baseline user
 // policy no longer carries, so this is an operator command by construction
 // rather than by convention.
-func addCmd(env cmdkit.Env) *cobra.Command {
-	var (
-		sv    store.Server
-		force bool
-	)
-	cmd := &cobra.Command{
-		Use:   "add",
-		Short: "Register an inventory host that sync cannot discover",
-		Long: `add registers a host in the central inventory.
-
-Use it for machines that are not in ~/.ssh/config, which is what vctl sync
-reads. Run with no flags to fill the fields interactively.
-
-A later sync will not undo this: sync refreshes probe-derived columns only and
-leaves ssh_user, dc and jump_via as entered here.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			return cmdkit.WithStorePort(env, ctx, true, func(_ *app.App, st addStore) error {
-				if err := completeServer(ctx, st, &sv); err != nil {
-					return err
-				}
-				if err := validateServer(ctx, st, sv); err != nil {
-					return err
-				}
-				created, err := st.Insert(ctx, sv)
-				if err != nil {
-					return err
-				}
-				if !created {
-					if !force {
-						return fmt.Errorf("%s is already in the inventory; change it with vctl edit, or pass --force to overwrite probe fields", sv.Hostname)
-					}
-					if err := st.Upsert(ctx, sv); err != nil {
-						return err
-					}
-					ui.Successf(os.Stdout, "updated %s (%s)", sv.Hostname, sv.IP)
-					return nil
-				}
-				addr := sv.IP
-				if n := len(sv.ExtraIPs); n > 0 {
-					addr = fmt.Sprintf("%s (+%d)", sv.IP, n)
-				}
-				ui.Successf(os.Stdout, "added %s (%s) in %s", sv.Hostname, addr, sv.DC)
-				ui.Infof(os.Stdout, "connect with: vctl ssh %s", sv.Hostname)
-				return nil
-			})
-		},
+func runAdd(ctx context.Context, st addStore, opts addOptions) error {
+	if err := completeServer(ctx, st, &opts.sv); err != nil {
+		return err
 	}
-	f := cmd.Flags()
-	f.StringVar(&sv.Hostname, "host", "", "inventory hostname (the name vctl ssh takes)")
-	f.StringVar(&sv.IP, "ip", "", "address to connect to")
-	f.StringVar(&sv.User, "user", "", "SSH login user")
-	f.StringVar(&sv.DC, "dc", "", "datacenter label, e.g. seoul-onprem")
-	f.StringVar(&sv.JumpVia, "jump", "", "jump host (an existing inventory hostname); empty means direct")
-	f.IntVar(&sv.Port, "port", 22, "SSH port")
-	f.StringVar(&sv.CARole, "ca-role", "sre-core", "Vault SSH CA role")
-	// Repeatable rather than comma-separated. A --extra-ip that swallowed a list
-	// would have to define what a bad element does — reject the whole flag, or
-	// drop it — and repeating the flag makes each address its own argument that
-	// shells complete and quote on their own.
-	f.StringSliceVar(&sv.ExtraIPs, "extra-ip", nil, "additional address the host answers on (repeatable)")
-	f.BoolVar(&force, "force", false, "if the hostname exists, refresh it instead of failing")
-	return cmdkit.Gate(cmd, "add")
+	if err := validateServer(ctx, st, opts.sv); err != nil {
+		return err
+	}
+	created, err := st.Insert(ctx, opts.sv)
+	if err != nil {
+		return err
+	}
+	if !created {
+		if !opts.force {
+			return fmt.Errorf("%s is already in the inventory; change it with vctl edit, or pass --force to overwrite probe fields", opts.sv.Hostname)
+		}
+		if err := st.Upsert(ctx, opts.sv); err != nil {
+			return err
+		}
+		ui.Successf(os.Stdout, "updated %s (%s)", opts.sv.Hostname, opts.sv.IP)
+		return nil
+	}
+	addr := opts.sv.IP
+	if n := len(opts.sv.ExtraIPs); n > 0 {
+		addr = fmt.Sprintf("%s (+%d)", opts.sv.IP, n)
+	}
+	ui.Successf(os.Stdout, "added %s (%s) in %s", opts.sv.Hostname, addr, opts.sv.DC)
+	ui.Infof(os.Stdout, "connect with: vctl ssh %s", opts.sv.Hostname)
+	return nil
 }
 
 // addStore is what `vctl add` may do to the inventory: read it to validate

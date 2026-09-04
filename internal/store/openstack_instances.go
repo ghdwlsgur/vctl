@@ -62,6 +62,9 @@ type InstanceAddress struct {
 // incident.
 //
 // In a transaction because a half-written listing would mark live VMs missing.
+// Three steps inside it: queue every VM's statements into one batch, run the
+// batch counting the VMs it completed, then — only for a whole listing — stamp
+// what was not listed as missing.
 func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []Instance, at time.Time, complete bool) (seen int, err error) {
 	if at.IsZero() {
 		at = time.Now()
@@ -72,10 +75,24 @@ func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []In
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	batch := &pgx.Batch{}
-	// done marks the final statement for each VM, so the return value keeps its
-	// old meaning even though all statements cross the network in one batch.
-	var done []bool
+	batch, done := instanceBatch(deployment, in, at)
+	if seen, err = execInstanceBatch(ctx, tx, batch, done); err != nil {
+		return seen, err
+	}
+	if complete {
+		if err := markMissing(ctx, tx, deployment, at); err != nil {
+			return 0, err
+		}
+	}
+	return seen, tx.Commit(ctx)
+}
+
+// instanceBatch queues one VM's upsert, its address replacement and its
+// address rows for every instance, so all statements cross the network once.
+// done marks the final statement for each VM, so the caller can count VMs
+// rather than statements.
+func instanceBatch(deployment string, in []Instance, at time.Time) (batch *pgx.Batch, done []bool) {
+	batch = &pgx.Batch{}
 	for _, i := range in {
 		if i.InstanceID == "" {
 			continue
@@ -130,42 +147,49 @@ func (s *Store) ReplaceInstances(ctx context.Context, deployment string, in []In
 		}
 		done[len(done)-1] = true
 	}
-	if len(done) > 0 {
-		results := tx.SendBatch(ctx, batch)
-		for _, completesInstance := range done {
-			if _, err := results.Exec(); err != nil {
-				_ = results.Close()
-				return seen, err
-			}
-			if completesInstance {
-				seen++
-			}
-		}
-		if err := results.Close(); err != nil {
+	return batch, done
+}
+
+// execInstanceBatch runs the batch and counts the VMs whose final statement
+// succeeded. On a failure it returns what had completed so far.
+func execInstanceBatch(ctx context.Context, tx pgx.Tx, batch *pgx.Batch, done []bool) (seen int, err error) {
+	if len(done) == 0 {
+		return 0, nil
+	}
+	results := tx.SendBatch(ctx, batch)
+	for _, completesInstance := range done {
+		if _, err := results.Exec(); err != nil {
+			_ = results.Close()
 			return seen, err
 		}
-	}
-
-	// Anything this deployment had and did not list now. First absence stamps
-	// the time; later ones leave it, so the age is how long it has been gone.
-	//
-	// Only when the listing was whole. A pass that stopped early saw a prefix of
-	// the deployment, and marking everything past that prefix as gone would
-	// render an API that answered half a question as a deployment that lost half
-	// its VMs. Nothing distinguishes the two once it is written.
-	//
-	// The same rule the host membership already follows: a partial answer holds
-	// rather than demotes (see ReconcileInput.Complete). What a partial pass
-	// still does is refresh what it did see, because those rows are current.
-	if complete {
-		if _, err := tx.Exec(ctx, `
-			UPDATE openstack_instances SET missing_since=$2
-			WHERE deployment_id=$1 AND observed_at < $2 AND missing_since IS NULL`,
-			deployment, at); err != nil {
-			return 0, err
+		if completesInstance {
+			seen++
 		}
 	}
-	return seen, tx.Commit(ctx)
+	if err := results.Close(); err != nil {
+		return seen, err
+	}
+	return seen, nil
+}
+
+// markMissing stamps anything this deployment had and did not list now. First
+// absence stamps the time; later ones leave it, so the age is how long it has
+// been gone.
+//
+// Only for a whole listing. A pass that stopped early saw a prefix of the
+// deployment, and marking everything past that prefix as gone would render an
+// API that answered half a question as a deployment that lost half its VMs.
+// Nothing distinguishes the two once it is written.
+//
+// The same rule the host membership already follows: a partial answer holds
+// rather than demotes (see ReconcileInput.Complete). What a partial pass still
+// does is refresh what it did see, because those rows are current.
+func markMissing(ctx context.Context, tx pgx.Tx, deployment string, at time.Time) error {
+	_, err := tx.Exec(ctx, `
+			UPDATE openstack_instances SET missing_since=$2
+			WHERE deployment_id=$1 AND observed_at < $2 AND missing_since IS NULL`,
+		deployment, at)
+	return err
 }
 
 // PruneMissingOpenStackInstances removes deleted-VM history older than before

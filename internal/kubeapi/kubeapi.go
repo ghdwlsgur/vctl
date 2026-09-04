@@ -11,16 +11,15 @@ package kubeapi
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/ghdwlsgur/vctl/internal/httpc"
 )
 
 // ErrConflict is the optimistic-concurrency refusal: the object moved between
@@ -49,20 +48,14 @@ func New(server, token string, caPEM []byte, serverName string) (*Client, error)
 	if server == "" || token == "" {
 		return nil, fmt.Errorf("kubernetes server and token are both required")
 	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
+	if len(caPEM) == 0 {
 		return nil, fmt.Errorf("no usable certificate in the cluster CA")
 	}
-	return &Client{
-		base:  strings.TrimRight(server, "/"),
-		token: token,
-		http: &http.Client{
-			Timeout: 15 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{
-				RootCAs: pool, ServerName: serverName, MinVersion: tls.VersionTLS12,
-			}},
-		},
-	}, nil
+	hc, err := httpc.NewClient(15*time.Second, httpc.TLS{CAPEM: caPEM, ServerName: serverName})
+	if err != nil {
+		return nil, fmt.Errorf("cluster CA: %w", err)
+	}
+	return &Client{base: strings.TrimRight(server, "/"), token: token, http: hc}, nil
 }
 
 // ConfigMap is the part of the object vctl reads: the data, the annotations,
@@ -132,29 +125,27 @@ func (c *Client) PatchConfigMapData(ctx context.Context, namespace, name, resour
 func (c *Client) do(req *http.Request, into any) error {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
-	resp, err := c.http.Do(req)
+	resp, err := httpc.Do(c.http, req, 8<<20)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusConflict {
+	if resp.Status == http.StatusConflict {
 		return fmt.Errorf("%s: %w", req.URL.Path, ErrConflict)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if !resp.OK() {
 		// The API server's status message names the reason (forbidden, not
 		// found); the operator gets it verbatim, bounded so a proxy's error
 		// page cannot flood a terminal.
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("%s: %s: %s", req.URL.Path, resp.Status, statusMessage(msg))
+		return fmt.Errorf("%s: %s: %s", req.URL.Path, resp.StatusText, statusMessage(resp.Body))
 	}
 	if into == nil {
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(into)
+	return resp.JSON(into)
 }
 
 // statusMessage pulls the human sentence out of a k8s Status body, falling
-// back to the raw bytes when it is not one.
+// back to a bounded slice of the raw bytes when it is not one.
 func statusMessage(body []byte) string {
 	var st struct {
 		Message string `json:"message"`
@@ -162,5 +153,5 @@ func statusMessage(body []byte) string {
 	if json.Unmarshal(body, &st) == nil && st.Message != "" {
 		return st.Message
 	}
-	return strings.TrimSpace(string(body))
+	return httpc.Snippet(body, 2048)
 }

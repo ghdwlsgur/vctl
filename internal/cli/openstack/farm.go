@@ -195,6 +195,10 @@ func loadVMCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Cata
 	return fleet.From(snap), nil
 }
 
+type farmsReader interface {
+	FleetFarms(ctx context.Context) (store.Fleet, error)
+}
+
 // loadFarmCatalog is the reading without the VM rows: everything about the
 // fleet except which instances there are.
 //
@@ -203,10 +207,6 @@ func loadVMCatalog(ctx context.Context, a *app.App, st *store.Store) (fleet.Cata
 // measured at 60–135ms per listing.
 // farmsReader is the one read loadFarmCatalog needs. Callers hand it a
 // *store.Store or their own port; either satisfies it implicitly.
-type farmsReader interface {
-	FleetFarms(ctx context.Context) (store.Fleet, error)
-}
-
 func loadFarmCatalog(ctx context.Context, a *app.App, st farmsReader) (fleet.Catalog, error) {
 	defer timing.Start("fleet-query-light")()
 	snap, err := st.FleetFarms(ctx)
@@ -369,8 +369,10 @@ func farmNameForm(f farmChoice, region string) (string, string, string, error) {
 	return f.ID, strings.TrimSpace(name), strings.TrimSpace(region), nil
 }
 
+// openstackFarmStateCmd wires `openstack farm state`; the body is
+// runOpenStackFarmState.
 func openstackFarmStateCmd(env cmdkit.Env) *cobra.Command {
-	var note string
+	var opts openstackFarmStateOptions
 	cmd := &cobra.Command{
 		Use:   "state [deployment] [state]",
 		Short: "Declare what an operator knows about a deployment: active, maintenance, broken, retired",
@@ -386,37 +388,47 @@ func openstackFarmStateCmd(env cmdkit.Env) *cobra.Command {
 		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env), cmdkit.StaticCompletions(store.HostStates...)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmdkit.WithStorePort(env, cmd.Context(), true, func(a *app.App, st farmDeclareStore) error {
-				ctx := cmd.Context()
-				farms, ok, err := farmChoicesForPick(ctx, a, st)
-				if err != nil || !ok {
-					return err
-				}
-				id, state := "", ""
-				if len(args) > 0 {
-					id = args[0]
-				}
-				if len(args) > 1 {
-					state = args[1]
-				}
-				id, state, note, err = resolveFarmState(farms, id, state, note)
-				if err != nil {
-					return err
-				}
-				if err := st.SetDeploymentState(ctx, id, state, note); err != nil {
-					return err
-				}
-				// A declared state changes what the listings mark as expected
-				// and hides a retired deployment altogether. Keeping the old
-				// reading would mean the farm somebody just retired stays in the
-				// list they retired it out of.
-				forgetReadings(ctx, a, st)
-				ui.Successf(os.Stdout, "%s is now %s", id, state)
-				return nil
+				return runOpenStackFarmState(cmd.Context(), a, st, args, opts)
 			})
 		},
 	}
-	cmd.Flags().StringVar(&note, "note", "", "why — the state says what to expect, this says what happened")
+	cmd.Flags().StringVar(&opts.note, "note", "", "why — the state says what to expect, this says what happened")
 	return cmd
+}
+
+// openstackFarmStateOptions is the bound flag set of `openstack farm state`.
+type openstackFarmStateOptions struct {
+	note string
+}
+
+// runOpenStackFarmState is the body of `openstack farm state`, kept apart
+// from the flag wiring in openstackFarmStateCmd.
+func runOpenStackFarmState(ctx context.Context, a *app.App, st farmDeclareStore, args []string, opts openstackFarmStateOptions) error {
+	farms, ok, err := farmChoicesForPick(ctx, a, st)
+	if err != nil || !ok {
+		return err
+	}
+	id, state := "", ""
+	if len(args) > 0 {
+		id = args[0]
+	}
+	if len(args) > 1 {
+		state = args[1]
+	}
+	id, state, opts.note, err = resolveFarmState(farms, id, state, opts.note)
+	if err != nil {
+		return err
+	}
+	if err := st.SetDeploymentState(ctx, id, state, opts.note); err != nil {
+		return err
+	}
+	// A declared state changes what the listings mark as expected
+	// and hides a retired deployment altogether. Keeping the old
+	// reading would mean the farm somebody just retired stays in the
+	// list they retired it out of.
+	forgetReadings(ctx, a, st)
+	ui.Successf(os.Stdout, "%s is now %s", id, state)
+	return nil
 }
 
 // resolveFarmState fills in whatever was not given on the command line.

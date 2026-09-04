@@ -80,7 +80,10 @@ type openstackVMOptions struct {
 }
 
 // runOpenStackVM is the body of `openstack vm`, kept apart from the flag
-// wiring in openstackVMCmd.
+// wiring in openstackVMCmd. It runs in phases that each answer one question:
+// what was asked for and whether it narrows the reading, what the narrowing
+// flags mean in the database's terms, and how the rows are shown. Each phase
+// is its own function so the reasoning that belongs to it stays beside it.
 func runOpenStackVM(cmd *cobra.Command, env cmdkit.Env, args []string, opts openstackVMOptions) error {
 	format, err := cmdkit.CommandOutput(cmd, opts.asJSON)
 	if err != nil {
@@ -90,25 +93,7 @@ func runOpenStackVM(cmd *cobra.Command, env cmdkit.Env, args []string, opts open
 		ctx := cmd.Context()
 		lazy := &openLater{app: a}
 		defer lazy.Close()
-		// One argument, read by its shape. A UUID is an identity and a
-		// word is a search, and asking somebody to say which is which
-		// with a flag would be asking them to describe what they can
-		// already see.
-		search := ""
-		if len(args) > 0 {
-			if v := normalizeInstanceID(args[0]); isInstanceID(v) {
-				if opts.id == "" {
-					opts.id = v
-				}
-			} else {
-				search = args[0]
-			}
-		}
-		f := store.InstanceFilter{
-			Address: opts.address, Search: search,
-			InstanceID:     normalizeInstanceID(opts.id),
-			IncludeMissing: opts.showGone,
-		}
+		f, narrowed := vmRequest(args, opts)
 		// A request nothing narrows is the whole reading, and the whole
 		// reading is the thing that gets stored. So it is answered from
 		// one catalog — off disk when there is a fresh one, out of the
@@ -122,7 +107,6 @@ func runOpenStackVM(cmd *cobra.Command, env cmdkit.Env, args []string, opts open
 		// those go to the database and stay there. --farm and --missing
 		// are the exceptions, because they are the two predicates the
 		// reading was stored under.
-		narrowed := search != "" || opts.address != "" || opts.id != "" || opts.project != "" || opts.host != ""
 		if !narrowed {
 			rd, err := vmCatalog(ctx, a, lazy, mustBeLive(cmd, format != cmdkit.OutputTable))
 			if err != nil {
@@ -133,63 +117,103 @@ func runOpenStackVM(cmd *cobra.Command, env cmdkit.Env, args []string, opts open
 			if err != nil {
 				return err
 			}
-			if format != cmdkit.OutputTable {
-				return cmdkit.WriteStructured(format, vms)
-			}
-			renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), opts.wide)
-			return nil
+			return printVMs(format, vms, cat, opts.wide)
 		}
 		return lazy.use(ctx, func(st *store.Store) error {
-			// One reading of the deployments for both things this
-			// command asks about them: which one --farm means, and what
-			// to call each in the grouping header. Those were two reads,
-			// and the second was issued after the VMs had already been
-			// fetched.
-			var cat fleet.Catalog
-			if opts.farm != "" || format == cmdkit.OutputTable {
-				c, err := loadFarmCatalog(ctx, a, st)
-				if err != nil {
-					return err
-				}
-				cat = c
-			}
-			if opts.farm != "" {
-				resolved, err := cat.Resolve(opts.farm)
-				if err != nil {
-					return err
-				}
-				f.DeploymentID = resolved.ID
-			}
-			// After the farm, so --farm narrows what a name has to be
-			// unique within.
-			if opts.project != "" {
-				ids, note, err := resolveProjects(ctx, st, f.DeploymentID, opts.project)
-				if err != nil {
-					return err
-				}
-				f.ProjectIDs = ids
-				if note != "" {
-					ui.Infof(os.Stderr, "%s", note)
-				}
-			}
-			if opts.host != "" {
-				nova, err := novaNameFor(ctx, st, opts.host, f.DeploymentID)
-				if err != nil {
-					return err
-				}
-				f.Hypervisor = nova
+			f, cat, err := resolveVMFilter(ctx, a, st, f, opts, format)
+			if err != nil {
+				return err
 			}
 			vms, err := st.Instances(ctx, f)
 			if err != nil {
 				return err
 			}
-			if format != cmdkit.OutputTable {
-				return cmdkit.WriteStructured(format, vms)
-			}
-			renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), opts.wide)
-			return nil
+			return printVMs(format, vms, cat, opts.wide)
 		})
 	})
+}
+
+// vmRequest is what the listing was asked for, and whether anything in it
+// narrows the reading.
+func vmRequest(args []string, opts openstackVMOptions) (store.InstanceFilter, bool) {
+	// One argument, read by its shape. A UUID is an identity and a
+	// word is a search, and asking somebody to say which is which
+	// with a flag would be asking them to describe what they can
+	// already see.
+	search := ""
+	if len(args) > 0 {
+		if v := normalizeInstanceID(args[0]); isInstanceID(v) {
+			if opts.id == "" {
+				opts.id = v
+			}
+		} else {
+			search = args[0]
+		}
+	}
+	f := store.InstanceFilter{
+		Address: opts.address, Search: search,
+		InstanceID:     normalizeInstanceID(opts.id),
+		IncludeMissing: opts.showGone,
+	}
+	narrowed := search != "" || opts.address != "" || opts.id != "" || opts.project != "" || opts.host != ""
+	return f, narrowed
+}
+
+// resolveVMFilter turns the narrowing flags into what the database keys on —
+// --farm into a deployment id, --project into project ids, --host into nova's
+// name for the machine — and hands back the catalog the farm was resolved
+// against, for the grouping header.
+func resolveVMFilter(ctx context.Context, a *app.App, st *store.Store, f store.InstanceFilter, opts openstackVMOptions, format cmdkit.Format) (store.InstanceFilter, fleet.Catalog, error) {
+	// One reading of the deployments for both things this
+	// command asks about them: which one --farm means, and what
+	// to call each in the grouping header. Those were two reads,
+	// and the second was issued after the VMs had already been
+	// fetched.
+	var cat fleet.Catalog
+	if opts.farm != "" || format == cmdkit.OutputTable {
+		c, err := loadFarmCatalog(ctx, a, st)
+		if err != nil {
+			return store.InstanceFilter{}, fleet.Catalog{}, err
+		}
+		cat = c
+	}
+	if opts.farm != "" {
+		resolved, err := cat.Resolve(opts.farm)
+		if err != nil {
+			return store.InstanceFilter{}, fleet.Catalog{}, err
+		}
+		f.DeploymentID = resolved.ID
+	}
+	// After the farm, so --farm narrows what a name has to be
+	// unique within.
+	if opts.project != "" {
+		ids, note, err := resolveProjects(ctx, st, f.DeploymentID, opts.project)
+		if err != nil {
+			return store.InstanceFilter{}, fleet.Catalog{}, err
+		}
+		f.ProjectIDs = ids
+		if note != "" {
+			ui.Infof(os.Stderr, "%s", note)
+		}
+	}
+	if opts.host != "" {
+		nova, err := novaNameFor(ctx, st, opts.host, f.DeploymentID)
+		if err != nil {
+			return store.InstanceFilter{}, fleet.Catalog{}, err
+		}
+		f.Hypervisor = nova
+	}
+	return f, cat, nil
+}
+
+// printVMs writes the rows in the format asked for: structured as they are,
+// or as a table grouped by farm.
+func printVMs(format cmdkit.Format, vms []store.Instance, cat fleet.Catalog, wide bool) error {
+	if format != cmdkit.OutputTable {
+		return cmdkit.WriteStructured(format, vms)
+	}
+	renderVMs(os.Stdout, vms, cat.Names(), operatorNetworks(), time.Now(), wide)
+	return nil
 }
 
 // vmCatalog is the whole reading for an unnarrowed listing, and where it came

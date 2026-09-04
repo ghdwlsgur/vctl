@@ -15,18 +15,9 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// deleteCmd removes a decommissioned host from the inventory.
-//
-// Audit rows keyed by the hostname stay. They are the record of what was done
-// on that machine while it existed, and deleting the host does not make that
-// history untrue — losing it because a VM was torn down would be the audit
-// trail failing at exactly the moment it matters.
-//
-// What does not stay is any jump chain pointing at this host, and that is why
-// the command refuses rather than cascades: silently rewriting other hosts to
-// "direct" would leave them unreachable with no sign of why.
+// deleteCmd wires `delete`; the body is runDelete.
 func deleteCmd(env cmdkit.Env) *cobra.Command {
-	var yes bool
+	var opts deleteOptions
 	cmd := &cobra.Command{
 		Use:     "delete [hostname]",
 		Aliases: []string{"rm"},
@@ -42,44 +33,63 @@ repointing them silently would leave them unreachable.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			return cmdkit.WithStorePort(env, ctx, true, func(_ *app.App, st deleteStore) error {
-				cur, err := cmdkit.ResolveHost(ctx, st, args, "Delete which host?")
-				if err != nil {
-					return err
-				}
-				host := cur.Hostname
-				dependents, err := jumpDependents(ctx, st, host)
-				if err != nil {
-					return err
-				}
-				if len(dependents) > 0 {
-					return fmt.Errorf("%s is the jump host for %s; repoint them first (vctl edit <host> --jump ...)",
-						host, strings.Join(dependents, ", "))
-				}
-				if !yes {
-					ok, err := confirmDelete(cur)
-					if err != nil {
-						return err
-					}
-					if !ok {
-						ui.Infof(os.Stdout, "cancelled")
-						return nil
-					}
-				}
-				removed, err := st.Delete(ctx, host)
-				if err != nil {
-					return err
-				}
-				if !removed {
-					return fmt.Errorf("no host named %q", host)
-				}
-				ui.Successf(os.Stdout, "removed %s (%s)", host, cur.IP)
-				ui.Infof(os.Stdout, "audit history for this hostname is kept")
-				return nil
+				return runDelete(ctx, st, args, opts)
 			})
 		},
 	}
-	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	cmd.Flags().BoolVar(&opts.yes, "yes", false, "skip the confirmation prompt")
 	return cmdkit.Gate(cmd, "delete")
+}
+
+// deleteOptions is the bound flag set of `delete`.
+type deleteOptions struct {
+	yes bool
+}
+
+// runDelete removes a decommissioned host from the inventory.
+//
+// Audit rows keyed by the hostname stay. They are the record of what was done
+// on that machine while it existed, and deleting the host does not make that
+// history untrue — losing it because a VM was torn down would be the audit
+// trail failing at exactly the moment it matters.
+//
+// What does not stay is any jump chain pointing at this host, and that is why
+// the command refuses rather than cascades: silently rewriting other hosts to
+// "direct" would leave them unreachable with no sign of why.
+func runDelete(ctx context.Context, st deleteStore, args []string, opts deleteOptions) error {
+	cur, err := cmdkit.ResolveHost(ctx, st, args, "Delete which host?")
+	if err != nil {
+		return err
+	}
+	host := cur.Hostname
+	dependents, err := jumpDependents(ctx, st, host)
+	if err != nil {
+		return err
+	}
+	if len(dependents) > 0 {
+		return fmt.Errorf("%s is the jump host for %s; repoint them first (vctl edit <host> --jump ...)",
+			host, strings.Join(dependents, ", "))
+	}
+	if !opts.yes {
+		ok, err := confirmDelete(cur)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			ui.Infof(os.Stdout, "cancelled")
+			return nil
+		}
+	}
+	removed, err := st.Delete(ctx, host)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		return fmt.Errorf("no host named %q", host)
+	}
+	ui.Successf(os.Stdout, "removed %s (%s)", host, cur.IP)
+	ui.Infof(os.Stdout, "audit history for this hostname is kept")
+	return nil
 }
 
 // deleteStore is what `vctl delete` may do: read the inventory to resolve

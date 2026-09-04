@@ -246,13 +246,130 @@ func withLiveStatus(ctx context.Context, st invcache.Reader, cands []store.Serve
 	return out, nil
 }
 
-// sshVM connects to a Nova instance.
+// sshVM connects to a Nova instance, in phases that each answer one question:
+// which VM the selector means, whether its record is current enough to dial,
+// and how to reach it as some login user. Each phase is its own function so
+// the reasoning that belongs to it stays beside it.
 //
 // Exact identity only. A VM name fits several VMs across farms — this fleet has
 // two called secloudit-pkg-bastion in different deployments — and resolving that
 // by position would connect to whichever sorted first, which is the kind of
 // mistake nothing downstream can catch. The id is what kubectl prints, what
 // `vctl openstack vm` prints, and what a person is likely to have.
+func sshVM(ctx context.Context, env cmdkit.Env, selector, user, farm string, allowStale bool) error {
+	id, ok := access.NovaID(selector)
+	if !ok {
+		return fmt.Errorf("--vm takes a Nova instance id or openstack:///<id>, not %q; "+
+			"run 'vctl openstack vm' to find it", selector)
+	}
+	return env.WithStore(ctx, false, func(a *app.App, st *store.Store) error {
+		v, err := lookupVM(ctx, a, st, id, farm)
+		if err != nil {
+			return err
+		}
+		if err := checkVMCurrent(v, id, allowStale); err != nil {
+			return err
+		}
+		return connectVM(ctx, a, st, v, user)
+	})
+}
+
+// lookupVM finds the instance the id names — within one deployment when a
+// farm was given, since the same id can sit in more than one.
+func lookupVM(ctx context.Context, a *app.App, st *store.Store, id, farm string) (store.Instance, error) {
+	deployment := ""
+	if farm != "" {
+		resolved, err := openstack.ResolveFarmID(ctx, a, st, farm)
+		if err != nil {
+			return store.Instance{}, err
+		}
+		deployment = resolved
+	}
+	return openstack.OneVM(ctx, st, id, deployment)
+}
+
+// checkVMCurrent refuses a record the control plane no longer lists, and one
+// older than the collector's schedule unless --allow-stale was passed or the
+// person at the terminal confirms it.
+func checkVMCurrent(v store.Instance, id string, allowStale bool) error {
+	if v.MissingSince != nil {
+		// The control plane stopped listing it. Connecting anyway would be
+		// reaching for an address that belonged to something else by now.
+		return fmt.Errorf("%s (%s) is no longer listed by its control plane", v.Name, id)
+	}
+	// An address is only as current as the pass that recorded it.
+	//
+	// MissingSince alone was the whole check, and it only says the control
+	// plane answered and left this VM out. A reconcile that has been failing
+	// for days sets nothing: the rows keep their addresses, look exactly
+	// like fresh ones, and the address in them is where some VM used to be.
+	// On a tenant range that gets reused, that is somebody else's machine.
+	if age := time.Since(v.ObservedAt); age > openstack.StaleProbeWindow && !allowStale {
+		when := "never collected"
+		if !v.ObservedAt.IsZero() {
+			when = strutil.CompactDuration(age) + " ago"
+		}
+		if !cmdkit.IsTerminal() {
+			return fmt.Errorf("%s was last collected %s, older than the collector's schedule; "+
+				"run 'vctl openstack reconcile' or pass --allow-stale", openstack.NameOrID(v), when)
+		}
+		ui.Warnf(os.Stderr, "%s in %s was last collected %s — its address may not be current",
+			openstack.NameOrID(v), v.DeploymentID, when)
+		var ok bool
+		if err := huh.NewForm(huh.NewGroup(
+			huh.NewConfirm().
+				Title("Connect to " + openstack.NameOrID(v) + " on a stale record?").
+				Description(fmt.Sprintf("%s in %s, last collected %s", id, v.DeploymentID, when)).
+				Affirmative("Connect").
+				Negative("Cancel").
+				Value(&ok),
+		)).WithTheme(ui.FormTheme()).WithKeyMap(ui.FormKeyMap()).Run(); err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("not connecting to a stale record")
+		}
+	}
+	return nil
+}
+
+// vmTarget is how to reach the VM as one login user: its vouched address when
+// it has one, otherwise a hop through a same-project sibling that does.
+func vmTarget(ctx context.Context, a *app.App, st *store.Store, v store.Instance, u string) (*sshc.Target, error) {
+	policyIn := access.VMPolicy{
+		User: u, CARole: a.Cfg.CARole, OperatorNets: a.Cfg.OperatorNetworks,
+	}
+	tgt, err := access.VMTarget(v.Name, v.Addresses, policyIn)
+	if err == nil {
+		return tgt, nil
+	}
+	// Tenant-only is not always the end: a same-project sibling holding
+	// a port on the same tenant network is a hop this data does vouch
+	// for. The read is the database, never the stored reading — the
+	// sibling's address is about to be dialed.
+	if !errors.Is(err, access.ErrNoVouchedAddress) {
+		return nil, err
+	}
+	siblings, serr := st.Instances(ctx, store.InstanceFilter{
+		DeploymentID: v.DeploymentID, ProjectIDs: []string{v.ProjectID},
+	})
+	if serr != nil {
+		// Still the primary condition (callers match on it), but the reason
+		// the jump search stopped is the store, and saying so is the difference
+		// between "add a floating IP" and "the database is down".
+		return nil, fmt.Errorf("%w — and the search for a jump host failed: %v", err, serr)
+	}
+	via, viaAddr, tenantAddr, ok := osdomain.TenantJump(v, siblings, a.Cfg.OperatorNetworks)
+	if !ok {
+		return nil, fmt.Errorf("%w — and no ACTIVE VM on its tenant network carries one to jump through", err)
+	}
+	ui.Infof(os.Stderr, "%s is tenant-only — dialing %s directly, falling back through %s (%s)",
+		openstack.NameOrID(v), tenantAddr, openstack.NameOrID(*via), viaAddr)
+	return access.VMTargetVia(v.Name, tenantAddr, openstack.NameOrID(*via), viaAddr, policyIn), nil
+}
+
+// connectVM walks the login candidates for the VM and connects as the first
+// one it accepts.
 //
 // Host key policy follows whether somebody is present, not the flag's shape.
 //
@@ -263,118 +380,32 @@ func withLiveStatus(ctx context.Context, st invcache.Reader, cands []store.Serve
 //
 // A physical host has both doors: the positional form prompts, --server does
 // not. Here the terminal is what says which one this is.
-func sshVM(ctx context.Context, env cmdkit.Env, selector, user, farm string, allowStale bool) error {
-	id, ok := access.NovaID(selector)
-	if !ok {
-		return fmt.Errorf("--vm takes a Nova instance id or openstack:///<id>, not %q; "+
-			"run 'vctl openstack vm' to find it", selector)
+func connectVM(ctx context.Context, a *app.App, st *store.Store, v store.Instance, user string) error {
+	// A named user is exact; an unnamed one is a walk — root first, then
+	// what the image name implies, then the configured default. Only an
+	// authentication refusal advances it: a route that is down answers the
+	// same for every user.
+	cands := []string{user}
+	if user == "" {
+		cands = osdomain.LoginCandidates(v.ImageName, a.Cfg.SSHDefaultUser)
 	}
-	return env.WithStore(ctx, false, func(a *app.App, st *store.Store) error {
-		deployment := ""
-		if farm != "" {
-			resolved, err := openstack.ResolveFarmID(ctx, a, st, farm)
-			if err != nil {
-				return err
-			}
-			deployment = resolved
+	policy := access.HostKeyStrict
+	if cmdkit.IsTerminal() {
+		policy = access.HostKeyPrompt
+	}
+	_, err := access.TryLoginUsers(cands, func(u string) error {
+		tgt, terr := vmTarget(ctx, a, st, v, u)
+		if terr != nil {
+			return terr
 		}
-		v, err := openstack.OneVM(ctx, st, id, deployment)
-		if err != nil {
-			return err
-		}
-		if v.MissingSince != nil {
-			// The control plane stopped listing it. Connecting anyway would be
-			// reaching for an address that belonged to something else by now.
-			return fmt.Errorf("%s (%s) is no longer listed by its control plane", v.Name, id)
-		}
-		// An address is only as current as the pass that recorded it.
-		//
-		// MissingSince alone was the whole check, and it only says the control
-		// plane answered and left this VM out. A reconcile that has been failing
-		// for days sets nothing: the rows keep their addresses, look exactly
-		// like fresh ones, and the address in them is where some VM used to be.
-		// On a tenant range that gets reused, that is somebody else's machine.
-		if age := time.Since(v.ObservedAt); age > openstack.StaleProbeWindow && !allowStale {
-			when := "never collected"
-			if !v.ObservedAt.IsZero() {
-				when = strutil.CompactDuration(age) + " ago"
-			}
-			if !cmdkit.IsTerminal() {
-				return fmt.Errorf("%s was last collected %s, older than the collector's schedule; "+
-					"run 'vctl openstack reconcile' or pass --allow-stale", openstack.NameOrID(v), when)
-			}
-			ui.Warnf(os.Stderr, "%s in %s was last collected %s — its address may not be current",
-				openstack.NameOrID(v), v.DeploymentID, when)
-			var ok bool
-			if err := huh.NewForm(huh.NewGroup(
-				huh.NewConfirm().
-					Title("Connect to " + openstack.NameOrID(v) + " on a stale record?").
-					Description(fmt.Sprintf("%s in %s, last collected %s", id, v.DeploymentID, when)).
-					Affirmative("Connect").
-					Negative("Cancel").
-					Value(&ok),
-			)).WithTheme(ui.FormTheme()).WithKeyMap(ui.FormKeyMap()).Run(); err != nil {
-				return err
-			}
-			if !ok {
-				return fmt.Errorf("not connecting to a stale record")
-			}
-		}
-		// A named user is exact; an unnamed one is a walk — root first, then
-		// what the image name implies, then the configured default. Only an
-		// authentication refusal advances it: a route that is down answers the
-		// same for every user.
-		cands := []string{user}
-		if user == "" {
-			cands = osdomain.LoginCandidates(v.ImageName, a.Cfg.SSHDefaultUser)
-		}
-		target := func(u string) (*sshc.Target, error) {
-			policyIn := access.VMPolicy{
-				User: u, CARole: a.Cfg.CARole, OperatorNets: a.Cfg.OperatorNetworks,
-			}
-			tgt, err := access.VMTarget(v.Name, v.Addresses, policyIn)
-			if err == nil {
-				return tgt, nil
-			}
-			// Tenant-only is not always the end: a same-project sibling holding
-			// a port on the same tenant network is a hop this data does vouch
-			// for. The read is the database, never the stored reading — the
-			// sibling's address is about to be dialed.
-			if !errors.Is(err, access.ErrNoVouchedAddress) {
-				return nil, err
-			}
-			siblings, serr := st.Instances(ctx, store.InstanceFilter{
-				DeploymentID: v.DeploymentID, ProjectIDs: []string{v.ProjectID},
-			})
-			if serr != nil {
-				return nil, err
-			}
-			via, viaAddr, tenantAddr, ok := osdomain.TenantJump(v, siblings, a.Cfg.OperatorNetworks)
-			if !ok {
-				return nil, fmt.Errorf("%w — and no ACTIVE VM on its tenant network carries one to jump through", err)
-			}
-			ui.Infof(os.Stderr, "%s is tenant-only — dialing %s directly, falling back through %s (%s)",
-				openstack.NameOrID(v), tenantAddr, openstack.NameOrID(*via), viaAddr)
-			return access.VMTargetVia(v.Name, tenantAddr, openstack.NameOrID(*via), viaAddr, policyIn), nil
-		}
-		policy := access.HostKeyStrict
-		if cmdkit.IsTerminal() {
-			policy = access.HostKeyPrompt
-		}
-		_, err = access.TryLoginUsers(cands, func(u string) error {
-			tgt, terr := target(u)
-			if terr != nil {
-				return terr
-			}
-			ui.Infof(os.Stderr, "connecting to %s (%s@%s) — VM in %s, project %s",
-				tgt.Name, tgt.User, tgt.Addr, v.DeploymentID, orUnknown(v.ProjectName))
-			return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
-		}, func(rejectedUser, next string) {
-			ui.Warnf(os.Stderr, "%s rejected login user %q — trying %q (image %s)",
-				openstack.NameOrID(v), rejectedUser, next, orUnknown(v.ImageName))
-		})
-		return err
+		ui.Infof(os.Stderr, "connecting to %s (%s@%s) — VM in %s, project %s",
+			tgt.Name, tgt.User, tgt.Addr, v.DeploymentID, orUnknown(v.ProjectName))
+		return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+	}, func(rejectedUser, next string) {
+		ui.Warnf(os.Stderr, "%s rejected login user %q — trying %q (image %s)",
+			openstack.NameOrID(v), rejectedUser, next, orUnknown(v.ImageName))
 	})
+	return err
 }
 
 func orUnknown(s string) string {

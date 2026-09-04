@@ -267,7 +267,37 @@ func ipStatusState(status string) ui.State {
 	}
 }
 
-// ipBindWGCmd records which WireGuard endpoint a VIP fronts.
+// ipBindWGCmd wires `ip bind-wg`; the body is runIPBindWG.
+func ipBindWGCmd(env cmdkit.Env) *cobra.Command {
+	var opts ipBindWGOptions
+	cmd := &cobra.Command{
+		Use:   "bind-wg <ip>",
+		Short: "Record which WireGuard endpoint an address fronts",
+		Long: `bind-wg states the WireGuard endpoint a VIP belongs to, so the
+dashboard stops guessing it from label text.
+
+Name the endpoint as host/interface — the same pair 'vctl wg graph' prints. It
+is stored as that interface's public key.
+
+  vctl ip bind-wg 192.0.2.10 --endpoint sre-lb/wg1
+  vctl ip bind-wg 192.0.2.10 --clear`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runIPBindWG(cmd.Context(), env, args, opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "owning endpoint as host/interface, e.g. sre-lb/wg1")
+	cmd.Flags().BoolVar(&opts.clear, "clear", false, "remove the binding and go back to guessing from labels")
+	return cmdkit.Gate(cmd, "ip")
+}
+
+// ipBindWGOptions is the bound flag set of `ip bind-wg`.
+type ipBindWGOptions struct {
+	endpoint string
+	clear    bool
+}
+
+// runIPBindWG records which WireGuard endpoint a VIP fronts.
 //
 // The dashboard needs to know which endpoint an address belongs to. Until this
 // existed it worked it out by asking whether the endpoint's display label
@@ -284,57 +314,36 @@ func ipStatusState(status string) ui.State {
 // The endpoint is named as host/interface because that is what an operator can
 // read off `vctl wg graph`; the public key it resolves to is what gets stored,
 // since that is the identity the rest of the schema uses.
-func ipBindWGCmd(env cmdkit.Env) *cobra.Command {
-	var endpoint string
-	var clear bool
-	cmd := &cobra.Command{
-		Use:   "bind-wg <ip>",
-		Short: "Record which WireGuard endpoint an address fronts",
-		Long: `bind-wg states the WireGuard endpoint a VIP belongs to, so the
-dashboard stops guessing it from label text.
-
-Name the endpoint as host/interface — the same pair 'vctl wg graph' prints. It
-is stored as that interface's public key.
-
-  vctl ip bind-wg 192.0.2.10 --endpoint sre-lb/wg1
-  vctl ip bind-wg 192.0.2.10 --clear`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			ip := strings.TrimSpace(args[0])
-			if net.ParseIP(ip) == nil {
-				return fmt.Errorf("not an IP address: %q", ip)
-			}
-			if clear == (endpoint != "") {
-				return fmt.Errorf("pass exactly one of --endpoint or --clear")
-			}
-			return cmdkit.WithStorePort(env, ctx, true, func(_ *app.App, st ipStore) error {
-				key := ""
-				if !clear {
-					var err error
-					if key, err = resolveWGEndpointKey(ctx, st, endpoint); err != nil {
-						return err
-					}
-				}
-				ok, err := st.IPAllocSetOwnerKey(ctx, ip, key)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return fmt.Errorf("%s is not in the IP ledger; add it with vctl ip set", ip)
-				}
-				if clear {
-					ui.Successf(os.Stdout, "cleared the endpoint binding for %s", ip)
-					return nil
-				}
-				ui.Successf(os.Stdout, "%s fronts %s (%s)", ip, endpoint, wireguard.ShortKey(key))
-				return nil
-			})
-		},
+func runIPBindWG(ctx context.Context, env cmdkit.Env, args []string, opts ipBindWGOptions) error {
+	ip := strings.TrimSpace(args[0])
+	if net.ParseIP(ip) == nil {
+		return fmt.Errorf("not an IP address: %q", ip)
 	}
-	cmd.Flags().StringVar(&endpoint, "endpoint", "", "owning endpoint as host/interface, e.g. sre-lb/wg1")
-	cmd.Flags().BoolVar(&clear, "clear", false, "remove the binding and go back to guessing from labels")
-	return cmdkit.Gate(cmd, "ip")
+	if opts.clear == (opts.endpoint != "") {
+		return fmt.Errorf("pass exactly one of --endpoint or --clear")
+	}
+	return cmdkit.WithStorePort(env, ctx, true, func(_ *app.App, st ipStore) error {
+		key := ""
+		if !opts.clear {
+			var err error
+			if key, err = resolveWGEndpointKey(ctx, st, opts.endpoint); err != nil {
+				return err
+			}
+		}
+		ok, err := st.IPAllocSetOwnerKey(ctx, ip, key)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%s is not in the IP ledger; add it with vctl ip set", ip)
+		}
+		if opts.clear {
+			ui.Successf(os.Stdout, "cleared the endpoint binding for %s", ip)
+			return nil
+		}
+		ui.Successf(os.Stdout, "%s fronts %s (%s)", ip, opts.endpoint, wireguard.ShortKey(key))
+		return nil
+	})
 }
 
 // resolveWGEndpointKey turns "host/iface" into that interface's public key.

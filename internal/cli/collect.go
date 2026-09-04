@@ -42,28 +42,34 @@ func finalFlushOnShutdown(
 	if err := flush(ctx); err != nil {
 		ui.Warnf(os.Stderr, "final flush on shutdown: %v", err)
 	}
-	// Anything still held is not going to get its session now; write it under
-	// whichever mode is in force so a clean stop does not silently drop it.
-	rest := held.drain()
-	if len(rest) == 0 {
-		return
-	}
-	var (
-		n   int
-		err error
-	)
-	if requireSession {
-		// Held events with no session by now are host churn nobody will attribute
-		// (the same events the grace path drops); the attributed insert stores the
-		// ones that did get a session and skips the rest by design.
-		n, _, err = st.InsertKernelEventsAttributed(ctx, rest)
-	} else {
-		n, err = st.InsertKernelEvents(ctx, rest)
-	}
+	n, err := drainHeld(ctx, held, st, requireSession)
 	*total += n
 	if err != nil {
 		ui.Warnf(os.Stderr, "final drain on shutdown failed: %v", err)
 	}
+}
+
+// drainHeld writes whatever is still inside its attribution grace when the
+// collector stops — under whichever mode is in force, so a clean stop does
+// not silently drop events the operator was told are captured. Held events
+// with no session by now are host churn nobody will attribute: with
+// --require-session the attributed insert stores the ones that did get a
+// session and skips the rest by design; without it everything is stored.
+//
+// Both stop paths (signal and end of input) go through here. The end-of-input
+// path once used the attributed insert regardless of the mode, so with
+// --require-session=false a batch re-held after a failed write was skipped at
+// EOF while the signal path would have stored it.
+func drainHeld(ctx context.Context, held *attributionHold, st audit.Ingestor, requireSession bool) (int, error) {
+	rest := held.drain()
+	if len(rest) == 0 {
+		return 0, nil
+	}
+	if requireSession {
+		n, _, err := st.InsertKernelEventsAttributed(ctx, rest)
+		return n, err
+	}
+	return st.InsertKernelEvents(ctx, rest)
 }
 
 // Tetragon JSON event subset (from `tetra getevents -o json`). Only the fields
@@ -148,72 +154,26 @@ type collectOptions struct {
 }
 
 func runCollect(cmd *cobra.Command, env cmdkit.Env, opts collectOptions) error {
+	// Before touching the database: a non-positive batch made make() panic on a
+	// negative and flushed on every event at zero. The hold sizes itself from
+	// the same number, so one refusal here covers both.
+	if opts.batch <= 0 {
+		return fmt.Errorf("--batch must be > 0 (got %d)", opts.batch)
+	}
 	_, adb, err := env.Audit()
 	if err != nil {
 		return err
 	}
-	return adb.Ingesting(cmd.Context(), func(st audit.Ingestor) error {
-		ctx := cmd.Context()
-		var r io.Reader = os.Stdin
-		if opts.from != "" {
-			f, err := os.Open(opts.from)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			r = f
+	ctx := cmd.Context()
+	return adb.Ingesting(ctx, func(st audit.Ingestor) error {
+		r, closeInput, err := openCollectInput(opts)
+		if err != nil {
+			return err
 		}
+		defer closeInput()
 
-		// Scan lines in a goroutine so we can flush on a timer too — a live
-		// `tetra getevents` stream never hits EOF, and on a quiet host events
-		// would otherwise sit in the buffer until a full batch accumulates.
-		lines := make(chan string, 4096)
-		var scanErr error // read after lines closes (close happens-after assignment)
-		go func() {
-			sc := bufio.NewScanner(r)
-			sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
-			for sc.Scan() {
-				lines <- sc.Text()
-			}
-			scanErr = sc.Err()
-			close(lines)
-		}()
-
-		buf := make([]store.KernelEvent, 0, opts.batch)
-		total, skipped := 0, 0
-		held := newAttributionHold(opts.grace, opts.batch)
-		// flush writes the buffered batch (plus anything still held from
-		// earlier flushes). A write that fails must not throw the batch
-		// away: everything is re-held so the next flush retries it, bounded
-		// by the same cap and grace as an unattributed event. ctx is a
-		// parameter so the shutdown path can pass one that is not already
-		// cancelled.
-		flush := func(ctx context.Context) error {
-			pending := held.merge(buf)
-			buf = buf[:0]
-			if len(pending) == 0 {
-				return nil
-			}
-			var (
-				n      int
-				missed []int
-				err    error
-			)
-			if opts.requireSession {
-				n, missed, err = st.InsertKernelEventsAttributed(ctx, pending)
-			} else {
-				n, err = st.InsertKernelEvents(ctx, pending)
-			}
-			total += n
-			if err != nil {
-				// The write failed — retry the whole batch on the next flush
-				// rather than dropping events the operator was told are captured.
-				held.holdAll(pending)
-				return err
-			}
-			held.hold(pending, missed)
-			return nil
-		}
+		lines, scanErr := scanLines(r)
+		c := newCollector(st, opts)
 
 		ticker := time.NewTicker(opts.flushInterval)
 		defer ticker.Stop()
@@ -224,58 +184,157 @@ func runCollect(cmd *cobra.Command, env cmdkit.Env, opts collectOptions) error {
 				// instantly and throw the buffer away. Give the final write its
 				// own short deadline off a live context so a restart still lands
 				// what is buffered.
-				finalFlushOnShutdown(flush, held, st, opts.requireSession, &total)
+				finalFlushOnShutdown(c.flush, c.held, c.st, c.opts.requireSession, &c.total)
 				return ctx.Err()
 			case <-ticker.C:
-				if err := flush(ctx); err != nil {
+				if err := c.flush(ctx); err != nil {
 					ui.Warnf(os.Stderr, "flush: %v", err)
 				}
 			case line, ok := <-lines:
 				if !ok {
-					if err := flush(ctx); err != nil {
-						return err
-					}
-					// Don't report success if the input stream errored (read
-					// failure, or a line over the 8MiB buffer) — that would
-					// silently mask dropped audit events.
-					if scanErr != nil {
-						return fmt.Errorf("input scan aborted after %d events: %w", total, scanErr)
-					}
-					// One last attempt for anything still inside its grace, so a
-					// clean shutdown does not throw away events whose session was
-					// about to appear.
-					if rest := held.drain(); len(rest) > 0 {
-						if n, _, err := st.InsertKernelEventsAttributed(ctx, rest); err == nil {
-							total += n
-						}
-					}
-					ui.Successf(os.Stderr, "ingested %d kernel events (%d unparsed, %d unattributable)",
-						total, skipped, held.Dropped())
-					return nil
+					return c.finish(ctx, scanErr)
 				}
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				var te tetraEvent
-				if err := json.Unmarshal([]byte(line), &te); err != nil {
-					skipped++
-					continue
-				}
-				ev, ok := mapTetra(te, opts.host, opts.serial)
-				if !ok {
-					skipped++
-					continue
-				}
-				buf = append(buf, ev)
-				if len(buf) >= opts.batch {
-					if err := flush(ctx); err != nil {
-						ui.Warnf(os.Stderr, "flush: %v", err)
-					}
-				}
+				c.ingest(ctx, line)
 			}
 		}
 	})
+}
+
+// openCollectInput is the event source: the --from file when one was given,
+// otherwise stdin. The returned func releases it; stdin has nothing to release.
+func openCollectInput(opts collectOptions) (io.Reader, func(), error) {
+	if opts.from == "" {
+		return os.Stdin, func() {}, nil
+	}
+	f, err := os.Open(opts.from)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, func() { f.Close() }, nil
+}
+
+// scanLines hands the input over a line at a time. It scans in a goroutine so
+// the caller can flush on a timer too — a live `tetra getevents` stream never
+// hits EOF, and on a quiet host events would otherwise sit in the buffer until
+// a full batch accumulates. The returned func reports the scan error; read it
+// only after lines closes (close happens-after the assignment).
+func scanLines(r io.Reader) (<-chan string, func() error) {
+	lines := make(chan string, 4096)
+	var scanErr error // read after lines closes (close happens-after assignment)
+	go func() {
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+		scanErr = sc.Err()
+		close(lines)
+	}()
+	return lines, func() error { return scanErr }
+}
+
+// collector is the batch between the input and the store: the events read since
+// the last flush, the ones still inside their attribution grace, and the counts
+// the final summary reports.
+type collector struct {
+	st   audit.Ingestor
+	opts collectOptions
+
+	buf     []store.KernelEvent
+	held    *attributionHold
+	total   int
+	skipped int
+}
+
+func newCollector(st audit.Ingestor, opts collectOptions) *collector {
+	return &collector{
+		st:   st,
+		opts: opts,
+		buf:  make([]store.KernelEvent, 0, opts.batch),
+		held: newAttributionHold(opts.grace, opts.batch),
+	}
+}
+
+// flush writes the buffered batch (plus anything still held from earlier
+// flushes). A write that fails must not throw the batch away: everything is
+// re-held so the next flush retries it, bounded by the same cap and grace as an
+// unattributed event. ctx is a parameter so the shutdown path can pass one that
+// is not already cancelled.
+func (c *collector) flush(ctx context.Context) error {
+	pending := c.held.merge(c.buf)
+	c.buf = c.buf[:0]
+	if len(pending) == 0 {
+		return nil
+	}
+	var (
+		n      int
+		missed []int
+		err    error
+	)
+	if c.opts.requireSession {
+		n, missed, err = c.st.InsertKernelEventsAttributed(ctx, pending)
+	} else {
+		n, err = c.st.InsertKernelEvents(ctx, pending)
+	}
+	c.total += n
+	if err != nil {
+		// The write failed — retry the whole batch on the next flush
+		// rather than dropping events the operator was told are captured.
+		c.held.holdAll(pending)
+		return err
+	}
+	c.held.hold(pending, missed)
+	return nil
+}
+
+// ingest parses one Tetragon line into the batch and flushes once the batch is
+// full. A blank, unparsable or unmappable line counts as skipped.
+func (c *collector) ingest(ctx context.Context, line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	var te tetraEvent
+	if err := json.Unmarshal([]byte(line), &te); err != nil {
+		c.skipped++
+		return
+	}
+	ev, ok := mapTetra(te, c.opts.host, c.opts.serial)
+	if !ok {
+		c.skipped++
+		return
+	}
+	c.buf = append(c.buf, ev)
+	if len(c.buf) >= c.opts.batch {
+		if err := c.flush(ctx); err != nil {
+			ui.Warnf(os.Stderr, "flush: %v", err)
+		}
+	}
+}
+
+// finish is the end-of-input stop path: the last flush, the verdict on the
+// input, whatever is still held, then the summary. scanErr is the scanner's
+// report, safe to read here because lines has closed.
+func (c *collector) finish(ctx context.Context, scanErr func() error) error {
+	if err := c.flush(ctx); err != nil {
+		return err
+	}
+	// Don't report success if the input stream errored (read failure, or a
+	// line over the 8MiB buffer) — that would silently mask dropped audit
+	// events.
+	if err := scanErr(); err != nil {
+		return fmt.Errorf("input scan aborted after %d events: %w", c.total, err)
+	}
+	// One last attempt for anything still inside its grace, so a clean
+	// shutdown does not throw away events whose session was about to appear.
+	n, err := drainHeld(ctx, c.held, c.st, c.opts.requireSession)
+	c.total += n
+	if err != nil {
+		ui.Warnf(os.Stderr, "final drain at end of input failed: %v", err)
+	}
+	ui.Successf(os.Stderr, "ingested %d kernel events (%d unparsed, %d unattributable)",
+		c.total, c.skipped, c.held.Dropped())
+	return nil
 }
 
 func mapTetra(te tetraEvent, hostOverride, serial string) (store.KernelEvent, bool) {

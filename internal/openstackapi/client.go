@@ -10,7 +10,6 @@ package openstackapi
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +17,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/ghdwlsgur/vctl/internal/httpc"
 )
 
 // Credentials authenticate against one deployment's Keystone.
@@ -57,12 +58,12 @@ func New(ctx context.Context, c Credentials, insecure bool, timeout time.Duratio
 	if c.AuthURL == "" || c.Username == "" || c.Password == "" {
 		return nil, fmt.Errorf("auth url, username and password are all required")
 	}
-	tr := &http.Transport{}
-	if insecure {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 -- caller's explicit per-deployment choice
+	hc, err := httpc.NewClient(timeout, httpc.TLS{Insecure: insecure})
+	if err != nil {
+		return nil, err
 	}
 	cl := &Client{
-		http:    &http.Client{Timeout: timeout, Transport: tr},
+		http:    hc,
 		authURL: strings.TrimRight(c.AuthURL, "/"),
 	}
 	if err := cl.authenticate(ctx, c); err != nil {
@@ -292,17 +293,16 @@ func (c *Client) getJSON(ctx context.Context, u string, into any) error {
 		return err
 	}
 	req.Header.Set("X-Auth-Token", c.token)
-	resp, err := c.http.Do(req)
+	resp, err := httpc.Do(c.http, req, 32<<20)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.Status != http.StatusOK {
 		// The host only. A service catalog URL can carry a project id, and
 		// errors end up in the database.
-		return fmt.Errorf("%s: %s", hostOf(u), resp.Status)
+		return fmt.Errorf("%s: %s", hostOf(u), resp.StatusText)
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(into)
+	return resp.JSON(into)
 }
 
 func preferInternal(eps []endpoint) []endpoint {

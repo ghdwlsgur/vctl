@@ -15,56 +15,67 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/ui"
 )
 
-// openstackFarmDoctorCmd wires `farm doctor`: pick the deployment, run the
-// diagnosis (internal/openstack/doctor, where it can be tested without a
-// terminal, a Vault and a live control plane), and render or export it.
+// openstackFarmDoctorCmd wires `farm doctor`; the body is
+// runOpenStackFarmDoctor.
 func openstackFarmDoctorCmd(env cmdkit.Env) *cobra.Command {
-	var insecure bool
-	var asJSON bool
+	var opts openstackFarmDoctorOptions
 	cmd := &cobra.Command{
 		Use:               "doctor [deployment]",
 		Short:             "Check what a reconcile would need, without changing anything",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := cmdkit.CommandOutput(cmd, asJSON)
-			if err != nil {
-				return err
-			}
-			return env.WithStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
-				ctx := cmd.Context()
-				farms, ok, err := farmChoicesForPick(ctx, a, st)
-				if err != nil || !ok {
-					return err
-				}
-				pick, err := pickFarm(farms, firstArg(args), "Check a deployment")
-				if err != nil {
-					return err
-				}
-				d := doctor.Doctor{
-					Creds: farmcreds.Store{KV: a.Vault, Prefix: a.Cfg.VaultFarmPrefix},
-					Runs:  st,
-				}
-				checks := d.Diagnose(ctx, pick.ID, insecure)
-				if format != cmdkit.OutputTable {
-					if err := cmdkit.WriteStructured(format, farmDoctorExport{
-						Farm: pick.ID, Name: pick.Name, Checks: checks,
-					}); err != nil {
-						return err
-					}
-				} else {
-					renderFarmDoctor(os.Stdout, pick, checks)
-				}
-				if n := doctor.Failed(checks); n > 0 {
-					return fmt.Errorf("%s: %d check(s) failed", pick.ID, n)
-				}
-				return nil
-			})
+			return runOpenStackFarmDoctor(cmd, env, args, opts)
 		},
 	}
-	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification, to tell a certificate problem from a reachability one")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output (for dataset/agent export)")
+	cmd.Flags().BoolVar(&opts.insecure, "insecure", false, "skip TLS verification, to tell a certificate problem from a reachability one")
+	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	return cmdkit.SupportsStructuredOutput(cmd)
+}
+
+// openstackFarmDoctorOptions is the bound flag set of `farm doctor`.
+type openstackFarmDoctorOptions struct {
+	insecure bool
+	asJSON   bool
+}
+
+// runOpenStackFarmDoctor is the body of `farm doctor`: pick the deployment, run the
+// diagnosis (internal/openstack/doctor, where it can be tested without a
+// terminal, a Vault and a live control plane), and render or export it.
+func runOpenStackFarmDoctor(cmd *cobra.Command, env cmdkit.Env, args []string, opts openstackFarmDoctorOptions) error {
+	format, err := cmdkit.CommandOutput(cmd, opts.asJSON)
+	if err != nil {
+		return err
+	}
+	return env.WithStore(cmd.Context(), false, func(a *app.App, st *store.Store) error {
+		ctx := cmd.Context()
+		farms, ok, err := farmChoicesForPick(ctx, a, st)
+		if err != nil || !ok {
+			return err
+		}
+		pick, err := pickFarm(farms, firstArg(args), "Check a deployment")
+		if err != nil {
+			return err
+		}
+		d := doctor.Doctor{
+			Creds: farmcreds.Store{KV: a.Vault, Prefix: a.Cfg.VaultFarmPrefix},
+			Runs:  st,
+		}
+		checks := d.Diagnose(ctx, pick.ID, opts.insecure)
+		if format != cmdkit.OutputTable {
+			if err := cmdkit.WriteStructured(format, farmDoctorExport{
+				Farm: pick.ID, Name: pick.Name, Checks: checks,
+			}); err != nil {
+				return err
+			}
+		} else {
+			renderFarmDoctor(os.Stdout, pick, checks)
+		}
+		if n := doctor.Failed(checks); n > 0 {
+			return fmt.Errorf("%s: %d check(s) failed", pick.ID, n)
+		}
+		return nil
+	})
 }
 
 // farmDoctorExport is the wire shape: the deployment the checks are about,

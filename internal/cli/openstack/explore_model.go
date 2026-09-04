@@ -379,6 +379,12 @@ func (m *exploreModel) restoreSelection(s exploreSelection) {
 	m.scrollRows()
 }
 
+// onKey routes one keypress. Whichever mode is open — a filter being typed,
+// the login prompt, a detail with or without its console — owns every key
+// while it is up, so it is asked first. Only the bare browser reaches the
+// table below, where each cluster of keys belongs to one pane or one concern
+// and goes to the handler named for it; the keys that mean the same thing
+// wherever the cursor is stay here.
 func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Typing a filter comes first: every shortcut below is also a letter, and a
 	// browser that quits because somebody filtered for "quay" is a browser
@@ -402,83 +408,114 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "tab", "shift+tab", "left", "right", "h", "l":
-		// h and l are the vim pair for the same move. The right pane's kind is
-		// on v and s instead, because a browser where "h" means both "left" and
-		// "hosts" has to guess which one was meant.
-		if msg.String() == "left" || msg.String() == "h" {
-			m.focus = paneFarms
-		} else if msg.String() == "right" || msg.String() == "l" {
-			m.focus = paneRows
-		} else if m.focus == paneFarms {
-			m.focus = paneRows
-		} else {
-			m.focus = paneFarms
-		}
+		m.switchFocus(msg)
 		return m, nil
-	case "up", "k":
-		m.move(-1)
-		return m, nil
-	case "down", "j":
-		m.move(1)
-		return m, nil
-	case "pgup":
-		m.move(-m.rowsHeight())
-		return m, nil
-	case "pgdown":
-		m.move(m.rowsHeight())
-		return m, nil
-	case "home", "g":
-		m.moveTo(0)
-		return m, nil
-	case "end", "G":
-		m.moveTo(1 << 30)
+	case "up", "k", "down", "j", "pgup", "pgdown", "home", "g", "end", "G":
+		m.moveByKey(msg)
 		return m, nil
 	case "v":
-		m.kind, m.rowCur, m.rowTop = kindVMs, 0, 0
-		m.focus = paneRows
+		m.showKind(kindVMs)
 		return m, nil
 	case "s":
-		m.kind, m.rowCur, m.rowTop = kindHosts, 0, 0
-		m.focus = paneRows
+		m.showKind(kindHosts)
 		return m, nil
 	case "/":
 		m.typing = true
 		return m, nil
 	case "r":
-		if m.data.NeedsLogin {
-			return m, nil
-		}
-		// Deliberately not on a timer. A screen that re-reads on its own moves
-		// the row somebody was about to open, and a browser nobody is looking at
-		// would keep a database busy for no one.
-		if m.refreshing {
-			return m, nil
-		}
-		m.refreshing, m.refreshErr = true, nil
-		return m, m.refreshCmd()
+		return m.onRefreshKey()
 	case "c":
-		if m.kind == kindVMs && m.focus == paneRows {
-			if vms := m.visibleVMs(); len(vms) > 0 {
-				v := vms[clampIndex(m.rowCur, len(vms))]
-				m.startConnect(&v, modeSubshell)
-			}
-		}
+		m.connectSelectedVM()
 		return m, nil
 	case "enter":
-		if m.focus == paneFarms {
-			m.focus = paneRows
-			m.rowCur, m.rowTop = 0, 0
-			return m, nil
-		}
-		m.openDetail()
+		m.openSelected()
 		return m, nil
 	}
 	return m, nil
 }
 
-// startConnect opens the login-user prompt for one VM. Nova records no login
-// user, so the one thing the browser cannot answer for you is asked, prefilled
-// with the config default.
+// switchFocus hands the keys to the pane the key names, or to the other one
+// when the key does not say.
+func (m *exploreModel) switchFocus(msg tea.KeyMsg) {
+	// h and l are the vim pair for the same move. The right pane's kind is
+	// on v and s instead, because a browser where "h" means both "left" and
+	// "hosts" has to guess which one was meant.
+	if msg.String() == "left" || msg.String() == "h" {
+		m.focus = paneFarms
+	} else if msg.String() == "right" || msg.String() == "l" {
+		m.focus = paneRows
+	} else if m.focus == paneFarms {
+		m.focus = paneRows
+	} else {
+		m.focus = paneFarms
+	}
+}
+
+// moveByKey moves the focused pane's cursor by what the key asks: one row, one
+// page, or to either end.
+func (m *exploreModel) moveByKey(msg tea.KeyMsg) {
+	switch msg.String() {
+	case "up", "k":
+		m.move(-1)
+	case "down", "j":
+		m.move(1)
+	case "pgup":
+		m.move(-m.rowsHeight())
+	case "pgdown":
+		m.move(m.rowsHeight())
+	case "home", "g":
+		m.moveTo(0)
+	case "end", "G":
+		m.moveTo(1 << 30)
+	}
+}
+
+// showKind switches what the right pane lists and puts the keys on it, from
+// the top.
+func (m *exploreModel) showKind(k exploreKind) {
+	m.kind, m.rowCur, m.rowTop = k, 0, 0
+	m.focus = paneRows
+}
+
+// onRefreshKey starts a background read of the fleet — unless one is already
+// running, or a read would need the login prompt the alternate screen cannot
+// show.
+func (m exploreModel) onRefreshKey() (tea.Model, tea.Cmd) {
+	if m.data.NeedsLogin {
+		return m, nil
+	}
+	// Deliberately not on a timer. A screen that re-reads on its own moves
+	// the row somebody was about to open, and a browser nobody is looking at
+	// would keep a database busy for no one.
+	if m.refreshing {
+		return m, nil
+	}
+	m.refreshing, m.refreshErr = true, nil
+	return m, m.refreshCmd()
+}
+
+// connectSelectedVM opens the login-user prompt for the VM under the cursor,
+// when the cursor is on one.
+func (m *exploreModel) connectSelectedVM() {
+	if m.kind == kindVMs && m.focus == paneRows {
+		if vms := m.visibleVMs(); len(vms) > 0 {
+			v := vms[clampIndex(m.rowCur, len(vms))]
+			m.startConnect(&v, modeSubshell)
+		}
+	}
+}
+
+// openSelected opens what the cursor is on: a farm into its rows pane, a row
+// into its detail.
+func (m *exploreModel) openSelected() {
+	if m.focus == paneFarms {
+		m.focus = paneRows
+		m.rowCur, m.rowTop = 0, 0
+		return
+	}
+	m.openDetail()
+}
+
 // vmRoute is how a connection reaches a VM: nothing extra for one with a
 // vouched address, and the tenant door plus its hop for one that only its
 // tenant network holds.
