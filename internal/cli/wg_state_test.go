@@ -50,7 +50,7 @@ func runModelJS(t *testing.T, body string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// The page is served as one document, so the two script files have to end up
+// The page is served as one document, so the script files have to end up
 // inside it. A missing tag would leave the browser asking for wg_model.js on a
 // route the server does not have, and the dashboard would come up blank with
 // nothing in the Go tests to say why.
@@ -60,14 +60,14 @@ func TestDashboardPageInlinesItsScripts(t *testing.T) {
 		t.Error("the served page still points at a script file; the inlining did not happen")
 	}
 	// A function from each file, so a silently-empty embed is caught too.
-	for _, want := range []string{"function focusVerdict", "function drawZones"} {
+	for _, want := range []string{"function focusVerdict", "function drawZones", "function renderLayers"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the served page is missing %q", want)
 		}
 	}
 	// Inlining is a text splice, so a "</script>" inside the JS would end the
 	// block early and drop the rest of the file into the document as markup.
-	for name, body := range map[string]string{"wg_model.js": wgModelJS, "wg_view.js": wgViewJS} {
+	for name, body := range map[string]string{"wg_model.js": wgModelJS, "wg_view.js": wgViewJS, "wg_layers.js": wgLayersJS} {
 		if strings.Contains(body, "</script") {
 			t.Errorf("%s contains a closing script tag; inlining it would truncate the page", name)
 		}

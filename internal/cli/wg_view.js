@@ -33,6 +33,10 @@ let tunnels = [], statusDots = new Map(), curTopo = null, lastTopo = null, vipFo
 let reading = { stats: {}, pollErrors: {}, at: 0 };
 // The current selection, in the shape focusClosure returns.
 let focusIf = null, focus = { ifaces: new Set(), nodes: new Set(), edges: new Set(), hubIfaces: new Set(), cidrs: new Set() };
+// viewMode picks the drawing: "hub" is the wiring around the hub below; "layers"
+// is the declared underlay with the overlay on top (wg_layers.js). It follows
+// ?view= so a link opens on the picture it was copied from.
+let viewMode = "hub";
 let canvasBase = { w: 800, h: 200 }, zoom = 1;
 
 function sizeCanvas(w, h) {
@@ -540,6 +544,14 @@ function drawHops({ gn, gd, gt, gf, grp }, geo, N, hub, { hops, startY, epPos, b
 // ---------- render ----------
 function render(topo) {
   curTopo = topo; svg.innerHTML = ""; tunnels = []; statusDots = new Map(); vipFocusNodes = new Map();
+  const aside = document.getElementById("derived");
+  if (viewMode === "layers") {
+    if (aside) aside.hidden = false;
+    renderLayers(svg, aside, topo, { mk, hot, esc, cssv, ifColor, sizeCanvas, kindLabel });
+    buildLegend(); buildKindKey(); applyStats();
+    return;
+  }
+  if (aside) aside.hidden = true;
   const { N, E, hub } = prep(topo);
   const gz = mk("g", {}, svg), gg = mk("g", {}, svg), gt = mk("g", {}, svg), gf = mk("g", {}, svg), gn = mk("g", {}, svg), gd = mk("g", {}, svg);
   if (!hub) {
@@ -750,6 +762,18 @@ function boot() {
   canvas = document.getElementById("canvas");
 
   initTheme();
+  viewMode = new URLSearchParams(location.search).get("view") === "layers" ? "layers" : "hub";
+  const viewBtn = document.getElementById("view-toggle");
+  const syncViewButton = () => { if (viewBtn) viewBtn.textContent = viewMode === "layers" ? "HUB" : "LAYERS"; };
+  syncViewButton();
+  if (viewBtn) viewBtn.addEventListener("click", () => {
+    viewMode = viewMode === "layers" ? "hub" : "layers";
+    const u = new URL(location.href);
+    if (viewMode === "layers") u.searchParams.set("view", "layers"); else u.searchParams.delete("view");
+    history.replaceState(null, "", u);
+    syncViewButton(); setFocus(null);
+    if (lastTopo) render(lastTopo);
+  });
   svg.addEventListener("click", e => { if (e.target === svg || e.target.classList.contains("zone")) setFocus(null); });
   document.getElementById("theme-toggle").addEventListener("click", () =>
     applyTheme(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light"));

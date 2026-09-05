@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -30,11 +31,16 @@ func wgGraphCmd(env cmdkit.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "graph",
 		Aliases: []string{"show"},
-		Short:   "Render the WireGuard topology (terminal or mermaid)",
+		Short:   "Render the WireGuard topology (terminal, mermaid or json)",
 		Long: `graph reads the collected WireGuard data (run 'vctl wg sync' first) and
 renders it as an aligned terminal summary (default) or a mermaid diagram
 (--format mermaid) you can paste into docs. Peers are matched to the far-end
-gateway by public key when both ends were collected.`,
+gateway by public key when both ends were collected.
+
+--format json writes the same topology the dashboard draws — collected
+gateways joined with the declared underlay ('vctl wg entity', 'vctl wg
+relation') and the derived failure domains, paths, SNAT requirements and
+gaps — so a script can assert on it without a browser.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return env.WithStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
 				ifaces, err := st.WGInterfaces(cmd.Context())
@@ -57,14 +63,28 @@ gateway by public key when both ends were collected.`,
 					fmt.Fprintln(os.Stdout, wgMermaid(ifaces, peers))
 				case "terminal", "":
 					renderWGTerminal(os.Stdout, ifaces, peers)
+				case "json":
+					// The dashboard's snapshot is the whole picture; a host filter
+					// would cut declared links off from one end, so it is refused
+					// rather than half-applied.
+					if hostFilter != "" {
+						return fmt.Errorf("--format json renders the whole topology; drop --host")
+					}
+					snap, err := loadDashboardSnapshot(cmd.Context(), st, func(f string, a ...any) { ui.Warnf(os.Stderr, f, a...) })
+					if err != nil {
+						return err
+					}
+					enc := json.NewEncoder(os.Stdout)
+					enc.SetIndent("", "  ")
+					return enc.Encode(snap.Topo)
 				default:
-					return fmt.Errorf("unknown --format %q (terminal|mermaid)", format)
+					return fmt.Errorf("unknown --format %q (terminal|mermaid|json)", format)
 				}
 				return nil
 			})
 		},
 	}
-	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal|mermaid")
+	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal|mermaid|json")
 	cmd.Flags().StringVar(&hostFilter, "host", "", "restrict to one gateway host")
 	cmdkit.RegisterCompletion(cmd, "host", cmdkit.CompleteInventoryHost(env))
 	return cmdkit.Gate(cmd, "wg")

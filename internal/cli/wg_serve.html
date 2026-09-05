@@ -227,7 +227,39 @@
   #tip{position:fixed;pointer-events:none;z-index:30;background:var(--panel);border:1px solid var(--ring);
     border-radius:5px;padding:9px 11px;font-size:11px;box-shadow:var(--shadow);
     opacity:0;transition:opacity .1s;max-width:340px}
-  #tip .t{font-weight:700;margin-bottom:3px;color:var(--ink)} #tip .m{color:var(--ink2);line-height:1.5}
+  #tip .t{font-weight:700;margin-bottom:3px;color:var(--ink)} #tip .m{color:var(--ink2);line-height:1.5;white-space:pre-line}
+  /* layers view — underlay boxes, overlay lines; every colour is a theme token */
+  .ly-site{fill:var(--panel2);stroke:var(--line)}
+  .ly-sitelab{fill:var(--muted);font-size:10px;letter-spacing:.14em;font-weight:700}
+  .ly-farm{fill:var(--panel);stroke:var(--ring);stroke-dasharray:4 3}
+  .ly-farmlab{fill:var(--ink2);font-size:10px;letter-spacing:.1em;font-weight:700}
+  .ly-host>rect{fill:var(--host-fill);stroke:var(--host-stroke);stroke-width:1.2}
+  .ly-hostlab{fill:var(--ink);font-size:11px;font-weight:700}
+  .ly-hostip{fill:var(--muted);font-size:9.5px;font-variant-numeric:tabular-nums}
+  .ly-row rect{fill:var(--vm-fill);stroke:var(--vm-stroke);stroke-width:.8}
+  .ly-row.ly-gateway rect{fill:var(--gateway-fill);stroke:var(--gateway-stroke)}
+  .ly-row.ly-physical-host rect{fill:var(--host-fill);stroke:var(--host-stroke)}
+  .ly-row.ly-unsynced rect{stroke-dasharray:3 2;fill:var(--external-fill)}
+  .ly-rowlab{fill:var(--ink);font-size:10px}
+  .ly-rowtag{fill:var(--muted);font-size:8.5px;letter-spacing:.06em}
+  .ly-net line{stroke:var(--netband-stroke);stroke-width:3;stroke-linecap:round;opacity:.85}
+  .ly-netlab{fill:var(--ink2);font-size:9.5px}
+  .ly-chip rect{fill:var(--external-fill);stroke:var(--external-stroke)}
+  .ly-chip.ly-edge rect{stroke:var(--acc)} .ly-chip.ly-egress rect{stroke:var(--c3)}
+  .ly-chip.ly-tray rect{stroke-dasharray:2 2}
+  .ly-chiplab{fill:var(--ink2);font-size:9.5px}
+  .ly-wire{fill:none;stroke-width:2;opacity:.75}
+  .ly-carry path{fill:none;stroke-width:1.6;stroke-dasharray:6 4;opacity:.8}
+  .ly-carry.ly-unsynced path{stroke-dasharray:2 3;opacity:.55}
+  .ly-snat{fill:var(--panel);stroke-width:2}
+  .ly-transit{fill:none;stroke:var(--muted);stroke-width:1;stroke-dasharray:1.5 3;opacity:.7}
+  #derived{position:absolute;z-index:9;right:16px;top:12px;width:300px;max-height:calc(100% - 24px);overflow:auto;
+    background:var(--canvas-tag-bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:11px;color:var(--ink2)}
+  #derived h2{margin:6px 0 4px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  #derived h2 span{font-weight:400;margin-left:6px;letter-spacing:0;text-transform:none}
+  #derived ol,#derived ul{margin:0;padding-left:16px} #derived li{margin:4px 0;color:var(--ink)} #derived .tk{color:var(--muted);font-size:10px}
+  #derived .ly-legend{display:grid;gap:3px} #derived .ly-legend i{display:inline-block;width:10px;height:3px;margin:0 6px 0 0;vertical-align:middle;border-radius:2px}
+  #derived .ly-snat-key{width:9px;height:9px;border-radius:50%;border:2px solid var(--ink2);background:transparent}
   @media(max-width:980px){
     header{gap:12px;flex-wrap:wrap}.brand{min-width:210px}#meta{order:3;width:100%;border-top:1px solid var(--line);padding-top:7px}
     .live-summary{margin-left:auto}.status-key{display:none}#toolbar{overflow-x:auto}.tool-spacer{min-width:12px}
@@ -273,6 +305,9 @@
        wording is the same; what changed is that its presence now means
        something. -->
   <div class="status-key" id="state-key" aria-label="tunnel state legend"></div>
+  <div class="view-controls" aria-label="view">
+    <button type="button" id="view-toggle" title="switch between the hub wiring and the layered architecture (underlay + overlay)">LAYERS</button>
+  </div>
   <div class="view-controls" aria-label="theme">
     <button type="button" id="theme-toggle" title="switch between dark and light">DARK</button>
   </div>
@@ -282,7 +317,7 @@
     <button type="button" id="zoom-in" aria-label="zoom in">+</button>
   </div>
 </div>
-<main id="canvas"><svg id="net" role="img" aria-label="WireGuard network architecture"></svg><pre id="errs"></pre><pre id="drift"></pre></main>
+<main id="canvas"><svg id="net" role="img" aria-label="WireGuard network architecture"></svg><pre id="errs"></pre><pre id="drift"></pre><aside id="derived" hidden aria-label="derived architecture facts"></aside></main>
 <div id="tip"></div>
 <!-- The model first, then the view: wg_view.js reads wg_model.js's declarations
      off the global scope, so the order is not cosmetic.
@@ -294,6 +329,7 @@
      gets driven without a database or SSH. A module script would not load over
      file:// and would take that second way away. -->
 <script src="wg_model.js"></script>
+<script src="wg_layers.js"></script>
 <script src="wg_view.js"></script>
 </body>
 </html>

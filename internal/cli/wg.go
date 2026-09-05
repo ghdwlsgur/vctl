@@ -25,7 +25,8 @@ func wgCmd(env cmdkit.Env) *cobra.Command {
 peers (topology edges) and per-peer runtime status, collected by SSHing into the
 gateways and running 'wg show'. No secrets are stored — only public keys.`,
 	}
-	cmd.AddCommand(wgSyncCmd(env), wgGraphCmd(env), wgMonitorCmd(env), wgServeCmd(env), wgEndpointCmd(env))
+	cmd.AddCommand(wgSyncCmd(env), wgGraphCmd(env), wgMonitorCmd(env), wgServeCmd(env), wgEndpointCmd(env),
+		wgEntityCmd(env), wgRelationCmd(env))
 	return cmd
 }
 
