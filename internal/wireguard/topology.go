@@ -52,6 +52,17 @@ type Node struct {
 	Warnings []string `json:"warnings,omitempty"`
 	Ifaces   []Iface  `json:"ifaces,omitempty"` // gateway interfaces, name-sorted
 
+	// Layer says which lane the node belongs to: "underlay" (sites, farms,
+	// hosts, networks, edges, egress) or "overlay" (tunnel endpoints). It is set
+	// only when declared topology exists, so a graph built from collection alone
+	// serialises exactly as it did before declarations were possible.
+	Layer string `json:"layer,omitempty"`
+
+	// Attrs carries kind-specific detail for declared entities — a network's
+	// cidr, an egress's public_ip — verbatim from net_entities. Collected nodes
+	// leave it empty; their facts have named fields above.
+	Attrs map[string]any `json:"attrs,omitempty"`
+
 	// PubKey is the endpoint's first interface key, kept for callers that want a
 	// single identity for the node. It is not the whole story — a gateway has a
 	// key per interface, and Ifaces carries all of them. Matching a VIP against
@@ -127,12 +138,18 @@ type Agg struct {
 	Count int    `json:"count"`
 }
 
-// Link is a physical/management adjacency derived from servers.jump_via,
-// resolved so both ends are a gateway hostname or an aggregate node id.
+// Link is a non-tunnel adjacency. The first three kinds are derived from
+// collection and inventory; the rest are declared relations passed through from
+// net_relations, so a new relation kind reaches the page without a code change.
 type Link struct {
 	Source string `json:"source"`
 	Target string `json:"target"`
-	Kind   string `json:"kind"` // management | placement | network
+	Kind   string `json:"kind"` // management | placement | network | placed-on | member-of | attached-to | transits | carries
+
+	// Attrs is the declared relation's detail — for `carries`, the access method
+	// (direct | proxy | dnat) and what that method needs (snat_at, oif, bind,
+	// backend, vip ...). Derived links leave it empty.
+	Attrs map[string]any `json:"attrs,omitempty"`
 }
 
 // Vip is an operator-recorded virtual IP from the IPAM ledger (kind=dnat-vip):
@@ -159,6 +176,10 @@ type Topology struct {
 	Aggs  []Agg  `json:"aggs"`
 	Links []Link `json:"links"`
 	Vips  []Vip  `json:"vips,omitempty"`
+	// Derived is present only when something was declared: the failure
+	// domains, hop chains and SNAT requirements the declarations imply, computed
+	// on every build so they cannot drift from the rows they came from.
+	Derived *Derived `json:"derived,omitempty"`
 
 	// CollectedAt is when `vctl wg sync` last wrote the rows this graph is drawn
 	// from — not when the page rendered, and not when live polling last ran.
@@ -249,11 +270,28 @@ func cidr24(ip string) (string, bool) {
 // closures over shared state — the closures are methods here, which is what
 // they were reaching for.
 func Build(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, servers []store.Server, annotations []store.WGEndpointAnnotation) (Topology, map[TunnelKey]string) {
+	return BuildWithDeclared(ifaces, peers, servers, annotations, nil, nil)
+}
+
+// BuildWithDeclared is Build plus the declared topology: the underlay entities
+// and typed relations an operator recorded in net_entities/net_relations. They
+// become nodes and links alongside the collected graph, reconciled where they
+// describe the same object (a declared host that inventory already placed, a
+// declared tunnel that is a collected interface). With nothing declared the
+// result is identical to Build.
+func BuildWithDeclared(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, servers []store.Server, annotations []store.WGEndpointAnnotation,
+	entities []store.NetEntity, relations []store.NetRelation) (Topology, map[TunnelKey]string) {
 	b := newBuilder(ifaces, peers, servers, annotations)
+	b.entities, b.relations = entities, relations
 	b.addGateways()
 	b.addPeerEdges()
 	b.addAggregates()
 	b.addLinks()
+	b.addDeclared()
+	if len(entities) > 0 || len(relations) > 0 {
+		d := Derive(b.topo)
+		b.topo.Derived = &d
+	}
 	b.topo.CollectedAt = CollectedAt(ifaces)
 	return b.topo, b.edgeFor
 }
@@ -276,6 +314,11 @@ type builder struct {
 	endpointIP map[string]int                        // endpoint IP → how many peers claim it
 	ifByHost   map[string][]Iface                    // gateway → its interfaces, name-sorted
 	gwHosts    map[string]bool                       // hosts that own at least one interface
+
+	// Declared topology, consumed by addDeclared. Nil when the caller is plain
+	// Build, in which case that phase is a no-op.
+	entities  []store.NetEntity
+	relations []store.NetRelation
 
 	topo      Topology
 	nodeSeen  map[string]bool
@@ -725,6 +768,176 @@ func (b *builder) addLinks() {
 			return b.topo.Links[x].Source < b.topo.Links[y].Source
 		}
 		return b.topo.Links[x].Target < b.topo.Links[y].Target
+	})
+}
+
+// addDeclared lays the declared underlay and pattern relations over the
+// collected graph.
+//
+// Two reconciliations keep one real object from becoming two nodes. A declared
+// physical host whose name inventory already placed (`host|<name>`) enriches
+// that node instead of standing beside it. A declared tunnel whose attrs name a
+// collected gateway interface is that gateway: the tunnel is the same object
+// seen from the declaration side, so its relations attach to the gateway node.
+// Everything else declared is new to the graph and is added as-is.
+//
+// Nothing here runs when nothing was declared, which is what keeps Build's
+// output byte-identical to before this phase existed.
+func (b *builder) addDeclared() {
+	if len(b.entities) == 0 && len(b.relations) == 0 {
+		return
+	}
+
+	// Collected nodes get a lane first so the page can filter by layer across
+	// the whole graph, not only the declared part of it.
+	byID := make(map[string]int, len(b.topo.Nodes))
+	for i := range b.topo.Nodes {
+		n := &b.topo.Nodes[i]
+		if n.Kind == "physical-host" {
+			n.Layer = "underlay"
+		} else {
+			n.Layer = "overlay"
+		}
+		byID[n.ID] = i
+	}
+
+	// alias maps a declared entity id to the node that represents it, which is
+	// the entity's own id except where it was reconciled onto a collected node.
+	// A peer that inventory annotated as a physical host is drawn as an
+	// endpoint node keyed by public key, so a declaration naming that host has
+	// to find it through the annotation's inventory hostname, not by id. The
+	// endpoint index cannot answer this: it knows keys that own an interface,
+	// and a peer-only key is exactly the case here.
+	endpointHost := make(map[string]int)
+	for i := range b.topo.Nodes {
+		n := &b.topo.Nodes[i]
+		if n.Kind != "physical-host" || !strings.HasPrefix(n.ID, "endpoint|") {
+			continue
+		}
+		if a, ok := b.annByKey[strings.TrimPrefix(n.ID, "endpoint|")]; ok && a.InventoryHost != "" {
+			endpointHost[a.InventoryHost] = i
+		}
+	}
+
+	alias := make(map[string]string, len(b.entities))
+	for _, e := range b.entities {
+		switch e.Kind {
+		case "physical-host":
+			name := strings.TrimPrefix(e.ID, "host/")
+			idx, ok := byID[PhysicalHostNodeID(name)]
+			if !ok {
+				idx, ok = endpointHost[name]
+			}
+			if !ok {
+				// A physical machine that terminates tunnels itself is already
+				// drawn as the gateway the sync saw. The declaration is about
+				// that node, not a box beside it.
+				if gw := b.canonicalHost(name); b.nodeSeen[gw] {
+					idx, ok = byID[gw]
+				}
+			}
+			if ok {
+				n := &b.topo.Nodes[idx]
+				n.Layer = "underlay"
+				n.DC = strutil.FirstNonEmpty(n.DC, e.Site)
+				if len(e.Attrs) > 0 {
+					n.Attrs = e.Attrs
+				}
+				alias[e.ID] = n.ID
+				continue
+			}
+		case "tunnel":
+			if host, _ := e.Attrs["host"].(string); host != "" {
+				if gw := b.canonicalHost(host); b.nodeSeen[gw] {
+					alias[e.ID] = gw
+					continue
+				}
+			}
+		case "vm":
+			// A declared VM that names a collected gateway by inventory hostname
+			// is that gateway; the declaration adds placement and attrs to the
+			// node the sync produced rather than drawing the machine twice.
+			if inv, _ := e.Attrs["inventory"].(string); inv != "" {
+				if gw := b.canonicalHost(inv); b.nodeSeen[gw] {
+					idx := byID[gw]
+					n := &b.topo.Nodes[idx]
+					n.DC = strutil.FirstNonEmpty(n.DC, e.Site)
+					if len(e.Attrs) > 0 {
+						n.Attrs = e.Attrs
+					}
+					alias[e.ID] = gw
+					continue
+				}
+			}
+		}
+		layer := "underlay"
+		if e.Kind == "tunnel" {
+			layer = "overlay"
+		}
+		// Declared-only physical hosts take the id shape collected ones have, so
+		// the page never has to know which of the two it is looking at.
+		id, label := e.ID, e.ID
+		if e.Kind == "physical-host" {
+			label = strings.TrimPrefix(e.ID, "host/")
+			id = PhysicalHostNodeID(label)
+		}
+		n := Node{
+			ID: id, Label: strutil.FirstNonEmpty(e.Label, label), Kind: e.Kind,
+			DC: e.Site, Layer: layer,
+		}
+		if len(e.Attrs) > 0 {
+			n.Attrs = e.Attrs
+		}
+		b.addNode(n)
+		byID[n.ID] = len(b.topo.Nodes) - 1
+		alias[e.ID] = n.ID
+	}
+
+	entityByID := make(map[string]store.NetEntity, len(b.entities))
+	for _, e := range b.entities {
+		entityByID[e.ID] = e
+	}
+	for _, r := range b.relations {
+		src, sok := alias[r.SrcID]
+		dst, dok := alias[r.DstID]
+		if !sok || !dok {
+			// The foreign keys make this unreachable from the database; kept so a
+			// hand-built input cannot produce a dangling link.
+			continue
+		}
+		l := Link{Source: src, Target: dst, Kind: r.Kind}
+		if len(r.Attrs) > 0 {
+			l.Attrs = r.Attrs
+		}
+		// A tunnel that aliased onto its gateway loses its own node, and with it
+		// the interface name. The link keeps it: a carries link knows which
+		// interface carries, which is what a NAT rule is keyed by.
+		if e, ok := entityByID[r.SrcID]; ok && e.Kind == "tunnel" {
+			if iface, _ := e.Attrs["iface"].(string); iface != "" {
+				if _, has := l.Attrs["iface"]; !has {
+					attrs := make(map[string]any, len(l.Attrs)+1)
+					for k, v := range l.Attrs {
+						attrs[k] = v
+					}
+					attrs["iface"] = iface
+					l.Attrs = attrs
+				}
+			}
+		}
+		b.topo.Links = append(b.topo.Links, l)
+	}
+
+	// Kind is the tiebreak: one tunnel may both transit an edge and carry a
+	// network to the same target, and the two links must land in a stable order.
+	sort.Slice(b.topo.Links, func(x, y int) bool {
+		a, c := b.topo.Links[x], b.topo.Links[y]
+		if a.Source != c.Source {
+			return a.Source < c.Source
+		}
+		if a.Target != c.Target {
+			return a.Target < c.Target
+		}
+		return a.Kind < c.Kind
 	})
 }
 

@@ -24,7 +24,10 @@ var wgModelJS string
 //go:embed wg_view.js
 var wgViewJS string
 
-// wgServeHTML is the dashboard as served: one document, with both script files
+//go:embed wg_layers.js
+var wgLayersJS string
+
+// wgServeHTML is the dashboard as served: one document, with the script files
 // inlined where their <script src> tags sit in the page.
 //
 // They are separate files on disk because that is what makes them testable —
@@ -44,6 +47,7 @@ func inlineDashboardScripts() []byte {
 	page := wgServePage
 	for _, s := range []struct{ tag, body string }{
 		{`<script src="wg_model.js"></script>`, wgModelJS},
+		{`<script src="wg_layers.js"></script>`, wgLayersJS},
 		{`<script src="wg_view.js"></script>`, wgViewJS},
 	} {
 		page = strings.Replace(page, s.tag, "<script>\n"+s.body+"</script>", 1)

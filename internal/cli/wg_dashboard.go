@@ -71,7 +71,19 @@ func loadDashboardSnapshot(ctx context.Context, st *store.Store, warn func(forma
 	}
 	annotations = enrichWGAnnotations(ifaces, servers, annotations, instances, osHosts)
 
-	topo, edgeFor := wireguard.Build(ifaces, peers, servers, annotations)
+	// Declared topology is the operator's record of the underlay and the access
+	// patterns over it. Like the other enrichments its absence leaves the
+	// collected graph intact, so a read failure warns rather than stops.
+	entities, err := st.NetEntities(ctx)
+	if err != nil {
+		warn("list declared entities (run vctl sync --migrate): %v", err)
+	}
+	relations, err := st.NetRelations(ctx)
+	if err != nil {
+		warn("list declared relations (run vctl sync --migrate): %v", err)
+	}
+
+	topo, edgeFor := wireguard.BuildWithDeclared(ifaces, peers, servers, annotations, entities, relations)
 	// DNAT VIPs come from the IPAM ledger, which is a different record with a
 	// different owner — a failure to read it is not a failure to draw the
 	// fabric, so it is dropped rather than warned about.
