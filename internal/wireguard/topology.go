@@ -236,10 +236,11 @@ type EdgeStat struct {
 
 // EdgeSideStat is one gateway's measurement of a tunnel.
 type EdgeSideStat struct {
-	RxPS float64 `json:"rx"`
-	TxPS float64 `json:"tx"`
-	HS   int64   `json:"hs"`
-	At   int64   `json:"at"` // unix seconds of the poll this came from
+	RateReady bool    `json:"-"` // two successful samples are available
+	RxPS      float64 `json:"rx"`
+	TxPS      float64 `json:"tx"`
+	HS        int64   `json:"hs"`
+	At        int64   `json:"at"` // unix seconds of the poll this came from
 }
 
 // cidr24 masks an IPv4 address to its /24 network ("10.20.0.33" → "10.20.0.0/24").

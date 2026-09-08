@@ -124,6 +124,7 @@ func (s *State) Record(host string, peers []PeerSample, at time.Time, edgeFor ma
 		}
 		if old, ok := s.prev[k]; ok {
 			side.RxPS, side.TxPS = ComputeRate(old, cur)
+			side.RateReady = true
 		}
 		s.prev[k] = cur
 
@@ -170,6 +171,34 @@ func (s *State) Fail(host string, err error) {
 }
 
 // snapshotJSON renders the current stats/errors/drift as one SSE payload.
+// LiveSnapshot owns its maps; renderers may read it without holding State's lock.
+type LiveSnapshot struct {
+	Edges  map[string]EdgeStat
+	Errors map[string]string
+	Drift  []DriftPeer
+}
+
+func (s *State) Snapshot() LiveSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := LiveSnapshot{Edges: map[string]EdgeStat{}, Errors: map[string]string{}, Drift: s.DriftList()}
+	for id, stat := range s.stats {
+		copyStat := stat
+		copyStat.Sides = map[string]EdgeSideStat{}
+		for host, side := range stat.Sides {
+			copyStat.Sides[host] = side
+		}
+		out.Edges[id] = copyStat
+	}
+	for host, err := range s.errs {
+		out.Errors[host] = err
+	}
+	for i := range out.Drift {
+		out.Drift[i].AllowedIPs = append([]string(nil), out.Drift[i].AllowedIPs...)
+	}
+	return out
+}
+
 func (s *State) SnapshotJSON() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
