@@ -60,6 +60,40 @@ For other distributions, download the `linux_amd64.tar.gz` or
 [GitHub Releases](https://github.com/ghdwlsgur/vctl/releases/latest), extract
 `vctl`, and place it in a directory on `PATH` such as `/usr/local/bin`.
 
+## WireGuard terminal map
+
+`vctl wg tui` explores the collected WireGuard topology without a web server.
+Run `vctl wg sync <gateway...>` first if the inventory has not been collected.
+
+```bash
+vctl wg tui
+vctl wg tui gateway-a gateway-b --interval 2
+```
+
+The Korean-language dashboard shows one row per pair of sites. Selecting a row
+expands a fixed reading order: network → gateway → WireGuard → gateway → network.
+The diagram includes handshake status and traffic labeled by direction. An
+80-column terminal is enough; narrower terminals stack the path vertically.
+Multiple tunnels between the same sites stay together, with left/right selecting
+which tunnel to inspect. Unknown-site endpoints are kept separate.
+
+Network names and addresses come from explicit `attached-to` relations to network
+entities. Otherwise the diagram says the network is unknown and, if available,
+separately displays destinations configured in the opposite peer's AllowedIPs.
+Management IPs, guessed inventory /24s and carried routes are not treated as proof
+of local network membership. A handshake does not prove routed reachability.
+
+Use up/down or `j`/`k` to select a site connection, Enter to fold/unfold its diagram,
+and `d` for technical details (interfaces, AllowedIPs, placement and declared paths).
+PageUp/PageDown scrolls details; `d` or Esc returns. Use `/` to search, Enter to
+finish filtering, Esc to clear and `q` to quit. The header summarizes the full
+topology even when the list is filtered. Rates require two recent successful
+samples and use one observer per tunnel to avoid double counting.
+Host arguments limit live polling; the full saved topology remains visible.
+Topology changes require a new sync and reopening the TUI. Unknown live peers
+are counted in the header. Redirected output prints the saved topology only,
+without opening SSH sessions. Normal inventory/Vault access is still required.
+
 ## Architecture
 
 ```mermaid
