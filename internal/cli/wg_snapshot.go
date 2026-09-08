@@ -9,20 +9,15 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
 
-// The dashboard, in three pieces: what is drawn, what moves on it, and what
-// serves it.
+// The WireGuard views — `wg graph`, `wg tui`, `wg monitor` — share one reading
+// of the database. It is kept apart from what moves on it (wg_poller.go) and
+// from what draws it, so the reading can be exercised without a Vault token or
+// a reachable gateway.
 //
-// All three used to be one RunE. That function opened the store, ran six
-// queries, joined two inventories, resolved SSH targets, started a goroutine per
-// gateway, mounted three routes and handled shutdown — so none of it could be
-// exercised without a database, a Vault token and twelve reachable gateways, and
-// in practice none of it was. This file is the first piece.
-//
-// dashboardSnapshot is one reading of the database, assembled into the drawing
-// the page asks for. Nothing here polls, listens, or contacts a gateway: the
-// picture is what the last `vctl wg sync` recorded, and the traffic on it
-// arrives separately and later.
-type dashboardSnapshot struct {
+// topologySnapshot is that reading, assembled into the drawing a view asks for.
+// Nothing here polls or contacts a gateway: the picture is what the last
+// `vctl wg sync` recorded, and the traffic on it arrives separately and later.
+type topologySnapshot struct {
 	Topo wireguard.Topology
 	// EdgeFor maps a polled tunnel back to the edge it is drawn as. The poller
 	// needs it to file a sample against the right line; it is produced here
@@ -31,16 +26,16 @@ type dashboardSnapshot struct {
 	EdgeFor map[wireguard.TunnelKey]string
 }
 
-// loadDashboardSnapshot reads everything the drawing needs, in one pass over one
+// loadTopologySnapshot reads everything the drawing needs, in one pass over one
 // store.
 //
 // warn takes the failures that do not stop the drawing. Site grouping, endpoint
 // annotations and the OpenStack join each make the picture better and none of
-// them make it wrong by their absence — a dashboard that refuses to open because
+// them make it wrong by their absence — a view that refuses to open because
 // one enrichment query failed is worse than one that opens with plainer boxes.
 // The two that do stop it are the interfaces and peers themselves, because
 // without them there is nothing to draw.
-func loadDashboardSnapshot(ctx context.Context, st *store.Store, warn func(format string, args ...any)) (*dashboardSnapshot, error) {
+func loadTopologySnapshot(ctx context.Context, st *store.Store, warn func(format string, args ...any)) (*topologySnapshot, error) {
 	ifaces, err := st.WGInterfaces(ctx)
 	if err != nil {
 		return nil, err
@@ -96,5 +91,5 @@ func loadDashboardSnapshot(ctx context.Context, st *store.Store, warn func(forma
 			})
 		}
 	}
-	return &dashboardSnapshot{Topo: topo, EdgeFor: edgeFor}, nil
+	return &topologySnapshot{Topo: topo, EdgeFor: edgeFor}, nil
 }

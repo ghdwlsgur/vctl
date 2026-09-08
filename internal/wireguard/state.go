@@ -1,7 +1,6 @@
 package wireguard
 
 import (
-	"encoding/json"
 	"sort"
 	"sync"
 	"time"
@@ -170,7 +169,6 @@ func (s *State) Fail(host string, err error) {
 	s.errs[host] = err.Error()
 }
 
-// snapshotJSON renders the current stats/errors/drift as one SSE payload.
 // LiveSnapshot owns its maps; renderers may read it without holding State's lock.
 type LiveSnapshot struct {
 	Edges  map[string]EdgeStat
@@ -197,17 +195,6 @@ func (s *State) Snapshot() LiveSnapshot {
 		out.Drift[i].AllowedIPs = append([]string(nil), out.Drift[i].AllowedIPs...)
 	}
 	return out
-}
-
-func (s *State) SnapshotJSON() []byte {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	payload := map[string]any{"edges": s.stats, "errors": s.errs, "at": time.Now().Unix()}
-	if len(s.drifted) > 0 {
-		payload["drift"] = s.DriftList()
-	}
-	b, _ := json.Marshal(payload)
-	return b
 }
 
 // driftList returns the drifted peers in a stable order. Callers hold the lock.

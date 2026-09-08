@@ -7,12 +7,12 @@ import (
 )
 
 // Monitor runs repeated polls against gateways for the live views
-// (`vctl wg serve`, `vctl wg monitor`) and records transitions instead of
+// (`vctl wg tui`, `vctl wg monitor`) and records transitions instead of
 // polls.
 //
 // Why this is not just Execute on a timer: Execute audits every call, which is
 // right for access — a command someone decided to run — and wrong for
-// telemetry. `wg serve` polls every 2s per gateway, so three gateways write
+// telemetry. `wg tui` polls every 2s per gateway, so three gateways write
 // roughly 43,000 access_log rows a day. Production peaked at 87 rows/min while
 // it was running. None of those rows record a decision anyone made, and all of
 // them bury the rows that do.

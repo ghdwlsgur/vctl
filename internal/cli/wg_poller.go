@@ -11,15 +11,15 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/wireguard"
 )
 
-// livePoller is the moving half of the dashboard: an SSH session to every
+// livePoller is the moving half of the live views (`wg tui`, `wg monitor`): an SSH session to every
 // gateway, `wg show all dump` on a fixed interval, and the tunnel state that
 // falls out of it.
 //
 // It is separate from the snapshot because it is the expensive half and the one
 // with teeth. The drawing is a database read that costs nothing to repeat; this
-// holds connections open to production gateways for as long as the page is up,
-// which is why `make wg-down` exists and why stopping it has to be one call
-// rather than a cancel buried in a request handler.
+// holds connections open to production gateways for as long as the view is up,
+// which is why stopping it has to be one call rather than a cancel buried
+// somewhere in a handler.
 type livePoller struct {
 	targets  []monTarget
 	mon      *access.Monitor
@@ -33,9 +33,9 @@ type livePoller struct {
 //
 // A gateway that cannot be resolved is warned about and dropped rather than
 // failing the command: eleven reachable gateways and one that moved is a
-// dashboard worth opening, and the page draws the missing one as unobserved. All
+// map worth opening, and the view draws the missing one as unobserved. All
 // of them failing is different — there is then nothing live to show, and
-// starting a server that animates nothing is worse than saying so.
+// opening a view that animates nothing is worse than saying so.
 func wgPollTargets(ctx context.Context, a *app.App, st *store.Store, args []string, warn func(format string, args ...any)) ([]monTarget, error) {
 	hosts, err := wgMonitorHosts(ctx, st, args, false)
 	if err != nil {
@@ -71,10 +71,6 @@ func newLivePoller(mon *access.Monitor, targets []monTarget, edgeFor map[wiregua
 // before any of them have landed — an unpolled gateway reports as unobserved,
 // which is a state the page draws rather than an absence it has to guess at.
 func (p *livePoller) State() *wireguard.State { return p.state }
-
-// Gateways is how many machines this is holding sessions to, for the line the
-// command prints when it starts.
-func (p *livePoller) Gateways() int { return len(p.targets) }
 
 // Start launches one goroutine per gateway and returns a stop function.
 //

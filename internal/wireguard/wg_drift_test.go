@@ -1,15 +1,13 @@
 package wireguard
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 )
 
 // A peer added since the last `vctl wg sync` is on the wire but not in the
-// graph. record used to drop it — "ignore until re-serve" — so with a six-day-old
-// snapshot the page was blind to every new tunnel and said nothing about it.
+// graph. record used to drop it — "ignore until re-sync" — so with a six-day-old
+// snapshot the view was blind to every new tunnel and said nothing about it.
 func TestDriftReportsPeersMissingFromTheSnapshot(t *testing.T) {
 	st := NewState()
 	now := time.Now()
@@ -22,16 +20,11 @@ func TestDriftReportsPeersMissingFromTheSnapshot(t *testing.T) {
 			AllowedIPs: []string{"10.9.0.0/24"}, Handshake: now.Unix()},
 	}, now, edgeFor)
 
-	var frame struct {
-		Drift []DriftPeer `json:"drift"`
+	drift := st.Snapshot().Drift
+	if len(drift) != 1 {
+		t.Fatalf("drift = %+v, want just the peer with no row behind it", drift)
 	}
-	if err := json.Unmarshal(st.SnapshotJSON(), &frame); err != nil {
-		t.Fatalf("unmarshal frame: %v", err)
-	}
-	if len(frame.Drift) != 1 {
-		t.Fatalf("drift = %+v, want just the peer with no row behind it", frame.Drift)
-	}
-	got := frame.Drift[0]
+	got := drift[0]
 	if got.PubKey != "BRANDNEW" || got.Host != "gw-a" || got.Iface != "wg0" {
 		t.Errorf("drift entry does not identify the peer: %+v", got)
 	}
@@ -52,7 +45,7 @@ func TestDriftIgnoresPeersTheSnapshotAlreadyHas(t *testing.T) {
 		st.Record("gw-a", []PeerSample{{Iface: "wg0", PubKey: "KNOWN", Handshake: now.Unix()}},
 			now.Add(time.Duration(i)*time.Second), edgeFor)
 	}
-	if strings.Contains(string(st.SnapshotJSON()), "drift") {
+	if len(st.Snapshot().Drift) != 0 {
 		t.Error("a peer that is in the snapshot was reported as drift")
 	}
 }
@@ -64,19 +57,19 @@ func TestDriftClearsOnceTheSnapshotCatchesUp(t *testing.T) {
 	now := time.Now()
 	before := map[TunnelKey]string{}
 	st.Record("gw-a", []PeerSample{{Iface: "wg0", PubKey: "NEW", Handshake: now.Unix()}}, now, before)
-	if !strings.Contains(string(st.SnapshotJSON()), "drift") {
+	if len(st.Snapshot().Drift) == 0 {
 		t.Fatal("the new peer was not reported at all")
 	}
 
 	after := map[TunnelKey]string{{"gw-a", "wg0", "NEW"}: "gw|A|B"}
 	st.Record("gw-a", []PeerSample{{Iface: "wg0", PubKey: "NEW", Handshake: now.Unix()}}, now, after)
-	if strings.Contains(string(st.SnapshotJSON()), "drift") {
+	if len(st.Snapshot().Drift) != 0 {
 		t.Error("drift survived the snapshot catching up")
 	}
 }
 
 // The list lands on screen, so its order has to be stable. An unstable order
-// would reshuffle the panel every two seconds and read as churn rather than as a
+// would reshuffle the view every two seconds and read as churn rather than as a
 // fixed set of things to fix.
 func TestDriftListIsOrderedStably(t *testing.T) {
 	st := NewState()
@@ -104,11 +97,11 @@ func TestDriftListIsOrderedStably(t *testing.T) {
 	}
 }
 
-// An empty frame must not carry the key at all, so the page's panel stays hidden
-// instead of rendering an empty box.
-func TestFrameOmitsDriftWhenThereIsNone(t *testing.T) {
+// An idle state reports no drift at all, so a view can hide its notice rather
+// than render an empty one.
+func TestSnapshotHasNoDriftWhenThereIsNone(t *testing.T) {
 	st := NewState()
-	if strings.Contains(string(st.SnapshotJSON()), "drift") {
-		t.Error("an idle frame carries a drift key")
+	if d := st.Snapshot().Drift; len(d) != 0 {
+		t.Errorf("an idle snapshot carries drift: %+v", d)
 	}
 }

@@ -3,11 +3,12 @@
 // them, and how much of that a collection actually established.
 //
 // It is separate from the things that draw it. There are three of those — the
-// terminal graph, the Mermaid export, and the browser dashboard — and each one
-// used to reach into the same file that built the model. The dashboard reaches
-// further than that: it re-derives structure in JavaScript, so "why is this
-// node in the wrong place" could be a question about the model or about the
-// page, with no seam to ask it at.
+// terminal graph, the Mermaid export, and the terminal map (`wg tui`) — and
+// each one used to reach into the same file that built the model. A browser
+// dashboard that once drew it went further still: it re-derived structure in
+// JavaScript, so "why is this node in the wrong place" could be a question
+// about the model or about the page, with no seam to ask it at. The seam is
+// this package.
 //
 // Nothing here renders. No colours, no widths, no terminal, no HTML.
 package wireguard
@@ -38,7 +39,7 @@ type Iface struct {
 	PubKey string `json:"pub,omitempty"`
 }
 
-// Node is one vertex in the dashboard graph: a collected gateway interface's
+// Node is one vertex in the topology graph: a collected gateway interface's
 // host, or an external (uncollected) peer endpoint.
 type Node struct {
 	ID       string   `json:"id"`
@@ -129,7 +130,7 @@ func TunnelEdgeID(localKey, peerKey string) string {
 }
 
 // Agg is a set of non-gateway inventory hosts in one dc collapsed by their
-// primary-IP /24, so the dashboard can show "the rest of the site" without
+// primary-IP /24, so the map can show "the rest of the site" without
 // hardcoding hosts. Only dcs that own at least one WG gateway are emitted.
 type Agg struct {
 	ID    string `json:"id"`
@@ -257,7 +258,7 @@ func cidr24(ip string) (string, bool) {
 }
 
 // Build turns the collected interfaces/peers plus the server inventory
-// into the dashboard graph. Peers whose public key matches another collected
+// into the topology graph. Peers whose public key matches another collected
 // interface become a single gateway↔gateway edge (canonical side = lexically
 // smaller host); the rest hang off their gateway as external nodes. Gateway
 // nodes carry their dc/ip and interface list. Non-gateway hosts in any dc that
@@ -364,7 +365,7 @@ func newBuilder(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, servers 
 		b.gwHosts[i.Host] = true
 		b.ifByHost[i.Host] = append(b.ifByHost[i.Host], Iface{Name: i.Iface, Port: i.ListenPort, PubKey: i.PublicKey})
 	}
-	// Name-sorted so the dashboard's port order is stable across polls.
+	// Name-sorted so a view's port order is stable across polls.
 	for h := range b.ifByHost {
 		sort.Slice(b.ifByHost[h], func(x, y int) bool { return b.ifByHost[h][x].Name < b.ifByHost[h][y].Name })
 	}

@@ -8,7 +8,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
-// enrichWGAnnotations joins the two inventories the dashboard already reads:
+// enrichWGAnnotations joins the two inventories the WireGuard views already read:
 // a WireGuard endpoint's underlay address and OpenStack's VM address identify
 // the same VM, while Nova's hypervisor name identifies its physical compute
 // host. The result is ephemeral page data; operator annotations remain the

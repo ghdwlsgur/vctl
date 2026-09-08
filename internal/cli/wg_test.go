@@ -348,65 +348,6 @@ func hasTopologyLink(topo wireguard.Topology, source, target, kind string) bool 
 	return false
 }
 
-func TestWGServeDashboardWiringLayout(t *testing.T) {
-	html := string(wgServeHTML)
-
-	// The dashboard renders the approved wiring layout: hub iface ports feeding
-	// orthogonal elbows through NAT into per-zone endpoints and reachable-CIDR
-	// bands, with a /32 mesh stack and a WG_BOOT snapshot-replay contract.
-	for _, want := range []string{
-		"window.WG_BOOT",
-		"hubPort",
-		"reachable ranges",
-		"mesh ×",
-		"NAT / WAN",
-		"EDGE / NAT",
-		"kindLabel",
-		"focusClosure",
-		`id="zoom-fit"`,
-		`id="live-summary"`,
-		`fetch("topology")`,
-		`EventSource("events")`,
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("dashboard is missing %q", want)
-		}
-	}
-	if strings.Contains(html, " Q ") || strings.Contains(html, " C ") {
-		t.Error("WireGuard tunnels must stay orthogonal (no curves)")
-	}
-}
-
-// TestWGServeInterfaceFilterIsolatesOneTunnel locks the filter contract: picking
-// an interface highlights that tunnel alone. The dashboard used to walk onward
-// through transit nodes, so selecting wg1 also lit wg9 behind a relay and
-// reported "+N connected" — the opposite of isolating what was clicked.
-func TestWGServeInterfaceFilterIsolatesOneTunnel(t *testing.T) {
-	html := string(wgServeHTML)
-
-	// "hops" on its own is the mesh renderer's own variable, so key off the label
-	// the closure walk used to print instead.
-	if strings.Contains(html, "connected") {
-		t.Error("filter must not report extra connected interfaces; focus is one tunnel")
-	}
-	// A closure that walks the graph needs a queue and an incident-edge index.
-	// Their absence is what keeps the selection exact.
-	for _, banned := range []string{"const incident=new Map()", "queue.shift()"} {
-		if strings.Contains(html, banned) {
-			t.Errorf("filter walks beyond the selected tunnel: found %q", banned)
-		}
-	}
-	// The legend must be built from drawn geometry. Interfaces the hub-centric
-	// layout never draws have nothing to highlight, so a chip for one would dim
-	// the whole diagram and light nothing.
-	if !strings.Contains(html, `svg.querySelectorAll("[data-ifc],[data-ifs]")`) {
-		t.Error("legend must be built from the drawn canvas, not from every topology edge")
-	}
-	if strings.Contains(html, "(curTopo.edges||[]).forEach(e=>ifs.add(e.iface))") {
-		t.Error("legend is back to enumerating every topology edge; undrawn ifaces get dead chips")
-	}
-}
-
 func TestComputeRate(t *testing.T) {
 	t0 := time.Unix(1_000_000, 0)
 	prev := wireguard.Sample{Rx: 1000, Tx: 500, At: t0}

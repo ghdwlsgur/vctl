@@ -17,7 +17,7 @@ import (
 )
 
 // netEntityIDPrefix is the id prefix each kind must carry. Ids are how relations
-// and the dashboard address an entity, so a readable, kind-revealing id is worth
+// and the views address an entity, so a readable, kind-revealing id is worth
 // enforcing: `farm/x` cannot be declared as a vm by mistake.
 var netEntityIDPrefix = map[string]string{
 	"site": "site/", "farm": "farm/", "physical-host": "host/", "vm": "vm/",
@@ -90,7 +90,7 @@ func wgEntityCmd(env cmdkit.Env) *cobra.Command {
 		Short: "Declare underlay and overlay entities the topology is drawn from",
 		Long: `entity declares a site, farm, physical host, VM, network, tunnel, edge or
 egress as a first-class object. Relations between entities ('wg relation') give
-the dashboard the underlay under the tunnels and the patterns laid over them,
+the terminal map the underlay under the tunnels and the patterns laid over them,
 so a new farm or tunnel is a row, not a code change.
 
 Ids carry their kind: site/<n>, farm/<n>, host/<n>, vm/<n>, tunnel/<n>,
