@@ -23,7 +23,7 @@ func wgEndpointCmd(env cmdkit.Env) *cobra.Command {
 		Short: "Manage endpoint identity and VM-to-physical-host placement",
 		Long: `endpoint attaches a stable identity to a WireGuard public key.
 For VM endpoints, --parent records the physical inventory host that runs the
-VM, allowing 'wg serve' to draw the endpoint together with its host network.`,
+VM, allowing 'wg tui' to draw the endpoint together with its host network.`,
 	}
 	cmd.AddCommand(wgEndpointListCmd(env), wgEndpointSetCmd(env), wgEndpointRmCmd(env))
 	return cmd

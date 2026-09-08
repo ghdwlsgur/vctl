@@ -37,7 +37,7 @@ renders it as an aligned terminal summary (default) or a mermaid diagram
 (--format mermaid) you can paste into docs. Peers are matched to the far-end
 gateway by public key when both ends were collected.
 
---format json writes the same topology the dashboard draws — collected
+--format json writes the same topology 'wg tui' draws — collected
 gateways joined with the declared underlay ('vctl wg entity', 'vctl wg
 relation') and the derived failure domains, paths, SNAT requirements and
 gaps — so a script can assert on it without a browser.`,
@@ -64,13 +64,13 @@ gaps — so a script can assert on it without a browser.`,
 				case "terminal", "":
 					renderWGTerminal(os.Stdout, ifaces, peers)
 				case "json":
-					// The dashboard's snapshot is the whole picture; a host filter
+					// The snapshot is the whole picture; a host filter
 					// would cut declared links off from one end, so it is refused
 					// rather than half-applied.
 					if hostFilter != "" {
 						return fmt.Errorf("--format json renders the whole topology; drop --host")
 					}
-					snap, err := loadDashboardSnapshot(cmd.Context(), st, func(f string, a ...any) { ui.Warnf(os.Stderr, f, a...) })
+					snap, err := loadTopologySnapshot(cmd.Context(), st, func(f string, a ...any) { ui.Warnf(os.Stderr, f, a...) })
 					if err != nil {
 						return err
 					}

@@ -62,7 +62,7 @@ func runWGTUI(cmd *cobra.Command, env cmdkit.Env, args []string, opts wgTUIOptio
 	}
 	defer st.Close()
 	warn := func(f string, a ...any) { ui.Warnf(os.Stderr, f, a...) }
-	snap, err := loadDashboardSnapshot(cmd.Context(), st, warn)
+	snap, err := loadTopologySnapshot(cmd.Context(), st, warn)
 	if err != nil {
 		return err
 	}
