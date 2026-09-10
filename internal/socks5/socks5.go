@@ -23,32 +23,30 @@ import (
 // Dialer opens the connection a client asked for. network is always "tcp".
 type Dialer func(ctx context.Context, network, address string) (net.Conn, error)
 
-// Serve accepts on ln until ctx is done or ln fails, handling each client in
-// its own goroutine. It closes ln when ctx is done and returns ctx.Err().
+// Serve accepts on ln until ctx is done or ln fails, speaking SOCKS5 to each
+// client in its own goroutine. It closes ln when ctx is done and returns
+// ctx.Err().
 func Serve(ctx context.Context, ln net.Listener, dial Dialer) error {
-	var wg sync.WaitGroup
-	defer wg.Wait()
-	go func() { <-ctx.Done(); ln.Close() }()
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return err
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer c.Close()
-			handle(ctx, c, dial)
-		}()
-	}
+	return acceptLoop(ctx, ln, func(c net.Conn) { handle(ctx, c, dial) })
 }
 
 // Forward accepts on ln and connects every client to target through dial —
 // a fixed port-forward for a client that cannot speak SOCKS.
 func Forward(ctx context.Context, ln net.Listener, target string, dial Dialer) error {
+	return acceptLoop(ctx, ln, func(c net.Conn) {
+		far, err := dial(ctx, "tcp", target)
+		if err != nil {
+			return
+		}
+		defer far.Close()
+		pipe(c, far)
+	})
+}
+
+// acceptLoop is the shape both listeners share: accept until ctx ends or the
+// listener fails, one goroutine per client that closes the client when done,
+// and wait for every client before returning so a shutdown is complete.
+func acceptLoop(ctx context.Context, ln net.Listener, serve func(net.Conn)) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	go func() { <-ctx.Done(); ln.Close() }()
@@ -64,12 +62,7 @@ func Forward(ctx context.Context, ln net.Listener, target string, dial Dialer) e
 		go func() {
 			defer wg.Done()
 			defer c.Close()
-			far, err := dial(ctx, "tcp", target)
-			if err != nil {
-				return
-			}
-			defer far.Close()
-			pipe(c, far)
+			serve(c)
 		}()
 	}
 }
