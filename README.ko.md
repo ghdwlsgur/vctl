@@ -12,6 +12,29 @@
 - 중앙 인벤토리: secret은 Vault에 두고, 호스트 토폴로지와 접근 감사 메타데이터만 Postgres에 저장합니다.
 - 강화된 릴리스 경로: CI에서 테스트, Trivy 스캔, distroless 이미지 스캔, GoReleaser, Homebrew 업데이트, GHCR 배포를 수행합니다.
 
+## WireGuard 설치 없이 함대에 접근하기
+
+`vctl wg connect`는 vctl 프로세스 안에서 WireGuard 터널을 올립니다. 내장 TCP/IP
+스택 위의 userspace 장치라서 설치할 것도 없고 root도 필요 없습니다. 터널은 명령이
+실행되는 동안만 존재합니다. 내 peer 정보(개인키·터널 주소·게이트웨이)는 Vault에
+있고 접속 시점에 읽습니다. 디스크에는 쓰지 않습니다.
+
+```bash
+vctl wg connect --init        # 처음 한 번: 새 키를 Vault에 저장하고 공개키를 출력
+vctl wg connect               # 게이트웨이 관리자가 peer를 등록한 뒤
+
+export HTTPS_PROXY=socks5h://127.0.0.1:1080   # kubectl, curl, helm …
+kubectl --context <cluster> get nodes
+ssh -o ProxyCommand='nc -x 127.0.0.1:1080 %h %p' user@host
+```
+
+peer 시크릿에 `dns`를 넣어 두면 이름 해석도 터널을 거칩니다. 그래서
+함대 내부 호스트명이 그대로 동작합니다. 환경변수 대신 kubeconfig에 클러스터별로
+프록시를 적을 수도 있습니다(`clusters[].cluster.proxy-url: socks5://127.0.0.1:1080`).
+프록시를 못 쓰는 클라이언트를 위해 `--forward 6443:10.20.0.5:6443`처럼 고정 로컬
+포트를 열 수 있습니다. 접속은 SSH 세션과 같은 방식으로 access log에 기록됩니다.
+명령은 `wg-connect` 그랜트로 게이트됩니다.
+
 ## WireGuard 터미널 맵
 
 `vctl wg tui`는 수집된 WireGuard 토폴로지를 웹 서버 없이 터미널에서 살펴봅니다.

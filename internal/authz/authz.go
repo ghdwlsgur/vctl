@@ -61,6 +61,7 @@ var gated = map[string]Class{
 	"ip":             ClassMutate,
 	"wg":             ClassRead,
 	"wg-sync":        ClassMutate,
+	"wg-connect":     ClassMutate,
 	"openstack-farm": ClassMutate,
 	// The rbac surface itself: reads are default-allowed, mutations are
 	// admin-only — a grant must not be able to mint further grants.

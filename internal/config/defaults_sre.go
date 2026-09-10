@@ -22,6 +22,7 @@ func Defaults() *Config {
 		DNSGitTokenKVPath:             "kv/teams/sre/gitlab-albert",
 		DNSGitBase:                    "https://gitlab.sre.local",
 		DNSGitProject:                 "sre/system/internal/devtools/coredns",
+		WGPeerKVPath:                  "kv/users/{entity}/wg",
 		AuthMethod:                    "oidc", // people: GitLab SSO by default; --method userpass for bootstrap
 		OIDCRole:                      "vctl",
 		OIDCMount:                     "oidc",
