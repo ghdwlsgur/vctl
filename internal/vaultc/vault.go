@@ -234,6 +234,12 @@ type TokenInfo struct {
 	// AuthMethod names the auth method that issued the token, read from
 	// display_name ("approle", "userpass-albert" → "userpass").
 	AuthMethod string
+
+	// EntityID is the Vault identity entity behind the token — stable across
+	// auth methods for one person, and the thing a templated policy can name
+	// (`{{identity.entity.id}}`), which is why a per-person secret path is
+	// keyed on it rather than on a display name that differs by login method.
+	EntityID string
 }
 
 // LookupToken reads the current token's info in one round trip.
@@ -266,6 +272,7 @@ func (c *Client) LookupToken(ctx context.Context) (TokenInfo, error) {
 	if info.Identity == "" {
 		info.Identity = dn
 	}
+	info.EntityID, _ = sec.Data["entity_id"].(string)
 	if i := strings.IndexByte(dn, '-'); i > 0 {
 		info.AuthMethod = dn[:i]
 	} else {
