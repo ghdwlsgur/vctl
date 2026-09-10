@@ -60,6 +60,30 @@ For other distributions, download the `linux_amd64.tar.gz` or
 [GitHub Releases](https://github.com/ghdwlsgur/vctl/releases/latest), extract
 `vctl`, and place it in a directory on `PATH` such as `/usr/local/bin`.
 
+## Reaching the fleet without WireGuard installed
+
+`vctl wg connect` brings up a WireGuard tunnel inside the vctl process — a
+userspace device on a built-in TCP/IP stack — and puts a SOCKS5 proxy in front
+of it. Nothing is installed, nothing needs root, and the tunnel exists only
+while the command runs. Your peer (private key, tunnel address, gateway) lives
+in Vault and is read at connect time; it is never written to disk.
+
+```bash
+vctl wg connect --init        # once: stores a new key in Vault, prints the public key
+vctl wg connect               # after a gateway administrator has registered the peer
+
+export HTTPS_PROXY=socks5h://127.0.0.1:1080   # kubectl, curl, helm …
+kubectl --context <cluster> get nodes
+ssh -o ProxyCommand='nc -x 127.0.0.1:1080 %h %p' user@host
+```
+
+Names are resolved through the tunnel when the peer secret sets `dns`, so
+fleet-internal hostnames work. A kubeconfig can carry the proxy per cluster
+(`clusters[].cluster.proxy-url: socks5://127.0.0.1:1080`) instead of the
+environment variable. `--forward 6443:10.20.0.5:6443` adds fixed local ports
+for clients that cannot use a proxy. The connection is recorded in the access
+log like an SSH session, and the command is gated by the `wg-connect` grant.
+
 ## WireGuard terminal map
 
 `vctl wg tui` explores the collected WireGuard topology without a web server.
@@ -516,6 +540,7 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl add [flags]` | Register an inventory host `sync` cannot discover; with no flags the fields are asked for in a form |
 | `vctl edit [host] [flags]` | Change the fields `sync` will not overwrite — dc, ssh user, jump host, extra IPs, hostname, and `--state active\|maintenance\|broken\|retired`. With no host, pick one from a list (←/→ filters by DC) |
 | `vctl delete [host] [--yes]` | Remove a decommissioned host. Audit history is kept; hosts that jump through it block the delete. With no host, pick one from a list (←/→ filters by DC) |
+| `vctl wg connect [--init] [--socks 127.0.0.1:1080] [--forward LPORT:HOST:PORT]` | A WireGuard tunnel inside vctl with a SOCKS5 proxy in front — reach fleet networks with nothing installed and no root. `--init` stores a new key in Vault and prints the public key for the gateway administrator |
 | `vctl wg sync\|graph\|monitor\|tui` | Collect and inspect WireGuard topology; `tui` is the live terminal map — one row per pair of sites, handshake state and traffic by direction, and the declared underlay (sites, farms, hosts, networks, which tunnel carries which network) in its details pane; `graph --format json` writes that same picture, derived facts included, for scripts |
 | `vctl wg endpoint list\|set\|rm` | Map a WireGuard public key to a VM/device identity and, for VMs, its physical inventory host |
 | `vctl wg entity list\|set\|rm`, `vctl wg relation list\|set\|rm` | Declare the underlay the tunnels ride — sites, farms, physical hosts, VMs, networks, tunnels, edges, egress — and how they relate (`member-of`, `placed-on`, `attached-to`, `transits`, `carries`). A new farm or network is a row, not a code change: `wg tui` lays it out from these rows |

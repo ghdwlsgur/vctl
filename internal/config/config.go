@@ -56,9 +56,14 @@ type Config struct {
 	DNSGitTokenKVPath string `yaml:"dns_git_token_kv_path"` // KV secret holding the IaC repo token (field: token)
 	DNSGitBase        string `yaml:"dns_git_base"`          // GitLab base URL
 	DNSGitProject     string `yaml:"dns_git_project"`       // IaC repo project path
-	AuthMethod        string `yaml:"auth_method"`           // userpass | oidc | approle | kubernetes
-	OIDCRole          string `yaml:"oidc_role"`             // Vault OIDC role (phase 2)
-	OIDCMount         string `yaml:"oidc_mount"`            // Vault OIDC auth mount path
+	// WGPeerKVPath is where `vctl wg connect` finds a person's own WireGuard
+	// peer (private key, tunnel address, gateway). `{entity}` is replaced by
+	// the Vault entity id and `{identity}` by the login identity, so one
+	// templated policy can grant each person exactly their own path.
+	WGPeerKVPath string `yaml:"wg_peer_kv_path"`
+	AuthMethod   string `yaml:"auth_method"` // userpass | oidc | approle | kubernetes
+	OIDCRole     string `yaml:"oidc_role"`   // Vault OIDC role (phase 2)
+	OIDCMount    string `yaml:"oidc_mount"`  // Vault OIDC auth mount path
 
 	DBHost               string `yaml:"db_host"`
 	DBServerName         string `yaml:"db_server_name"` // TLS SNI override; defaults to DBHost. Use for port-forward/proxy where dial host != cert name.

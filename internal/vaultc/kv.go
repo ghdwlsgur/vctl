@@ -206,3 +206,19 @@ func kvMetadataPath(path string) string {
 	}
 	return mount + "/metadata/" + rest
 }
+
+// WriteKV writes the string fields of a KV v2 secret, replacing what was
+// there. vctl is otherwise a KV reader; this exists for the one secret it
+// creates itself — a person's own WireGuard key from `vctl wg connect --init`
+// — and writes only to the path the caller names.
+func (c *Client) WriteKV(ctx context.Context, path string, data map[string]string) error {
+	body := make(map[string]any, len(data))
+	for k, v := range data {
+		body[k] = v
+	}
+	_, err := c.api.Logical().WriteWithContext(ctx, kvDataPath(path), map[string]any{"data": body})
+	if err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}

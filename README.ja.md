@@ -13,6 +13,30 @@
 - ホストエージェント(任意): 低リソースのデーモンが、ログインした本人に紐づけて、個人単位のカーネルセッション活動とホストの稼働状況を Postgres に報告します。エージェントレスな Vault パターンをサーバー側に適用したものです。
 - 堅牢化されたリリース経路: CI がテスト、Trivy スキャン、distroless イメージスキャン、GoReleaser、Homebrew 更新、GHCR 公開を実行します。
 
+## WireGuard をインストールせずにフリートへ到達する
+
+`vctl wg connect` は vctl プロセスの中で WireGuard トンネルを立ち上げます。内蔵
+TCP/IP スタック上のユーザー空間デバイスなので、インストールも root も不要です。
+トンネルはコマンドの実行中だけ存在します。自分の peer 情報(秘密鍵・トンネル
+アドレス・ゲートウェイ)は Vault にあり、接続時に読み取ります。ディスクには
+書きません。
+
+```bash
+vctl wg connect --init        # 初回のみ: 新しい鍵を Vault に保存し、公開鍵を表示
+vctl wg connect               # ゲートウェイ管理者が peer を登録したあと
+
+export HTTPS_PROXY=socks5h://127.0.0.1:1080   # kubectl, curl, helm …
+kubectl --context <cluster> get nodes
+ssh -o ProxyCommand='nc -x 127.0.0.1:1080 %h %p' user@host
+```
+
+peer シークレットに `dns` を設定すると名前解決もトンネル経由になり、フリート内部の
+ホスト名がそのまま使えます。環境変数の代わりに kubeconfig でクラスタごとにプロキシを
+指定することもできます(`clusters[].cluster.proxy-url: socks5://127.0.0.1:1080`)。
+プロキシを使えないクライアント向けに `--forward 6443:10.20.0.5:6443` のように固定の
+ローカルポートを開けます。接続は SSH セッションと同様に access log に記録され、
+コマンドは `wg-connect` グラントでゲートされます。
+
 ## WireGuard ターミナルマップ
 
 `vctl wg tui` は収集済みの WireGuard トポロジを Web サーバーなしで端末上に表示します。
