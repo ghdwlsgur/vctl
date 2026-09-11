@@ -84,6 +84,30 @@ environment variable. `--forward 6443:10.20.0.5:6443` adds fixed local ports
 for clients that cannot use a proxy. The connection is recorded in the access
 log like an SSH session, and the command is gated by the `wg-connect` grant.
 
+## Reaching Kubernetes clusters
+
+`vctl k8s` splits a kubeconfig into the two things it mixes. Where a cluster
+is — API server, CA, how it is reached, where its tokens come from — is
+inventory, shared in Postgres. Who you are to it is never stored: `vctl k8s
+token` mints a short-lived ServiceAccount token from Vault's Kubernetes secrets
+engine on every use, and `vctl k8s use` writes a kubeconfig entry that holds
+only the address, the CA and an instruction to call vctl. The file on disk
+carries no credential, and the cluster's own audit log names the person.
+
+```bash
+vctl k8s                          # the clusters, how they are reached, where tokens come from
+vctl k8s use core-sre             # write a context that calls vctl for tokens (--role viewer|editor|admin)
+kubectl get nodes                 # kubectl → vctl k8s token → Vault → a token that expires
+vctl k8s exec core-sre -- helm list -A   # one command with a throwaway kubeconfig
+```
+
+A cluster reached through the WireGuard hub gets `proxy-url` pointing at
+`vctl wg connect`'s proxy, so a new laptop is three commands from any cluster:
+`vctl login`, `vctl wg connect`, `vctl k8s use <cluster>`. Administrators
+declare clusters with `vctl k8s cluster set <name> --from-context <kubectl
+context> --source vault:kubernetes/<name>`; `deploy/k8s/vault-issuer.yaml` and
+`scripts/k8s-issuer-bootstrap.sh` give Vault its foothold in a cluster.
+
 ## WireGuard terminal map
 
 `vctl wg tui` explores the collected WireGuard topology without a web server.
@@ -554,6 +578,12 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl dns [name]` | The fleet DNS records, grouped by zone — filtered by a name or address fragment, with a live answer from the fleet resolver for an exact name |
 | `vctl dns add <hostname> <ip> [--zone <z>]` | Register a record: committed to the IaC repo first (the source of truth a sync reasserts), patched into the live CoreDNS ConfigMap, then verified with a real query. Zone inferred from the hostname via the Corefile's own bindings |
 | `vctl dns rm <hostname>` | Deregister a record, through the same repo-then-cluster path |
+| `vctl k8s [ls] [--json]` | The Kubernetes clusters in the inventory — API server, site, how each is reached (through `wg connect` or direct) and where its tokens come from |
+| `vctl k8s use <cluster> [--role viewer\|editor\|admin] [--context <name>]` | Write a kubeconfig context for a cluster and make it current. The user entry is an exec plugin that calls `vctl k8s token`; the file holds no credential. Tunnel-reached clusters get `proxy-url` for `wg connect`'s proxy |
+| `vctl k8s token --cluster <name> [--role <r>] [--no-cache]` | The kubectl exec credential plugin: a short-lived ServiceAccount token from Vault's Kubernetes secrets engine (`vault:<mount>`), or a KV secret's `token` field for a cluster not yet wired to it (`kv:<path>`). Cached 0600 until two minutes before expiry; every mint is an access-log row. Gated by `k8s-access` |
+| `vctl k8s exec <cluster> [--role <r>] -- <command>` | Run one command with a throwaway kubeconfig in `KUBECONFIG`; your own kubeconfig is untouched |
+| `vctl k8s cluster set <name> [--from-context <ctx>] [--api <url>] [--ca @file] [--reach tunnel\|direct] [--source vault:<mount>\|kv:<path>]` | Declare a cluster or change fields of one; only the flags given are written. `--from-context` copies address, CA and tls-server-name from your kubeconfig (never credentials). Gated by `k8s-inventory` |
+| `vctl k8s cluster rm <name>` | Remove a cluster from the inventory |
 | `vctl ca install\|remove\|print` | Trust the embedded root CA in this machine's OS store so browsers/curl accept the organization's internal hostnames (clears HSTS errors); platform auto-detected |
 | `vctl node-agent [--interval 5m] [--probe-interval 1h]` | Report lightweight host runtime status for already registered inventory. A slower probe pass records what platform the host is part of and in what role |
 | `vctl session [<serial>\|--list\|--json]` | Show what a person did inside an SSH session (host kernel-audit timeline) |

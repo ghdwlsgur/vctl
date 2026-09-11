@@ -37,6 +37,29 @@ peer シークレットに `dns` を設定すると名前解決もトンネル�
 ローカルポートを開けます。接続は SSH セッションと同様に access log に記録され、
 コマンドは `wg-connect` グラントでゲートされます。
 
+## Kubernetes クラスタへ到達する
+
+`vctl k8s` は kubeconfig が混ぜていた二つを分けます。クラスタがどこにあるか(API
+サーバー・CA・到達経路・トークンの出どころ)はインベントリとして Postgres で共有します。
+自分がそのクラスタで誰なのかは保存しません。`vctl k8s token` が使うたびに Vault の
+Kubernetes secrets engine から短命の ServiceAccount トークンを発行し、`vctl k8s use`
+はアドレス・CA・「vctl を呼べ」という指示だけを持つ kubeconfig エントリを書きます。
+ディスク上のファイルに資格情報はなく、クラスタ自身の監査ログに人の名前が残ります。
+
+```bash
+vctl k8s                          # クラスタ一覧、到達経路、トークンの出どころ
+vctl k8s use core-sre             # vctl を呼んでトークンを得るコンテキストを書く (--role viewer|editor|admin)
+kubectl get nodes                 # kubectl → vctl k8s token → Vault → 期限付きトークン
+vctl k8s exec core-sre -- helm list -A   # 使い捨て kubeconfig でコマンド一つ
+```
+
+WireGuard ハブ経由のクラスタは `proxy-url` が `vctl wg connect` のプロキシを指すように
+書かれます。新しいノートPCからどのクラスタへもコマンド三つで届きます。`vctl login`、
+`vctl wg connect`、`vctl k8s use <cluster>`。管理者は `vctl k8s cluster set <name>
+--from-context <kubectl コンテキスト> --source vault:kubernetes/<name>` でクラスタを
+宣言します。`deploy/k8s/vault-issuer.yaml` と `scripts/k8s-issuer-bootstrap.sh` が
+Vault にクラスタ内の足場を作ります。
+
 ## WireGuard ターミナルマップ
 
 `vctl wg tui` は収集済みの WireGuard トポロジを Web サーバーなしで端末上に表示します。
@@ -469,6 +492,12 @@ claude mcp add vctl -- vctl mcp
 | `vctl dns [name]` | フリートの DNS レコードを zone ごとに表示。名前・アドレスの断片で絞り込み、完全一致の名前にはフリートリゾルバの実応答も併記 |
 | `vctl dns add <hostname> <ip> [--zone <z>]` | レコード登録: まず IaC リポジトリへコミットし(sync が再適用する基準はリポジトリ)、ライブの CoreDNS ConfigMap をパッチしてから実クエリで検証。zone は Corefile のバインディングからホスト名で推論 |
 | `vctl dns rm <hostname>` | レコード削除。同じリポジトリ→クラスタ経路を通る |
+| `vctl k8s [ls] [--json]` | インベントリの Kubernetes クラスタ。API サーバー・サイト・到達経路(`wg connect` 経由か直接か)・トークンの出どころ |
+| `vctl k8s use <cluster> [--role viewer\|editor\|admin] [--context <name>]` | クラスタ用の kubeconfig コンテキストを書き、現在のコンテキストにする。user エントリは `vctl k8s token` を呼ぶ exec プラグインで、ファイルに資格情報はない。トンネル経由のクラスタには `wg connect` プロキシ用の `proxy-url` が入る |
+| `vctl k8s token --cluster <name> [--role <r>] [--no-cache]` | kubectl exec credential プラグイン。Vault Kubernetes secrets engine の短命 ServiceAccount トークン(`vault:<mount>`)か、未接続クラスタ向け KV シークレットの `token` フィールド(`kv:<path>`)。期限 2 分前まで 0600 でキャッシュし、発行ごとに access log に記録。`k8s-access` グラントでゲート |
+| `vctl k8s exec <cluster> [--role <r>] -- <command>` | 使い捨て kubeconfig を `KUBECONFIG` に置いてコマンドを一つ実行。自分の kubeconfig は触らない |
+| `vctl k8s cluster set <name> [--from-context <ctx>] [--api <url>] [--ca @file] [--reach tunnel\|direct] [--source vault:<mount>\|kv:<path>]` | クラスタを宣言、またはフィールドを変更。与えたフラグだけ書く。`--from-context` は自分の kubeconfig からアドレス・CA・tls-server-name のみ写す(資格情報は読まない)。`k8s-inventory` グラントでゲート |
+| `vctl k8s cluster rm <name>` | インベントリからクラスタを削除 |
 | `vctl ca install\|remove\|print` | このマシンの OS ストアで埋め込みルート CA を信頼し、ブラウザ/curl が組織の内部ホスト名を受け入れるようにする(HSTS エラーを解消)。プラットフォームは自動検出 |
 | `vctl node-agent [--interval 5m] [--probe-interval 1h]` | すでに登録済みのインベントリについて軽量なホストのランタイム状態を報告する。間隔の長い probe はそのホストがどのプラットフォームのどの役割かを記録する |
 | `vctl session [<serial>\|--list\|--json]` | SSH セッション内で誰が何をしたかを表示する(ホストのカーネル監査タイムライン) |

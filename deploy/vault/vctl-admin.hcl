@@ -63,3 +63,11 @@ path "identity/group-alias" {
 path "identity/group-alias/id/*" {
   capabilities = ["read", "update", "delete"]
 }
+
+# --- Kubernetes cluster access (vctl v0.8.0) ----------------------------------
+# All three tiers on every cluster: viewer → view, editor → edit, admin →
+# cluster-admin, each a short-lived ServiceAccount token from the Kubernetes
+# secrets engine mounted at kubernetes/<cluster>.
+path "kubernetes/+/creds/*" {
+  capabilities = ["update"]
+}
