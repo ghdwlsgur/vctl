@@ -8,9 +8,17 @@
 #
 #   vctl k8s cluster set <name> --from-context <ctx> --source vault:kubernetes/<name>
 #
-# The issuer can bind only the roles it is allowed to bind (view, edit,
-# cluster-admin), and every account it creates lands in vctl-access, named
-# after the person who asked — so the cluster's audit log reads like vctl's.
+# The issuer can bind only the roles it is allowed to bind (vctl-view,
+# vctl-edit, cluster-admin), and every account it creates lands in vctl-access,
+# named after the person who asked — so the cluster's audit log reads like
+# vctl's.
+#
+# vctl-view and vctl-edit are the builtin view and edit plus read on the
+# cluster-scoped objects a person looking at a cluster expects to see — nodes,
+# namespaces, PersistentVolumes, StorageClasses, CRDs. The builtins alone never
+# cover those, so a viewer bound to plain `view` cannot even `kubectl get
+# nodes`. Aggregation keeps them in step with the builtins as the cluster
+# upgrades.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -38,7 +46,7 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["bind"]
-    resourceNames: ["view", "edit", "cluster-admin"]
+    resourceNames: ["vctl-view", "vctl-edit", "cluster-admin"]
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles", "roles"]
     verbs: ["get", "list"]
@@ -55,6 +63,55 @@ subjects:
   - kind: ServiceAccount
     name: vault-issuer
     namespace: vctl-access
+---
+# Read-only on the cluster-scoped objects the builtin view/edit leave out.
+# Aggregated into vctl-view and vctl-edit below through its label.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vctl-cluster-view
+  labels:
+    vctl/aggregate-cluster-view: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "csinodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+# viewer tier: everything the builtin view aggregates, plus the cluster view.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vctl-view
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.authorization.k8s.io/aggregate-to-view: "true"
+    - matchLabels:
+        vctl/aggregate-cluster-view: "true"
+rules: []
+---
+# editor tier: everything the builtin edit aggregates (which includes view),
+# plus the cluster view.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vctl-edit
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.authorization.k8s.io/aggregate-to-edit: "true"
+    - matchLabels:
+        vctl/aggregate-cluster-view: "true"
+rules: []
 ---
 # A long-lived token for the issuer. The engine is configured with it once;
 # every token it mints for a person is short-lived and separate.

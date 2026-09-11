@@ -29,7 +29,9 @@ import (
 const k8sAccessNamespace = "vctl-access"
 
 // k8sRoles are the access tiers a token can be minted for; each is a role
-// under the cluster's Vault mount, bound to the matching built-in ClusterRole.
+// under the cluster's Vault mount. viewer and editor bind to vctl-view and
+// vctl-edit (the builtin view/edit plus read on cluster-scoped objects such
+// as nodes — deploy/k8s/vault-issuer.yaml), admin to cluster-admin.
 var k8sRoles = []string{"viewer", "editor", "admin"}
 
 // k8sCmd wires `vctl k8s`; the bare command lists, like `vctl dns`.
