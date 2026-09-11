@@ -27,20 +27,30 @@ type Dialer func(ctx context.Context, network, address string) (net.Conn, error)
 // client in its own goroutine. It closes ln when ctx is done and returns
 // ctx.Err().
 func Serve(ctx context.Context, ln net.Listener, dial Dialer) error {
-	return acceptLoop(ctx, ln, func(c net.Conn) { handle(ctx, c, dial) })
+	return ServeTracked(ctx, ln, dial, nil)
+}
+
+// ServeTracked is Serve with every client counted on tr (nil counts nothing).
+func ServeTracked(ctx context.Context, ln net.Listener, dial Dialer, tr *Tracker) error {
+	return acceptLoop(ctx, ln, tr.wrap(func(c net.Conn) { handle(ctx, c, dial) }))
 }
 
 // Forward accepts on ln and connects every client to target through dial —
 // a fixed port-forward for a client that cannot speak SOCKS.
 func Forward(ctx context.Context, ln net.Listener, target string, dial Dialer) error {
-	return acceptLoop(ctx, ln, func(c net.Conn) {
+	return ForwardTracked(ctx, ln, target, dial, nil)
+}
+
+// ForwardTracked is Forward with every client counted on tr (nil counts nothing).
+func ForwardTracked(ctx context.Context, ln net.Listener, target string, dial Dialer, tr *Tracker) error {
+	return acceptLoop(ctx, ln, tr.wrap(func(c net.Conn) {
 		far, err := dial(ctx, "tcp", target)
 		if err != nil {
 			return
 		}
 		defer far.Close()
 		pipe(c, far)
-	})
+	}))
 }
 
 // acceptLoop is the shape both listeners share: accept until ctx ends or the

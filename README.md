@@ -71,11 +71,17 @@ in Vault and is read at connect time; it is never written to disk.
 ```bash
 vctl wg connect --init        # once: stores a new key in Vault, prints the public key
 vctl wg connect               # after a gateway administrator has registered the peer
+vctl wg connect --background  # or detached: idles out after 30m, `vctl wg status` / `vctl wg down`
 
 export HTTPS_PROXY=socks5h://127.0.0.1:1080   # kubectl, curl, helm …
 kubectl --context <cluster> get nodes
 ssh -o ProxyCommand='nc -x 127.0.0.1:1080 %h %p' user@host
 ```
+
+Clusters set up with `vctl k8s use` need none of this by hand: when kubectl
+finds the proxy silent, the credential plugin starts the tunnel in the
+background, shows its progress, and hands kubectl the token once the gateway
+has answered.
 
 Names are resolved through the tunnel when the peer secret sets `dns`, so
 fleet-internal hostnames work. A kubeconfig can carry the proxy per cluster
@@ -102,8 +108,10 @@ vctl k8s exec core-sre -- helm list -A   # one command with a throwaway kubeconf
 ```
 
 A cluster reached through the WireGuard hub gets `proxy-url` pointing at
-`vctl wg connect`'s proxy, so a new laptop is three commands from any cluster:
-`vctl login`, `vctl wg connect`, `vctl k8s use <cluster>`. Administrators
+`vctl wg connect`'s proxy, and the credential plugin starts that tunnel in the
+background when it is not up — so a new laptop is two commands from any
+cluster: `vctl login`, `vctl k8s use <cluster>`; the first `kubectl` brings the
+tunnel with it. Administrators
 declare clusters with `vctl k8s cluster set <name> --from-context <kubectl
 context> --source vault:kubernetes/<name>`; `deploy/k8s/vault-issuer.yaml` and
 `scripts/k8s-issuer-bootstrap.sh` give Vault its foothold in a cluster.
@@ -565,7 +573,8 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl add [flags]` | Register an inventory host `sync` cannot discover; with no flags the fields are asked for in a form |
 | `vctl edit [host] [flags]` | Change the fields `sync` will not overwrite — dc, ssh user, jump host, extra IPs, hostname, and `--state active\|maintenance\|broken\|retired`. With no host, pick one from a list (←/→ filters by DC) |
 | `vctl delete [host] [--yes]` | Remove a decommissioned host. Audit history is kept; hosts that jump through it block the delete. With no host, pick one from a list (←/→ filters by DC) |
-| `vctl wg connect [--init] [--socks 127.0.0.1:1080] [--forward LPORT:HOST:PORT]` | A WireGuard tunnel inside vctl with a SOCKS5 proxy in front — reach fleet networks with nothing installed and no root. `--init` stores a new key in Vault and prints the public key for the gateway administrator |
+| `vctl wg connect [--init] [--background] [--idle-exit 30m] [--socks 127.0.0.1:1080] [--forward LPORT:HOST:PORT]` | A WireGuard tunnel inside vctl with a SOCKS5 proxy in front — reach fleet networks with nothing installed and no root. `--init` stores a new key in Vault and prints the public key for the gateway administrator. `--background` detaches it (log in `~/.vctl/wg/`), and it disconnects by itself after `--idle-exit` without a client |
+| `vctl wg status [--json]`, `vctl wg down` | The tunnel running on this machine — address, gateway, handshake age, traffic, open clients — and how to stop it. Local only, not gated |
 | `vctl wg sync\|graph\|monitor\|tui` | Collect and inspect WireGuard topology; `tui` is the live terminal map — one row per pair of sites, handshake state and traffic by direction, and the declared underlay (sites, farms, hosts, networks, which tunnel carries which network) in its details pane; `graph --format json` writes that same picture, derived facts included, for scripts |
 | `vctl wg endpoint list\|set\|rm` | Map a WireGuard public key to a VM/device identity and, for VMs, its physical inventory host |
 | `vctl wg entity list\|set\|rm`, `vctl wg relation list\|set\|rm` | Declare the underlay the tunnels ride — sites, farms, physical hosts, VMs, networks, tunnels, edges, egress — and how they relate (`member-of`, `placed-on`, `attached-to`, `transits`, `carries`). A new farm or network is a row, not a code change: `wg tui` lays it out from these rows |
@@ -580,7 +589,7 @@ needs an active ssh-capable session (`vctl login`); the read tools work either w
 | `vctl dns rm <hostname>` | Deregister a record, through the same repo-then-cluster path |
 | `vctl k8s [ls] [--json]` | The Kubernetes clusters in the inventory — API server, site, how each is reached (through `wg connect` or direct) and where its tokens come from |
 | `vctl k8s use <cluster> [--role viewer\|editor\|admin] [--context <name>]` | Write a kubeconfig context for a cluster and make it current. The user entry is an exec plugin that calls `vctl k8s token`; the file holds no credential. Tunnel-reached clusters get `proxy-url` for `wg connect`'s proxy |
-| `vctl k8s token --cluster <name> [--role <r>] [--no-cache]` | The kubectl exec credential plugin: a short-lived ServiceAccount token from Vault's Kubernetes secrets engine (`vault:<mount>`), or a KV secret's `token` field for a cluster not yet wired to it (`kv:<path>`). Cached 0600 until two minutes before expiry; every mint is an access-log row. Gated by `k8s-access` |
+| `vctl k8s token --cluster <name> [--role <r>] [--no-cache] [--proxy <url>]` | The kubectl exec credential plugin — starts the tunnel in the background first when the cluster's loopback proxy is silent, with progress on stderr: a short-lived ServiceAccount token from Vault's Kubernetes secrets engine (`vault:<mount>`), or a KV secret's `token` field for a cluster not yet wired to it (`kv:<path>`). Cached 0600 until two minutes before expiry; every mint is an access-log row. Gated by `k8s-access` |
 | `vctl k8s exec <cluster> [--role <r>] -- <command>` | Run one command with a throwaway kubeconfig in `KUBECONFIG`; your own kubeconfig is untouched |
 | `vctl k8s cluster set <name> [--from-context <ctx>] [--api <url>] [--ca @file] [--reach tunnel\|direct] [--source vault:<mount>\|kv:<path>]` | Declare a cluster or change fields of one; only the flags given are written. `--from-context` copies address, CA and tls-server-name from your kubeconfig (never credentials). Gated by `k8s-inventory` |
 | `vctl k8s cluster rm <name>` | Remove a cluster from the inventory |

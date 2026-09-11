@@ -131,7 +131,7 @@ func TestK8sKubeconfigEntriesCarryNoCredential(t *testing.T) {
 	}
 	ex := user["exec"].(map[string]any)
 	args := strings.Join(ex["args"].([]string), " ")
-	if ex["command"] != "vctl" || !strings.Contains(args, "--cluster core") || !strings.Contains(args, "--role admin") || !strings.Contains(args, "--source vault:kubernetes/core") {
+	if ex["command"] != "vctl" || !strings.Contains(args, "--cluster core") || !strings.Contains(args, "--role admin") || !strings.Contains(args, "--source vault:kubernetes/core") || !strings.Contains(args, "--proxy "+defaultK8sProxy) {
 		t.Errorf("exec = %v", ex)
 	}
 	for k := range user {
@@ -140,9 +140,12 @@ func TestK8sKubeconfigEntriesCarryNoCredential(t *testing.T) {
 		}
 	}
 	c.Reach = "direct"
-	cluster, _ = k8sKubeconfigEntries(c, "viewer", defaultK8sProxy)
+	cluster, user = k8sKubeconfigEntries(c, "viewer", defaultK8sProxy)
 	if _, has := cluster["proxy-url"]; has {
 		t.Error("a direct cluster got a proxy-url")
+	}
+	if args := strings.Join(user["exec"].(map[string]any)["args"].([]string), " "); strings.Contains(args, "--proxy") {
+		t.Error("a direct cluster's plugin was told to start a tunnel")
 	}
 }
 

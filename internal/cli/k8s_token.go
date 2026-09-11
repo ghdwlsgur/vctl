@@ -51,6 +51,7 @@ that calls this; nobody types it.`,
 	f.StringVar(&opts.server, "server", "", "API server, for the audit row (default: look the cluster up)")
 	f.DurationVar(&opts.ttl, "ttl", 0, "requested token TTL; 0 takes the role's default")
 	f.BoolVar(&opts.noCache, "no-cache", false, "always mint, never read or write the local cache")
+	f.StringVar(&opts.proxy, "proxy", "", "the kubeconfig's proxy-url for this cluster; a loopback SOCKS proxy that is not answering is started (`vctl wg connect --background`)")
 	_ = cmd.MarkFlagRequired("cluster")
 	cmdkit.RegisterCompletion(cmd, "role", completeK8sRole)
 	cmdkit.RegisterCompletion(cmd, "cluster", completeK8sCluster(env))
@@ -58,9 +59,9 @@ that calls this; nobody types it.`,
 }
 
 type k8sTokenOptions struct {
-	cluster, role, source, server string
-	ttl                           time.Duration
-	noCache                       bool
+	cluster, role, source, server, proxy string
+	ttl                                  time.Duration
+	noCache                              bool
 }
 
 // k8sToken is one minted token and when it stops working.
@@ -87,6 +88,12 @@ func runK8sToken(cmd *cobra.Command, env cmdkit.Env, opts k8sTokenOptions) error
 	ctx := cmd.Context()
 	return env.WithApp(func(a *app.App) error {
 		if err := a.EnsureLogin(ctx); err != nil {
+			return err
+		}
+		// Tunnel before token: kubectl will send the request through the proxy
+		// the moment it has the credential, and a failed tunnel should not cost
+		// a Vault lease.
+		if err := ensureTunnel(ctx, a, opts.proxy, os.Stderr); err != nil {
 			return err
 		}
 		source, server := opts.source, opts.server

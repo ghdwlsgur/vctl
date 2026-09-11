@@ -22,11 +22,16 @@
 ```bash
 vctl wg connect --init        # 처음 한 번: 새 키를 Vault에 저장하고 공개키를 출력
 vctl wg connect               # 게이트웨이 관리자가 peer를 등록한 뒤
+vctl wg connect --background  # 또는 분리 실행: 30분 유휴면 스스로 끊김, `vctl wg status` / `vctl wg down`
 
 export HTTPS_PROXY=socks5h://127.0.0.1:1080   # kubectl, curl, helm …
 kubectl --context <cluster> get nodes
 ssh -o ProxyCommand='nc -x 127.0.0.1:1080 %h %p' user@host
 ```
+
+`vctl k8s use`로 만든 클러스터는 이 과정을 손으로 할 필요가 없습니다. kubectl이
+프록시가 꺼져 있는 것을 보면 자격증명 플러그인이 터널을 백그라운드로 띄우고
+진행 상황을 보여 줍니다. 게이트웨이가 응답하면 토큰을 넘깁니다.
 
 peer 시크릿에 `dns`를 넣어 두면 이름 해석도 터널을 거칩니다. 그래서
 함대 내부 호스트명이 그대로 동작합니다. 환경변수 대신 kubeconfig에 클러스터별로
@@ -52,8 +57,9 @@ vctl k8s exec core-sre -- helm list -A   # 일회용 kubeconfig 로 명령 하�
 ```
 
 WireGuard 허브를 거치는 클러스터는 `proxy-url`이 `vctl wg connect`의 프록시를 가리키게
-기록됩니다. 새 노트북에서 어느 클러스터든 명령 셋이면 닿습니다. `vctl login`, `vctl wg
-connect`, `vctl k8s use <cluster>`. 관리자는 `vctl k8s cluster set <name> --from-context
+기록됩니다. 그 터널이 꺼져 있으면 자격증명 플러그인이 백그라운드로 띄웁니다. 새 노트북에서
+어느 클러스터든 명령 둘이면 닿습니다. `vctl login`, `vctl k8s use <cluster>`. 첫 `kubectl`이
+터널을 함께 올립니다. 관리자는 `vctl k8s cluster set <name> --from-context
 <kubectl 컨텍스트> --source vault:kubernetes/<name>`으로 클러스터를 선언합니다.
 `deploy/k8s/vault-issuer.yaml`과 `scripts/k8s-issuer-bootstrap.sh`가 Vault에 클러스터
 발판을 만들어 줍니다.
@@ -501,9 +507,11 @@ claude mcp add vctl -- vctl mcp
 | `vctl dns [name]` | 함대 DNS 레코드를 zone별로 보여줍니다. 이름·주소 조각으로 필터하고, 정확한 이름이면 함대 리졸버의 실제 응답도 함께 보여줍니다 |
 | `vctl dns add <hostname> <ip> [--zone <z>]` | 레코드 등록: IaC 저장소에 먼저 커밋하고(sync가 되돌리는 기준은 저장소) 라이브 CoreDNS ConfigMap을 패치한 뒤 실제 쿼리로 검증합니다. zone은 Corefile의 바인딩으로 호스트명에서 추론합니다 |
 | `vctl dns rm <hostname>` | 레코드 삭제. 같은 저장소→클러스터 경로를 지납니다 |
+| `vctl wg connect [--init] [--background] [--idle-exit 30m] [--socks 127.0.0.1:1080] [--forward LPORT:HOST:PORT]` | vctl 안의 WireGuard 터널과 그 앞의 SOCKS5 프록시. 설치도 root 도 없이 함대망에 닿습니다. `--init` 은 새 키를 Vault 에 저장하고 관리자에게 줄 공개키를 출력합니다. `--background` 는 분리 실행(로그 `~/.vctl/wg/`)이며 `--idle-exit` 동안 클라이언트가 없으면 스스로 끊습니다 |
+| `vctl wg status [--json]`, `vctl wg down` | 이 기기에서 도는 터널의 주소·게이트웨이·핸드셰이크 경과·트래픽·열린 클라이언트, 그리고 중지. 로컬 전용이라 게이트 없음 |
 | `vctl k8s [ls] [--json]` | 인벤토리의 Kubernetes 클러스터. API 서버·사이트·도달 경로(`wg connect` 경유 또는 직접)·토큰 출처 |
 | `vctl k8s use <cluster> [--role viewer\|editor\|admin] [--context <name>]` | 클러스터용 kubeconfig 컨텍스트를 쓰고 현재 컨텍스트로 만듭니다. user 항목은 `vctl k8s token`을 호출하는 exec 플러그인이라 파일에 자격증명이 없습니다. 터널 경유 클러스터에는 `wg connect` 프록시용 `proxy-url`이 들어갑니다 |
-| `vctl k8s token --cluster <name> [--role <r>] [--no-cache]` | kubectl exec credential 플러그인. Vault Kubernetes secrets engine의 단기 ServiceAccount 토큰(`vault:<mount>`) 또는 아직 연결되지 않은 클러스터용 KV 시크릿의 `token` 필드(`kv:<path>`). 만료 2분 전까지 0600 으로 캐시하고 발급마다 access log 에 남깁니다. `k8s-access` 그랜트로 게이트 |
+| `vctl k8s token --cluster <name> [--role <r>] [--no-cache] [--proxy <url>]` | kubectl exec credential 플러그인. 클러스터의 루프백 프록시가 꺼져 있으면 먼저 터널을 백그라운드로 띄우고 진행 상황을 stderr 에 보여 줍니다. Vault Kubernetes secrets engine의 단기 ServiceAccount 토큰(`vault:<mount>`) 또는 아직 연결되지 않은 클러스터용 KV 시크릿의 `token` 필드(`kv:<path>`). 만료 2분 전까지 0600 으로 캐시하고 발급마다 access log 에 남깁니다. `k8s-access` 그랜트로 게이트 |
 | `vctl k8s exec <cluster> [--role <r>] -- <command>` | 일회용 kubeconfig 를 `KUBECONFIG` 에 두고 명령 하나를 실행합니다. 내 kubeconfig 는 건드리지 않습니다 |
 | `vctl k8s cluster set <name> [--from-context <ctx>] [--api <url>] [--ca @file] [--reach tunnel\|direct] [--source vault:<mount>\|kv:<path>]` | 클러스터를 선언하거나 필드를 바꿉니다. 준 플래그만 씁니다. `--from-context` 는 내 kubeconfig 에서 주소·CA·tls-server-name 만 복사합니다(자격증명은 읽지 않음). `k8s-inventory` 그랜트로 게이트 |
 | `vctl k8s cluster rm <name>` | 인벤토리에서 클러스터 삭제 |

@@ -47,7 +47,12 @@ func runK8sExec(cmd *cobra.Command, env cmdkit.Env, name string, command []strin
 	if err := validK8sRole(opts.role); err != nil {
 		return err
 	}
-	return k8sClusterFor(cmd.Context(), env, name, func(_ *app.App, c store.K8sCluster) error {
+	return k8sClusterFor(cmd.Context(), env, name, func(a *app.App, c store.K8sCluster) error {
+		if c.Reach == "tunnel" {
+			if err := ensureTunnel(cmd.Context(), a, opts.proxy, os.Stderr); err != nil {
+				return err
+			}
+		}
 		dir, err := os.MkdirTemp("", "vctl-k8s-")
 		if err != nil {
 			return err
