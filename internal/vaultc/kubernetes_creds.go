@@ -26,7 +26,14 @@ type K8sCreds struct {
 // with the service account placed in namespace. ttl 0 takes the role's
 // default.
 func (c *Client) KubernetesCreds(ctx context.Context, mount, role, namespace string, ttl time.Duration) (K8sCreds, error) {
-	params := map[string]any{"kubernetes_namespace": namespace}
+	params := map[string]any{
+		"kubernetes_namespace": namespace,
+		// The roles are bound to builtin ClusterRoles (view/edit/cluster-admin)
+		// and mean the whole cluster. Without this the engine makes a namespaced
+		// RoleBinding inside kubernetes_namespace, and a freshly minted viewer
+		// sees only vctl-access (found live on v0.8.0: nodes Forbidden).
+		"cluster_role_binding": true,
+	}
 	if ttl > 0 {
 		params["ttl"] = int(ttl.Seconds())
 	}
