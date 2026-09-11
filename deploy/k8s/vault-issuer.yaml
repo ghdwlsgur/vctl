@@ -1,0 +1,68 @@
+# Vault's foothold in a cluster for the Kubernetes secrets engine.
+#
+# vctl k8s token asks Vault for a short-lived ServiceAccount token; Vault, in
+# turn, needs an identity in the cluster that may create service accounts,
+# bind them to a ClusterRole, and mint tokens for them. This is that identity.
+# Apply it once per cluster (scripts/k8s-issuer-bootstrap.sh does, and stores
+# the resulting token where vault-iac reads it), then declare the cluster:
+#
+#   vctl k8s cluster set <name> --from-context <ctx> --source vault:kubernetes/<name>
+#
+# The issuer can bind only the roles it is allowed to bind (view, edit,
+# cluster-admin), and every account it creates lands in vctl-access, named
+# after the person who asked — so the cluster's audit log reads like vctl's.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vctl-access
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-issuer
+  namespace: vctl-access
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vctl-vault-issuer
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts", "serviceaccounts/token"]
+    verbs: ["create", "update", "delete", "get", "list"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings", "clusterrolebindings"]
+    verbs: ["create", "update", "delete", "get", "list"]
+  # bind lets the issuer grant these roles without holding their permissions;
+  # the list is the whole set vctl hands out.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames: ["view", "edit", "cluster-admin"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "roles"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vctl-vault-issuer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vctl-vault-issuer
+subjects:
+  - kind: ServiceAccount
+    name: vault-issuer
+    namespace: vctl-access
+---
+# A long-lived token for the issuer. The engine is configured with it once;
+# every token it mints for a person is short-lived and separate.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-issuer-token
+  namespace: vctl-access
+  annotations:
+    kubernetes.io/service-account.name: vault-issuer
+type: kubernetes.io/service-account-token

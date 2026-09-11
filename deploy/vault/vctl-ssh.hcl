@@ -20,3 +20,12 @@ path "auth/token/lookup-self" {
 path "auth/token/renew-self" {
   capabilities = ["update"]
 }
+
+# `vctl k8s token` — read-only cluster tokens (vctl v0.8.0).
+# Cluster viewing sits with SSH access rather than the login baseline: the
+# builtin `view` ClusterRole cannot read Secrets but does read pod logs and
+# ConfigMaps. `+` is one mount segment (kubernetes/<cluster>). Every mint is an
+# access_log row through vctl-audit-writer above.
+path "kubernetes/+/creds/viewer" {
+  capabilities = ["update"]
+}

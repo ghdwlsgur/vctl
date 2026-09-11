@@ -82,6 +82,11 @@ var gated = map[string]Class{
 	// nothing it could add except a second place to keep the same rule.
 	"kv":     ClassRead,
 	"kv-set": ClassMutate,
+	// Kubernetes: the inventory is a read like any listing, a token is access
+	// (like ssh), declaring a cluster is an inventory write.
+	"k8s":           ClassRead,
+	"k8s-access":    ClassMutate,
+	"k8s-inventory": ClassMutate,
 }
 
 // ClassOf reports the class of a gated command; ok is false for an unknown

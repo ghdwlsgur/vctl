@@ -35,6 +35,69 @@ peer 시크릿에 `dns`를 넣어 두면 이름 해석도 터널을 거칩니다
 포트를 열 수 있습니다. 접속은 SSH 세션과 같은 방식으로 access log에 기록됩니다.
 명령은 `wg-connect` 그랜트로 게이트됩니다.
 
+## Kubernetes 클러스터에 접근하기
+
+`vctl k8s`는 kubeconfig가 섞어 두던 두 가지를 나눕니다. 클러스터가 어디 있는지(API
+서버·CA·도달 경로·토큰 출처)는 인벤토리로서 Postgres에 공유합니다. 내가 그 클러스터에
+누구인지는 저장하지 않습니다. `vctl k8s token`이 쓸 때마다 Vault의 Kubernetes secrets
+engine에서 단기 ServiceAccount 토큰을 발급받습니다. `vctl k8s use`는 주소·CA·"vctl을
+호출하라"는 지시만 담은 kubeconfig 항목을 씁니다. 디스크의 파일에는 자격증명이 없고
+클러스터 자체의 감사 로그에 사람 이름이 남습니다.
+
+```bash
+vctl k8s                          # 클러스터 목록, 도달 경로, 토큰 출처
+vctl k8s use core-sre             # vctl 을 호출해 토큰을 받는 컨텍스트를 기록 (--role viewer|editor|admin)
+kubectl get nodes                 # kubectl → vctl k8s token → Vault → 만료되는 토큰
+vctl k8s exec core-sre -- helm list -A   # 일회용 kubeconfig 로 명령 하나
+```
+
+WireGuard 허브를 거치는 클러스터는 `proxy-url`이 `vctl wg connect`의 프록시를 가리키게
+기록됩니다. 새 노트북에서 어느 클러스터든 명령 셋이면 닿습니다. `vctl login`, `vctl wg
+connect`, `vctl k8s use <cluster>`. 관리자는 `vctl k8s cluster set <name> --from-context
+<kubectl 컨텍스트> --source vault:kubernetes/<name>`으로 클러스터를 선언합니다.
+`deploy/k8s/vault-issuer.yaml`과 `scripts/k8s-issuer-bootstrap.sh`가 Vault에 클러스터
+발판을 만들어 줍니다.
+
+<!-- HUMANIZE-SUMMARY v2.2 light
+run_id: 2026-09-11-001
+mode: light (단일 콜) · 강도: 보수
+metrics:
+  char_in: 1033
+  char_out: 1034
+  change_rate: 1.0%
+  self_check: 6/6
+  grade: A
+  risk_band_in: low (score 2)
+categories:  # before → after
+  C-11 연결어미 뒤 쉼표: 2 → 0
+  A-7 have/make 직역: 0 → 0
+  A-8 이중 피동: 0 → 0
+  A-9 ~에 의해 피동: 0 → 0
+  D-1 결산 lexicon: 0 → 0
+  H-1 문두 접속사: 0 → 0
+  I-1 ~한 것이다 종결: 0 → 0
+self_check:
+  - 고유명사·수치·인용 100% 보존: OK (vctl·kubectl·Vault·Postgres·ServiceAccount·WireGuard·경로·플래그 무수정, "vctl을 호출하라" 인용 원형)
+  - 변경률 30% 이하: OK (1.0%)
+  - 장르 이탈 없음: OK (리포트·README 한국어 섹션)
+  - register 보존: OK ("~합니다" 격식체 유지, 격식 상향 없음)
+  - S1 잔존 0건: OK (ending_comma_rate 트리거 해소)
+  - 인공 표현 추가 없음: OK (삽입 0건, 빼기·끊기만)
+structure_preserved:
+  - 헤딩 1개·bash 코드블록 1개(주석 포함)·인라인 백틱 전부 원형
+  - 코드블록 내 "vctl 을"·"kubeconfig 로" 띄어쓰기는 지시대로 미수정
+highlights:
+  - id: C-11
+    before: "단기 ServiceAccount 토큰을 발급받고, `vctl k8s use`는 주소·CA·... 항목을 씁니다."
+    after: "단기 ServiceAccount 토큰을 발급받습니다. `vctl k8s use`는 주소·CA·... 항목을 씁니다."
+    reason: 주어가 다른 두 절을 쉼표로 이어붙인 장문. 문장 분리
+  - id: C-11
+    before: "디스크의 파일에는 자격증명이 없고, 클러스터 자체의 감사 로그에 사람 이름이 남습니다."
+    after: "디스크의 파일에는 자격증명이 없고 클러스터 자체의 감사 로그에 사람 이름이 남습니다."
+    reason: 연결어미 '-고' 직후 쉼표 제거
+residual_findings: (없음) 3번째 문단의 명령 나열 쉼표("`vctl login`, `vctl wg connect`, ...")는 연결어미 쉼표가 아닌 등위 나열이며, 보수 강도상 원형 유지
+grade_reason: "A — S1 잔존 0, S2 잔존 0, 자체검증 6항 통과. 입력이 risk_band low(이미 잘 쓴 글)라 변경률이 A 기준 밴드(10~25%)보다 낮으나 최소 수정이 정답인 구간."
+-->
 ## WireGuard 터미널 맵
 
 `vctl wg tui`는 수집된 WireGuard 토폴로지를 웹 서버 없이 터미널에서 살펴봅니다.
@@ -438,6 +501,12 @@ claude mcp add vctl -- vctl mcp
 | `vctl dns [name]` | 함대 DNS 레코드를 zone별로 보여줍니다. 이름·주소 조각으로 필터하고, 정확한 이름이면 함대 리졸버의 실제 응답도 함께 보여줍니다 |
 | `vctl dns add <hostname> <ip> [--zone <z>]` | 레코드 등록: IaC 저장소에 먼저 커밋하고(sync가 되돌리는 기준은 저장소) 라이브 CoreDNS ConfigMap을 패치한 뒤 실제 쿼리로 검증합니다. zone은 Corefile의 바인딩으로 호스트명에서 추론합니다 |
 | `vctl dns rm <hostname>` | 레코드 삭제. 같은 저장소→클러스터 경로를 지납니다 |
+| `vctl k8s [ls] [--json]` | 인벤토리의 Kubernetes 클러스터. API 서버·사이트·도달 경로(`wg connect` 경유 또는 직접)·토큰 출처 |
+| `vctl k8s use <cluster> [--role viewer\|editor\|admin] [--context <name>]` | 클러스터용 kubeconfig 컨텍스트를 쓰고 현재 컨텍스트로 만듭니다. user 항목은 `vctl k8s token`을 호출하는 exec 플러그인이라 파일에 자격증명이 없습니다. 터널 경유 클러스터에는 `wg connect` 프록시용 `proxy-url`이 들어갑니다 |
+| `vctl k8s token --cluster <name> [--role <r>] [--no-cache]` | kubectl exec credential 플러그인. Vault Kubernetes secrets engine의 단기 ServiceAccount 토큰(`vault:<mount>`) 또는 아직 연결되지 않은 클러스터용 KV 시크릿의 `token` 필드(`kv:<path>`). 만료 2분 전까지 0600 으로 캐시하고 발급마다 access log 에 남깁니다. `k8s-access` 그랜트로 게이트 |
+| `vctl k8s exec <cluster> [--role <r>] -- <command>` | 일회용 kubeconfig 를 `KUBECONFIG` 에 두고 명령 하나를 실행합니다. 내 kubeconfig 는 건드리지 않습니다 |
+| `vctl k8s cluster set <name> [--from-context <ctx>] [--api <url>] [--ca @file] [--reach tunnel\|direct] [--source vault:<mount>\|kv:<path>]` | 클러스터를 선언하거나 필드를 바꿉니다. 준 플래그만 씁니다. `--from-context` 는 내 kubeconfig 에서 주소·CA·tls-server-name 만 복사합니다(자격증명은 읽지 않음). `k8s-inventory` 그랜트로 게이트 |
+| `vctl k8s cluster rm <name>` | 인벤토리에서 클러스터 삭제 |
 | `vctl node-agent [--interval 5m] [--probe-interval 1h]` | 이미 등록된 인벤토리 호스트의 가벼운 런타임 상태를 보고합니다. 주기가 긴 probe는 그 호스트가 어떤 플랫폼의 무슨 역할인지 기록합니다 |
 | `vctl cache status\|refresh\|clear` | Postgres 불통 시 쓰이는 로컬 인벤토리 스냅샷을 확인·제어합니다 |
 | `vctl status` | 로그인, SSH CA, inventory DB 연결 상태를 확인합니다 |

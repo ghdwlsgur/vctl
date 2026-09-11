@@ -21,9 +21,10 @@ var fleetValueFlags = map[string]bool{
 // it. Each is a decision recorded here rather than a hole in the rule, and
 // adding to this map should take an argument.
 var notFleetValues = map[string]string{
-	"vctl add --host":       "the name being registered — by definition not in the inventory yet",
-	"vctl ip set --farm":    "a label (A/B/C/D) on an address record, not a deployment",
-	"vctl ip set --project": "a free-text purpose on an address record, not a Keystone project",
+	"vctl add --host":         "the name being registered — by definition not in the inventory yet",
+	"vctl ip set --farm":      "a label (A/B/C/D) on an address record, not a deployment",
+	"vctl ip set --project":   "a free-text purpose on an address record, not a Keystone project",
+	"vctl k8s token --server": "the API URL kubectl's exec entry passes back for the audit row — written by `k8s use`, never typed",
 }
 
 func TestEveryFleetValueFlagCompletes(t *testing.T) {
