@@ -80,7 +80,8 @@ var gated = map[string]Class{
 	// and nothing else is answered per path. Read class, then: login required,
 	// and Vault decides. An app-layer grant is not asked for because there is
 	// nothing it could add except a second place to keep the same rule.
-	"kv": ClassRead,
+	"kv":     ClassRead,
+	"kv-set": ClassMutate,
 }
 
 // ClassOf reports the class of a gated command; ok is false for an unknown

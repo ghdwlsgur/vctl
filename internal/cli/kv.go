@@ -81,7 +81,7 @@ Every read lands in Vault's own audit log under your identity.`,
 		},
 	}
 	addKVGetFlags(cmd, &opts)
-	cmd.AddCommand(kvListCmd(env), kvGetCmd(env), kvSearchCmd(env), kvExecCmd(env))
+	cmd.AddCommand(kvListCmd(env), kvGetCmd(env), kvSearchCmd(env), kvExecCmd(env), kvSetCmd(env))
 	return cmdkit.SupportsStructuredOutput(cmdkit.Gate(cmd, "kv"))
 }
 

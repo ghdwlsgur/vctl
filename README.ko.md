@@ -412,6 +412,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl kv list [path]` | KV 경로 한 단계 아래의 시크릿과 폴더를 나열합니다(기본: 마운트 루트). 보이는 범위는 토큰의 Vault 정책이 허용하는 만큼입니다 |
 | `vctl kv search <word>... [--under <path>] [--limit <n>]` | 경로에 모든 단어가 들어간 시크릿을 찾습니다. 경로만 순회하고 시크릿은 읽지 않습니다. 토큰이 나열할 수 없는 폴더는 건너뛰고 개수만 셉니다 |
 | `vctl kv exec <word\|path> <cmd...>` | `{key}` 자리에 시크릿 필드 값을 채워 명령을 실행합니다. 앞머리의 `NAME={key}`는 환경변수, `{key:file}`은 0600 임시파일 경로가 됩니다. 출력은 걸러져서 채워 넣은 값은 base64·URL 인코딩 형태까지 `[REDACTED:key]`로 나옵니다. Vault 토큰은 넘기지 않습니다 |
+| `vctl kv set <path> [<key>=<value>...] [--rm <key>] [--replace]` | KV 시크릿의 필드를 씁니다. 기본은 병합이며 check-and-set 으로 읽은 뒤 바뀐 시크릿은 다시 읽어 재적용합니다. 값은 인자·`@파일`·`-`(stdin)에서 오고, 쓴 값은 되돌려 출력하지 않습니다(필드 이름만). 전체 경로만 받습니다. `kv-set` 그랜트로 게이트 |
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |
 | `vctl ssh [host\|user@addr] [--server <host>]` | exact, fuzzy, IP, interactive 선택으로 접속합니다(픽커는 ←/→로 DC 필터). `--server`는 정확히 또는 IP로 해석해 비대화형으로 접속합니다(스크립트/에이전트용). `user@addr` 형태는 인벤토리를 거치지 않고 주소로 바로 접속합니다 |
 | `vctl list [--dc <dc>] [--wide]` | 인벤토리를 터미널 폭에 맞는 간결한 표로 표시합니다. `--wide`는 에이전트·운영 상태·SSH 사용자를 별도 열로 표시합니다 |

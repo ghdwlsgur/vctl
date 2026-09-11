@@ -207,18 +207,34 @@ func kvMetadataPath(path string) string {
 	return mount + "/metadata/" + rest
 }
 
-// WriteKV writes the string fields of a KV v2 secret, replacing what was
-// there. vctl is otherwise a KV reader; this exists for the one secret it
-// creates itself — a person's own WireGuard key from `vctl wg connect --init`
-// — and writes only to the path the caller names.
-func (c *Client) WriteKV(ctx context.Context, path string, data map[string]string) error {
+// ErrKVConflict is the check-and-set refusal: the secret is not at the
+// version the caller read (or exists when the caller required it not to).
+// The caller re-reads and reapplies, the way the DNS and ConfigMap writers do.
+var ErrKVConflict = errors.New("the secret changed since it was read")
+
+// WriteKV writes the string fields of a KV v2 secret as its next version and
+// returns that version number. cas < 0 writes unconditionally; cas == 0
+// requires that the secret does not exist yet; cas > 0 requires the current
+// version to be exactly cas — the optimistic lock that lets two writers
+// serialize instead of one silently undoing the other.
+func (c *Client) WriteKV(ctx context.Context, path string, data map[string]string, cas int) (int, error) {
 	body := make(map[string]any, len(data))
 	for k, v := range data {
 		body[k] = v
 	}
-	_, err := c.api.Logical().WriteWithContext(ctx, kvDataPath(path), map[string]any{"data": body})
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+	req := map[string]any{"data": body}
+	if cas >= 0 {
+		req["options"] = map[string]any{"cas": cas}
 	}
-	return nil
+	sec, err := c.api.Logical().WriteWithContext(ctx, kvDataPath(path), req)
+	if err != nil {
+		if strings.Contains(err.Error(), "check-and-set parameter did not match") {
+			return 0, fmt.Errorf("%s: %w", path, ErrKVConflict)
+		}
+		return 0, fmt.Errorf("write %s: %w", path, err)
+	}
+	if sec != nil && sec.Data != nil {
+		return jsonInt(sec.Data["version"]), nil
+	}
+	return 0, nil
 }
