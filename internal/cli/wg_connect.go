@@ -50,7 +50,13 @@ fleet-internal hostnames work:
   # or, per cluster in kubeconfig:  clusters[].cluster.proxy-url: socks5://127.0.0.1:1080
 
 --forward adds fixed local ports for clients that cannot use a proxy, in ssh -L
-form: --forward 6443:10.20.0.5:6443. Ctrl-C disconnects.`,
+form: --forward 6443:10.20.0.5:6443. Ctrl-C disconnects.
+
+--background detaches instead: the tunnel runs as its own process with its log
+in ~/.vctl/wg/connect.log, disconnects by itself after --idle-exit without a
+client (default 30m), and 'vctl wg status' / 'vctl wg down' manage it. kubectl
+contexts written by 'vctl k8s use' start it this way on demand, so nothing has
+to be left open in a terminal.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runWGConnect(cmd, env, opts)
@@ -63,18 +69,25 @@ form: --forward 6443:10.20.0.5:6443. Ctrl-C disconnects.`,
 	cmd.Flags().DurationVar(&opts.status, "status-every", 10*time.Second, "how often to print handshake age and traffic; 0 silences it")
 	cmd.Flags().BoolVar(&opts.initKey, "init", false, "generate a key, store it in Vault, print the public key, and exit")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "print wireguard-go's own log")
+	cmd.Flags().BoolVar(&opts.background, "background", false, "detach: run the tunnel as its own process and return once it has its first handshake")
+	cmd.Flags().DurationVar(&opts.idleExit, "idle-exit", 0, "disconnect after this long with no client (0 never; --background defaults to 30m)")
+	cmd.Flags().BoolVar(&opts.detachedChild, "detached-child", false, "")
+	_ = cmd.Flags().MarkHidden("detached-child")
 	return cmdkit.Gate(cmd, "wg-connect")
 }
 
 // wgConnectOptions is the bound flag set of `wg connect`.
 type wgConnectOptions struct {
-	socks     string
-	forwards  []string
-	peerPath  string
-	keepalive time.Duration
-	status    time.Duration
-	initKey   bool
-	debug     bool
+	socks         string
+	forwards      []string
+	peerPath      string
+	keepalive     time.Duration
+	status        time.Duration
+	idleExit      time.Duration
+	initKey       bool
+	debug         bool
+	background    bool // detach and return
+	detachedChild bool // this process is the detached one
 }
 
 // wgPeer is the peer secret as vctl reads it: the fields the tunnel needs
@@ -108,6 +121,9 @@ func runWGConnect(cmd *cobra.Command, env cmdkit.Env, opts wgConnectOptions) err
 		if err := a.EnsureLogin(ctx); err != nil {
 			return err
 		}
+		if opts.background {
+			return runWGConnectBackground(ctx, a, opts)
+		}
 		info, err := a.Vault.LookupToken(ctx)
 		if err != nil {
 			return err
@@ -122,6 +138,43 @@ func runWGConnect(cmd *cobra.Command, env cmdkit.Env, opts wgConnectOptions) err
 		}
 		return connectAndServe(ctx, a, info, peer, opts, forwards)
 	})
+}
+
+// runWGConnectBackground is `--background`: hand the work to a detached
+// child, wait for its handshake, report, return. Login happened in the caller
+// so the child finds a token instead of trying to log in into a log file.
+func runWGConnectBackground(ctx context.Context, a *app.App, opts wgConnectOptions) error {
+	if opts.socks == "" {
+		return errors.New("--background needs the SOCKS proxy (--socks); a detached tunnel with no listener has no way to be used")
+	}
+	if len(opts.forwards) > 0 || opts.peerPath != "" {
+		return errors.New("--background does not take --forward or --peer yet; run those in a terminal")
+	}
+	if socksAnswering(opts.socks) {
+		if st, ok := readTunnelState(tunnelStatePath(a.Cfg.StateDir)); ok {
+			ui.Infof(os.Stderr, "a tunnel is already up on %s (pid %d) — `vctl wg status`", opts.socks, st.PID)
+			return nil
+		}
+		return fmt.Errorf("%s is already taken by something that is not vctl's tunnel", opts.socks)
+	}
+	idle := opts.idleExit
+	if idle == 0 {
+		idle = tunnelIdleDefault
+	}
+	prog := newTunnelProgress(os.Stderr)
+	prog.setPhase("starting the tunnel in the background")
+	if _, err := spawnTunnelFn(a.Cfg.StateDir, opts.socks, idle); err != nil {
+		prog.done()
+		return err
+	}
+	st, err := waitForTunnel(ctx, opts.socks, tunnelStatePath(a.Cfg.StateDir), tunnelReadyTimeout, prog)
+	prog.done()
+	if err != nil {
+		return fmt.Errorf("%w (log: %s)", err, tunnelLogPath(a.Cfg.StateDir))
+	}
+	ui.Successf(os.Stderr, "tunnel up in the background (pid %d): %s via %s · socks5://%s · idles out after %s", st.PID, st.Address, st.Gateway, st.Socks, idle)
+	ui.Infof(os.Stderr, "`vctl wg status` to watch it, `vctl wg down` to stop it; log: %s", st.Log)
+	return nil
 }
 
 // wgPeerPath is the secret path: the flag, else the configured template with
@@ -292,6 +345,8 @@ func parseForwards(specs []string) ([]wgForward, error) {
 func connectAndServe(ctx context.Context, a *app.App, info vaultc.TokenInfo, peer *wgPeer, opts wgConnectOptions, forwards []wgForward) error {
 	ctx, stop := signal.NotifyContext(ctx, shutdownSignals()...)
 	defer stop()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	tun, err := wgtun.Up(peer.cfg)
 	if err != nil {
@@ -300,46 +355,151 @@ func connectAndServe(ctx context.Context, a *app.App, info vaultc.TokenInfo, pee
 	}
 	defer tun.Close()
 
-	// Listeners first, so a port in use fails before anything is announced.
+	socksLn, fwdLns, err := openTunnelListeners(opts, forwards)
+	if err != nil {
+		return err
+	}
+	defer closeAll(socksLn, fwdLns)
+	logWGAccess(ctx, a, info, peer, true, nil)
+
+	tracker := &socks5.Tracker{}
+	announceTunnel(peer, socksLn, fwdLns, forwards, opts)
+	if socksLn != nil {
+		go func() { _ = socks5.ServeTracked(ctx, socksLn, tun.DialContext, tracker) }()
+	}
+	for i, f := range forwards {
+		go func(ln net.Listener, target string) {
+			_ = socks5.ForwardTracked(ctx, ln, target, tun.DialContext, tracker)
+		}(fwdLns[i], f.target)
+	}
+
+	// The state file is how `wg status`, `wg down` and the on-demand start see
+	// this tunnel, whether it runs in a terminal or detached.
+	statePath := tunnelStatePath(a.Cfg.StateDir)
+	base := tunnelState{PID: os.Getpid(), Background: opts.detachedChild, Socks: opts.socks, Address: peer.cfg.Addresses[0].String(),
+		Gateway: gatewayName(peer), Endpoint: peer.cfg.Peers[0].Endpoint, StartedAt: time.Now()}
+	if opts.idleExit > 0 {
+		base.IdleExit = opts.idleExit.String()
+	}
+	if opts.detachedChild {
+		base.Log = tunnelLogPath(a.Cfg.StateDir)
+	}
+	go publishTunnelState(ctx, tun, tracker, statePath, base)
+	defer os.Remove(statePath)
+	if opts.idleExit > 0 {
+		go idleWatch(ctx, tracker, base.StartedAt, opts.idleExit, cancel)
+	}
+	return watchTunnel(ctx, tun, opts.status)
+}
+
+func gatewayName(peer *wgPeer) string {
+	if peer.Name != "" {
+		return peer.Name
+	}
+	return peer.cfg.Peers[0].Endpoint
+}
+
+// openTunnelListeners binds every local port first, so a port in use fails
+// before anything is announced.
+func openTunnelListeners(opts wgConnectOptions, forwards []wgForward) (net.Listener, []net.Listener, error) {
 	var socksLn net.Listener
+	var err error
 	if opts.socks != "" {
 		if socksLn, err = net.Listen("tcp", opts.socks); err != nil {
-			return fmt.Errorf("SOCKS listener: %w", err)
+			return nil, nil, fmt.Errorf("SOCKS listener: %w", err)
 		}
-		defer socksLn.Close()
 	}
 	fwdLns := make([]net.Listener, 0, len(forwards))
 	for _, f := range forwards {
 		ln, err := net.Listen("tcp", f.local)
 		if err != nil {
-			return fmt.Errorf("forward %s: %w", f.local, err)
+			closeAll(socksLn, fwdLns)
+			return nil, nil, fmt.Errorf("forward %s: %w", f.local, err)
 		}
-		defer ln.Close()
 		fwdLns = append(fwdLns, ln)
 	}
-	logWGAccess(ctx, a, info, peer, true, nil)
+	return socksLn, fwdLns, nil
+}
 
-	gw := peer.Name
-	if gw == "" {
-		gw = peer.cfg.Peers[0].Endpoint
+func closeAll(socksLn net.Listener, fwdLns []net.Listener) {
+	if socksLn != nil {
+		socksLn.Close()
 	}
-	ui.Successf(os.Stderr, "tunnel up: %s via %s (%s)", peer.cfg.Addresses[0], gw, peer.cfg.Peers[0].Endpoint)
+	for _, ln := range fwdLns {
+		ln.Close()
+	}
+}
+
+// announceTunnel is what a person in a terminal reads once the tunnel is up.
+func announceTunnel(peer *wgPeer, socksLn net.Listener, fwdLns []net.Listener, forwards []wgForward, opts wgConnectOptions) {
+	ui.Successf(os.Stderr, "tunnel up: %s via %s (%s)", peer.cfg.Addresses[0], gatewayName(peer), peer.cfg.Peers[0].Endpoint)
 	if socksLn != nil {
 		ui.Infof(os.Stderr, "SOCKS5 proxy on %s", socksLn.Addr())
 		fmt.Fprintf(os.Stderr, "     export HTTPS_PROXY=socks5h://%s      # kubectl, curl, helm\n", socksLn.Addr())
 		fmt.Fprintf(os.Stderr, "     ssh -o ProxyCommand='nc -x %s %%h %%p' user@host\n", socksLn.Addr())
-		go func() { _ = socks5.Serve(ctx, socksLn, tun.DialContext) }()
 	}
 	for i, f := range forwards {
 		ui.Infof(os.Stderr, "forward %s → %s", fwdLns[i].Addr(), f.target)
-		go func(ln net.Listener, target string) { _ = socks5.Forward(ctx, ln, target, tun.DialContext) }(fwdLns[i], f.target)
 	}
 	if len(peer.cfg.DNS) == 0 {
 		ui.Warnf(os.Stderr, "the peer secret sets no dns — names will not resolve through the tunnel; use addresses, or add dns=<resolver>")
 	}
-	ui.Infof(os.Stderr, "Ctrl-C to disconnect")
+	switch {
+	case opts.detachedChild && opts.idleExit > 0:
+		ui.Infof(os.Stderr, "running detached; disconnects after %s without a client, or on `vctl wg down`", opts.idleExit)
+	case opts.detachedChild:
+		ui.Infof(os.Stderr, "running detached until `vctl wg down`")
+	default:
+		ui.Infof(os.Stderr, "Ctrl-C to disconnect")
+	}
+}
 
-	return watchTunnel(ctx, tun, opts.status)
+// publishTunnelState refreshes the state file: every second until the first
+// handshake (the on-demand start is waiting on it), every five after.
+func publishTunnelState(ctx context.Context, tun *wgtun.Tunnel, tracker *socks5.Tracker, path string, base tunnelState) {
+	write := func() bool {
+		st := base
+		st.UpdatedAt = time.Now()
+		st.OpenConns = tracker.Open()
+		if stats, err := tun.Stats(); err == nil && len(stats) > 0 {
+			st.LastHandshake, st.RxBytes, st.TxBytes = stats[0].LastHandshake, stats[0].RxBytes, stats[0].TxBytes
+		}
+		if err := writeTunnelState(path, st); err != nil {
+			ui.Warnf(os.Stderr, "tunnel state file: %v", err)
+		}
+		return !st.LastHandshake.IsZero()
+	}
+	handshaken := write()
+	for {
+		every := time.Second
+		if handshaken {
+			every = 5 * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(every):
+			handshaken = write()
+		}
+	}
+}
+
+// idleWatch ends the tunnel once nobody has used it for idle.
+func idleWatch(ctx context.Context, tracker *socks5.Tracker, since time.Time, idle time.Duration, cancel context.CancelFunc) {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			if d, ok := tracker.IdleSince(since, now); ok && d >= idle {
+				ui.Infof(os.Stderr, "no client for %s — disconnecting (idle-exit %s)", d.Round(time.Second), idle)
+				cancel()
+				return
+			}
+		}
+	}
 }
 
 // watchTunnel prints handshake age and traffic until ctx ends, and says so

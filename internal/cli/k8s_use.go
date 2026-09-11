@@ -88,7 +88,7 @@ func runK8sUse(cmd *cobra.Command, env cmdkit.Env, name string, opts k8sUseOptio
 		}
 		ui.Successf(os.Stderr, "context %s → %s as %s (%s)", ctxName, c.APIServer, opts.role, path)
 		if c.Reach == "tunnel" && opts.proxy != "" {
-			ui.Infof(os.Stderr, "reach is tunnel: keep `vctl wg connect` running; kubectl goes through %s", opts.proxy)
+			ui.Infof(os.Stderr, "reach is tunnel: kubectl goes through %s and starts `vctl wg connect` in the background when it is not up (`vctl wg status` / `vctl wg down`)", opts.proxy)
 		}
 		ui.Infof(os.Stderr, "try: kubectl get nodes")
 		return nil
@@ -105,8 +105,9 @@ func validK8sRole(role string) error {
 }
 
 // k8sKubeconfigEntries renders the cluster and user entries `use` writes. The
-// user is an exec plugin whose arguments carry everything `k8s token` needs,
-// so kubectl's call does not touch the inventory database.
+// user is an exec plugin whose arguments carry everything `k8s token` needs —
+// including the proxy to bring up — so kubectl's call does not touch the
+// inventory database.
 func k8sKubeconfigEntries(c store.K8sCluster, role, proxy string) (cluster, user map[string]any) {
 	cluster = map[string]any{"server": c.APIServer}
 	if c.CAPEM != "" {
@@ -118,10 +119,15 @@ func k8sKubeconfigEntries(c store.K8sCluster, role, proxy string) (cluster, user
 	if c.Reach == "tunnel" && proxy != "" {
 		cluster["proxy-url"] = proxy
 	}
+	args := []string{"k8s", "token", "--cluster", c.Name, "--role", role, "--source", c.TokenSource, "--server", c.APIServer}
+	if c.Reach == "tunnel" && proxy != "" {
+		// The plugin brings the tunnel up on demand when this proxy is not answering.
+		args = append(args, "--proxy", proxy)
+	}
 	user = map[string]any{"exec": map[string]any{
 		"apiVersion":         "client.authentication.k8s.io/v1",
 		"command":            "vctl",
-		"args":               []string{"k8s", "token", "--cluster", c.Name, "--role", role, "--source", c.TokenSource, "--server", c.APIServer},
+		"args":               args,
 		"interactiveMode":    "IfAvailable",
 		"provideClusterInfo": false,
 		"installHint":        "vctl is the fleet CLI: brew install ghdwlsgur/vctl/vctl",

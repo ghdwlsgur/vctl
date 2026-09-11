@@ -24,11 +24,16 @@ TCP/IP スタック上のユーザー空間デバイスなので、インスト�
 ```bash
 vctl wg connect --init        # 初回のみ: 新しい鍵を Vault に保存し、公開鍵を表示
 vctl wg connect               # ゲートウェイ管理者が peer を登録したあと
+vctl wg connect --background  # または分離実行: 30 分アイドルで自動切断、`vctl wg status` / `vctl wg down`
 
 export HTTPS_PROXY=socks5h://127.0.0.1:1080   # kubectl, curl, helm …
 kubectl --context <cluster> get nodes
 ssh -o ProxyCommand='nc -x 127.0.0.1:1080 %h %p' user@host
 ```
+
+`vctl k8s use` で設定したクラスタではこの手順は不要です。kubectl がプロキシの停止を
+検知すると、資格情報プラグインがトンネルをバックグラウンドで起動し、進行状況を表示し、
+ゲートウェイが応答した時点でトークンを渡します。
 
 peer シークレットに `dns` を設定すると名前解決もトンネル経由になり、フリート内部の
 ホスト名がそのまま使えます。環境変数の代わりに kubeconfig でクラスタごとにプロキシを
@@ -54,8 +59,9 @@ vctl k8s exec core-sre -- helm list -A   # 使い捨て kubeconfig でコマン�
 ```
 
 WireGuard ハブ経由のクラスタは `proxy-url` が `vctl wg connect` のプロキシを指すように
-書かれます。新しいノートPCからどのクラスタへもコマンド三つで届きます。`vctl login`、
-`vctl wg connect`、`vctl k8s use <cluster>`。管理者は `vctl k8s cluster set <name>
+書かれ、そのトンネルが止まっていれば資格情報プラグインがバックグラウンドで起動します。
+新しいノートPCからどのクラスタへもコマンド二つで届きます。`vctl login`、`vctl k8s use
+<cluster>`。最初の `kubectl` がトンネルも立ち上げます。管理者は `vctl k8s cluster set <name>
 --from-context <kubectl コンテキスト> --source vault:kubernetes/<name>` でクラスタを
 宣言します。`deploy/k8s/vault-issuer.yaml` と `scripts/k8s-issuer-bootstrap.sh` が
 Vault にクラスタ内の足場を作ります。
@@ -492,9 +498,11 @@ claude mcp add vctl -- vctl mcp
 | `vctl dns [name]` | フリートの DNS レコードを zone ごとに表示。名前・アドレスの断片で絞り込み、完全一致の名前にはフリートリゾルバの実応答も併記 |
 | `vctl dns add <hostname> <ip> [--zone <z>]` | レコード登録: まず IaC リポジトリへコミットし(sync が再適用する基準はリポジトリ)、ライブの CoreDNS ConfigMap をパッチしてから実クエリで検証。zone は Corefile のバインディングからホスト名で推論 |
 | `vctl dns rm <hostname>` | レコード削除。同じリポジトリ→クラスタ経路を通る |
+| `vctl wg connect [--init] [--background] [--idle-exit 30m] [--socks 127.0.0.1:1080] [--forward LPORT:HOST:PORT]` | vctl 内の WireGuard トンネルとその前の SOCKS5 プロキシ。インストールも root もなしでフリート網に到達する。`--init` は新しい鍵を Vault に保存し、管理者に渡す公開鍵を表示する。`--background` は分離実行(ログは `~/.vctl/wg/`)で、`--idle-exit` の間クライアントがなければ自動で切断する |
+| `vctl wg status [--json]`, `vctl wg down` | このマシンで動くトンネルのアドレス・ゲートウェイ・ハンドシェイク経過・トラフィック・接続中クライアント、そして停止。ローカル専用でゲートなし |
 | `vctl k8s [ls] [--json]` | インベントリの Kubernetes クラスタ。API サーバー・サイト・到達経路(`wg connect` 経由か直接か)・トークンの出どころ |
 | `vctl k8s use <cluster> [--role viewer\|editor\|admin] [--context <name>]` | クラスタ用の kubeconfig コンテキストを書き、現在のコンテキストにする。user エントリは `vctl k8s token` を呼ぶ exec プラグインで、ファイルに資格情報はない。トンネル経由のクラスタには `wg connect` プロキシ用の `proxy-url` が入る |
-| `vctl k8s token --cluster <name> [--role <r>] [--no-cache]` | kubectl exec credential プラグイン。Vault Kubernetes secrets engine の短命 ServiceAccount トークン(`vault:<mount>`)か、未接続クラスタ向け KV シークレットの `token` フィールド(`kv:<path>`)。期限 2 分前まで 0600 でキャッシュし、発行ごとに access log に記録。`k8s-access` グラントでゲート |
+| `vctl k8s token --cluster <name> [--role <r>] [--no-cache] [--proxy <url>]` | kubectl exec credential プラグイン。クラスタのループバックプロキシが止まっていれば先にトンネルをバックグラウンドで起動し、進行状況を stderr に表示する。Vault Kubernetes secrets engine の短命 ServiceAccount トークン(`vault:<mount>`)か、未接続クラスタ向け KV シークレットの `token` フィールド(`kv:<path>`)。期限 2 分前まで 0600 でキャッシュし、発行ごとに access log に記録。`k8s-access` グラントでゲート |
 | `vctl k8s exec <cluster> [--role <r>] -- <command>` | 使い捨て kubeconfig を `KUBECONFIG` に置いてコマンドを一つ実行。自分の kubeconfig は触らない |
 | `vctl k8s cluster set <name> [--from-context <ctx>] [--api <url>] [--ca @file] [--reach tunnel\|direct] [--source vault:<mount>\|kv:<path>]` | クラスタを宣言、またはフィールドを変更。与えたフラグだけ書く。`--from-context` は自分の kubeconfig からアドレス・CA・tls-server-name のみ写す(資格情報は読まない)。`k8s-inventory` グラントでゲート |
 | `vctl k8s cluster rm <name>` | インベントリからクラスタを削除 |
