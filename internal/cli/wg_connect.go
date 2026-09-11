@@ -145,14 +145,19 @@ func wgConnectInit(ctx context.Context, v *vaultc.Client, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := v.WriteKV(ctx, path, map[string]string{"private_key": priv, "public_key": pub}); err != nil {
+	// cas=0: create only. The read above is the friendly message; this is the
+	// guarantee, in case another --init landed between the two.
+	if _, err := v.WriteKV(ctx, path, map[string]string{"private_key": priv, "public_key": pub}, 0); err != nil {
+		if errors.Is(err, vaultc.ErrKVConflict) {
+			return fmt.Errorf("%s was written by someone else just now; read it before deciding to replace it", path)
+		}
 		return err
 	}
 	ui.Successf(os.Stderr, "key stored at %s — the private half stays in Vault and is never printed.", path)
 	fmt.Fprintf(os.Stdout, "public key: %s\n", pub)
 	fmt.Fprintln(os.Stderr)
 	ui.Infof(os.Stderr, "next, a gateway administrator registers this public key as a peer and completes the secret:")
-	fmt.Fprintf(os.Stderr, "\n  vault kv patch %s \\\n", path)
+	fmt.Fprintf(os.Stderr, "\n  vctl kv set %s \\\n", path)
 	for _, f := range wgPeerFields {
 		if f.key == "private_key" {
 			continue

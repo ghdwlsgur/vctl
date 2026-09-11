@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -33,6 +34,40 @@ type fakeKV struct {
 
 	mu    sync.Mutex
 	lists []string
+
+	// writes records every WriteKV in order; conflictOnce makes the next write
+	// fail check-and-set, as a concurrent writer would.
+	writes       []fakeKVWrite
+	conflictOnce bool
+}
+
+type fakeKVWrite struct {
+	path string
+	data map[string]string
+	cas  int
+}
+
+func (f *fakeKV) WriteKV(_ context.Context, path string, data map[string]string, cas int) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.denied[path] {
+		return 0, fmt.Errorf("%s: %w", path, &vault.ResponseError{StatusCode: http.StatusForbidden})
+	}
+	cur, exists := f.secrets[path]
+	if f.conflictOnce {
+		f.conflictOnce = false
+		return 0, fmt.Errorf("%s: %w", path, vaultc.ErrKVConflict)
+	}
+	if cas == 0 && exists || cas > 0 && (!exists || cur.Version != cas) {
+		return 0, fmt.Errorf("%s: %w", path, vaultc.ErrKVConflict)
+	}
+	if f.secrets == nil {
+		f.secrets = map[string]vaultc.KVSecret{}
+	}
+	next := vaultc.KVSecret{Path: path, Data: maps.Clone(data), Version: cur.Version + 1}
+	f.secrets[path] = next
+	f.writes = append(f.writes, fakeKVWrite{path: path, data: maps.Clone(data), cas: cas})
+	return next.Version, nil
 }
 
 func (f *fakeKV) ListKV(_ context.Context, path string) ([]string, error) {
