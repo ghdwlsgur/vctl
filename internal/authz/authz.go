@@ -58,10 +58,14 @@ var gated = map[string]Class{
 	"sync":   ClassMutate,
 	// Ledgers and topology. A grant of "ip" authorizes the subcommands that
 	// write the address ledger; listing it is a read view, default-allowed.
-	"ip":             ClassMutate,
-	"wg":             ClassRead,
-	"wg-sync":        ClassMutate,
-	"wg-connect":     ClassMutate,
+	"ip":         ClassMutate,
+	"wg":         ClassRead,
+	"wg-sync":    ClassMutate,
+	"wg-connect": ClassMutate,
+	// Moving a remote between hubs changes live routing on someone else's
+	// box, so it is a mutation even though vctl stores nothing: the grant is
+	// what separates reading the failover view (class "wg") from driving it.
+	"wg-failover":    ClassMutate,
 	"openstack-farm": ClassMutate,
 	// The rbac surface itself: reads are default-allowed, mutations are
 	// admin-only — a grant must not be able to mint further grants.
