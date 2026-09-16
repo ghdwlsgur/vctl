@@ -137,7 +137,11 @@ func printSessions(sessions []store.AuditSession) error {
 		return nil
 	}
 	rows := make([][]string, 0, len(sessions))
+	skewed := 0
 	for _, s := range sessions {
+		if skewedSession(s) {
+			skewed++
+		}
 		rows = append(rows, []string{
 			s.StartedAt.Local().Format(ui.TimeLayout) + " " + ui.Ago(s.StartedAt),
 			ui.OrDash(s.VaultUser), s.Hostname, ui.OrDash(s.LoginUser),
@@ -145,7 +149,13 @@ func printSessions(sessions []store.AuditSession) error {
 		})
 	}
 	ui.Section(os.Stdout, "sessions")
-	return ui.Table(os.Stdout, []string{"started", "vault user", "host", "login", "serial", "dur"}, rows)
+	if err := ui.Table(os.Stdout, []string{"started", "vault user", "host", "login", "serial", "dur"}, rows); err != nil {
+		return err
+	}
+	if skewed > 0 {
+		ui.Warnf(os.Stderr, "%d session(s) ended before they began and are shown as 0s — the host clock led the database when they were written; `vctl migrate` repairs stored rows", skewed)
+	}
+	return nil
 }
 
 type sessionDetailOptions struct {
@@ -257,10 +267,30 @@ func timelineExport(sessions []store.AuditSession, events map[int64][]store.Kern
 	return out
 }
 
+// dur renders a session's length, flooring it at zero.
+//
+// started_at is the host's clock (it comes from the login marker and is part of
+// the session key) while older binaries stamped ended_at from the database
+// clock, so a host running ahead produced sessions that ended before they
+// began — "-3m15s" and friends sat in `vctl session --list` for weeks.
+// store.EndSession now floors the write and migration 031 floored the rows
+// already stored, but a host still running an older agent can write one more.
+// A reader must not be shown negative arithmetic; skewedSession is what tells
+// them the row is wrong rather than the session being strange.
 func dur(start time.Time, end *time.Time) string {
 	if end == nil {
 		return "live"
 	}
 	d := end.Sub(start).Round(time.Second)
+	if d < 0 {
+		return "0s"
+	}
 	return d.String()
+}
+
+// skewedSession reports a row whose end precedes its start — the two-clock bug
+// above. Counting them is how the table says "this number is floored" instead
+// of quietly showing 0s.
+func skewedSession(s store.AuditSession) bool {
+	return s.EndedAt != nil && s.EndedAt.Before(s.StartedAt)
 }
