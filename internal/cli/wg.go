@@ -26,7 +26,7 @@ peers (topology edges) and per-peer runtime status, collected by SSHing into the
 gateways and running 'wg show'. No secrets are stored — only public keys.`,
 	}
 	cmd.AddCommand(wgSyncCmd(env), wgGraphCmd(env), wgMonitorCmd(env), wgTUICmd(env), wgConnectCmd(env), wgStatusCmd(env), wgDownCmd(env),
-		wgEndpointCmd(env), wgEntityCmd(env), wgRelationCmd(env))
+		wgEndpointCmd(env), wgEntityCmd(env), wgRelationCmd(env), wgFailoverCmd(env))
 	return cmd
 }
 
