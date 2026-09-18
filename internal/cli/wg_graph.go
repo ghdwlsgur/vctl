@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,7 +28,7 @@ const wgHandshakeWindow = 3 * time.Minute
 // wgGraphCmd renders the collected WireGuard topology, as a terminal summary or
 // a mermaid diagram. Read (default-allow).
 func wgGraphCmd(env cmdkit.Env) *cobra.Command {
-	var format, hostFilter string
+	var opts wgGraphOptions
 	cmd := &cobra.Command{
 		Use:     "graph",
 		Aliases: []string{"show"},
@@ -42,52 +43,75 @@ gateways joined with the declared underlay ('vctl wg entity', 'vctl wg
 relation') and the derived failure domains, paths, SNAT requirements and
 gaps — so a script can assert on it without a browser.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return env.WithStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
-				ifaces, err := st.WGInterfaces(cmd.Context())
-				if err != nil {
-					return err
-				}
-				peers, err := st.WGPeers(cmd.Context())
-				if err != nil {
-					return err
-				}
-				if hostFilter != "" {
-					ifaces, peers = filterWGByHost(ifaces, peers, hostFilter)
-				}
-				if len(ifaces) == 0 {
-					ui.Warnf(os.Stderr, "no WireGuard data. Run 'vctl wg sync --all' first.")
-					return nil
-				}
-				switch format {
-				case "mermaid":
-					fmt.Fprintln(os.Stdout, wgMermaid(ifaces, peers))
-				case "terminal", "":
-					renderWGTerminal(os.Stdout, ifaces, peers)
-				case "json":
-					// The snapshot is the whole picture; a host filter
-					// would cut declared links off from one end, so it is refused
-					// rather than half-applied.
-					if hostFilter != "" {
-						return fmt.Errorf("--format json renders the whole topology; drop --host")
-					}
-					snap, err := loadTopologySnapshot(cmd.Context(), st, func(f string, a ...any) { ui.Warnf(os.Stderr, f, a...) })
-					if err != nil {
-						return err
-					}
-					enc := json.NewEncoder(os.Stdout)
-					enc.SetIndent("", "  ")
-					return enc.Encode(snap.Topo)
-				default:
-					return fmt.Errorf("unknown --format %q (terminal|mermaid|json)", format)
-				}
-				return nil
-			})
+			return runWGGraph(cmd, env, opts)
 		},
 	}
-	cmd.Flags().StringVar(&format, "format", "terminal", "output format: terminal|mermaid|json")
-	cmd.Flags().StringVar(&hostFilter, "host", "", "restrict to one gateway host")
+	cmd.Flags().StringVar(&opts.format, "format", "terminal", "output format: terminal|mermaid|json")
+	cmd.Flags().StringVar(&opts.hostFilter, "host", "", "restrict to one gateway host")
 	cmdkit.RegisterCompletion(cmd, "host", cmdkit.CompleteInventoryHost(env))
 	return cmdkit.Gate(cmd, "wg")
+}
+
+// wgGraphOptions is the bound flag set of `wg graph`.
+type wgGraphOptions struct {
+	format     string
+	hostFilter string
+}
+
+// runWGGraph is the body of `wg graph`, kept apart from the flag wiring in
+// wgGraphCmd.
+func runWGGraph(cmd *cobra.Command, env cmdkit.Env, opts wgGraphOptions) error {
+	return env.WithStore(cmd.Context(), false, func(_ *app.App, st *store.Store) error {
+		ctx := cmd.Context()
+		ifaces, err := st.WGInterfaces(ctx)
+		if err != nil {
+			return err
+		}
+		peers, err := st.WGPeers(ctx)
+		if err != nil {
+			return err
+		}
+		if opts.hostFilter != "" {
+			ifaces, peers = filterWGByHost(ifaces, peers, opts.hostFilter)
+		}
+		if len(ifaces) == 0 {
+			ui.Warnf(os.Stderr, "no WireGuard data. Run 'vctl wg sync --all' first.")
+			return nil
+		}
+		return renderWGGraph(ctx, st, ifaces, peers, opts)
+	})
+}
+
+// renderWGGraph writes the collected topology in the requested shape.
+func renderWGGraph(ctx context.Context, st *store.Store,
+	ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, opts wgGraphOptions) error {
+	switch opts.format {
+	case "mermaid":
+		fmt.Fprintln(os.Stdout, wgMermaid(ifaces, peers))
+	case "terminal", "":
+		renderWGTerminal(os.Stdout, ifaces, peers)
+	case "json":
+		return writeWGTopologyJSON(ctx, st, opts.hostFilter)
+	default:
+		return fmt.Errorf("unknown --format %q (terminal|mermaid|json)", opts.format)
+	}
+	return nil
+}
+
+// writeWGTopologyJSON emits the same picture `wg tui` draws, for scripts.
+func writeWGTopologyJSON(ctx context.Context, st *store.Store, hostFilter string) error {
+	// The snapshot is the whole picture; a host filter would cut declared
+	// links off from one end, so it is refused rather than half-applied.
+	if hostFilter != "" {
+		return fmt.Errorf("--format json renders the whole topology; drop --host")
+	}
+	snap, err := loadTopologySnapshot(ctx, st, func(f string, a ...any) { ui.Warnf(os.Stderr, f, a...) })
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(snap.Topo)
 }
 
 func filterWGByHost(ifaces []store.WGInterfaceRow, peers []store.WGPeerRow, host string) ([]store.WGInterfaceRow, []store.WGPeerRow) {
