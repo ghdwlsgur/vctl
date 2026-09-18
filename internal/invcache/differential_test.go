@@ -124,7 +124,7 @@ func TestOfflineReaderMatchesPostgres(t *testing.T) {
 				t.Errorf("Get(%q) error mismatch: postgres=%v snapshot=%v", h, wantErr, gotErr)
 				continue
 			}
-			if wantErr == nil && !reflect.DeepEqual(*wantSv, *gotSv) {
+			if wantErr == nil && !sameServer(*wantSv, *gotSv) {
 				t.Errorf("Get(%q): postgres=%+v snapshot=%+v", h, *wantSv, *gotSv)
 			}
 		}
@@ -193,6 +193,34 @@ func seedBothReaders(t *testing.T) (*store.Store, Reader, Reader) {
 		t.Fatalf("reload: %v", err)
 	}
 	return st, st, NewMemory(loaded)
+}
+
+// sameServer compares two rows by value, with the timestamp compared as an
+// instant rather than as a struct.
+//
+// reflect.DeepEqual on a time.Time looks at its internal representation, and
+// that includes the *Location pointer. The two readers legitimately differ
+// there: pgx hands back the process's local zone, while the snapshot's value
+// has been through JSON and comes back from time.Parse. On a machine set to
+// Asia/Seoul those land on the same Location and the comparison passes; on a
+// machine set to UTC — which is every CI runner and most containers — they are
+// two distinct Location values both naming UTC, and the comparison fails on
+// rows that are identical down to the nanosecond. The failure prints the two
+// structs as the same text, because they render the same.
+//
+// Normalising to UTC keeps the instant, so a real divergence in the timestamp,
+// or one side losing it entirely, still fails.
+func sameServer(a, b store.Server) bool {
+	a.LastSeenUp, b.LastSeenUp = atUTC(a.LastSeenUp), atUTC(b.LastSeenUp)
+	return reflect.DeepEqual(a, b)
+}
+
+func atUTC(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
 
 func name(sv *store.Server) string {
