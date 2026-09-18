@@ -71,9 +71,10 @@ func runSync(cmd *cobra.Command, env cmdkit.Env, opts syncOptions) error {
 	}
 	servers := syncx.BuildWithOptions(blocks, a.Cfg.SyncBuildOptions(opts.prefix))
 
-	var ok, up int
+	var ok, up, kept int
 	for _, s := range servers {
-		if err := st.Upsert(ctx, s); err != nil {
+		out, err := st.UpsertSynced(ctx, s)
+		if err != nil {
 			ui.Errorf(os.Stderr, "%s: %v", s.Hostname, err)
 			continue
 		}
@@ -81,8 +82,20 @@ func runSync(cmd *cobra.Command, env cmdkit.Env, opts syncOptions) error {
 		if s.LastSeenUp != nil {
 			up++
 		}
+		if out.KeptAddress {
+			kept++
+			// Named per host rather than counted only: the file still holds the
+			// stale address, so the operator has to go and fix it there. A
+			// number alone would not say where.
+			ui.Warnf(os.Stderr, "%s: kept %s — %s in %s did not answer and is not an address the host's agent reports",
+				s.Hostname, out.Address, s.IP, opts.path)
+		}
 	}
 	ui.Successf(os.Stderr, "sync complete: %d upserted", ok)
+	if kept > 0 {
+		ui.Infof(os.Stderr, "%d host(s) kept the inventory address over the one in %s — correct the file, or every sync will report this again ('vctl list --drift')",
+			kept, opts.path)
+	}
 
 	// sync is the command that changes inventory, so it leaves the local
 	// snapshot current instead of waiting for the refresh interval to
