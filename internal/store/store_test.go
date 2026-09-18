@@ -455,3 +455,124 @@ func TestCredentialReuseWindowIsWorthCaching(t *testing.T) {
 			"too little of each credential's life is left for reuse", got, credentialTTL, max)
 	}
 }
+
+// seedDriftedHost registers a host at `stored` with an agent reporting only
+// `observed`, which is the shape of an inventory that a moved machine left
+// behind. Addresses are RFC 5737 documentation ranges: this repository is
+// public.
+func seedDriftedHost(t *testing.T, st *Store, host, stored, observed string) {
+	t.Helper()
+	ctx := context.Background()
+	_, _ = st.pool.Exec(ctx, `DELETE FROM server_status WHERE hostname=$1`, host)
+	_, _ = st.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=$1`, host)
+	t.Cleanup(func() {
+		_, _ = st.pool.Exec(ctx, `DELETE FROM server_status WHERE hostname=$1`, host)
+		_, _ = st.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=$1`, host)
+	})
+	if _, err := st.pool.Exec(ctx, `
+		INSERT INTO servers (hostname, ip, ssh_port, ssh_user, dc, ca_role)
+		VALUES ($1, $2::inet, 22, 'root', 'test', 'sre-core')`, host, stored); err != nil {
+		t.Fatalf("seed server: %v", err)
+	}
+	if _, err := st.pool.Exec(ctx, `
+		INSERT INTO server_status (hostname, observed_ips) VALUES ($1, ARRAY[$2::inet])`,
+		host, observed); err != nil {
+		t.Fatalf("seed status: %v", err)
+	}
+}
+
+func storedIP(t *testing.T, st *Store, host string) string {
+	t.Helper()
+	var ip string
+	if err := st.pool.QueryRow(context.Background(),
+		`SELECT host(ip) FROM servers WHERE hostname=$1`, host).Scan(&ip); err != nil {
+		t.Fatalf("read back %s: %v", host, err)
+	}
+	return ip
+}
+
+// The correction an operator makes with `vctl edit --ip` has to survive the
+// next sync. ~/.ssh/config still holds the address the machine moved off, and
+// sync matches a known host BY its address — so the stale value arrives down
+// the hostname-conflict path and used to win silently.
+func TestSyncKeepsTheStoredAddressOverAStaleUnreachableOne(t *testing.T) {
+	st := testStore(t)
+	host := "drift-guard-" + time.Now().Format("150405.000000")
+	seedDriftedHost(t, st, host, "198.51.100.11", "198.51.100.11")
+
+	out, err := st.UpsertSynced(context.Background(), Server{
+		Hostname: host, IP: "198.51.100.10", Port: 22, DC: "test", CARole: "sre-core",
+		LastSeenUp: nil, // the probe did not answer
+	})
+	if err != nil {
+		t.Fatalf("UpsertSynced: %v", err)
+	}
+	if !out.KeptAddress || out.Address != "198.51.100.11" {
+		t.Fatalf("outcome = %+v, want the stored address kept", out)
+	}
+	if got := storedIP(t, st, host); got != "198.51.100.11" {
+		t.Fatalf("stored ip = %s, want the correction to survive", got)
+	}
+}
+
+// A machine that really moved has its new address answering, so the guard must
+// not stand in the way of the inventory following it.
+func TestSyncFollowsAnAddressThatAnswers(t *testing.T) {
+	st := testStore(t)
+	host := "drift-follow-" + time.Now().Format("150405.000000")
+	seedDriftedHost(t, st, host, "198.51.100.11", "198.51.100.11")
+
+	now := time.Now()
+	out, err := st.UpsertSynced(context.Background(), Server{
+		Hostname: host, IP: "198.51.100.20", Port: 22, DC: "test", CARole: "sre-core",
+		LastSeenUp: &now, // it answered
+	})
+	if err != nil {
+		t.Fatalf("UpsertSynced: %v", err)
+	}
+	if out.KeptAddress || out.Address != "198.51.100.20" {
+		t.Fatalf("outcome = %+v, want the new address taken", out)
+	}
+}
+
+// `vctl add` is person-authored: naming an address is the authority, which is
+// how a host is registered at one nothing can reach yet.
+func TestUpsertFromAnOperatorIsNotGuarded(t *testing.T) {
+	st := testStore(t)
+	host := "drift-operator-" + time.Now().Format("150405.000000")
+	seedDriftedHost(t, st, host, "198.51.100.11", "198.51.100.11")
+
+	if err := st.Upsert(context.Background(), Server{
+		Hostname: host, IP: "198.51.100.30", Port: 22, DC: "test", CARole: "sre-core",
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if got := storedIP(t, st, host); got != "198.51.100.30" {
+		t.Fatalf("stored ip = %s, want the operator's value", got)
+	}
+}
+
+// A host with no agent gives no basis to prefer the stored address, so sync
+// stays in charge of it.
+func TestSyncFollowsWhenNoAgentHasReported(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	host := "drift-noagent-" + time.Now().Format("150405.000000")
+	_, _ = st.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=$1`, host)
+	t.Cleanup(func() { _, _ = st.pool.Exec(ctx, `DELETE FROM servers WHERE hostname=$1`, host) })
+	if _, err := st.pool.Exec(ctx, `
+		INSERT INTO servers (hostname, ip, ssh_port, ssh_user, dc, ca_role)
+		VALUES ($1, '198.51.100.11'::inet, 22, 'root', 'test', 'sre-core')`, host); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	out, err := st.UpsertSynced(ctx, Server{
+		Hostname: host, IP: "198.51.100.40", Port: 22, DC: "test", CARole: "sre-core",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSynced: %v", err)
+	}
+	if out.KeptAddress {
+		t.Fatalf("outcome = %+v, want sync to follow when nothing contradicts it", out)
+	}
+}

@@ -615,15 +615,45 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-// Upsert reconciles one probed host during sync. It requires write credentials.
-//
-// An already-known host is matched by IP and its operator-managed identity and
-// topology — hostname, dc, ssh_user, jump_via — are PRESERVED; only the probe
-// fields refresh (last_seen_up, ssh_port, ca_role). So operator edits (DC moves,
-// renames, ssh-user overrides) stay sticky across syncs and a renamed host is
-// never re-inserted under its ssh-config alias. A genuinely new IP is inserted
-// with the sync-derived values (initial DC classification etc.).
+// SyncOutcome reports what a sync did with one host's address.
+type SyncOutcome struct {
+	// KeptAddress is set when the address in ~/.ssh/config was refused and the
+	// stored one left standing.
+	KeptAddress bool
+	// Address is what the inventory holds for the host now.
+	Address string
+}
+
+// Upsert reconciles one host from an operator-authored record (`vctl add`).
+// The address is taken as given: a person naming it is the authority, which is
+// how a host is registered at an address nothing can reach yet.
 func (s *Store) Upsert(ctx context.Context, sv Server) error {
+	_, err := s.upsert(ctx, sv, false)
+	return err
+}
+
+// UpsertSynced reconciles one probed host during `vctl sync`, where the address
+// comes from a *file* rather than from a person — and a file has no way to know
+// the machine moved.
+//
+// That distinction is the whole reason this door exists. Sync matches a known
+// host BY its address, so once a machine moves, the probe no longer recognises
+// it, the hostname-conflict path takes over and ~/.ssh/config's stale value
+// overwrites whatever the inventory held — including a correction an operator
+// just made with `vctl edit --ip`. The fix would not survive the next sync.
+//
+// So this refuses exactly one thing: replacing the stored address with one that
+// did not answer this run and that the host's own node-agent does not report.
+// Both halves are needed. A genuine move has the new address answering, so it
+// is never blocked; and an address the agent cannot see is normal for a host
+// reached through NAT, so an unobserved address that answers is accepted too.
+// Anything else — a new host, a host with no agent, a reachable address — is
+// upserted exactly as before.
+func (s *Store) UpsertSynced(ctx context.Context, sv Server) (SyncOutcome, error) {
+	return s.upsert(ctx, sv, true)
+}
+
+func (s *Store) upsert(ctx context.Context, sv Server, guardAddress bool) (SyncOutcome, error) {
 	var jump any
 	if sv.JumpVia != "" {
 		jump = sv.JumpVia
@@ -638,28 +668,44 @@ func (s *Store) Upsert(ctx context.Context, sv Server) error {
 		 WHERE ip=$1::inet OR host(ip)=host($1::inet)`,
 		sv.IP).Scan(&existing)
 	if err != nil {
-		return err
+		return SyncOutcome{}, err
 	}
 	switch len(existing) {
 	case 1:
 		_, err = s.pool.Exec(ctx, `
 			UPDATE servers SET ssh_port=$2, ca_role=$3, last_seen_up=$4, updated_at=now()
 			WHERE hostname=$1`, existing[0], sv.Port, sv.CARole, sv.LastSeenUp)
-		return err
+		return SyncOutcome{Address: sv.IP}, err
 	case 0:
 		// New address; insert below.
 	default:
-		return fmt.Errorf("primary IP %s belongs to multiple servers: %s", sv.IP, strings.Join(existing, ", "))
+		return SyncOutcome{}, fmt.Errorf("primary IP %s belongs to multiple servers: %s", sv.IP, strings.Join(existing, ", "))
 	}
 
 	// New host: insert sync-derived values. The hostname conflict fallback also
-	// preserves operator dc/ssh_user/jump_via (only refreshes probe fields).
-	_, err = s.pool.Exec(ctx, `
+	// preserves operator dc/ssh_user/jump_via (only refreshes probe fields), and
+	// — when guarded — the address itself.
+	var stored string
+	err = s.pool.QueryRow(ctx, `
 		INSERT INTO servers (hostname, ip, ssh_port, ssh_user, jump_via, dc, ca_role, last_seen_up, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
 		ON CONFLICT (hostname) DO UPDATE SET
-			ip=EXCLUDED.ip, ssh_port=EXCLUDED.ssh_port, ca_role=EXCLUDED.ca_role,
-			last_seen_up=EXCLUDED.last_seen_up, updated_at=now()`,
-		sv.Hostname, sv.IP, sv.Port, sv.User, jump, sv.DC, sv.CARole, sv.LastSeenUp)
-	return err
+			ip=CASE WHEN $9::bool
+			          AND EXCLUDED.last_seen_up IS NULL
+			          AND EXISTS (
+			                SELECT 1 FROM server_status ss
+			                 WHERE ss.hostname = servers.hostname
+			                   AND coalesce(array_length(ss.observed_ips, 1), 0) > 0
+			                   AND NOT (ss.observed_ips @> ARRAY[EXCLUDED.ip]
+			                            OR EXISTS (SELECT 1 FROM unnest(ss.observed_ips) a
+			                                        WHERE host(a) = host(EXCLUDED.ip))))
+			        THEN servers.ip ELSE EXCLUDED.ip END,
+			ssh_port=EXCLUDED.ssh_port, ca_role=EXCLUDED.ca_role,
+			last_seen_up=EXCLUDED.last_seen_up, updated_at=now()
+		RETURNING host(ip)`,
+		sv.Hostname, sv.IP, sv.Port, sv.User, jump, sv.DC, sv.CARole, sv.LastSeenUp, guardAddress).Scan(&stored)
+	if err != nil {
+		return SyncOutcome{}, err
+	}
+	return SyncOutcome{KeptAddress: stored != sv.IP, Address: stored}, nil
 }
