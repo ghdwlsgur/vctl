@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Delete removes a server from the inventory. Use when a host is
@@ -210,7 +213,36 @@ func (s *Store) Insert(ctx context.Context, sv Server) (bool, error) {
 //
 // Sync can still overwrite it on a later run if ~/.ssh/config still holds the
 // old value, so the two are corrected together — `vctl list --drift` reports
-// what is out of step. Returns whether a row matched.
+// what is out of step.
+//
+// It refuses an address another host already holds. servers.ip carries no
+// unique constraint, and sync treats two rows on one address as a conflict it
+// cannot resolve: it skips both hosts, every run, and their probe fields stop
+// moving. An edit is the one path that can create that state deliberately, so
+// it is the path that checks. Returns whether a row matched; an unknown host is
+// (false, nil), a taken address is an error that names the holder.
 func (s *Store) SetIP(ctx context.Context, hostname, ip string) (bool, error) {
-	return s.execMatched(ctx, `UPDATE servers SET ip=$2::inet, updated_at=now() WHERE hostname=$1`, hostname, ip)
+	// One statement, so a writer landing between a check and the update
+	// cannot slip a second holder in. The host's own current address passes:
+	// re-setting it is a no-op, not a collision.
+	matched, err := s.execMatched(ctx, `
+		UPDATE servers SET ip=$2::inet, updated_at=now()
+		 WHERE hostname=$1
+		   AND NOT EXISTS (SELECT 1 FROM servers o
+		                    WHERE host(o.ip)=host($2::inet) AND o.hostname<>$1)`, hostname, ip)
+	if err != nil || matched {
+		return matched, err
+	}
+	var holder string
+	err = s.pool.QueryRow(ctx, `
+		SELECT hostname FROM servers WHERE host(ip)=host($2::inet) AND hostname<>$1 LIMIT 1`,
+		hostname, ip).Scan(&holder)
+	switch {
+	case err == nil:
+		return false, fmt.Errorf("%s already belongs to %s — sync refuses an address two hosts hold and would skip both", ip, holder)
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil // no such host; the caller says so
+	default:
+		return false, err
+	}
 }

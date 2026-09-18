@@ -157,7 +157,7 @@ func runSSH(cmd *cobra.Command, env cmdkit.Env, args []string, opts sshOptions) 
 // the original error exactly as it was: a diagnostic must never replace the
 // error it is trying to explain.
 func explainInventoryDrift(ctx context.Context, inv *app.Inventory, sv *store.Server, connErr error) error {
-	if connErr == nil || sv == nil {
+	if !driftCouldExplain(sv, connErr) {
 		return connErr
 	}
 	w, lookupErr := inv.WithStatus(ctx, sv.Hostname)
@@ -168,6 +168,21 @@ func explainInventoryDrift(ctx context.Context, inv *app.Inventory, sv *store.Se
 		sv.Hostname, ui.Ago(w.Status.LastSeenAt), sv.IP, strings.Join(w.Status.ObservedIPs, ", "))
 	ui.Infof(os.Stderr, "the inventory has drifted, not the host — 'vctl edit %s --ip <address>' fixes it, and ~/.ssh/config needs the same value or the next sync restores the old one", sv.Hostname)
 	return connErr
+}
+
+// driftCouldExplain says whether a failed connection is the kind an address
+// drift produces. Only a failure to *reach* the address is: a handshake or
+// authentication error means something answered there, and a host reached
+// through a jump may have failed at the jump instead. The check matters because
+// a host whose primary is a floating IP reads as drifted by construction — its
+// agent never sees that address — so without it every auth failure on such a
+// host would end in advice to edit an inventory row that is right.
+func driftCouldExplain(sv *store.Server, connErr error) bool {
+	if connErr == nil || sv == nil || sv.JumpVia != "" {
+		return false
+	}
+	var op *net.OpError
+	return errors.As(connErr, &op) && op.Op == "dial"
 }
 
 // sshEndpoint is a target given as an address on the command line instead of a

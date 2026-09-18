@@ -685,12 +685,13 @@ func (s *Store) upsert(ctx context.Context, sv Server, guardAddress bool) (SyncO
 	// New host: insert sync-derived values. The hostname conflict fallback also
 	// preserves operator dc/ssh_user/jump_via (only refreshes probe fields), and
 	// — when guarded — the address itself.
-	var stored string
-	err = s.pool.QueryRow(ctx, `
-		INSERT INTO servers (hostname, ip, ssh_port, ssh_user, jump_via, dc, ca_role, last_seen_up, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
-		ON CONFLICT (hostname) DO UPDATE SET
-			ip=CASE WHEN $9::bool
+	// The guard, spelled once and applied to both columns it governs. Keeping
+	// the address while taking the probe's NULL for last_seen_up would leave a
+	// row that says "this address, never seen up" about an address the probe
+	// never dialled — the failed dial was of the file's address, not this one.
+	// The condition holds no user input: only the $9 flag, the incoming row and
+	// the row already there.
+	const keepStored = `($9::bool
 			          AND EXCLUDED.last_seen_up IS NULL
 			          AND EXISTS (
 			                SELECT 1 FROM server_status ss
@@ -698,14 +699,26 @@ func (s *Store) upsert(ctx context.Context, sv Server, guardAddress bool) (SyncO
 			                   AND coalesce(array_length(ss.observed_ips, 1), 0) > 0
 			                   AND NOT (ss.observed_ips @> ARRAY[EXCLUDED.ip]
 			                            OR EXISTS (SELECT 1 FROM unnest(ss.observed_ips) a
-			                                        WHERE host(a) = host(EXCLUDED.ip))))
-			        THEN servers.ip ELSE EXCLUDED.ip END,
-			ssh_port=EXCLUDED.ssh_port, ca_role=EXCLUDED.ca_role,
-			last_seen_up=EXCLUDED.last_seen_up, updated_at=now()
-		RETURNING host(ip)`,
-		sv.Hostname, sv.IP, sv.Port, sv.User, jump, sv.DC, sv.CARole, sv.LastSeenUp, guardAddress).Scan(&stored)
+			                                        WHERE host(a) = host(EXCLUDED.ip)))))`
+	var (
+		stored string
+		kept   bool
+	)
+	// Whether the address was kept is answered by the database, comparing
+	// canonical forms. Comparing the returned text against sv.IP would call
+	// any spelling difference a kept address — an upper-case IPv6 literal in
+	// the file is written exactly as asked and still read as refused.
+	err = s.pool.QueryRow(ctx, `
+		INSERT INTO servers (hostname, ip, ssh_port, ssh_user, jump_via, dc, ca_role, last_seen_up, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+		ON CONFLICT (hostname) DO UPDATE SET
+			ip=CASE WHEN `+keepStored+` THEN servers.ip ELSE EXCLUDED.ip END,
+			last_seen_up=CASE WHEN `+keepStored+` THEN servers.last_seen_up ELSE EXCLUDED.last_seen_up END,
+			ssh_port=EXCLUDED.ssh_port, ca_role=EXCLUDED.ca_role, updated_at=now()
+		RETURNING host(ip), host(ip) <> host($2::inet)`,
+		sv.Hostname, sv.IP, sv.Port, sv.User, jump, sv.DC, sv.CARole, sv.LastSeenUp, guardAddress).Scan(&stored, &kept)
 	if err != nil {
 		return SyncOutcome{}, err
 	}
-	return SyncOutcome{KeptAddress: stored != sv.IP, Address: stored}, nil
+	return SyncOutcome{KeptAddress: kept, Address: stored}, nil
 }
