@@ -509,6 +509,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl dns rm <hostname>` | 레코드 삭제. 같은 저장소→클러스터 경로를 지납니다 |
 | `vctl wg connect [--init] [--background] [--idle-exit 30m] [--socks 127.0.0.1:1080] [--forward LPORT:HOST:PORT]` | vctl 안의 WireGuard 터널과 그 앞의 SOCKS5 프록시. 설치도 root 도 없이 함대망에 닿습니다. `--init` 은 새 키를 Vault 에 저장하고 관리자에게 줄 공개키를 출력합니다. `--background` 는 분리 실행(로그 `~/.vctl/wg/`)이며 `--idle-exit` 동안 클라이언트가 없으면 스스로 끊습니다 |
 | `vctl wg status [--json]`, `vctl wg down` | 이 기기에서 도는 터널의 주소·게이트웨이·핸드셰이크 경과·트래픽·열린 클라이언트, 그리고 중지. 로컬 전용이라 게이트 없음 |
+| `vctl wg forget <host...>\|--gone [--dry-run]` | 수집된 인터페이스·peer·런타임 상태를 지웁니다. 이걸 하는 다른 경로가 없습니다. `wg sync` 는 한 호스트를 교체하는 앞단으로만 그 행을 지우므로, 철거된 게이트웨이는 스스로를 영영 못 지우고 계속 그려집니다. `--gone` 은 인벤토리에 더는 없는 수집 호스트를 전부 쓸어냅니다. 선언 엔티티와 주석은 건드리지 않습니다 — 각자 `rm` 이 따로 있습니다 |
 | `vctl wg failover status\|to-standby\|to-primary\|hold` | 원격이 스스로 돌리는 대기 허브 전환을 읽고 조작합니다. 지금 어느 허브가 전송망을 지고 있는지, 양쪽 핸드셰이크 경과, 그리고 제자리가 아닌 원격은 그 원격 자신의 판정 이유까지 보여 줍니다. 판정은 여기서 다시 계산하지 않고 스크립트에서 읽어 옵니다. 강제 전환과 자동 전환 정지는 `wg-failover` 그랜트가 필요합니다 |
 | `vctl k8s [ls] [--json]` | 인벤토리의 Kubernetes 클러스터. API 서버·사이트·도달 경로(`wg connect` 경유 또는 직접)·토큰 출처 |
 | `vctl k8s use <cluster> [--role viewer\|editor\|admin] [--context <name>]` | 클러스터용 kubeconfig 컨텍스트를 쓰고 현재 컨텍스트로 만듭니다. user 항목은 `vctl k8s token`을 호출하는 exec 플러그인이라 파일에 자격증명이 없습니다. 터널 경유 클러스터에는 `wg connect` 프록시용 `proxy-url`이 들어갑니다 |
