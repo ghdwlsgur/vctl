@@ -576,3 +576,96 @@ func TestSyncFollowsWhenNoAgentHasReported(t *testing.T) {
 		t.Fatalf("outcome = %+v, want sync to follow when nothing contradicts it", out)
 	}
 }
+
+// Keeping the address must keep the probe time with it. The failed dial was of
+// the file's address; writing its NULL against the address that was kept would
+// leave a row reading "this address, never seen up" about an address nobody
+// dialled.
+func TestSyncKeepsTheProbeTimeWithTheAddress(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	host := "drift-probetime-" + time.Now().Format("150405.000000")
+	seedDriftedHost(t, st, host, "198.51.100.11", "198.51.100.11")
+	seen := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if _, err := st.pool.Exec(ctx, `UPDATE servers SET last_seen_up=$2 WHERE hostname=$1`, host, seen); err != nil {
+		t.Fatalf("seed probe time: %v", err)
+	}
+
+	out, err := st.UpsertSynced(ctx, Server{
+		Hostname: host, IP: "198.51.100.10", Port: 22, DC: "test", CARole: "sre-core",
+		LastSeenUp: nil, // the file's address did not answer
+	})
+	if err != nil || !out.KeptAddress {
+		t.Fatalf("UpsertSynced = %+v, %v; want the address kept", out, err)
+	}
+	var got *time.Time
+	if err := st.pool.QueryRow(ctx, `SELECT last_seen_up FROM servers WHERE hostname=$1`, host).Scan(&got); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got == nil || !got.Equal(seen) {
+		t.Fatalf("last_seen_up = %v, want the earlier %v kept alongside the address", got, seen)
+	}
+}
+
+// "Kept" is decided by the database on canonical addresses, not by comparing the
+// returned text to what the file said. An upper-case IPv6 literal in the file is
+// written exactly as asked and must not be reported as refused.
+func TestSyncDoesNotCallASpellingDifferenceAKeptAddress(t *testing.T) {
+	st := testStore(t)
+	host := "drift-spelling-" + time.Now().Format("150405.000000")
+	seedDriftedHost(t, st, host, "2001:db8::11", "2001:db8::11")
+
+	now := time.Now()
+	out, err := st.UpsertSynced(context.Background(), Server{
+		Hostname: host, IP: "2001:DB8::20", Port: 22, DC: "test", CARole: "sre-core",
+		LastSeenUp: &now, // it answered, so the address is taken
+	})
+	if err != nil {
+		t.Fatalf("UpsertSynced: %v", err)
+	}
+	if out.KeptAddress {
+		t.Fatalf("outcome = %+v; the address was written, nothing was kept", out)
+	}
+	if got := storedIP(t, st, host); got != "2001:db8::20" {
+		t.Fatalf("stored ip = %s, want the file's address", got)
+	}
+}
+
+// servers.ip has no unique constraint, and sync treats two rows on one address
+// as a conflict it skips — both hosts, every run. The edit is the one path that
+// can create that state on purpose, so it refuses.
+func TestSetIPRefusesAnAddressAnotherHostHolds(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	stamp := time.Now().Format("150405.000000")
+	a, b := "setip-a-"+stamp, "setip-b-"+stamp
+	seedDriftedHost(t, st, a, "198.51.100.61", "198.51.100.61")
+	seedDriftedHost(t, st, b, "198.51.100.62", "198.51.100.62")
+
+	matched, err := st.SetIP(ctx, a, "198.51.100.62")
+	if err == nil || matched {
+		t.Fatalf("SetIP onto %s's address = (%v, %v); want a refusal", b, matched, err)
+	}
+	if !strings.Contains(err.Error(), b) {
+		t.Fatalf("refusal does not name the holder: %v", err)
+	}
+	if got := storedIP(t, st, a); got != "198.51.100.61" {
+		t.Fatalf("%s moved to %s despite the refusal", a, got)
+	}
+
+	// The host's own address is not a collision.
+	if matched, err := st.SetIP(ctx, a, "198.51.100.61"); err != nil || !matched {
+		t.Fatalf("re-setting the current address = (%v, %v); want a plain match", matched, err)
+	}
+	// A free address goes through.
+	if matched, err := st.SetIP(ctx, a, "198.51.100.63"); err != nil || !matched {
+		t.Fatalf("SetIP to a free address = (%v, %v)", matched, err)
+	}
+	if got := storedIP(t, st, a); got != "198.51.100.63" {
+		t.Fatalf("stored ip = %s after a valid edit", got)
+	}
+	// An unknown host is (false, nil), as before — the caller names it.
+	if matched, err := st.SetIP(ctx, "setip-nobody-"+stamp, "198.51.100.64"); err != nil || matched {
+		t.Fatalf("SetIP on an unknown host = (%v, %v); want (false, nil)", matched, err)
+	}
+}

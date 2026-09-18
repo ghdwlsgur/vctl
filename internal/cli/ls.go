@@ -89,48 +89,93 @@ func runListDrift(cmd *cobra.Command, env cmdkit.Env, dc string) error {
 				candidates = append(candidates, r)
 			}
 		}
-		drifted, reachable := splitByPrimaryReachable(cmd.Context(), candidates)
-		return printDriftedHosts(drifted, reachable, len(rows), agents, inv.Cached())
+		return printDriftedHosts(probeCandidates(cmd.Context(), candidates), len(rows), agents, inv.Cached())
 	})
 }
 
-// splitByPrimaryReachable separates candidates whose primary still answers —
-// the floating-IP shape, which is not drift — from those where nothing answers.
-func splitByPrimaryReachable(ctx context.Context, candidates []store.ServerWithStatus) (drifted, reachable []store.ServerWithStatus) {
-	answers := make([]bool, len(candidates))
+// probeVerdict is what one dial to a candidate's primary established.
+type probeVerdict int
+
+const (
+	probeAnswered probeVerdict = iota // accepted or refused: a machine is there
+	probeSilent                       // nothing answered — the drift shape
+	probeNoRoute                      // this machine has no route to that network; says nothing about the host
+	probeSkipped                      // reached through a jump, which a dial from here does not follow
+)
+
+// driftProbe sorts the candidates by what the probe could and could not say.
+type driftProbe struct {
+	drifted    []store.ServerWithStatus // unobserved and unanswering
+	reachable  []store.ServerWithStatus // unobserved but answering: a floating IP
+	noRoute    []store.ServerWithStatus // unjudged: no route from here
+	behindJump []store.ServerWithStatus // unjudged: `vctl ssh` goes via a jump host
+}
+
+// probeCandidates dials each candidate's primary once, except those reached
+// through a jump. `vctl ssh` follows JumpVia; a dial from the operator's machine
+// does not, so for those hosts an unanswered dial is the expected result of a
+// working setup and would read as drift. They are reported as unprobed instead.
+func probeCandidates(ctx context.Context, candidates []store.ServerWithStatus) driftProbe {
+	verdicts := make([]probeVerdict, len(candidates))
 	var wg sync.WaitGroup
 	for i := range candidates {
+		if candidates[i].JumpVia != "" {
+			verdicts[i] = probeSkipped
+			continue
+		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			answers[i] = primaryAnswers(ctx, candidates[i])
+			verdicts[i] = primaryAnswers(ctx, candidates[i])
 		}(i)
 	}
 	wg.Wait()
+	var p driftProbe
 	for i, c := range candidates {
-		if answers[i] {
-			reachable = append(reachable, c)
-			continue
+		switch verdicts[i] {
+		case probeAnswered:
+			p.reachable = append(p.reachable, c)
+		case probeNoRoute:
+			p.noRoute = append(p.noRoute, c)
+		case probeSkipped:
+			p.behindJump = append(p.behindJump, c)
+		default:
+			p.drifted = append(p.drifted, c)
 		}
-		drifted = append(drifted, c)
 	}
-	return drifted, reachable
+	return p
 }
 
-// primaryAnswers reports whether anything accepts a connection on the host's
-// primary address and SSH port. A refused connection counts as answering: some
-// machine is there, which is not the drift this looks for.
-func primaryAnswers(ctx context.Context, w store.ServerWithStatus) bool {
+// primaryAnswers dials the host's primary address and SSH port once and
+// classifies what came back.
+func primaryAnswers(ctx context.Context, w store.ServerWithStatus) probeVerdict {
 	ctx, cancel := context.WithTimeout(ctx, driftProbeTimeout)
 	defer cancel()
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(w.IP, strconv.Itoa(w.Port)))
 	if err == nil {
 		_ = conn.Close()
-		return true
 	}
-	var se *os.SyscallError
-	return errors.As(err, &se) && errors.Is(se.Err, syscall.ECONNREFUSED)
+	return classifyDial(err)
+}
+
+// classifyDial reads a dial error for what it says about the far end.
+//
+// A refused connection counts as answering: some machine is there, which is
+// not the drift this looks for. "Network is unreachable" is the opposite
+// case — it is about this machine's routing table, not the host, and is what
+// every candidate returns when the VPN is down. Treating it as silence would
+// report the whole fleet drifted the moment the tunnel dropped. "No route to
+// host" stays silence on purpose: on a directly attached subnet it is exactly
+// what an address nobody holds any more produces.
+func classifyDial(err error) probeVerdict {
+	switch {
+	case err == nil, errors.Is(err, syscall.ECONNREFUSED):
+		return probeAnswered
+	case errors.Is(err, syscall.ENETUNREACH):
+		return probeNoRoute
+	}
+	return probeSilent
 }
 
 // driftProbeTimeout is short on purpose: the answer wanted here is "did
@@ -148,17 +193,24 @@ func lastProbeCell(t *time.Time) string {
 
 // printDriftedHosts puts the two addresses side by side, which is the whole
 // point: the reader has to see that the one vctl dials is not one the host has.
-func printDriftedHosts(drifted, reachable []store.ServerWithStatus, total, agents int, cached bool) error {
+func printDriftedHosts(p driftProbe, total, agents int, cached bool) error {
 	if cached {
 		ui.Warnf(os.Stderr, "reading the local snapshot — drift is judged on heartbeats that are old by construction")
 	}
-	if len(drifted) == 0 {
-		ui.Successf(os.Stdout, "no drift: every primary address either answers or is one its node-agent reports (%d of %d hosts have an agent)", agents, total)
-		noteReachableUnobserved(reachable)
+	if len(p.drifted) == 0 {
+		if len(p.noRoute) > 0 && len(p.reachable) == 0 {
+			// Every probe that ran came back "no route": nothing was judged,
+			// and saying "no drift" here would be false comfort.
+			ui.Warnf(os.Stdout, "no verdict: this machine has no route to any candidate's network — is the VPN up?")
+		} else {
+			ui.Successf(os.Stdout, "no drift: every primary address either answers or is one its node-agent reports (%d of %d hosts have an agent)", agents, total)
+		}
+		noteReachableUnobserved(p.reachable)
+		noteUnjudged(p)
 		return nil
 	}
-	rows := make([][]string, 0, len(drifted))
-	for _, d := range drifted {
+	rows := make([][]string, 0, len(p.drifted))
+	for _, d := range p.drifted {
 		rows = append(rows, []string{
 			d.Hostname, d.IP, strings.Join(d.Status.ObservedIPs, ", "),
 			ui.Ago(d.Status.LastSeenAt), lastProbeCell(d.LastSeenUp),
@@ -168,10 +220,32 @@ func printDriftedHosts(drifted, reachable []store.ServerWithStatus, total, agent
 	if err := ui.Table(os.Stdout, []string{"host", "dials", "agent sees", "heartbeat", "primary answered"}, rows); err != nil {
 		return err
 	}
-	ui.Warnf(os.Stderr, "%d of %d agent-reporting hosts dial an address their agent does not have", len(drifted), agents)
+	ui.Warnf(os.Stderr, "%d of %d agent-reporting hosts dial an address their agent does not have", len(p.drifted), agents)
 	ui.Infof(os.Stderr, "fix one with: vctl edit <host> --ip <address> — and correct ~/.ssh/config too, or the next sync puts the old value back")
-	noteReachableUnobserved(reachable)
+	noteReachableUnobserved(p.reachable)
+	noteUnjudged(p)
 	return nil
+}
+
+// noteUnjudged names the candidates the probe could not decide, so they are
+// neither counted as drift nor silently dropped from the picture.
+func noteUnjudged(p driftProbe) {
+	if len(p.noRoute) > 0 {
+		ui.Warnf(os.Stderr, "%d host(s) not judged — no route from this machine to their network (VPN?): %s",
+			len(p.noRoute), strings.Join(hostNames(p.noRoute), ", "))
+	}
+	if len(p.behindJump) > 0 {
+		ui.Infof(os.Stderr, "%d host(s) not probed — reached through a jump host, which a dial from here does not follow; check with 'vctl ssh': %s",
+			len(p.behindJump), strings.Join(hostNames(p.behindJump), ", "))
+	}
+}
+
+func hostNames(rows []store.ServerWithStatus) []string {
+	names := make([]string, 0, len(rows))
+	for _, r := range rows {
+		names = append(names, r.Hostname)
+	}
+	return names
 }
 
 // noteReachableUnobserved accounts for the candidates that turned out fine, so
@@ -182,12 +256,8 @@ func noteReachableUnobserved(reachable []store.ServerWithStatus) {
 	if len(reachable) == 0 {
 		return
 	}
-	names := make([]string, 0, len(reachable))
-	for _, r := range reachable {
-		names = append(names, r.Hostname)
-	}
 	ui.Infof(os.Stderr, "%d host(s) are reached at an address their agent does not see, and it answers — a floating IP, not drift: %s",
-		len(reachable), strings.Join(names, ", "))
+		len(reachable), strings.Join(hostNames(reachable), ", "))
 }
 
 // ipCell renders the address a host is reached at, and how many others it also
