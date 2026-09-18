@@ -717,6 +717,8 @@ scripts/verify-stack.sh down
 
 The fixture lives in that script rather than in a wiki page because the tests assert against it — that a policy reaches the token, that a role outside it is denied, that an untrusted CA is refused. A hand-built fixture drifts, and a drifted fixture fails those tests in ways that look like code regressions.
 
+Every one of those packages shares the single database `VCTL_TEST_DSN` names, and `go test ./...` runs them at the same time. A test may therefore assert only on rows it seeded itself. Another package's fixture can appear or disappear mid-run, so a test that compares whole result sets is reporting on the scheduler rather than on the code — and that failure comes and goes with machine load, which reads as a code regression.
+
 What the integration tests cover beyond the unit suite:
 
 | Area | Asserts |

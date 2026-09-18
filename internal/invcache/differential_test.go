@@ -24,7 +24,7 @@ import (
 //
 // Integration — needs VCTL_TEST_DSN pointing at a loopback Postgres.
 func TestOfflineReaderMatchesPostgres(t *testing.T) {
-	live, snapshot := seedBothReaders(t)
+	_, live, snapshot := seedBothReaders(t)
 	ctx := context.Background()
 
 	queries := []string{
@@ -53,11 +53,16 @@ func TestOfflineReaderMatchesPostgres(t *testing.T) {
 			if (wantErr == nil) != (gotErr == nil) {
 				t.Fatalf("error mismatch: postgres=%v snapshot=%v", wantErr, gotErr)
 			}
-			if name(wantOne) != name(gotOne) {
-				t.Errorf("single match: postgres=%q snapshot=%q", name(wantOne), name(gotOne))
+			wantAll, gotAll := matched(wantOne, wantCands), matched(gotOne, gotCands)
+			if w, g := ownedOnly(wantAll), ownedOnly(gotAll); !reflect.DeepEqual(w, g) {
+				t.Errorf("matches: postgres=%v snapshot=%v", w, g)
 			}
-			if w, g := names(wantCands), names(gotCands); !reflect.DeepEqual(w, g) {
-				t.Errorf("candidates: postgres=%v snapshot=%v", w, g)
+			// Which of the two shapes Resolve uses turns on how many rows
+			// matched, so a foreign row moves a query from one to the other on
+			// whichever side saw it. Hold both to that decision only on a run
+			// where neither of them saw one.
+			if allOwned(wantAll) && allOwned(gotAll) && name(wantOne) != name(gotOne) {
+				t.Errorf("single match: postgres=%q snapshot=%q", name(wantOne), name(gotOne))
 			}
 		})
 	}
@@ -72,18 +77,19 @@ func TestOfflineReaderMatchesPostgres(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if w, g := serverNames(wantList), serverNames(gotList); !reflect.DeepEqual(w, g) {
+			if w, g := ownedOnly(serverNames(wantList)), ownedOnly(serverNames(gotList)); !reflect.DeepEqual(w, g) {
 				t.Errorf("List: postgres=%v snapshot=%v", w, g)
 			}
 
-			wantInv, err := live.ListInventory(ctx, dc)
+			wantInvAll, err := live.ListInventory(ctx, dc)
 			if err != nil {
 				t.Fatal(err)
 			}
-			gotInv, err := snapshot.ListInventory(ctx, dc)
+			gotInvAll, err := snapshot.ListInventory(ctx, dc)
 			if err != nil {
 				t.Fatal(err)
 			}
+			wantInv, gotInv := ownedInventory(wantInvAll), ownedInventory(gotInvAll)
 			if len(wantInv) != len(gotInv) {
 				t.Fatalf("ListInventory length: postgres=%d snapshot=%d", len(wantInv), len(gotInv))
 			}
@@ -127,8 +133,9 @@ func TestOfflineReaderMatchesPostgres(t *testing.T) {
 
 // seedBothReaders writes a fixture into the real database and returns it
 // alongside a snapshot captured from it, so both readers answer from identical
-// data.
-func seedBothReaders(t *testing.T) (Reader, Reader) {
+// data. The store itself comes back as well, for the one test that needs to
+// write a row the fixtures do not own.
+func seedBothReaders(t *testing.T) (*store.Store, Reader, Reader) {
 	t.Helper()
 	dsn := os.Getenv("VCTL_TEST_DSN")
 	if dsn == "" {
@@ -145,10 +152,9 @@ func seedBothReaders(t *testing.T) (Reader, Reader) {
 	}
 
 	seenUp := time.Now().UTC()
-	fixtures := []store.Server{
-		{Hostname: "sre-srv-0047", IP: "198.51.100.47", Port: 22, User: "ubuntu", DC: "incheon", CARole: "sre-core", LastSeenUp: &seenUp},
-		{Hostname: "sre-srv-0048", IP: "198.51.100.48", Port: 22, User: "ubuntu", DC: "incheon", CARole: "sre-core", JumpVia: "sre-bastion", LastSeenUp: &seenUp},
-		{Hostname: "sre-bastion", IP: "198.51.100.10", Port: 22, User: "root", DC: "seoul-onprem", CARole: "sre-core", LastSeenUp: &seenUp},
+	fixtures := append([]store.Server(nil), differentialFixtures...)
+	for i := range fixtures {
+		fixtures[i].LastSeenUp = &seenUp
 	}
 	for _, sv := range fixtures {
 		// Remove first, and again on the way out. Upsert matches an existing host
@@ -186,7 +192,7 @@ func seedBothReaders(t *testing.T) (Reader, Reader) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	return st, NewMemory(loaded)
+	return st, st, NewMemory(loaded)
 }
 
 func name(sv *store.Server) string {
@@ -194,6 +200,149 @@ func name(sv *store.Server) string {
 		return ""
 	}
 	return sv.Hostname
+}
+
+// A row that lands between the snapshot capture and the live read must not
+// change the verdict. That is the condition this file used to fail on: CI hands
+// every package the same VCTL_TEST_DSN and `go test ./...` runs them at once, so
+// internal/store inserting one of its own fixtures mid-run left the snapshot
+// holding a set the live reader no longer returned. Neither reader was wrong and
+// the build went red anyway — three runs in twenty-eight when this was measured,
+// more of them on a loaded machine, none at all on a quiet one. A failure that
+// comes and goes with machine load reads as a code regression, which is the
+// expensive part.
+//
+// The insert here is the same event, made deliberate instead of waiting for the
+// scheduler to produce it.
+func TestComparisonIgnoresRowsTheFixturesDoNotOwn(t *testing.T) {
+	st, live, snapshot := seedBothReaders(t)
+	ctx := context.Background()
+
+	foreign := store.Server{
+		Hostname: "outsider-host-01", IP: "198.51.100.201", Port: 22,
+		User: "root", DC: "incheon", CARole: "sre-core",
+	}
+	if _, err := st.Delete(ctx, foreign.Hostname); err != nil {
+		t.Fatalf("clear %s: %v", foreign.Hostname, err)
+	}
+	if err := st.Upsert(ctx, foreign); err != nil {
+		t.Fatalf("seed foreign row: %v", err)
+	}
+	t.Cleanup(func() { _, _ = st.Delete(context.Background(), foreign.Hostname) })
+
+	// The row is really there, and only the live reader can see it — otherwise
+	// this test would pass without reproducing anything.
+	if _, cands, _ := live.Resolve(ctx, ""); !contains(names(cands), foreign.Hostname) {
+		t.Fatalf("postgres does not return the foreign row; nothing is being reproduced")
+	}
+	if _, cands, _ := snapshot.Resolve(ctx, ""); contains(names(cands), foreign.Hostname) {
+		t.Fatalf("the snapshot already holds the foreign row; it was captured too late")
+	}
+
+	for _, q := range []string{"", "sre", "host", "198.51.100.201"} {
+		wantOne, wantCands, _ := live.Resolve(ctx, q)
+		gotOne, gotCands, _ := snapshot.Resolve(ctx, q)
+		w, g := ownedOnly(matched(wantOne, wantCands)), ownedOnly(matched(gotOne, gotCands))
+		if !reflect.DeepEqual(w, g) {
+			t.Errorf("resolve(%q): postgres=%v snapshot=%v", q, w, g)
+		}
+	}
+
+	for _, dc := range []string{"", "incheon"} {
+		wantList, err := live.List(ctx, dc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotList, err := snapshot.List(ctx, dc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w, g := ownedOnly(serverNames(wantList)), ownedOnly(serverNames(gotList)); !reflect.DeepEqual(w, g) {
+			t.Errorf("list(%q): postgres=%v snapshot=%v", dc, w, g)
+		}
+
+		wantInvAll, err := live.ListInventory(ctx, dc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotInvAll, err := snapshot.ListInventory(ctx, dc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w, g := len(ownedInventory(wantInvAll)), len(ownedInventory(gotInvAll)); w != g {
+			t.Errorf("listInventory(%q) length: postgres=%d snapshot=%d", dc, w, g)
+		}
+	}
+}
+
+func contains(hosts []string, want string) bool {
+	for _, h := range hosts {
+		if h == want {
+			return true
+		}
+	}
+	return false
+}
+
+// differentialFixtures is what seedBothReaders puts in the table, and the only
+// thing either reader is held to here. Both of them answer over one shared database:
+// CI hands every package the same VCTL_TEST_DSN and `go test ./...` runs those
+// packages at the same time, so rows belonging to internal/store or
+// internal/auditspool appear and vanish underneath this test while it runs.
+// Comparing whole result sets made the outcome depend on what else happened to
+// be running — a snapshot captured a moment before a foreign insert differs
+// from a live read taken a moment after, and neither reader is wrong about it.
+var differentialFixtures = []store.Server{
+	{Hostname: "sre-srv-0047", IP: "198.51.100.47", Port: 22, User: "ubuntu", DC: "incheon", CARole: "sre-core"},
+	{Hostname: "sre-srv-0048", IP: "198.51.100.48", Port: 22, User: "ubuntu", DC: "incheon", CARole: "sre-core", JumpVia: "sre-bastion"},
+	{Hostname: "sre-bastion", IP: "198.51.100.10", Port: 22, User: "root", DC: "seoul-onprem", CARole: "sre-core"},
+}
+
+// owned reports whether a host is one of the fixtures above. Deriving it from
+// the list rather than repeating the names keeps a fixture added later inside
+// the comparison instead of silently outside it.
+func owned(hostname string) bool {
+	for _, sv := range differentialFixtures {
+		if sv.Hostname == hostname {
+			return true
+		}
+	}
+	return false
+}
+
+// ownedOnly drops the rows this test did not seed, keeping the order it was
+// given so an ordering divergence between the two readers still shows.
+func ownedOnly(hosts []string) []string {
+	out := []string{}
+	for _, h := range hosts {
+		if owned(h) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func allOwned(hosts []string) bool { return len(ownedOnly(hosts)) == len(hosts) }
+
+func ownedInventory(rows []store.InventoryRow) []store.InventoryRow {
+	out := []store.InventoryRow{}
+	for _, r := range rows {
+		if owned(r.Hostname) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// matched flattens Resolve's two return shapes into the one list of hosts it
+// found. Resolve reports a lone match through the first return value and an
+// ambiguous one through the second, so comparing the two shapes separately asks
+// a question that depends on the row count rather than on query semantics.
+func matched(one *store.Server, cands []store.Server) []string {
+	if one != nil {
+		return []string{one.Hostname}
+	}
+	return names(cands)
 }
 
 func names(list []store.Server) []string {
