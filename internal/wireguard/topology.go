@@ -789,9 +789,15 @@ func (b *builder) addDeclared() {
 	if len(b.entities) == 0 && len(b.relations) == 0 {
 		return
 	}
+	byID := b.layerCollectedNodes()
+	alias := b.aliasDeclaredEntities(byID, b.annotatedHostNodes())
+	b.addDeclaredRelations(alias)
+}
 
-	// Collected nodes get a lane first so the page can filter by layer across
-	// the whole graph, not only the declared part of it.
+// layerCollectedNodes gives every collected node a lane and indexes the nodes
+// by id. Collected nodes get a lane first so the page can filter by layer
+// across the whole graph, not only the declared part of it.
+func (b *builder) layerCollectedNodes() map[string]int {
 	byID := make(map[string]int, len(b.topo.Nodes))
 	for i := range b.topo.Nodes {
 		n := &b.topo.Nodes[i]
@@ -802,14 +808,18 @@ func (b *builder) addDeclared() {
 		}
 		byID[n.ID] = i
 	}
+	return byID
+}
 
-	// alias maps a declared entity id to the node that represents it, which is
-	// the entity's own id except where it was reconciled onto a collected node.
-	// A peer that inventory annotated as a physical host is drawn as an
-	// endpoint node keyed by public key, so a declaration naming that host has
-	// to find it through the annotation's inventory hostname, not by id. The
-	// endpoint index cannot answer this: it knows keys that own an interface,
-	// and a peer-only key is exactly the case here.
+// annotatedHostNodes indexes, by inventory hostname, the endpoint nodes an
+// annotation identified as physical hosts.
+//
+// A peer that inventory annotated as a physical host is drawn as an endpoint
+// node keyed by public key, so a declaration naming that host has to find it
+// through the annotation's inventory hostname, not by id. The endpoint index
+// cannot answer this: it knows keys that own an interface, and a peer-only key
+// is exactly the case here.
+func (b *builder) annotatedHostNodes() map[string]int {
 	endpointHost := make(map[string]int)
 	for i := range b.topo.Nodes {
 		n := &b.topo.Nodes[i]
@@ -820,81 +830,124 @@ func (b *builder) addDeclared() {
 			endpointHost[a.InventoryHost] = i
 		}
 	}
+	return endpointHost
+}
 
+// aliasDeclaredEntities maps each declared entity id to the node that
+// represents it, which is the entity's own id except where it was reconciled
+// onto a collected node. Entities the graph does not already have are added.
+func (b *builder) aliasDeclaredEntities(byID, endpointHost map[string]int) map[string]string {
 	alias := make(map[string]string, len(b.entities))
 	for _, e := range b.entities {
-		switch e.Kind {
-		case "physical-host":
-			name := strings.TrimPrefix(e.ID, "host/")
-			idx, ok := byID[PhysicalHostNodeID(name)]
-			if !ok {
-				idx, ok = endpointHost[name]
-			}
-			if !ok {
-				// A physical machine that terminates tunnels itself is already
-				// drawn as the gateway the sync saw. The declaration is about
-				// that node, not a box beside it.
-				if gw := b.canonicalHost(name); b.nodeSeen[gw] {
-					idx, ok = byID[gw]
-				}
-			}
-			if ok {
-				n := &b.topo.Nodes[idx]
-				n.Layer = "underlay"
-				n.DC = strutil.FirstNonEmpty(n.DC, e.Site)
-				if len(e.Attrs) > 0 {
-					n.Attrs = e.Attrs
-				}
-				alias[e.ID] = n.ID
-				continue
-			}
-		case "tunnel":
-			if host, _ := e.Attrs["host"].(string); host != "" {
-				if gw := b.canonicalHost(host); b.nodeSeen[gw] {
-					alias[e.ID] = gw
-					continue
-				}
-			}
-		case "vm":
-			// A declared VM that names a collected gateway by inventory hostname
-			// is that gateway; the declaration adds placement and attrs to the
-			// node the sync produced rather than drawing the machine twice.
-			if inv, _ := e.Attrs["inventory"].(string); inv != "" {
-				if gw := b.canonicalHost(inv); b.nodeSeen[gw] {
-					idx := byID[gw]
-					n := &b.topo.Nodes[idx]
-					n.DC = strutil.FirstNonEmpty(n.DC, e.Site)
-					if len(e.Attrs) > 0 {
-						n.Attrs = e.Attrs
-					}
-					alias[e.ID] = gw
-					continue
-				}
-			}
+		if id, ok := b.reconcileDeclared(e, byID, endpointHost); ok {
+			alias[e.ID] = id
+			continue
 		}
-		layer := "underlay"
-		if e.Kind == "tunnel" {
-			layer = "overlay"
-		}
-		// Declared-only physical hosts take the id shape collected ones have, so
-		// the page never has to know which of the two it is looking at.
-		id, label := e.ID, e.ID
-		if e.Kind == "physical-host" {
-			label = strings.TrimPrefix(e.ID, "host/")
-			id = PhysicalHostNodeID(label)
-		}
-		n := Node{
-			ID: id, Label: strutil.FirstNonEmpty(e.Label, label), Kind: e.Kind,
-			DC: e.Site, Layer: layer,
-		}
-		if len(e.Attrs) > 0 {
-			n.Attrs = e.Attrs
-		}
+		n := declaredNode(e)
 		b.addNode(n)
 		byID[n.ID] = len(b.topo.Nodes) - 1
 		alias[e.ID] = n.ID
 	}
+	return alias
+}
 
+// reconcileDeclared answers "is this declared entity a node the graph already
+// has?", enriching that node when it is. A false return means the entity is new
+// to the graph.
+func (b *builder) reconcileDeclared(e store.NetEntity, byID, endpointHost map[string]int) (string, bool) {
+	switch e.Kind {
+	case "physical-host":
+		return b.reconcileDeclaredHost(e, byID, endpointHost)
+	case "tunnel":
+		// A declared tunnel whose attrs name a collected gateway interface is
+		// that gateway seen from the declaration side.
+		if host, _ := e.Attrs["host"].(string); host != "" {
+			if gw := b.canonicalHost(host); b.nodeSeen[gw] {
+				return gw, true
+			}
+		}
+	case "vm":
+		return b.reconcileDeclaredVM(e, byID)
+	}
+	return "", false
+}
+
+// reconcileDeclaredHost finds the collected node for a declared physical host
+// under any of the three names it can carry, and enriches it.
+func (b *builder) reconcileDeclaredHost(e store.NetEntity, byID, endpointHost map[string]int) (string, bool) {
+	name := strings.TrimPrefix(e.ID, "host/")
+	idx, ok := byID[PhysicalHostNodeID(name)]
+	if !ok {
+		idx, ok = endpointHost[name]
+	}
+	if !ok {
+		// A physical machine that terminates tunnels itself is already drawn as
+		// the gateway the sync saw. The declaration is about that node, not a
+		// box beside it.
+		if gw := b.canonicalHost(name); b.nodeSeen[gw] {
+			idx, ok = byID[gw]
+		}
+	}
+	if !ok {
+		return "", false
+	}
+	n := &b.topo.Nodes[idx]
+	n.Layer = "underlay"
+	n.DC = strutil.FirstNonEmpty(n.DC, e.Site)
+	if len(e.Attrs) > 0 {
+		n.Attrs = e.Attrs
+	}
+	return n.ID, true
+}
+
+// reconcileDeclaredVM folds a declared VM onto the gateway it names.
+//
+// A declared VM that names a collected gateway by inventory hostname is that
+// gateway; the declaration adds placement and attrs to the node the sync
+// produced rather than drawing the machine twice.
+func (b *builder) reconcileDeclaredVM(e store.NetEntity, byID map[string]int) (string, bool) {
+	inv, _ := e.Attrs["inventory"].(string)
+	if inv == "" {
+		return "", false
+	}
+	gw := b.canonicalHost(inv)
+	if !b.nodeSeen[gw] {
+		return "", false
+	}
+	n := &b.topo.Nodes[byID[gw]]
+	n.DC = strutil.FirstNonEmpty(n.DC, e.Site)
+	if len(e.Attrs) > 0 {
+		n.Attrs = e.Attrs
+	}
+	return gw, true
+}
+
+// declaredNode builds the node for a declared entity new to the graph.
+func declaredNode(e store.NetEntity) Node {
+	layer := "underlay"
+	if e.Kind == "tunnel" {
+		layer = "overlay"
+	}
+	// Declared-only physical hosts take the id shape collected ones have, so
+	// the page never has to know which of the two it is looking at.
+	id, label := e.ID, e.ID
+	if e.Kind == "physical-host" {
+		label = strings.TrimPrefix(e.ID, "host/")
+		id = PhysicalHostNodeID(label)
+	}
+	n := Node{
+		ID: id, Label: strutil.FirstNonEmpty(e.Label, label), Kind: e.Kind,
+		DC: e.Site, Layer: layer,
+	}
+	if len(e.Attrs) > 0 {
+		n.Attrs = e.Attrs
+	}
+	return n
+}
+
+// addDeclaredRelations turns declared relations into links between the nodes
+// their endpoints aliased onto.
+func (b *builder) addDeclaredRelations(alias map[string]string) {
 	entityByID := make(map[string]store.NetEntity, len(b.entities))
 	for _, e := range b.entities {
 		entityByID[e.ID] = e
@@ -911,28 +964,45 @@ func (b *builder) addDeclared() {
 		if len(r.Attrs) > 0 {
 			l.Attrs = r.Attrs
 		}
-		// A tunnel that aliased onto its gateway loses its own node, and with it
-		// the interface name. The link keeps it: a carries link knows which
-		// interface carries, which is what a NAT rule is keyed by.
-		if e, ok := entityByID[r.SrcID]; ok && e.Kind == "tunnel" {
-			if iface, _ := e.Attrs["iface"].(string); iface != "" {
-				if _, has := l.Attrs["iface"]; !has {
-					attrs := make(map[string]any, len(l.Attrs)+1)
-					for k, v := range l.Attrs {
-						attrs[k] = v
-					}
-					attrs["iface"] = iface
-					l.Attrs = attrs
-				}
-			}
+		if e, ok := entityByID[r.SrcID]; ok {
+			l.Attrs = withTunnelIface(l.Attrs, e)
 		}
 		b.topo.Links = append(b.topo.Links, l)
 	}
+	sortDeclaredLinks(b.topo.Links)
+}
 
-	// Kind is the tiebreak: one tunnel may both transit an edge and carry a
-	// network to the same target, and the two links must land in a stable order.
-	sort.Slice(b.topo.Links, func(x, y int) bool {
-		a, c := b.topo.Links[x], b.topo.Links[y]
+// withTunnelIface keeps the interface name on the link.
+//
+// A tunnel that aliased onto its gateway loses its own node, and with it the
+// interface name. The link keeps it: a carries link knows which interface
+// carries, which is what a NAT rule is keyed by.
+func withTunnelIface(attrs map[string]any, e store.NetEntity) map[string]any {
+	if e.Kind != "tunnel" {
+		return attrs
+	}
+	iface, _ := e.Attrs["iface"].(string)
+	if iface == "" {
+		return attrs
+	}
+	if _, has := attrs["iface"]; has {
+		return attrs
+	}
+	out := make(map[string]any, len(attrs)+1)
+	for k, v := range attrs {
+		out[k] = v
+	}
+	out["iface"] = iface
+	return out
+}
+
+// sortDeclaredLinks puts the links in a stable order.
+//
+// Kind is the tiebreak: one tunnel may both transit an edge and carry a network
+// to the same target, and the two links must land in a stable order.
+func sortDeclaredLinks(links []Link) {
+	sort.Slice(links, func(x, y int) bool {
+		a, c := links[x], links[y]
 		if a.Source != c.Source {
 			return a.Source < c.Source
 		}
