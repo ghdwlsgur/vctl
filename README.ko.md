@@ -484,7 +484,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl kv set <path> [<key>=<value>...] [--rm <key>] [--replace]` | KV 시크릿의 필드를 씁니다. 기본은 병합이며 check-and-set 으로 읽은 뒤 바뀐 시크릿은 다시 읽어 재적용합니다. 값은 인자·`@파일`·`-`(stdin)에서 오고, 쓴 값은 되돌려 출력하지 않습니다(필드 이름만). 전체 경로만 받습니다. `kv-set` 그랜트로 게이트 |
 | `vctl agent [--sink <path>]` | 토큰을 유지하고 sink 파일에 기록합니다 |
 | `vctl ssh [host\|user@addr] [--server <host>]` | exact, fuzzy, IP, interactive 선택으로 접속합니다(픽커는 ←/→로 DC 필터). `--server`는 정확히 또는 IP로 해석해 비대화형으로 접속합니다(스크립트/에이전트용). `user@addr` 형태는 인벤토리를 거치지 않고 주소로 바로 접속합니다 |
-| `vctl list [--dc <dc>] [--wide]` | 인벤토리를 터미널 폭에 맞는 간결한 표로 표시합니다. `--wide`는 에이전트·운영 상태·SSH 사용자를 별도 열로 표시합니다 |
+| `vctl list [--dc <dc>] [--wide] [--all-ips] [--drift]` | 인벤토리를 터미널 폭에 맞는 간결한 표로 표시합니다. `--wide`는 에이전트·운영 상태·SSH 사용자를 별도 열로 표시합니다. `--drift` 는 주 주소가 node-agent 가 보는 주소도 아니고 응답하지도 않는 호스트를 지목합니다. 기계가 옮겨간 뒤 낡아 버린 인벤토리인데, 주소 열이 합쳐져 있어 평소에는 안 보입니다. 후보만 실제로 두드려 봅니다 — 부동 IP 는 NAT 뒤 호스트가 원래 못 보는 주소이기 때문입니다 |
 | `vctl openstack [deployment]` | 전체 화면 브라우저. 왼쪽은 팜, 오른쪽은 선택한 팜의 VM 또는 호스트, `enter`로 `openstack host`·`vm show`와 같은 상세 화면을 엽니다. `tab`으로 창 이동, `/` 필터, `r` 새로고침. 읽기 전용이며 DB만 읽습니다 — 컨트롤 플레인에 접속하지 않습니다. `explore`·`browse`·`ui`도 계속 사용할 수 있습니다 |
 | `vctl openstack list [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | 스크립트와 비대화형 환경을 위한 호스트 표입니다. 어떤 호스트가 OpenStack을 돌리는지, 역할과 팜 소속을 보여줍니다. 기존 bare `vctl openstack`의 listing 플래그도 호환을 위해 계속 동작합니다 |
 | `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure] [--json] [--fail-on <problems>]` | 각 배포의 컨트롤 플레인에 어느 호스트가 자기 것인지 묻고, 양쪽이 일치하는 호스트를 `confirmed`로 올립니다. 자격증명은 Vault `kv/teams/sre/vctl-<host_port>`에서 읽습니다(필드: `auth_url`·`username`·`password`, 선택 `project_name`·`user_domain`·`project_domain`) |
@@ -496,7 +496,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl openstack farm list [--json]` | 배포마다 한 줄. 호스트·VM 수와 마지막으로 reconcile이 확인한 시점을 함께 보여줍니다 |
 | `vctl openstack farm doctor [deployment]` | reconcile이 무엇을 필요로 하는지 미리 봅니다 — 자격증명·Keystone·Nova·마지막 실행. 아무것도 바꾸지 않습니다 |
 | `vctl add [flags]` | `sync`가 찾지 못하는 호스트를 인벤토리에 등록합니다. 플래그 없이 실행하면 폼으로 입력합니다 |
-| `vctl edit [host] [flags]` | `sync`가 덮어쓰지 않는 필드를 바꿉니다 — dc · ssh user · 점프 호스트 · extra IP · 호스트명, 그리고 `--state active\|maintenance\|broken\|retired`. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
+| `vctl edit [host] [flags]` | `sync`가 덮어쓰지 않는 필드를 바꿉니다 — dc · ssh user · 점프 호스트 · 주 주소(`--ip`) · extra IP · 호스트명, 그리고 `--state active\|maintenance\|broken\|retired`. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
 | `vctl delete [host] [--yes]` | 폐기한 호스트를 지웁니다. 감사 기록은 남습니다. 이 호스트를 경유하는 호스트가 있으면 삭제를 막습니다. 호스트를 생략하면 목록에서 고릅니다(←/→ 로 DC 필터) |
 | `vctl mcp` | 인벤토리를 AI 에이전트에 노출하는 읽기 전용 MCP 서버(stdio). `vctl_ssh_exec`로 호스트 명령 실행도 가능. 호출자 신원으로 동작 — RBAC 적용 |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | 앱 계층 커맨드 RBAC 관리(관리자). `assign`/`grant`은 인터랙티브 픽커 |

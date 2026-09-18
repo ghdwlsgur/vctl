@@ -475,7 +475,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl kv set <path> [<key>=<value>...] [--rm <key>] [--replace]` | KV シークレットのフィールドを書き込む。既定はマージで、check-and-set により読み取り後に変わったシークレットは再読込して再適用する。値は引数・`@file`・`-`(stdin)から取り、書いた値は表示しない(フィールド名のみ)。フルパスのみ。`kv-set` グラントでゲート |
 | `vctl agent [--sink <path>]` | トークンを生かし続け、シンクファイルに書き出す |
 | `vctl ssh [host\|user@addr] [--server <host>]` | 完全一致、あいまい一致、IP、対話的な選択で接続する(ピッカーは ←/→ で DC フィルタ)。`--server` は完全一致または IP で解決し、非対話的に接続する(スクリプト/エージェント向け). `user@addr` 形式はインベントリを経由せずアドレスへ直接接続する |
-| `vctl list [--dc <dc>] [--wide]` | インベントリを端末幅に合わせた簡潔な表で表示する。`--wide` はエージェント・運用状態・SSH ユーザーを別の列に表示する |
+| `vctl list [--dc <dc>] [--wide] [--all-ips] [--drift]` | インベントリを端末幅に合わせた簡潔な表で表示する。`--wide` はエージェント・運用状態・SSH ユーザーを別の列に表示する。`--drift` は、プライマリアドレスが node-agent の見るアドレスでもなく応答もしないホストを指す。マシンが移った後に古びたインベントリで、アドレス列が統合されているため普段は見えない。候補だけ実際に叩く — フローティング IP は NAT 配下のホストが本来見られないアドレスだからだ |
 | `vctl openstack [deployment]` | 全画面ブラウザ。左にファーム、右に選択したファームの VM またはホストを表示し、`enter` で `openstack host`・`vm show` と同じ詳細画面を開く。`tab` でペイン移動、`/` 絞り込み、`r` 更新。読み取り専用で DB のみを読む — コントロールプレーンには接続しない。`explore`・`browse`・`ui` も引き続き使用できる |
 | `vctl openstack list [--farm <id>] [--role <role>] [--wide] [--all] [--json]` | スクリプトと非対話環境向けのホスト表。どのホストが OpenStack を動かし、その役割とファーム所属を表示する。従来の bare `vctl openstack` の listing フラグも互換性のため引き続き動作する |
 | `vctl openstack reconcile [--farm <id>] [--dry-run] [--insecure] [--json] [--fail-on <problems>]` | 各デプロイのコントロールプレーンにどのホストが自分のものかを問い合わせ、両者が一致したホストを `confirmed` に昇格する。認証情報は Vault の `kv/teams/sre/vctl-<host_port>` から読む(フィールド: `auth_url`・`username`・`password`、任意で `project_name`・`user_domain`・`project_domain`) |
@@ -487,7 +487,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl openstack farm list [--json]` | デプロイを一行ずつ。ホスト数・VM 数と、最後に reconcile が確認した時刻を並べる |
 | `vctl openstack farm doctor [deployment]` | reconcile が何を必要とするかを先に見る — 認証情報・Keystone・Nova・直近の実行。何も変更しない |
 | `vctl add [flags]` | `sync` が発見できないホストをインベントリに登録する。フラグなしで実行するとフォームで入力する |
-| `vctl edit [host] [flags]` | `sync` が上書きしないフィールドを変更する — dc・ssh user・踏み台・追加 IP・ホスト名、および `--state active\|maintenance\|broken\|retired`。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
+| `vctl edit [host] [flags]` | `sync` が上書きしないフィールドを変更する — dc・ssh user・踏み台・プライマリアドレス(`--ip`)・追加 IP・ホスト名、および `--state active\|maintenance\|broken\|retired`。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
 | `vctl delete [host] [--yes]` | 廃止したホストを削除する。監査履歴は残る。このホストを経由するホストがあれば削除を拒否する。ホストを省略すると一覧から選ぶ(←/→ で DC フィルタ) |
 | `vctl mcp` | インベントリを AI エージェントに公開する読み取り専用 MCP サーバ(stdio)。`vctl_ssh_exec` でホストのコマンド実行も可能。呼び出し元の識別情報で動作 — RBAC 適用 |
 | `vctl rbac <group\|member\|grant\|revoke\|assign\|users\|whoami\|check>` | アプリ層のコマンド RBAC を管理する(admin)。`assign`/`grant` は対話的なピッカー |

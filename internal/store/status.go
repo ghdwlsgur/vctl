@@ -3,6 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"net/netip"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,6 +40,51 @@ type ServerStatus struct {
 type ServerWithStatus struct {
 	Server
 	Status *ServerStatus
+}
+
+// PrimaryDrifted reports a host whose primary address — the one `vctl ssh`
+// dials — is not among the addresses its node-agent actually sees on the NICs.
+//
+// That is the shape of an inventory gone stale under a machine that moved: the
+// host is up and reporting, the dial fails, and nothing connects the two facts.
+// It is only meaningful while an agent is reporting, so a host without status,
+// or one whose agent has never sent an address, is not drifted — it is unknown,
+// and calling that drift would flag most of a fleet that simply has no agent.
+func (w ServerWithStatus) PrimaryDrifted() bool {
+	if w.Status == nil || len(w.Status.ObservedIPs) == 0 || w.IP == "" {
+		return false
+	}
+	return !containsAddr(w.Status.ObservedIPs, w.IP)
+}
+
+// containsAddr compares parsed addresses, not strings: the two sides reach us
+// from different INET columns and one may still carry a mask, so "10.0.0.1/32"
+// and "10.0.0.1" have to read as the same address. An unparseable value falls
+// back to an exact match rather than being silently treated as absent.
+func containsAddr(list []string, want string) bool {
+	wa, err := netip.ParsePrefix(strings.TrimSpace(want))
+	if err != nil {
+		a, aerr := netip.ParseAddr(strings.TrimSpace(want))
+		if aerr != nil {
+			return slices.Contains(list, want)
+		}
+		wa = netip.PrefixFrom(a, a.BitLen())
+	}
+	for _, s := range list {
+		if sameAddr(s, wa.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameAddr(s string, want netip.Addr) bool {
+	s = strings.TrimSpace(s)
+	if p, err := netip.ParsePrefix(s); err == nil {
+		return p.Addr() == want
+	}
+	a, err := netip.ParseAddr(s)
+	return err == nil && a == want
 }
 
 // InventoryRow derives the listing view from a status-joined row: the merged
