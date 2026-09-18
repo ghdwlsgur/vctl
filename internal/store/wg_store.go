@@ -124,3 +124,76 @@ func (s *Store) WGPeers(ctx context.Context) ([]WGPeerRow, error) {
 		return w, err
 	})
 }
+
+// WGCollectedHosts lists every host the WireGuard tables hold rows for.
+//
+// The union across all three tables, not a read of wg_interfaces alone: a host
+// whose interfaces went but whose peer rows survived is exactly the drift this
+// exists to surface, and a query that could not see it would report the
+// database clean while it was not.
+func (s *Store) WGCollectedHosts(ctx context.Context) ([]string, error) {
+	return queryAndCollect(ctx, s.pool, `
+		            SELECT host FROM wg_interfaces
+		  UNION     SELECT host FROM wg_peers
+		  UNION     SELECT host FROM wg_peer_status
+		  ORDER BY 1`, nil, func(r pgx.Rows) (string, error) {
+		var h string
+		err := r.Scan(&h)
+		return h, err
+	})
+}
+
+// WGForgetCounts is what one host's removal took with it.
+type WGForgetCounts struct {
+	Interfaces int64 `json:"interfaces"`
+	Peers      int64 `json:"peers"`
+	Statuses   int64 `json:"statuses"`
+}
+
+// Total reports every row removed for the host.
+func (c WGForgetCounts) Total() int64 { return c.Interfaces + c.Peers + c.Statuses }
+
+// WGForgetHost drops every collected WireGuard row for one host.
+//
+// Until this existed the only DELETE against these tables was the one inside
+// WGReplaceHost, which a *successful* sync of that same host performs. That
+// makes a decommissioned gateway's rows permanent: the host is gone, so it can
+// never be synced again, and nothing else removes them — the tables carry no
+// foreign key to servers, so `vctl delete` does not reach them either.
+//
+// Deleted in the same order and the same transaction WGReplaceHost uses, so a
+// forget and a concurrent sync cannot interleave into a half-removed host.
+func (s *Store) WGForgetHost(ctx context.Context, host string) (WGForgetCounts, error) {
+	var c WGForgetCounts
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return c, err
+	}
+	defer tx.Rollback(ctx)
+
+	into := []*int64{&c.Statuses, &c.Peers, &c.Interfaces}
+	for i, tbl := range []string{"wg_peer_status", "wg_peers", "wg_interfaces"} {
+		tag, err := tx.Exec(ctx, "DELETE FROM "+tbl+" WHERE host=$1", host)
+		if err != nil {
+			return WGForgetCounts{}, err
+		}
+		*into[i] = tag.RowsAffected()
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return WGForgetCounts{}, err
+	}
+	return c, nil
+}
+
+// WGCountHostRows reports what WGForgetHost would remove for a host, reading
+// the same three tables the delete walks so a preview cannot disagree with the
+// run it previews.
+func (s *Store) WGCountHostRows(ctx context.Context, host string) (WGForgetCounts, error) {
+	var c WGForgetCounts
+	err := s.pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM wg_interfaces  WHERE host=$1),
+		       (SELECT count(*) FROM wg_peers       WHERE host=$1),
+		       (SELECT count(*) FROM wg_peer_status WHERE host=$1)`, host).
+		Scan(&c.Interfaces, &c.Peers, &c.Statuses)
+	return c, err
+}

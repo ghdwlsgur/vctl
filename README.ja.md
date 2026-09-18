@@ -500,6 +500,7 @@ claude mcp add vctl -- vctl mcp
 | `vctl dns rm <hostname>` | レコード削除。同じリポジトリ→クラスタ経路を通る |
 | `vctl wg connect [--init] [--background] [--idle-exit 30m] [--socks 127.0.0.1:1080] [--forward LPORT:HOST:PORT]` | vctl 内の WireGuard トンネルとその前の SOCKS5 プロキシ。インストールも root もなしでフリート網に到達する。`--init` は新しい鍵を Vault に保存し、管理者に渡す公開鍵を表示する。`--background` は分離実行(ログは `~/.vctl/wg/`)で、`--idle-exit` の間クライアントがなければ自動で切断する |
 | `vctl wg status [--json]`, `vctl wg down` | このマシンで動くトンネルのアドレス・ゲートウェイ・ハンドシェイク経過・トラフィック・接続中クライアント、そして停止。ローカル専用でゲートなし |
+| `vctl wg forget <host...>\|--gone [--dry-run]` | 収集済みのインターフェース・peer・ランタイム状態を削除する。これを行う経路は他にない。`wg sync` は一つのホストを置き換える前半としてのみその行を消すので、撤去されたゲートウェイは自分の行を永遠に消せず描かれ続ける。`--gone` はインベントリにもう無い収集ホストをまとめて掃く。宣言エンティティと注釈には触れない — それぞれ `rm` がある |
 | `vctl wg failover status\|to-standby\|to-primary\|hold` | リモートが自分で回すスタンバイハブ切り替えを読み、操作する。いまどちらのハブがトランジット網を担っているか、両方のハンドシェイク経過、そして定位置にないリモートはその判定理由まで表示する。判定はここで再計算せずスクリプトから読む。強制切り替えと自動切り替えの停止には `wg-failover` グラントが必要 |
 | `vctl k8s [ls] [--json]` | インベントリの Kubernetes クラスタ。API サーバー・サイト・到達経路(`wg connect` 経由か直接か)・トークンの出どころ |
 | `vctl k8s use <cluster> [--role viewer\|editor\|admin] [--context <name>]` | クラスタ用の kubeconfig コンテキストを書き、現在のコンテキストにする。user エントリは `vctl k8s token` を呼ぶ exec プラグインで、ファイルに資格情報はない。トンネル経由のクラスタには `wg connect` プロキシ用の `proxy-url` が入る |
