@@ -42,6 +42,7 @@ are written; with none, the fields are asked for interactively.`,
 	f.StringVar(&e.JumpVia, "jump", "", `jump host; pass "direct" to clear it`)
 	f.StringVar(&e.Name, "name", "", "rename the host (jump chains that point at it are repointed)")
 	f.StringVar(&e.State, "state", "", "operator-declared state: "+strings.Join(store.HostStates, "|"))
+	f.StringVar(&e.IP, "ip", "", "replace the primary address vctl ssh dials (see 'vctl list --drift')")
 	f.StringSliceVar(&e.ExtraIPs, "extra-ip", nil, "replace the extra addresses (repeatable; pass none to clear)")
 	f.BoolVar(&e.clearIPs, "clear-extra-ips", false, "remove every extra address")
 	return cmdkit.Gate(cmd, "edit")
@@ -94,6 +95,7 @@ type editStore interface {
 	SetDC(ctx context.Context, hostname, dc string) (bool, error)
 	SetUser(ctx context.Context, hostname, user string) (bool, error)
 	SetJumpVia(ctx context.Context, hostname, jump string) (bool, error)
+	SetIP(ctx context.Context, hostname, ip string) (bool, error)
 	SetExtraIPs(ctx context.Context, hostname string, ips []string) (bool, error)
 	SetState(ctx context.Context, hostname, state string) (bool, error)
 	Rename(ctx context.Context, oldHost, newHost string) (bool, error)
@@ -107,6 +109,7 @@ var _ editStore = (*store.Store)(nil)
 // spellings (--jump direct, --clear-extra-ips) rather than an empty value.
 type hostEdits struct {
 	DC       string
+	IP       string
 	User     string
 	JumpVia  string
 	Name     string
@@ -116,7 +119,7 @@ type hostEdits struct {
 }
 
 func (e hostEdits) empty() bool {
-	return e.DC == "" && e.User == "" && e.JumpVia == "" && e.Name == "" && e.State == "" &&
+	return e.DC == "" && e.IP == "" && e.User == "" && e.JumpVia == "" && e.Name == "" && e.State == "" &&
 		len(e.ExtraIPs) == 0 && !e.clearIPs
 }
 
@@ -140,6 +143,10 @@ func (e hostEdits) apply(ctx context.Context, st editStore, host string) error {
 	}
 	if e.User != "" {
 		steps = append(steps, step{"user=" + e.User, func() (bool, error) { return st.SetUser(ctx, host, e.User) }})
+	}
+	if e.IP != "" {
+		ip := e.IP
+		steps = append(steps, step{"ip=" + ip, func() (bool, error) { return st.SetIP(ctx, host, ip) }})
 	}
 	if e.clearIPs {
 		steps = append(steps, step{"extra-ips=(none)", func() (bool, error) { return st.SetExtraIPs(ctx, host, nil) }})

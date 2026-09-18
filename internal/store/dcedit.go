@@ -198,3 +198,19 @@ func (s *Store) Insert(ctx context.Context, sv Server) (bool, error) {
 		ON CONFLICT (hostname) DO NOTHING`,
 		sv.Hostname, sv.IP, sv.Port, sv.User, jump, sv.DC, sv.CARole, sv.ExtraIPs)
 }
+
+// SetIP replaces a server's primary address — the one `vctl ssh` dials.
+//
+// This is the operator's correction path for inventory drift. The primary comes
+// from `vctl sync` reading ~/.ssh/config, and sync matches an existing host *by*
+// that address: once the machine moves, the probe no longer recognises it and
+// the stale value stays until someone edits the ssh config by hand. The
+// node-agent knows the true address set the whole time, which is what makes the
+// drift detectable and this edit the fix.
+//
+// Sync can still overwrite it on a later run if ~/.ssh/config still holds the
+// old value, so the two are corrected together — `vctl list --drift` reports
+// what is out of step. Returns whether a row matched.
+func (s *Store) SetIP(ctx context.Context, hostname, ip string) (bool, error) {
+	return s.execMatched(ctx, `UPDATE servers SET ip=$2::inet, updated_at=now() WHERE hostname=$1`, hostname, ip)
+}

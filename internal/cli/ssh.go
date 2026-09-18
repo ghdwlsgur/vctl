@@ -141,8 +141,33 @@ func runSSH(cmd *cobra.Command, env cmdkit.Env, args []string, opts sshOptions) 
 		}
 
 		ui.Infof(os.Stderr, "connecting to %s (%s@%s)", tgt.Name, tgt.User, tgt.Addr)
-		return cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+		err = cmdkit.NewConnector(a).Connect(ctx, access.Request{Target: tgt, HostKey: policy})
+		return explainInventoryDrift(ctx, inv, target, err)
 	})
+}
+
+// explainInventoryDrift names the cause when a connection failed to an address
+// the host's own agent does not report.
+//
+// "network is unreachable" reads as a dead server, and the operator goes
+// looking for one. The inventory already holds the contradiction — a heartbeat
+// from seconds ago, on addresses that do not include the one just dialled — and
+// until now nothing put the two together. Consulted only after a failure, so
+// the working path pays nothing for it, and a lookup that itself fails leaves
+// the original error exactly as it was: a diagnostic must never replace the
+// error it is trying to explain.
+func explainInventoryDrift(ctx context.Context, inv *app.Inventory, sv *store.Server, connErr error) error {
+	if connErr == nil || sv == nil {
+		return connErr
+	}
+	w, lookupErr := inv.WithStatus(ctx, sv.Hostname)
+	if lookupErr != nil || w == nil || !w.PrimaryDrifted() {
+		return connErr
+	}
+	ui.Warnf(os.Stderr, "%s is reporting (node-agent heartbeat %s) but %s is not one of the addresses it sees: %s",
+		sv.Hostname, ui.Ago(w.Status.LastSeenAt), sv.IP, strings.Join(w.Status.ObservedIPs, ", "))
+	ui.Infof(os.Stderr, "the inventory has drifted, not the host — 'vctl edit %s --ip <address>' fixes it, and ~/.ssh/config needs the same value or the next sync restores the old one", sv.Hostname)
+	return connErr
 }
 
 // sshEndpoint is a target given as an address on the command line instead of a
