@@ -181,9 +181,10 @@ const (
 // Input is what a caller has collected. Every field is optional: an assessment
 // built from less says less, rather than refusing.
 type Input struct {
-	ID     string
-	Name   string
-	Region string
+	ID        string
+	Name      string
+	Region    string
+	Dashboard []string
 
 	// State is what an operator declared. Empty is treated as active.
 	State      string
@@ -221,7 +222,8 @@ func Assess(in Input) Assessment {
 	}
 	a := Assessment{
 		ID: in.ID, Name: in.Name, Region: in.Region,
-		State: in.State, StateNote: in.StateNote, StateSince: in.StateSince,
+		Dashboard: append([]string(nil), in.Dashboard...),
+		State:     in.State, StateNote: in.StateNote, StateSince: in.StateSince,
 	}
 	if a.State == "" {
 		a.State = store.StateActive

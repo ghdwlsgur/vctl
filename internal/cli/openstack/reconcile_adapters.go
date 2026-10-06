@@ -3,6 +3,8 @@ package openstack
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/openstack/membership"
@@ -23,6 +25,38 @@ import (
 // novaCloud asks one control plane. Each call gets its own deadline because the
 // two questions take very different amounts of time.
 type novaCloud struct{}
+
+// horizonEnvCredentials provides a one-run operator credential override. The
+// password is read from the process environment and is never written to Vault
+// or emitted in diagnostics.
+type horizonEnvCredentials struct {
+	username string
+	password string
+	resolver string
+	authURLs map[string]string
+	fallback reconcile.Credentials
+}
+
+func keystoneURLFromHorizon(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return ""
+	}
+	u.Host = net.JoinHostPort(u.Hostname(), "5000")
+	u.Path, u.RawPath, u.RawQuery, u.Fragment = "/v3", "", "", ""
+	return u.String()
+}
+
+func (c horizonEnvCredentials) ForFarm(ctx context.Context, id string) (openstackapi.Credentials, error) {
+	authURL := c.authURLs[id]
+	if authURL == "" {
+		return c.fallback.ForFarm(ctx, id)
+	}
+	return openstackapi.Credentials{
+		AuthURL: authURL, Username: c.username, Password: c.password, DNSResolver: c.resolver,
+		ProjectName: "admin", UserDomain: "Default", ProjectDom: "Default",
+	}, nil
+}
 
 func (novaCloud) Hosts(ctx context.Context, c openstackapi.Credentials, insecure bool) (openstackapi.HostList, error) {
 	ctx, cancel := context.WithTimeout(ctx, reconcileTimeout)

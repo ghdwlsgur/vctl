@@ -132,6 +132,7 @@ type Deployment struct {
 	DisplayName string
 	Region      string
 	KeystoneURL string
+	HorizonURL  string
 
 	// State is what an operator declared about it, in the same words hosts use.
 	// Observation cannot tell a farm that is broken from one being rebuilt.
@@ -197,6 +198,18 @@ func (s *Store) SetDeploymentName(ctx context.Context, id, name string, region *
 	return err
 }
 
+// SetDeploymentHorizonURL stores the operator supplied dashboard address in
+// deployment metadata. Horizon and Keystone are separate endpoints.
+func (s *Store) SetDeploymentHorizonURL(ctx context.Context, id, horizonURL string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO openstack_deployments (id, metadata, updated_at)
+		VALUES ($1, jsonb_build_object('horizon_url', $2::text), now())
+		ON CONFLICT (id) DO UPDATE SET
+			metadata = jsonb_set(openstack_deployments.metadata, '{horizon_url}', to_jsonb($2::text), true),
+			updated_at=now()`, id, horizonURL)
+	return err
+}
+
 // Deployments lists the farms the inventory knows by name.
 func (s *Store) Deployments(ctx context.Context) ([]Deployment, error) {
 	return deploymentsOn(ctx, s.pool)
@@ -204,12 +217,12 @@ func (s *Store) Deployments(ctx context.Context) ([]Deployment, error) {
 
 func deploymentsOn(ctx context.Context, db rowQuerier) ([]Deployment, error) {
 	return queryAndCollect(ctx, db, `
-		SELECT id, display_name, region, keystone_url,
+		SELECT id, display_name, region, keystone_url, coalesce(metadata->>'horizon_url',''),
 		       coalesce(state,'active'), state_note, state_changed_at
 		FROM openstack_deployments ORDER BY id`, nil,
 		func(r pgx.Rows) (Deployment, error) {
 			var d Deployment
-			err := r.Scan(&d.ID, &d.DisplayName, &d.Region, &d.KeystoneURL,
+			err := r.Scan(&d.ID, &d.DisplayName, &d.Region, &d.KeystoneURL, &d.HorizonURL,
 				&d.State, &d.StateNote, &d.StateChangedAt)
 			return d, err
 		})

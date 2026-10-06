@@ -994,40 +994,18 @@ func TestTheCursorRowIsAlwaysRenderedInALongList(t *testing.T) {
 	}
 }
 
-// `c` on a VM asks for a login user (Nova records none), enter hands back the
-// command that suspends the screen, and esc forgets the whole idea. The
-// keypress must be inert on the hosts view — there `s`/`c` would otherwise
-// collide with a person's muscle memory for list navigation.
-func TestConnectAsksForAUserThenHandsBackTheSubshell(t *testing.T) {
+// `c` on a VM immediately opens the agent-backed Bash command; it does not
+// ask for a guest hostname or login user. It is inert on the hosts view.
+func TestConnectRunsAgentShellWithoutGuestLoginPrompt(t *testing.T) {
 	m := testExploreModel()
-	m.defaultUser = "ubuntu"
-	m = keys(m, "tab", "c") // focus rows, start connect on the first VM
-	if !m.askingUser() || m.connectVM == nil {
-		t.Fatalf("connect prompt not open: askUser=%v vm=%v", m.askingUser(), m.connectVM)
-	}
-	if m.userInput != "ubuntu" {
-		t.Fatalf("prompt not prefilled with the default user: %q", m.userInput)
-	}
-	// Type a different user over the default.
-	m = keys(m, "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "rocky")
-	if m.userInput != "rocky" {
-		t.Fatalf("edited user = %q", m.userInput)
-	}
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m.focus = paneRows
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = out.(exploreModel)
 	if cmd == nil {
 		t.Fatal("enter produced no subshell command")
 	}
-	if m.askingUser() {
-		t.Error("prompt still open after enter")
-	}
-
-	// esc cancels without a command.
-	m2 := keys(testExploreModel(), "tab", "c")
-	out2, cmd2 := m2.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m2 = out2.(exploreModel)
-	if cmd2 != nil || m2.askingUser() || m2.connectVM != nil {
-		t.Error("esc did not cancel the pending connect")
+	if m.askingUser() || m.connectVM != nil {
+		t.Error("agent-backed connect asked for a guest login")
 	}
 
 	// Inert on the hosts view.

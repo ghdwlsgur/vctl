@@ -1,0 +1,39 @@
+[Unit]
+Description=vctl outbound node access agent
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=GOMAXPROCS=2
+EnvironmentFile=/etc/vctl/session-agent.env
+ExecStart=/usr/local/bin/vctl-agent session-agent --cert /var/lib/vctl-session-agent/node.crt --key /var/lib/vctl-session-agent/node.key --vault-role-id-file /etc/vctl/session-agent/role-id --vault-secret-id-file /etc/vctl/session-agent/secret-id
+Restart=always
+RestartSec=15
+User=root
+StateDirectory=vctl-session-agent
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/vctl/session-agent
+ReadWritePaths=/var/lib/vctl-session-agent
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CPUQuota=5%
+MemoryHigh=48M
+MemoryMax=64M
+TasksMax=32
+LimitCORE=0
+Nice=10
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

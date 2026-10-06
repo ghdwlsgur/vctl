@@ -15,6 +15,7 @@ func Defaults() *Config {
 	return &Config{
 		OperatorNetworks:              []string{"192.168."},
 		VaultAddr:                     "https://vault.sre.local",
+		AccessGateway:                 "https://node-access.sre.local",
 		AdminPolicies:                 []string{"vctl-admin", "sre-admin"},
 		VaultFarmPrefix:               "kv/teams/sre",
 		DNSResolver:                   "192.168.201.12:53",
@@ -39,6 +40,7 @@ func Defaults() *Config {
 		DBRoleOpenStackPrune:          "vctl-openstack-pruner",
 		DBRoleReconcile:               "vctl-reconcile",
 		DBRoleStatus:                  "vctl-status",
+		DBRoleNodeAccessAudit:         "vctl-node-access-audit",
 		DBRoleMigrate:                 "vctl-migrator",
 		DBMigrationOwner:              "vctl_owner",
 		KernelRetentionDays:           14,

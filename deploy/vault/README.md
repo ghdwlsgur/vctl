@@ -33,9 +33,9 @@ the vctl repo alone — even if Vault state (or the vault-iac repo) is wiped.
 | SSH CA + sign role | `ssh/`, `ssh/sign/sre-core` | sign per-connection SSH certs (`vctl ssh`) |
 | DB connection | `database/config/vctl-pg` | issue dynamic Postgres creds (verify-full TLS) |
 | DB roles | `database/roles/vctl-*` | separate inventory, identity, audit read/write/ingest/prune, status, and migration privileges |
-| Policies | `vctl-{user,ssh,auditor,admin,node,collector,host,pruner}` | server-enforced least privilege per caller |
+| Policies | `vctl-{user,ssh,auditor,admin,node,collector,host,pruner}` and per-host node-access policies | server-enforced least privilege per caller |
 | Identity groups | `identity/group` (external) | GitLab `vctl-{ssh-users,auditors,admins}` -> capability policies |
-| AppRoles | `vctl-{user,collector,host,node,pruner}` | non-interactive auto-auth with task-specific database roles |
+| AppRoles | `vctl-{user,collector,host,node,pruner}` and per-host `vctl-node-access-<hostname>` | non-interactive auto-auth with task-specific database roles or node-only PKI renewal |
 | OIDC + role | `auth/oidc`, `auth/oidc/role/vctl` | per-person GitLab SSO (`vctl login`), base grant `vctl-user` (+ group policies) |
 | userpass | `auth/userpass` | bootstrap login before the OIDC seed exists |
 

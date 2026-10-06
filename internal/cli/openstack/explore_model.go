@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,8 +29,8 @@ import (
 type connectMode int
 
 const (
-	// modeSubshell suspends the screen and runs `vctl ssh --vm` with a PTY —
-	// for the visit that needs an editor or a pager. Bound to `c`.
+	// modeSubshell suspends the screen and runs `vctl openstack ssh` with a PTY.
+	// Bound to `c`.
 	modeSubshell connectMode = iota
 	// modeConsole opens the inline pane under the VM's detail — for the visit
 	// that is three commands and a look at their output. Bound to enter.
@@ -81,6 +82,16 @@ const (
 	paneRows
 )
 
+// exploreLeftKind is what the sidebar lists. Projects are a second way to
+// navigate the selected farm's VMs; the farm itself remains selected while the
+// sidebar is showing project names.
+type exploreLeftKind int
+
+const (
+	leftFarms exploreLeftKind = iota
+	leftProjects
+)
+
 // What the right pane is showing.
 type exploreKind int
 
@@ -95,16 +106,19 @@ type exploreModel struct {
 	width, height int
 	focus         explorePane
 	kind          exploreKind
+	leftKind      exploreLeftKind
 
-	farmCur int
-	rowCur  int
-	rowTop  int
+	farmCur    int
+	projectCur int
+	rowCur     int
+	rowTop     int
+	projectKey string
 
 	// filter narrows the focused pane. Held per pane, because a filter that
 	// followed the cursor between them would silently hide rows in the one
 	// nobody is looking at.
-	farmFilter, rowFilter string
-	typing                bool
+	farmFilter, projectSearch, rowFilter string
+	typing                               bool
 
 	// detail is the overlay: the individual command's own rendering, held as
 	// lines so it can scroll. detailVM is set when the overlay shows a VM, so
@@ -210,6 +224,108 @@ func (m exploreModel) currentFarm() (farmChoice, bool) {
 	return farms[i], true
 }
 
+type exploreProject struct {
+	Key, ID, Label string
+	Count          int
+}
+
+func projectKey(v store.Instance) string {
+	if v.ProjectID != "" {
+		return "id:" + v.ProjectID
+	}
+	if v.ProjectName != "" {
+		return "name:" + v.ProjectName
+	}
+	return "unassigned"
+}
+
+// projectsForFarm groups the live VMs in the selected farm by project. The
+// empty key is the all-projects entry; the other keys keep equal display names
+// with different project IDs distinct.
+func (m exploreModel) projectsForFarm() []exploreProject {
+	f, ok := m.currentFarm()
+	if !ok {
+		return []exploreProject{{Label: "All projects"}}
+	}
+	all := liveInstances(m.data.VMs[f.ID])
+	byKey := make(map[string]exploreProject)
+	nameCounts := make(map[string]int)
+	for _, v := range all {
+		key := projectKey(v)
+		p := byKey[key]
+		p.Key, p.ID = key, v.ProjectID
+		label := vmProjectLabel(v)
+		if label == "" {
+			label = "(no project)"
+		}
+		if p.Label == "" || (p.Label == p.ID && label != p.ID) {
+			p.Label = label
+		}
+		p.Count++
+		byKey[key] = p
+	}
+	projects := make([]exploreProject, 0, len(byKey)+1)
+	projects = append(projects, exploreProject{Label: "All projects", Count: len(all)})
+	for _, p := range byKey {
+		nameCounts[p.Label]++
+	}
+	for _, p := range byKey {
+		if nameCounts[p.Label] > 1 && p.ID != "" {
+			id := p.ID
+			if len(id) > 8 {
+				id = id[:8]
+			}
+			p.Label += " · " + id
+		}
+		projects = append(projects, p)
+	}
+	sort.Slice(projects[1:], func(i, j int) bool {
+		a, b := projects[i+1], projects[j+1]
+		if a.Label != b.Label {
+			return a.Label < b.Label
+		}
+		return a.Key < b.Key
+	})
+	return projects
+}
+
+func (m exploreModel) visibleProjects() []exploreProject {
+	projects := m.projectsForFarm()
+	if m.projectSearch == "" {
+		return projects
+	}
+	out := make([]exploreProject, 0, len(projects))
+	for _, p := range projects {
+		if matchesFilter(m.projectSearch, p.Label, p.ID) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (m exploreModel) selectedProjectLabel() string {
+	if m.projectKey == "" {
+		return ""
+	}
+	for _, p := range m.projectsForFarm() {
+		if p.Key == m.projectKey {
+			return p.Label
+		}
+	}
+	return ""
+}
+
+func (m *exploreModel) chooseProject(i int) {
+	projects := m.visibleProjects()
+	if len(projects) == 0 {
+		m.projectCur, m.projectKey = 0, ""
+	} else {
+		m.projectCur = clampIndex(i, len(projects))
+		m.projectKey = projects[m.projectCur].Key
+	}
+	m.rowCur, m.rowTop = 0, 0
+}
+
 // visibleHosts and visibleVMs are the right pane's contents after its filter.
 func (m exploreModel) visibleHosts() []store.OpenStackHost {
 	f, ok := m.currentFarm()
@@ -236,7 +352,16 @@ func (m exploreModel) visibleVMs() []store.Instance {
 	}
 	all := liveInstances(m.data.VMs[f.ID])
 	if m.rowFilter == "" {
-		return all
+		if m.projectKey == "" {
+			return all
+		}
+		out := make([]store.Instance, 0, len(all))
+		for _, v := range all {
+			if projectKey(v) == m.projectKey {
+				out = append(out, v)
+			}
+		}
+		return out
 	}
 	out := make([]store.Instance, 0, len(all))
 	for _, v := range all {
@@ -244,7 +369,7 @@ func (m exploreModel) visibleVMs() []store.Instance {
 		for _, a := range v.Addresses {
 			addrs = append(addrs, a.Address)
 		}
-		if matchesFilter(m.rowFilter, v.Name, v.InstanceID, vmProjectLabel(v),
+		if (m.projectKey == "" || projectKey(v) == m.projectKey) && matchesFilter(m.rowFilter, v.Name, v.InstanceID, vmProjectLabel(v),
 			v.HypervisorHostname, strings.Join(addrs, " ")) {
 			out = append(out, v)
 		}
@@ -327,13 +452,14 @@ func (m exploreModel) onRefreshed(msg exploreRefreshed) exploreModel {
 }
 
 // exploreSelection is what the cursor was on, named rather than numbered.
-type exploreSelection struct{ farm, row string }
+type exploreSelection struct{ farm, project, row string }
 
 func (m exploreModel) selection() exploreSelection {
 	var s exploreSelection
 	if f, ok := m.currentFarm(); ok {
 		s.farm = f.ID
 	}
+	s.project = m.projectKey
 	if m.kind == kindHosts {
 		if hosts := m.visibleHosts(); len(hosts) > 0 {
 			s.row = hosts[clampIndex(m.rowCur, len(hosts))].Hostname
@@ -354,6 +480,15 @@ func (m *exploreModel) restoreSelection(s exploreSelection) {
 		for i, f := range m.visibleFarms() {
 			if f.ID == s.farm {
 				m.farmCur = i
+				break
+			}
+		}
+	}
+	m.projectKey, m.projectCur = "", 0
+	if s.project != "" {
+		for i, p := range m.visibleProjects() {
+			if p.Key == s.project {
+				m.projectCur, m.projectKey = i, p.Key
 				break
 			}
 		}
@@ -419,14 +554,20 @@ func (m exploreModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.showKind(kindHosts)
 		return m, nil
+	case "p":
+		m.showProjects()
+		return m, nil
+	case "f":
+		m.leftKind = leftFarms
+		m.focus = paneFarms
+		return m, nil
 	case "/":
 		m.typing = true
 		return m, nil
 	case "r":
 		return m.onRefreshKey()
 	case "c":
-		m.connectSelectedVM()
-		return m, nil
+		return m, m.connectSelectedVM()
 	case "enter":
 		m.openSelected()
 		return m, nil
@@ -474,7 +615,29 @@ func (m *exploreModel) moveByKey(msg tea.KeyMsg) {
 // the top.
 func (m *exploreModel) showKind(k exploreKind) {
 	m.kind, m.rowCur, m.rowTop = k, 0, 0
+	if k == kindHosts {
+		m.leftKind = leftFarms
+	}
 	m.focus = paneRows
+}
+
+// showProjects turns the sidebar into a project picker for the selected farm.
+// Moving through it immediately filters the VM pane, just as moving through
+// farms changes the rows beside the farm list.
+func (m *exploreModel) showProjects() {
+	if m.kind != kindVMs {
+		return
+	}
+	m.leftKind = leftProjects
+	m.focus = paneFarms
+	projects := m.visibleProjects()
+	for i, p := range projects {
+		if p.Key == m.projectKey {
+			m.projectCur = i
+			return
+		}
+	}
+	m.chooseProject(0)
 }
 
 // onRefreshKey starts a background read of the fleet — unless one is already
@@ -494,15 +657,15 @@ func (m exploreModel) onRefreshKey() (tea.Model, tea.Cmd) {
 	return m, m.refreshCmd()
 }
 
-// connectSelectedVM opens the login-user prompt for the VM under the cursor,
-// when the cursor is on one.
-func (m *exploreModel) connectSelectedVM() {
+// connectSelectedVM opens the selected VM's agent-backed Bash session.
+func (m *exploreModel) connectSelectedVM() tea.Cmd {
 	if m.kind == kindVMs && m.focus == paneRows {
 		if vms := m.visibleVMs(); len(vms) > 0 {
 			v := vms[clampIndex(m.rowCur, len(vms))]
-			m.startConnect(&v, modeSubshell)
+			return m.connectCmd(&v)
 		}
 	}
+	return nil
 }
 
 // openSelected opens what the cursor is on: a farm into its rows pane, a row
@@ -578,7 +741,7 @@ func (m exploreModel) onConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.console = &exploreConsole{vm: v, user: user}
 			return m, nil
 		}
-		return m, m.connectCmd(v, user)
+		return m, m.connectCmd(v)
 	case tea.KeyEsc:
 		m.connectVM = nil
 		return m, nil
@@ -589,22 +752,15 @@ func (m exploreModel) onConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// connectCmd suspends the browser and runs `vctl ssh --vm` attached to the
-// terminal, resuming when the shell exits. It execs this same binary rather
-// than dialing in-process: the subshell then IS the vctl ssh command — same
-// RBAC gate, same audit row, same jump logic — and cannot drift from it.
-// --allow-stale is passed because the browser already showed the record's age
-// beside the address; the flag exists to force that acknowledgment on people
-// connecting blind.
-func (m exploreModel) connectCmd(v *store.Instance, user string) tea.Cmd {
+// connectCmd suspends the browser and runs the agent-backed command attached
+// to the terminal. The VM UUID comes from the selected row, so the operator
+// does not type a guest hostname or Linux login user.
+func (m exploreModel) connectCmd(v *store.Instance) tea.Cmd {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = os.Args[0]
 	}
-	args := []string{"ssh", "--vm", v.InstanceID, "--user", user, "--allow-stale"}
-	if v.DeploymentID != "" {
-		args = append(args, "--farm", v.DeploymentID)
-	}
+	args := []string{"openstack", "ssh", v.InstanceID}
 	return tea.ExecProcess(exec.Command(exe, args...), func(err error) tea.Msg {
 		return exploreConnectDone{vm: NameOrID(*v), err: err}
 	})
@@ -796,9 +952,9 @@ func (m exploreModel) onDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.detail, m.detailTop, m.detailOf = nil, 0, ""
 		return m, nil
 	case "c":
-		// The full subshell (PTY: editors, pagers) from the same place.
+		// The agent-backed Bash subshell from the VM detail.
 		if m.detailVM != nil {
-			m.startConnect(m.detailVM, modeSubshell)
+			return m, m.connectCmd(m.detailVM)
 		}
 		return m, nil
 	case "ctrl+c":
@@ -827,6 +983,9 @@ func (m exploreModel) onDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m exploreModel) activeFilter() string {
 	if m.focus == paneFarms {
+		if m.leftKind == leftProjects {
+			return m.projectSearch
+		}
 		return m.farmFilter
 	}
 	return m.rowFilter
@@ -834,8 +993,14 @@ func (m exploreModel) activeFilter() string {
 
 func (m *exploreModel) setFilter(v string) {
 	if m.focus == paneFarms {
-		m.farmFilter = v
-		m.farmCur = 0
+		if m.leftKind == leftProjects {
+			m.projectSearch = v
+			m.chooseProject(0)
+		} else {
+			m.farmFilter = v
+			m.farmCur = 0
+			m.projectKey, m.projectCur, m.projectSearch = "", 0, ""
+		}
 	} else {
 		m.rowFilter = v
 	}
@@ -844,10 +1009,15 @@ func (m *exploreModel) setFilter(v string) {
 
 func (m *exploreModel) move(delta int) {
 	if m.focus == paneFarms {
-		m.farmCur = clampIndex(m.farmCur+delta, len(m.visibleFarms()))
-		// The right pane belongs to the farm under the cursor, so it starts at
-		// the top rather than keeping a position that meant something else.
-		m.rowCur, m.rowTop = 0, 0
+		if m.leftKind == leftProjects {
+			m.chooseProject(m.projectCur + delta)
+		} else {
+			m.farmCur = clampIndex(m.farmCur+delta, len(m.visibleFarms()))
+			// The right pane belongs to the farm under the cursor, so it starts at
+			// the top rather than keeping a position that meant something else.
+			m.projectKey, m.projectCur, m.projectSearch = "", 0, ""
+			m.rowCur, m.rowTop = 0, 0
+		}
 		return
 	}
 	m.rowCur = clampIndex(m.rowCur+delta, m.rowCount())
@@ -856,8 +1026,13 @@ func (m *exploreModel) move(delta int) {
 
 func (m *exploreModel) moveTo(i int) {
 	if m.focus == paneFarms {
-		m.farmCur = clampIndex(i, len(m.visibleFarms()))
-		m.rowCur, m.rowTop = 0, 0
+		if m.leftKind == leftProjects {
+			m.chooseProject(i)
+		} else {
+			m.farmCur = clampIndex(i, len(m.visibleFarms()))
+			m.projectKey, m.projectCur, m.projectSearch = "", 0, ""
+			m.rowCur, m.rowTop = 0, 0
+		}
 		return
 	}
 	m.rowCur = clampIndex(i, m.rowCount())

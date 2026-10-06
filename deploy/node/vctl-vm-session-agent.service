@@ -1,0 +1,35 @@
+[Unit]
+Description=vctl outbound OpenStack VM access agent
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=GOMAXPROCS=2
+EnvironmentFile=/etc/vctl/session-agent.env
+ExecStart=/usr/local/bin/vctl-agent session-agent --gateway https://node-access.sre.local --ca /etc/vctl/session-agent/gateway-ca.crt --cert /var/lib/vctl-session-agent/node.crt --key /var/lib/vctl-session-agent/node.key --renew-gateway https://node-access.sre.local
+Restart=always
+RestartSec=15
+User=root
+StateDirectory=vctl-session-agent
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+ReadOnlyPaths=/etc/vctl/session-agent
+ReadWritePaths=/var/lib/vctl-session-agent
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CPUQuota=200%
+MemoryHigh=512M
+MemoryMax=1G
+TasksMax=128
+LimitCORE=0
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

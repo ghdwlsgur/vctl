@@ -133,6 +133,7 @@ Start here:
 		loginCmd(env), logoutCmd(env), tokenCmd(env), kvCmd(env),
 		cmdkit.Gate(execCmd(env), "exec"),
 		cmdkit.Gate(sshCmd(env), "ssh"),
+		cmdkit.Gate(nodeAccessCmd(env), "node-access"),
 		cmdkit.Gate(injectCmd(env), "inject"), cmdkit.Gate(installCmd(env), "install"), caCmd(env), sessionCmd(env),
 	)
 	addCommandGroup(root, "infrastructure",

@@ -92,6 +92,7 @@ func Cmd(env cmdkit.Env) *cobra.Command {
 	// before the command it guards could run at all.
 	cmd.AddCommand(ReconcileCmd(env))
 	cmd.AddCommand(openstackVMCmd(env))
+	cmd.AddCommand(cmdkit.Gate(openstackVMSSHCmd(env), "node-access-shell"))
 	// Read-only and interactive, so it is gated by neither RBAC nor a flag: it
 	// shows what the ungated listings already show, through a picker.
 	cmd.AddCommand(openstackExploreCmd(env))

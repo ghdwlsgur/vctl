@@ -91,6 +91,11 @@ var gated = map[string]Class{
 	"k8s":           ClassRead,
 	"k8s-access":    ClassMutate,
 	"k8s-inventory": ClassMutate,
+	// Typed node-agent operations are remote access even though the current
+	// operation set is read-only. Shell sessions have a separate, stronger
+	// grant because agents open a privileged interactive PTY.
+	"node-access":       ClassMutate,
+	"node-access-shell": ClassMutate,
 }
 
 // ClassOf reports the class of a gated command; ok is false for an unknown

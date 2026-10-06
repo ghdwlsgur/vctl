@@ -39,9 +39,17 @@ const (
 // than the filtered ones, so typing a filter does not make the panes jump.
 func (m exploreModel) farmPaneWidth() int {
 	w := farmPaneMinWidth
-	for _, f := range m.data.Farms {
-		if n := lipgloss.Width(farmMenuTitle(f)) + 2; n > w {
-			w = n
+	if m.leftKind == leftProjects {
+		for _, p := range m.projectsForFarm() {
+			if n := lipgloss.Width(p.Label) + 10; n > w {
+				w = n
+			}
+		}
+	} else {
+		for _, f := range m.data.Farms {
+			if n := lipgloss.Width(farmMenuTitle(f)) + 2; n > w {
+				w = n
+			}
 		}
 	}
 	w = min(w, farmPaneMaxWidth)
@@ -140,7 +148,7 @@ func (m exploreModel) View() string {
 	b.WriteString(m.clip(m.titleBar()) + "\n\n")
 
 	paneW := m.farmPaneWidth()
-	farmLines := m.farmPaneLines()
+	farmLines := m.leftPaneLines()
 	rowLines := m.rowPaneLines()
 	for i := 0; i < m.bodyHeight()+1; i++ {
 		// The left pane's ground extends past its last row — a sidebar is a
@@ -226,7 +234,10 @@ func (m exploreModel) freshness() string {
 	return what
 }
 
-func (m exploreModel) farmPaneLines() []string {
+func (m exploreModel) leftPaneLines() []string {
+	if m.leftKind == leftProjects {
+		return m.projectPaneLines()
+	}
 	farms := m.visibleFarms()
 	paneW := m.farmPaneWidth()
 	title := "FARMS"
@@ -264,6 +275,34 @@ func (m exploreModel) farmPaneLines() []string {
 	}
 	if len(farms) == 0 {
 		out = append(out, farmPaneCell(ui.Muted("  no match"), paneW))
+	}
+	return out
+}
+
+func (m exploreModel) projectPaneLines() []string {
+	projects := m.visibleProjects()
+	paneW := m.farmPaneWidth()
+	title := "PROJECTS · "
+	if f, ok := m.currentFarm(); ok {
+		title += farmMenuTitle(f)
+	}
+	if m.projectSearch != "" {
+		title += " /" + m.projectSearch
+	}
+	out := []string{farmPaneCell(" "+paneHeading(ui.Truncate(title, paneW-1), m.focus == paneFarms), paneW)}
+	for i, p := range projects {
+		count := fmt.Sprintf("%d", p.Count)
+		avail := paneW - 2
+		labelWidth := max(5, avail-lipgloss.Width(count)-1)
+		text := ui.PadRight(ui.Truncate(p.Label, labelWidth), labelWidth) + " " + ui.Muted(count)
+		line := m.cursorLine(text, i == clampIndex(m.projectCur, len(projects)), m.focus == paneFarms, paneW)
+		if !(i == clampIndex(m.projectCur, len(projects)) && m.focus == paneFarms) {
+			line = farmPaneCell(line, paneW)
+		}
+		out = append(out, line)
+	}
+	if len(projects) == 0 {
+		out = append(out, farmPaneCell(ui.Muted("  no matching projects"), paneW))
 	}
 	return out
 }
@@ -371,6 +410,11 @@ func (m exploreModel) rowPaneLines() []string {
 		kind = "HOSTS"
 	}
 	head := fmt.Sprintf("%s · %s", farmMenuTitle(f), kind)
+	if m.kind == kindVMs && m.projectKey != "" {
+		if project := m.selectedProjectLabel(); project != "" {
+			head = fmt.Sprintf("%s · %s · VMS", farmMenuTitle(f), project)
+		}
+	}
 	if m.rowFilter != "" {
 		head += " /" + m.rowFilter
 	}
@@ -584,6 +628,7 @@ func (m exploreModel) footer() string {
 	keys := hintKeys(
 		[2]string{"tab", "switch"}, [2]string{"↑↓", "move"}, [2]string{"enter", "open"},
 		[2]string{"c", "connect"}, [2]string{"v", "VMs"}, [2]string{"s", "hosts"},
+		[2]string{"p", "projects"}, [2]string{"f", "farms"},
 		[2]string{"/", "filter"}, [2]string{"r", "refresh"}, [2]string{"q", "quit"},
 	)
 	for len(keys) > 2 && lipgloss.Width(strings.Join(keys, hintSep)) > m.width {

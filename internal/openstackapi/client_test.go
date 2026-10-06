@@ -136,6 +136,36 @@ func TestHostsSurvivesOneEndpointBeingRefused(t *testing.T) {
 	}
 }
 
+func TestHypervisorsFallsBackWhenInternalEndpointTimesOut(t *testing.T) {
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer internal.Close()
+	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"hypervisors": []any{
+			map[string]string{"hypervisor_hostname": "compute-01"},
+		}})
+	}))
+	defer public.Close()
+
+	c := &Client{
+		http:            &http.Client{},
+		token:           "fake-token",
+		endpointTimeout: 20 * time.Millisecond,
+		computes: []endpoint{
+			{iface: "internal", url: internal.URL + "/v2.1"},
+			{iface: "public", url: public.URL + "/v2.1"},
+		},
+	}
+	hosts, err := c.Hypervisors(context.Background())
+	if err != nil {
+		t.Fatalf("Hypervisors: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0].Hostname != "compute-01" {
+		t.Fatalf("Hypervisors = %+v, want public endpoint result", hosts)
+	}
+}
+
 // Neither answering is a failure to look, and must not read as an empty
 // deployment — that would mark every host control-only.
 func TestHostsFailsWhenNeitherEndpointAnswers(t *testing.T) {

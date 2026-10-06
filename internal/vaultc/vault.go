@@ -53,6 +53,31 @@ type cachedToken struct {
 // `export VAULT_SKIP_VERIFY=1` from a dev Vault must not send production tokens,
 // OIDC codes, DB credentials and SSH signing requests over an unverified channel.
 func New(addr string, caPEM []byte, stateDir string) (*Client, error) {
+	api, err := newAPI(addr, caPEM)
+	if err != nil {
+		return nil, err
+	}
+	c := &Client{api: api, tokenPath: filepath.Join(stateDir, "token")}
+	c.loadToken()
+	return c, nil
+}
+
+// NewWithToken creates an isolated, non-persisting Vault client for validating
+// a bearer token presented to a trusted server. The supplied credential never
+// enters the server's cached operator token file.
+func NewWithToken(addr string, caPEM []byte, token string) (*Client, error) {
+	if strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("vault: bearer token is empty")
+	}
+	api, err := newAPI(addr, caPEM)
+	if err != nil {
+		return nil, err
+	}
+	api.SetToken(token)
+	return &Client{api: api}, nil
+}
+
+func newAPI(addr string, caPEM []byte) (*vault.Client, error) {
 	cfg := vault.DefaultConfig()
 	cfg.Address = addr
 	cfg.AgentAddress = ""
@@ -66,9 +91,7 @@ func New(addr string, caPEM []byte, stateDir string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new vault client: %w", err)
 	}
-	c := &Client{api: api, tokenPath: filepath.Join(stateDir, "token")}
-	c.loadToken()
-	return c, nil
+	return api, nil
 }
 
 // ErrTokenDenied means Vault itself rejected the current token — revoked,

@@ -378,6 +378,7 @@ const (
 	PurposeOpenStackPrune
 	PurposeOpenStackReconcile
 	PurposeMigrate
+	PurposeNodeAccessAudit
 	purposeCount
 )
 
@@ -408,6 +409,8 @@ func (a *App) roleFor(p Purpose) (string, error) {
 		return a.Cfg.DBRoleReconcile, nil
 	case PurposeMigrate:
 		return a.Cfg.DBRoleMigrate, nil
+	case PurposeNodeAccessAudit:
+		return a.Cfg.DBRoleNodeAccessAudit, nil
 	default:
 		return "", fmt.Errorf("unknown database purpose %d", p)
 	}

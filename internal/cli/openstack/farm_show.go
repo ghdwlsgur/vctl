@@ -105,6 +105,9 @@ func collectAssessment(ctx context.Context, st *store.Store, id string, now time
 	if snap.DeploymentKnown {
 		d := snap.Deployment
 		in.Name, in.Region, in.State = d.DisplayName, d.Region, d.State
+		if d.HorizonURL != "" {
+			in.Dashboard = []string{d.HorizonURL}
+		}
 		in.StateNote, in.StateSince = d.StateNote, d.StateChangedAt
 	}
 	return osdomain.Assess(in), nil

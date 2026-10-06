@@ -26,6 +26,19 @@ func TestCountAndNamesAFewAndCountsTheRest(t *testing.T) {
 	}
 }
 
+func TestKeystoneURLFromHorizonUsesTheVIPPort(t *testing.T) {
+	for _, tc := range []struct{ horizon, want string }{
+		{"https://192.168.201.245/", "https://192.168.201.245:5000/v3"},
+		{"http://192.168.201.154/", "http://192.168.201.154:5000/v3"},
+		{"https://openstack.native-ai.local/", "https://openstack.native-ai.local:5000/v3"},
+		{"file:///tmp/nope", ""},
+	} {
+		if got := keystoneURLFromHorizon(tc.horizon); got != tc.want {
+			t.Errorf("keystoneURLFromHorizon(%q) = %q, want %q", tc.horizon, got, tc.want)
+		}
+	}
+}
+
 // reconcile must not be app-gated. A CronJob authenticating with kubernetes
 // auth has no per-person identity, and the gate opened the inventory with
 // vctl-ro — a role this workload has no reason to hold. It failed before the

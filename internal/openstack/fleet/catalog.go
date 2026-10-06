@@ -29,10 +29,11 @@ import (
 // deriving them at each call site is what let two screens disagree about how
 // many hosts a farm has.
 type Farm struct {
-	ID     string
-	Name   string
-	Region string
-	State  string
+	ID         string
+	Name       string
+	Region     string
+	State      string
+	HorizonURL string
 
 	// Hosts are the machines a probe found OpenStack on and something has
 	// placed in this deployment.
@@ -101,7 +102,7 @@ func From(snap store.Fleet) Catalog {
 		}
 		f := Farm{ID: id}
 		if d, ok := declared[id]; ok {
-			f.Name, f.Region, f.State = d.DisplayName, d.Region, d.State
+			f.Name, f.Region, f.State, f.HorizonURL = d.DisplayName, d.Region, d.State, d.HorizonURL
 		}
 		c.byID[id] = len(c.farms)
 		c.farms = append(c.farms, f)

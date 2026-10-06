@@ -15,6 +15,7 @@ import (
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
 	"github.com/ghdwlsgur/vctl/internal/config"
+	"github.com/ghdwlsgur/vctl/internal/nodeaccess"
 	// The domain model this package presents; aliased because this command
 	// package answers to the same name.
 	osdomain "github.com/ghdwlsgur/vctl/internal/openstack"
@@ -55,6 +56,7 @@ func openstackVMCmd(env cmdkit.Env) *cobra.Command {
 	cmd.Flags().StringVar(&opts.id, "id", "", "a Nova UUID, or a Kubernetes providerID (openstack:///<uuid>)")
 	cmd.Flags().BoolVar(&opts.showGone, "missing", false, "include VMs the control plane no longer lists")
 	cmd.AddCommand(openstackVMShowCmd(env))
+	cmd.AddCommand(cmdkit.Gate(openstackVMConnectCmd(env), "node-access-shell"))
 	cmd.Flags().BoolVar(&opts.wide, "wide", false, "full UUIDs and the rest of what was collected")
 	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "machine-readable output (for dataset/agent export)")
 	cmdkit.RegisterCompletion(cmd, "farm", CompleteFarm(env))
@@ -65,6 +67,46 @@ func openstackVMCmd(env cmdkit.Env) *cobra.Command {
 	// uuids --id takes. Somebody who has the uuid is not searching for it.
 	cmd.ValidArgsFunction = completeVMName(env)
 	return cmdkit.SupportsStructuredOutput(cmd)
+}
+
+func openstackVMConnectCmd(env cmdkit.Env) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:               "connect <nova-uuid>",
+		Aliases:           []string{"shell", "bash"},
+		Short:             "Open an interactive Bash session in a Linux VM",
+		Long:              "Opens a root PTY through the VM's outbound session agent. The guest uses /bin/bash when installed, otherwise /bin/sh.",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: CompleteVM(env),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, ok := access.NovaID(args[0])
+			if !ok {
+				return fmt.Errorf("connect needs a Nova UUID; find it with 'vctl openstack vm'")
+			}
+			a, err := env.App()
+			if err != nil {
+				return err
+			}
+			if err := a.EnsureLogin(cmd.Context()); err != nil {
+				return err
+			}
+			if a.Cfg.AccessGateway == "" {
+				return fmt.Errorf("set access_gateway to use VM session access")
+			}
+			return nodeaccess.ConnectShell(cmd.Context(), a.Cfg.AccessGateway, a.Vault.Token(), id, os.Stdin, os.Stdout)
+		},
+	}
+	return cmd
+}
+
+// openstackVMSSHCmd is the direct, short spelling for the guest Bash session.
+// It shares the same VM-specific agent transport and shell grant as vm connect.
+func openstackVMSSHCmd(env cmdkit.Env) *cobra.Command {
+	cmd := openstackVMConnectCmd(env)
+	cmd.Use = "ssh <nova-uuid>"
+	cmd.Aliases = nil
+	cmd.Short = "Open an interactive Bash session in a Linux VM"
+	cmd.Long = "Opens a root Bash PTY through the VM's outbound session agent. The guest uses /bin/bash when installed, otherwise /bin/sh."
+	return cmd
 }
 
 // openstackVMOptions is the bound flag set of `openstack vm`.

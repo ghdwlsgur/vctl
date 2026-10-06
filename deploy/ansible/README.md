@@ -9,6 +9,84 @@ truth — no duplicated copies here) plus the SSH CA trust.
 | `trust-vault-ssh-ca.yml` | Install the operator-supplied `files/vault-ca.pub` as system-wide `TrustedUserCAKeys` in `/etc/ssh/sshd_config.d/10-vault-ca.conf` (same as `vctl trust-ca`, in bulk). |
 | `site.yml` | Install node-agent (runtime status) by default. The collector + watch-sessions audit stack, `vctl-host` AppRole, and Tetragon are explicit opt-ins via `vctl_host_audit_stack=true`. |
 | `openstack-vendordata.yml` | Install the same CA trust into an OpenStack farm's Nova vendordata, so a **new VM** trusts vctl certificates from first boot. See below. |
+| `openstack-vm-agent-vendordata.yml` | Stage per-farm Nova DynamicJSON settings so new Linux VMs fetch a short-lived, VM UUID-bound enrollment grant from the access gateway. |
+
+## Nova DynamicJSON VM enrollment
+
+The access gateway is deployed at `https://node-access.sre.local`. This play
+stages a `cloud-init` DynamicJSON target in the Kolla Nova config for each farm.
+Nova authenticates to that farm's Keystone as its existing `nova` service user;
+the play reads `nova_keystone_password` from the farm's `/etc/kolla/passwords.yml`
+and writes the rendered overrides as root-only files. Secret-bearing tasks hide
+their output and diffs.
+
+The inventory variable `openstack_deployment_id` must exactly match the Keystone
+ID shown by `vctl openstack farm list` (for example, `172.16.0.245:5000`). It is
+used both to select the registered farm at the gateway and to construct the
+Keystone v3 auth URL. Do not use the Horizon URL here; Horizon and Keystone are
+separate endpoints.
+
+The play checks from the Kolla deployment host that the gateway health endpoint
+has a valid HTTPS certificate, and that Keystone issues a service token whose
+user, project and admin role match the gateway's validator. Ensure the Nova API
+containers also trust the gateway's issuing CA. Kolla can add CA files from
+`/etc/kolla/certificates/ca` to service containers when
+`kolla_copy_ca_into_containers` is enabled. Alternatively, set
+`vendordata_dynamic_ssl_certfile` to a CA bundle path inside the Nova container.
+TLS verification is never disabled.
+
+The play stages configuration only. Review the diff, run `kolla-ansible
+genconfig -t nova`, review generated Nova config, then reconfigure the metadata
+responder in a maintenance window. Releases with a separate `nova-metadata`
+service should reconfigure that responder; older releases serve metadata from
+`nova-api`, which also serves the Compute API. The existing static vendordata
+file remains enabled for its current SSH CA trust payload.
+
+At the latest inventory read (2026-10-02), the active deployment IDs were:
+
+| Farm | Keystone deployment ID |
+|---|---|
+| `ai/native-1x4-dalmatian` | `172.16.0.150:5000` |
+| `hybrid-0026-epoxy` | `172.16.0.111:5000` |
+| `hybrid-1x2-epoxy` | `172.17.0.115:5000` |
+| `incheon-main-farm` | `172.16.0.10:5000` |
+| `infra-3x5-epoxy` | `172.16.0.245:5000` |
+| `infra-3x5-gazpacho` | `172.17.0.87:5000` |
+| `posco-infra-dev-farm` | `172.16.0.21:5000` |
+| `sre-0047-epoxy` | `192.168.201.130:5000` |
+| `sre-0048-caracal` | `192.168.201.90:5000` |
+
+The two hybrid farms marked `retired` in inventory were excluded. Inventory IDs
+and active state can change; read `vctl openstack farm list --json` before each
+rollout. This config provisions only **new** guests; it does not retrofit
+already-running VMs.
+
+Run for one farm first, using a deploy host in `openstack_deploy` with the
+farm-specific variables in inventory:
+
+```bash
+ansible-playbook -i inventory/hosts.ini openstack-vm-agent-vendordata.yml \
+    -l infra_epoxy
+```
+
+After the canary succeeds and its generated `vendor_data2.json` contains a
+`cloud-init` entry, repeat for the remaining active farm deploy hosts. The
+actual deploy-host addresses are intentionally kept in the ignored
+`inventory/hosts.ini` file.
+
+For a new canary VM, check the response without displaying its short-lived
+enrollment grant:
+
+```bash
+curl -fsS http://169.254.169.254/openstack/latest/vendor_data2.json \
+    | jq -e '."cloud-init" | startswith("#cloud-config")' >/dev/null
+cloud-init status --wait
+systemctl is-active vctl-vm-session-agent.service
+```
+
+Then verify the VM appears as connected through `vctl openstack` and can open a
+shell through the gateway. `vendor_data2.json` is metadata and contains the
+one-hour bootstrap grant; do not print or retain its full response.
 
 ## Nova vendordata (new VMs)
 

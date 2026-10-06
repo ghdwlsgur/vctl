@@ -3,6 +3,7 @@ package openstack
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -58,6 +59,9 @@ func ReconcileCmd(env cmdkit.Env) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.insecure, "insecure", false, "skip TLS verification against the control plane (self-signed endpoints)")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "report what would change without writing")
 	cmd.Flags().BoolVar(&opts.includeRetired, "include-retired", false, "also reconcile deployments declared retired")
+	cmd.Flags().BoolVar(&opts.credentialsFromEnv, "credentials-from-env", false,
+		"use VCTL_OPENSTACK_USERNAME and VCTL_OPENSTACK_PASSWORD with each farm's Horizon host on port 5000 (project/domain: admin/Default)")
+	cmd.Flags().StringVar(&opts.authURL, "auth-url", "", "one-run Keystone auth URL override; requires --farm and --credentials-from-env")
 	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "machine-readable result, for timers and dashboards")
 	cmd.Flags().StringVar(&opts.failOn, "fail-on", "",
 		"exit non-zero when any of these occurred: unreachable, no-credentials, partial, warning")
@@ -73,14 +77,16 @@ func ReconcileCmd(env cmdkit.Env) *cobra.Command {
 
 // reconcileOptions is the bound flag set of `openstack reconcile`.
 type reconcileOptions struct {
-	only           string
-	self           bool
-	hostname       string
-	insecure       bool
-	dryRun         bool
-	asJSON         bool
-	failOn         string
-	includeRetired bool
+	only               string
+	self               bool
+	hostname           string
+	insecure           bool
+	dryRun             bool
+	asJSON             bool
+	failOn             string
+	includeRetired     bool
+	credentialsFromEnv bool
+	authURL            string
 }
 
 // runReconcile is the body of `openstack reconcile`, kept apart from the flag
@@ -118,8 +124,58 @@ func runReconcile(cmd *cobra.Command, env cmdkit.Env, opts reconcileOptions) err
 		if err != nil {
 			return err
 		}
+		creds := reconcile.Credentials(farmcreds.Store{KV: a.Vault, Prefix: a.Cfg.VaultFarmPrefix})
+		if opts.credentialsFromEnv {
+			username, password := os.Getenv("VCTL_OPENSTACK_USERNAME"), os.Getenv("VCTL_OPENSTACK_PASSWORD")
+			if strings.TrimSpace(username) == "" || password == "" {
+				return fmt.Errorf("--credentials-from-env requires VCTL_OPENSTACK_USERNAME and VCTL_OPENSTACK_PASSWORD")
+			}
+			deployments, err := st.Deployments(ctx)
+			if err != nil {
+				return err
+			}
+			authURLs := make(map[string]string, len(deployments))
+			for _, deployment := range deployments {
+				if endpoint := keystoneURLFromHorizon(deployment.HorizonURL); endpoint != "" {
+					authURLs[deployment.ID] = endpoint
+				}
+			}
+			// Older registrations predate the operator-maintained dashboard
+			// field. Their controller probe still carries the observed Horizon
+			// VIP, which is a better API route than the private Keystone IP.
+			hosts, err := st.OpenStackHosts(ctx)
+			if err != nil {
+				return err
+			}
+			for _, host := range hosts {
+				if authURLs[host.Farm] == "" {
+					if endpoint := keystoneURLFromHorizon(host.Details["horizon_url"]); endpoint != "" {
+						authURLs[host.Farm] = endpoint
+					}
+				}
+			}
+			if opts.authURL != "" {
+				if opts.only == "" {
+					return fmt.Errorf("--auth-url requires --farm")
+				}
+				u, err := url.ParseRequestURI(opts.authURL)
+				if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					return fmt.Errorf("--auth-url must be an absolute http(s) URL")
+				}
+				authURLs[opts.only] = u.String()
+			}
+			if opts.authURL != "" && authURLs[opts.only] == "" {
+				return fmt.Errorf("no Keystone auth URL is available for %s", opts.only)
+			}
+			creds = horizonEnvCredentials{
+				username: strings.TrimSpace(username), password: password,
+				resolver: a.Cfg.DNSResolver,
+				authURLs: authURLs,
+				fallback: farmcreds.Store{KV: a.Vault, Prefix: a.Cfg.VaultFarmPrefix},
+			}
+		}
 		svc := &reconcile.Service{
-			Creds: farmcreds.Store{KV: a.Vault, Prefix: a.Cfg.VaultFarmPrefix},
+			Creds: creds,
 			Cloud: novaCloud{},
 			Repo:  storeRepo{st: st},
 		}

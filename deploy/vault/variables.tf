@@ -66,3 +66,16 @@ variable "sre_ca_pem_file" {
   default     = "../../internal/config/innogrid-sre-root-ca.crt"
   description = "Public SRE root CA for OIDC discovery TLS (the binary's embedded copy by default)"
 }
+
+variable "node_access_hosts" {
+  type = set(string)
+  default = [
+    "sre-srv-0025", "sre-srv-0026", "sre-srv-0030", "sre-srv-0031", "sre-srv-0032",
+    "sre-srv-0034", "sre-srv-0035", "sre-srv-0036", "sre-srv-0038", "sre-srv-0041",
+    "sre-srv-0042", "sre-srv-0047", "sre-srv-0048", "sre-srv-0050", "sre-srv-0051",
+    "sre-srv-0054", "sre-srv-0055", "sre-srv-0058", "sre-srv-0059", "sre-srv-0093",
+    "sre-srv-0094", "sre-srv-0100", "sre-srv-0101", "sre-srv-0102", "sre-srv-0103",
+    "sre-srv-0104"
+  ]
+  description = "Inventory hostnames allowed to enroll as node-access mTLS agents. Each gets an isolated PKI role and AppRole."
+}

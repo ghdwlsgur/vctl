@@ -8,6 +8,21 @@ the authority split clear:
 - `servers`: operator-managed source of truth for connection metadata.
 - `server_status`: observed runtime state from the host.
 
+## Outbound access agent (not yet deployable)
+
+The separate `vctl-agent session-agent` process and unit are packaged as an
+implementation slice for the node-initiated mTLS channel. Do not enable the
+unit yet: a production gateway, node certificate enrollment/rotation, and the
+Vault/Postgres authorization and audit adapters are not present. The unit
+expects `/etc/vctl/session-agent.env` to define `VCTL_ACCESS_GATEWAY` and
+short-lived node identity files under `/etc/vctl/session-agent/`.
+
+The current fixed dispatcher supports read-only host load, Podman container
+listing, systemd service status, and bounded service journal reads. It does
+not offer an interactive shell. See
+`/usr/share/doc/vctl/node-access-README.md` for the trust and deployment
+boundary.
+
 ## Install
 
 The `vctl` `.deb`/`.rpm` package already places the binary and

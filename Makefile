@@ -6,6 +6,7 @@ BIN         := $(BIN_DIR)/$(BINARY)
 # The fleet-host slice: daemons and login hooks only, no operator commands.
 AGENT_PKG   := ./cmd/vctl-agent
 AGENT_BIN   := $(BIN_DIR)/$(BINARY)-agent
+GATEWAY_BIN := $(BIN_DIR)/$(BINARY)-access-gateway
 VERSION     ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS     := -s -w -X main.version=$(VERSION)
 GOFILES     := $(shell find . -name '*.go' -not -path './vendor/*')
@@ -21,7 +22,7 @@ help: ## Show available targets
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: build
-build: $(BIN) $(AGENT_BIN) ## Build binaries to bin/vctl and bin/vctl-agent
+build: $(BIN) $(AGENT_BIN) $(GATEWAY_BIN) ## Build the operator, node-agent and access-gateway binaries
 
 $(BIN): $(GOFILES) go.mod
 	@mkdir -p $(BIN_DIR)
@@ -32,6 +33,11 @@ $(AGENT_BIN): $(GOFILES) go.mod
 	@mkdir -p $(BIN_DIR)
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(AGENT_BIN) $(AGENT_PKG)
 	@echo "built $(AGENT_BIN)"
+
+$(GATEWAY_BIN): $(GOFILES) go.mod
+	@mkdir -p $(BIN_DIR)
+	go build -trimpath -ldflags '$(LDFLAGS)' -o $(GATEWAY_BIN) ./cmd/vctl-access-gateway
+	@echo "built $(GATEWAY_BIN)"
 
 .PHONY: install
 install: ## Install to $GOBIN with go install

@@ -38,6 +38,7 @@ func NewAgentRoot(deps Dependencies) *cobra.Command {
 runs under systemd, without the operator commands.
 
   vctl-agent node-agent           report runtime status to server_status
+  vctl-agent session-agent        maintain an outbound node access channel
   vctl-agent collect              ingest Tetragon kernel events
   vctl-agent watch-sessions       register SSH sessions from PAM markers
   vctl-agent openstack reconcile  confirm farm membership (farm controllers)`,
@@ -66,9 +67,13 @@ runs under systemd, without the operator commands.
 		Short: "Farm control-plane tasks a controller host runs",
 	}
 	openstackParent.AddCommand(openstack.ReconcileCmd(env))
+	nodeAccessParent := &cobra.Command{Use: "node-access", Short: "Enroll this VM with the outbound access gateway"}
+	nodeAccessParent.AddCommand(nodeAccessEnrollVMCmd())
 
 	root.AddCommand(
 		nodeAgentCmd(env),
+		sessionAgentCmd(),
+		nodeAccessParent,
 		collectCmd(env),
 		watchSessionsCmd(env),
 		sessionStartCmd(env),

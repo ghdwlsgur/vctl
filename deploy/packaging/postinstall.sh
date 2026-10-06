@@ -7,6 +7,7 @@ set -e
 # Credential drop-point and daemon state/home. The services run as root today;
 # 0700 keeps the AppRole secret-id readable only by root.
 install -d -m 0700 /etc/vctl
+install -d -m 0700 /etc/vctl/session-agent
 install -d -m 0750 /var/lib/vctl
 
 # Pick up the new/changed unit files.
@@ -26,6 +27,8 @@ To turn them on for this host:
   2) Ensure *.sre.local resolves (vault.sre.local, vctl-postgres.sre.local)
   3) Enable the agent(s) you want:
        systemctl enable --now vctl-node-agent       # runtime host status
+       # session-agent needs a separate node certificate and gateway config;
+       # see /usr/share/doc/vctl/node-access-README.md before enabling it.
        systemctl enable --now vctl-watch-sessions   # SSH session registrar
        systemctl enable --now vctl-collect          # kernel audit (requires tetragon)
 EOF

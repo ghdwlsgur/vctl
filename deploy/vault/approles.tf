@@ -45,6 +45,19 @@ resource "vault_approle_auth_backend_role" "node" {
   secret_id_num_uses = 0
 }
 
+resource "vault_approle_auth_backend_role" "node_access" {
+  for_each           = var.node_access_hosts
+  backend            = vault_auth_backend.approle.path
+  role_name          = "vctl-node-access-${each.value}"
+  token_policies     = [vault_policy.node_access[each.key].name]
+  token_ttl          = 3600
+  token_max_ttl      = 3600
+  token_type         = "service"
+  secret_id_ttl      = 0
+  secret_id_num_uses = 0
+
+}
+
 # Retention CronJob: delete expired audit rows only.
 resource "vault_approle_auth_backend_role" "pruner" {
   backend            = vault_auth_backend.approle.path

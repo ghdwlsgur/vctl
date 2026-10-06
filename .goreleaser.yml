@@ -35,6 +35,19 @@ builds:
       - arm64
     ldflags:
       - -s -w -X main.version={{ .Version }}
+  # The SRE control-plane service that brokers the node-initiated access channel.
+  - id: vctl-access-gateway
+    main: ./cmd/vctl-access-gateway
+    binary: vctl-access-gateway
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
 
 archives:
   - id: vctl
@@ -58,6 +71,16 @@ archives:
       - tar.gz
     name_template: >-
       vctl-agent_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+  - id: vctl-access-gateway
+    ids:
+      - vctl-access-gateway
+    formats:
+      - tar.gz
+    name_template: >-
+      vctl-access-gateway_
       {{- .Version }}_
       {{- .Os }}_
       {{- .Arch }}
@@ -92,6 +115,8 @@ nfpms:
         dst: /usr/lib/systemd/system/vctl-watch-sessions.service
       - src: ./deploy/node/vctl-node-agent.service
         dst: /usr/lib/systemd/system/vctl-node-agent.service
+      - src: ./deploy/node/vctl-session-agent.service
+        dst: /usr/lib/systemd/system/vctl-session-agent.service
       - src: ./deploy/audit/pam-session-stamp.sh
         dst: /usr/local/sbin/pam-session-stamp.sh
         file_info:
@@ -113,6 +138,8 @@ nfpms:
         dst: /usr/share/doc/vctl/audit-README.md
       - src: ./deploy/node/README.md
         dst: /usr/share/doc/vctl/node-README.md
+      - src: ./docs/architecture/node-access.md
+        dst: /usr/share/doc/vctl/node-access-README.md
     scripts:
       postinstall: ./deploy/packaging/postinstall.sh
       postremove: ./deploy/packaging/postremove.sh

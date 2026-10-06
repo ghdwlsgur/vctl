@@ -54,7 +54,7 @@ DECLARE g text;
 BEGIN
   FOREACH g IN ARRAY ARRAY[
     'vctl_ro','vctl_rw','vctl_status','vctl_identity',
-    'vctl_audit_ro','vctl_audit_writer','vctl_audit_ingest','vctl_pruner',
+    'vctl_audit_ro','vctl_audit_writer','vctl_audit_ingest','vctl_node_access_audit','vctl_pruner',
     'vctl_openstack_pruner','vctl_backup','vctl_reconcile'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = g) THEN
@@ -66,11 +66,11 @@ END $$;
 -- CONNECT + schema USAGE for every group (inherited by dynamic members).
 GRANT CONNECT ON DATABASE vctl TO
   vctl_ro, vctl_rw, vctl_status, vctl_identity,
-  vctl_audit_ro, vctl_audit_writer, vctl_audit_ingest, vctl_pruner,
+  vctl_audit_ro, vctl_audit_writer, vctl_audit_ingest, vctl_node_access_audit, vctl_pruner,
   vctl_openstack_pruner, vctl_backup, vctl_reconcile;
 GRANT USAGE ON SCHEMA public TO
   vctl_ro, vctl_rw, vctl_status, vctl_identity,
-  vctl_audit_ro, vctl_audit_writer, vctl_audit_ingest, vctl_pruner,
+  vctl_audit_ro, vctl_audit_writer, vctl_audit_ingest, vctl_node_access_audit, vctl_pruner,
   vctl_openstack_pruner, vctl_backup, vctl_reconcile;
 
 -- ro: inventory + app-RBAC + IPAM/WireGuard reads. Audit payloads deliberately excluded.

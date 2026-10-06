@@ -24,6 +24,7 @@ import (
 // Credentials authenticate against one deployment's Keystone.
 type Credentials struct {
 	AuthURL     string
+	DNSResolver string
 	Username    string
 	Password    string
 	ProjectName string
@@ -33,10 +34,11 @@ type Credentials struct {
 
 // Client is a session against one deployment.
 type Client struct {
-	http     *http.Client
-	authURL  string
-	token    string
-	computes []endpoint
+	http            *http.Client
+	endpointTimeout time.Duration
+	authURL         string
+	token           string
+	computes        []endpoint
 	// identities are the Keystone endpoints from the catalog, used to turn
 	// project ids into the names people actually call them by.
 	identities []endpoint
@@ -58,13 +60,14 @@ func New(ctx context.Context, c Credentials, insecure bool, timeout time.Duratio
 	if c.AuthURL == "" || c.Username == "" || c.Password == "" {
 		return nil, fmt.Errorf("auth url, username and password are all required")
 	}
-	hc, err := httpc.NewClient(timeout, httpc.TLS{Insecure: insecure})
+	hc, err := httpc.NewClient(timeout, httpc.TLS{Insecure: insecure, DNSResolver: c.DNSResolver})
 	if err != nil {
 		return nil, err
 	}
 	cl := &Client{
-		http:    hc,
-		authURL: strings.TrimRight(c.AuthURL, "/"),
+		http:            hc,
+		endpointTimeout: 10 * time.Second,
+		authURL:         strings.TrimRight(c.AuthURL, "/"),
 	}
 	if err := cl.authenticate(ctx, c); err != nil {
 		return nil, err
@@ -288,7 +291,13 @@ func (c *Client) hypervisorsFrom(ctx context.Context, base string) ([]Hypervisor
 
 // getJSON performs one authenticated read.
 func (c *Client) getJSON(ctx context.Context, u string, into any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	requestCtx := ctx
+	cancel := func() {}
+	if c.endpointTimeout > 0 {
+		requestCtx, cancel = context.WithTimeout(ctx, c.endpointTimeout)
+	}
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,18 @@
+# vctl VM-scoped DynamicJSON enrollment. Managed by
+# openstack-vm-agent-vendordata.yml; do not place this credential in git.
+[api]
+vendordata_providers = StaticJSON,DynamicJSON
+vendordata_dynamic_targets = cloud-init@{{ vendordata_gateway_url | regex_replace('/$', '') }}/v1/vendordata?farm={{ openstack_deployment_id | urlencode }}
+vendordata_dynamic_failure_fatal = false
+{% if vendordata_dynamic_ssl_certfile | default('') | length > 0 %}
+vendordata_dynamic_ssl_certfile = {{ vendordata_dynamic_ssl_certfile }}
+{% endif %}
+
+[vendordata_dynamic_auth]
+auth_type = password
+auth_url = {{ vendordata_keystone_auth_url }}
+username = {{ vendordata_nova_user }}
+password = {{ vendordata_nova_service_password }}
+project_name = {{ vendordata_nova_project }}
+project_domain_name = {{ vendordata_nova_project_domain | default(vendordata_domain) }}
+user_domain_name = {{ vendordata_nova_user_domain | default(vendordata_domain) }}

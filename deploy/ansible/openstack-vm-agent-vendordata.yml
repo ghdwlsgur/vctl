@@ -1,0 +1,185 @@
+---
+# Stage Nova DynamicJSON configuration for VM-scoped vctl agent enrollment.
+# This updates Kolla's source-of-truth config only. Review the generated Nova
+# config and run kolla-ansible genconfig/reconfigure explicitly per farm.
+
+- name: Stage VM agent enrollment in Nova metadata services
+  hosts: openstack_deploy
+  become: true
+  gather_facts: false
+  serial: 1
+  vars:
+    state: present
+    vendordata_gateway_url: https://node-access.sre.local
+    vendordata_kolla_passwords_file: /etc/kolla/passwords.yml
+    vendordata_node_custom_config: /etc/kolla/config
+    vendordata_nova_user: nova
+    vendordata_nova_project: service
+    vendordata_domain: Default
+  pre_tasks:
+    - name: Validate the deployment identity and endpoint
+      ansible.builtin.assert:
+        that:
+          - state in ['present', 'absent']
+          - openstack_deployment_id is defined
+          - openstack_deployment_id is match('^[A-Za-z0-9.-]+:[0-9]{1,5}$')
+          - vendordata_gateway_url is match('^https://[^/]+/?$')
+        fail_msg: >-
+          Set openstack_deployment_id to the exact Keystone host:port shown by
+          `vctl openstack farm list` (never the Horizon URL), and use an HTTPS
+          gateway origin.
+
+    - name: Verify the gateway is reachable with a valid TLS certificate
+      when: state == 'present'
+      ansible.builtin.uri:
+        url: "{{ vendordata_gateway_url | regex_replace('/$', '') }}/healthz"
+        method: GET
+        status_code: 204
+        validate_certs: true
+        return_content: false
+      changed_when: false
+
+    - name: Read Kolla service credentials without displaying them
+      when: state == 'present'
+      ansible.builtin.slurp:
+        src: "{{ vendordata_kolla_passwords_file }}"
+      register: vendordata_kolla_passwords_raw
+      no_log: true
+
+    - name: Extract the Nova service password
+      when: state == 'present'
+      ansible.builtin.set_fact:
+        vendordata_nova_password: >-
+          {{ (vendordata_kolla_passwords_raw.content | b64decode | from_yaml)
+             ['nova_keystone_password'] | default('') }}
+      no_log: true
+
+    - name: Require a Nova service password
+      when: state == 'present'
+      ansible.builtin.assert:
+        that:
+          - vendordata_nova_password | length >= 1
+        fail_msg: Kolla passwords.yml does not contain nova_keystone_password.
+      no_log: true
+
+    - name: Define the Keystone v3 URL used for the Nova service identity
+      when: state == 'present'
+      ansible.builtin.set_fact:
+        vendordata_keystone_auth_url: >-
+          {{ vendordata_keystone_auth_url_override
+             | default('https://' ~ openstack_deployment_id ~ '/v3') }}
+      no_log: true
+
+    - name: Verify Nova can obtain a scoped Keystone service token
+      when: state == 'present'
+      ansible.builtin.uri:
+        url: "{{ vendordata_keystone_auth_url | regex_replace('/$', '') }}/auth/tokens"
+        method: POST
+        body_format: json
+        body:
+          auth:
+            identity:
+              methods: [password]
+              password:
+                user:
+                  name: "{{ vendordata_nova_user }}"
+                  domain:
+                    name: "{{ vendordata_nova_user_domain | default(vendordata_domain) }}"
+                  password: "{{ vendordata_nova_password }}"
+            scope:
+              project:
+                name: "{{ vendordata_nova_project }}"
+                domain:
+                  name: "{{ vendordata_nova_project_domain | default(vendordata_domain) }}"
+        status_code: 201
+        validate_certs: true
+        return_content: false
+      register: vendordata_nova_auth
+      no_log: true
+
+    - name: Validate the issued Nova service token against gateway policy
+      when: state == 'present'
+      ansible.builtin.uri:
+        url: "{{ vendordata_keystone_auth_url | regex_replace('/$', '') }}/auth/tokens"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ vendordata_nova_auth.x_subject_token }}"
+          X-Subject-Token: "{{ vendordata_nova_auth.x_subject_token }}"
+        status_code: 200
+        validate_certs: true
+        return_content: true
+      register: vendordata_nova_token_validation
+      no_log: true
+
+    - name: Require the service token identity the gateway accepts
+      when: state == 'present'
+      ansible.builtin.assert:
+        that:
+          - vendordata_nova_token_validation.json.token.user.name == vendordata_nova_user
+          - vendordata_nova_token_validation.json.token.project.id | length > 0
+          - >-
+            (vendordata_nova_token_validation.json.token.roles
+             | selectattr('name', 'equalto', 'admin') | list | length) > 0
+        fail_msg: >-
+          The scoped Nova token must belong to the configured service user,
+          include a project ID, and carry the admin role required by the
+          gateway's Nova-token verifier.
+      no_log: true
+
+  tasks:
+    - name: Ensure the Kolla Nova config override directory exists
+      when: state == 'present'
+      ansible.builtin.file:
+        path: "{{ vendordata_node_custom_config }}/nova"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Configure nova-api DynamicJSON enrollment
+      when: state == 'present'
+      ansible.builtin.template:
+        src: templates/vm-agent-vendordata-nova.conf.j2
+        dest: "{{ vendordata_node_custom_config }}/nova/nova-api.conf"
+        owner: root
+        group: root
+        mode: "0600"
+      vars:
+        vendordata_nova_service_password: "{{ vendordata_nova_password }}"
+      no_log: true
+      diff: false
+
+    - name: Configure nova-metadata DynamicJSON enrollment
+      when: state == 'present'
+      ansible.builtin.template:
+        src: templates/vm-agent-vendordata-nova.conf.j2
+        dest: "{{ vendordata_node_custom_config }}/nova/nova-metadata.conf"
+        owner: root
+        group: root
+        mode: "0600"
+      vars:
+        vendordata_nova_service_password: "{{ vendordata_nova_password }}"
+      no_log: true
+      diff: false
+
+    - name: Remove the VM agent Nova overrides (rollback staging)
+      when: state == 'absent'
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ vendordata_node_custom_config }}/nova/nova-api.conf"
+        - "{{ vendordata_node_custom_config }}/nova/nova-metadata.conf"
+
+  post_tasks:
+    - name: Report the next Kolla steps
+      when: state == 'present'
+      ansible.builtin.debug:
+        msg: >-
+          Nova DynamicJSON overrides are staged on {{ inventory_hostname }}.
+          Review the config diff, run `kolla-ansible genconfig -t nova`, then
+          reconfigure Nova in a maintenance window. Restart only the metadata
+          service when the farm has a separate nova-metadata service; older
+          releases serve metadata from nova-api, which also serves compute API.
+          Verify the generated config and test vendor_data2.json from a new
+          canary VM without printing its short-lived enrollment grant.

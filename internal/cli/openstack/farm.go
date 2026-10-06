@@ -3,6 +3,7 @@ package openstack
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -37,10 +38,39 @@ func openstackFarmCmd(env cmdkit.Env) *cobra.Command {
 	// are mutations. Same grant name as before, so grants already issued still
 	// apply.
 	cmd.AddCommand(cmdkit.Gate(openstackFarmNameCmd(env), "openstack-farm"))
+	cmd.AddCommand(cmdkit.Gate(openstackFarmHorizonCmd(env), "openstack-farm"))
 	cmd.AddCommand(openstackFarmDoctorCmd(env))
 	cmd.AddCommand(openstackFarmListCmd(env))
 	cmd.AddCommand(openstackFarmShowCmd(env))
 	cmd.AddCommand(cmdkit.Gate(openstackFarmStateCmd(env), "openstack-farm"))
+	return cmd
+}
+
+func openstackFarmHorizonCmd(env cmdkit.Env) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:               "horizon <deployment> <url>",
+		Short:             "Set the dashboard URL separately from the Keystone API endpoint",
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			u, err := url.ParseRequestURI(args[1])
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+				return fmt.Errorf("Horizon URL must be an absolute http(s) URL")
+			}
+			return env.WithStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
+				id, err := ResolveFarmID(cmd.Context(), a, st, args[0])
+				if err != nil {
+					return err
+				}
+				if err := st.SetDeploymentHorizonURL(cmd.Context(), id, u.String()); err != nil {
+					return err
+				}
+				forgetReadings(cmd.Context(), a, st)
+				ui.Successf(os.Stdout, "%s Horizon URL set to %s", id, u.String())
+				return nil
+			})
+		},
+	}
 	return cmd
 }
 

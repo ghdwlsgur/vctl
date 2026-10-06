@@ -33,7 +33,7 @@ resource "vault_database_secret_backend_connection" "vctl_pg" {
   allowed_roles = [
     "vctl-ro", "vctl-identity", "vctl-rw", "vctl-audit-ro",
     "vctl-audit-writer", "vctl-audit-ingest", "vctl-pruner",
-    "vctl-status", "vctl-migrator", "vctl-openstack-pruner", "vctl-backup"
+    "vctl-status", "vctl-node-access-audit", "vctl-migrator", "vctl-openstack-pruner", "vctl-backup"
   ]
 
   postgresql {
@@ -123,6 +123,17 @@ resource "vault_database_secret_backend_role" "audit_ingest" {
   default_ttl           = 3600
   max_ttl               = 14400
   creation_statements   = ["${local.create_login} GRANT vctl_audit_ingest TO \"{{name}}\";"]
+  revocation_statements = local.revoke_stmts
+}
+
+# Access gateway: append-only metadata for typed node-agent operations.
+resource "vault_database_secret_backend_role" "node_access_audit" {
+  backend               = local.db_backend
+  name                  = "vctl-node-access-audit"
+  db_name               = local.db_name
+  default_ttl           = 3600
+  max_ttl               = 14400
+  creation_statements   = ["${local.create_login} GRANT vctl_node_access_audit TO \"{{name}}\";"]
   revocation_statements = local.revoke_stmts
 }
 

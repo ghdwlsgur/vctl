@@ -13,3 +13,15 @@ import _ "embed"
 //
 //go:embed vctl-node-agent.service
 var AgentUnit string
+
+// SessionAgentUnit is the outbound node-access renewal service definition.
+//
+//go:embed vctl-session-agent.service
+var SessionAgentUnit string
+
+// VMSessionAgentUnit permits privileged interactive guest sessions while
+// retaining bounded CPU, memory, and process use. It is separate from the
+// deliberately restrictive host status-agent unit.
+//
+//go:embed vctl-vm-session-agent.service
+var VMSessionAgentUnit string

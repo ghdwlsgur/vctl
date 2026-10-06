@@ -60,12 +60,13 @@ func openstackFarmListCmd(env cmdkit.Env) *cobra.Command {
 
 // farmSummary is one deployment as an operator scans it.
 type farmSummary struct {
-	ID     string `json:"id"`
-	Name   string `json:"name,omitempty"`
-	Region string `json:"region,omitempty"`
-	State  string `json:"state"`
-	Hosts  int    `json:"hosts"`
-	VMs    int    `json:"vms"`
+	ID         string `json:"id"`
+	Name       string `json:"name,omitempty"`
+	Region     string `json:"region,omitempty"`
+	HorizonURL string `json:"horizon_url,omitempty"`
+	State      string `json:"state"`
+	Hosts      int    `json:"hosts"`
+	VMs        int    `json:"vms"`
 
 	// Reconciled is the last run that settled membership. Nil when nothing ever
 	// has, which is a different thing from an old one and reads differently.
@@ -102,7 +103,7 @@ func summarize(cat fleet.Catalog) []farmSummary {
 	out := make([]farmSummary, 0, len(cat.Farms()))
 	for _, f := range cat.Farms() {
 		row := farmSummary{
-			ID: f.ID, Name: f.Name, Region: f.Region, State: f.State,
+			ID: f.ID, Name: f.Name, Region: f.Region, State: f.State, HorizonURL: f.HorizonURL,
 			Hosts: len(f.Hosts), VMs: cat.VMCount(f.ID), Unsettled: f.Unsettled,
 		}
 		// A deployment nothing has declared reads as active, the same way a

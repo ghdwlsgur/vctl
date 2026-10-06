@@ -11,11 +11,13 @@
 package httpc
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -35,6 +37,8 @@ type TLS struct {
 	// Insecure skips verification. A caller's explicit, per-endpoint choice
 	// (a self-signed OpenStack control plane); never a default.
 	Insecure bool
+	// DNSResolver optionally pins name lookups to an organization resolver.
+	DNSResolver string
 }
 
 // NewClient builds an *http.Client with timeout and t. An unusable CAPEM is an
@@ -56,7 +60,17 @@ func NewClient(timeout time.Duration, t TLS) (*http.Client, error) {
 	if t.Insecure {
 		cfg.InsecureSkipVerify = true // #nosec G402 -- caller's explicit per-endpoint choice
 	}
-	return &http.Client{Timeout: timeout, Transport: &http.Transport{TLSClientConfig: cfg}}, nil
+	transport := &http.Transport{TLSClientConfig: cfg}
+	if t.DNSResolver != "" {
+		resolver := &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, t.DNSResolver)
+			},
+		}
+		transport.DialContext = (&net.Dialer{Timeout: 30 * time.Second, Resolver: resolver}).DialContext
+	}
+	return &http.Client{Timeout: timeout, Transport: transport}, nil
 }
 
 // Response is one answer with its body already read.

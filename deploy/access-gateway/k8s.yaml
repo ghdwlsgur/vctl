@@ -1,0 +1,185 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vctl-access-gateway
+  namespace: vctl
+automountServiceAccountToken: true
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vctl-access-gateway-server
+  namespace: vctl
+spec:
+  secretName: vctl-access-gateway-server-tls
+  issuerRef:
+    name: vault-issuer
+    kind: ClusterIssuer
+  dnsNames:
+    - node-access.sre.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vctl-access-gateway
+  namespace: vctl
+spec:
+  type: ClusterIP
+  selector:
+    app: vctl-access-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vctl-access-gateway
+  namespace: vctl
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vctl-access-gateway
+  template:
+    metadata:
+      labels:
+        app: vctl-access-gateway
+    spec:
+      serviceAccountName: vctl-access-gateway
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: harbor.sre.local/sre/vctl-access-gateway:node-access-vm-shell-20261002-amd64@sha256:2cc30f0049f0ddec32a040b964ee85aec7c6a98525a444c6b2113e7706ddfd6a
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: VCTL_AUTH_METHOD
+              value: kubernetes
+            - name: HOME
+              value: /tmp
+            - name: VCTL_KUBERNETES_ROLE
+              value: vctl-access-gateway
+            - name: VAULT_ADDR
+              value: https://vault.sre.local
+            - name: VCTL_DB_HOST
+              value: vctl-postgres.vctl.svc.cluster.local
+            - name: VCTL_DB_SERVERNAME
+              value: vctl-postgres.sre.local
+            - name: VCTL_ACCESS_LISTEN
+              value: :8080
+            - name: VCTL_ACCESS_NODE_CA_FILE
+              value: /etc/vctl-access/node-ca/ca.crt
+            - name: VCTL_ACCESS_ENROLLMENT_KEY_FILE
+              value: /etc/vctl-access/enrollment/key
+            - name: VCTL_ACCESS_PUBLIC_URL
+              value: https://node-access.sre.local
+          volumeMounts:
+            - name: state
+              mountPath: /tmp
+            - name: node-ca
+              mountPath: /etc/vctl-access/node-ca
+              readOnly: true
+            - name: enrollment-key
+              mountPath: /etc/vctl-access/enrollment
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: state
+          emptyDir: {}
+        - name: node-ca
+          secret:
+            secretName: vctl-node-access-gateway-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: enrollment-key
+          secret:
+            secretName: vctl-vm-enrollment
+            optional: true
+            items:
+              - key: key
+                path: key
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vctl-access-gateway
+  namespace: vctl
+  annotations:
+    nginx.ingress.kubernetes.io/auth-tls-secret: vctl/vctl-node-access-client-ca
+    nginx.ingress.kubernetes.io/auth-tls-verify-client: optional
+    nginx.ingress.kubernetes.io/auth-tls-verify-depth: "2"
+    nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "28800"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "28800"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - node-access.sre.local
+      secretName: vctl-access-gateway-server-tls
+  rules:
+    - host: node-access.sre.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vctl-access-gateway
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vctl-access-gateway
+  namespace: vctl
+spec:
+  podSelector:
+    matchLabels:
+      app: vctl-access-gateway
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080

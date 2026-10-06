@@ -13,6 +13,7 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5
+	golang.org/x/net v0.57.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
@@ -60,7 +61,6 @@ require (
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.7.0 // indirect

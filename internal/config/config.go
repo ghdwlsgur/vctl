@@ -36,7 +36,8 @@ type Config struct {
 	// it. Empty leaves resolution exactly as it was.
 	DNSServer string `yaml:"dns_server"`
 
-	VaultAddr string `yaml:"vault_addr"`
+	VaultAddr     string `yaml:"vault_addr"`
+	AccessGateway string `yaml:"access_gateway"`
 	// AdminPolicies are the Vault policy names that bypass app-layer command
 	// RBAC entirely (see internal/authz.HasAdminPolicy). Organization-specific
 	// surface: a fork renames its admin policies here instead of editing authz.
@@ -65,23 +66,24 @@ type Config struct {
 	OIDCRole     string `yaml:"oidc_role"`   // Vault OIDC role (phase 2)
 	OIDCMount    string `yaml:"oidc_mount"`  // Vault OIDC auth mount path
 
-	DBHost               string `yaml:"db_host"`
-	DBServerName         string `yaml:"db_server_name"` // TLS SNI override; defaults to DBHost. Use for port-forward/proxy where dial host != cert name.
-	DBPort               int    `yaml:"db_port"`
-	DBName               string `yaml:"db_name"`
-	DBRoleRO             string `yaml:"db_role_ro"`              // database/creds/<ro> for read paths
-	DBRoleRW             string `yaml:"db_role_rw"`              // database/creds/<rw> for sync/admin paths
-	DBRoleIdentity       string `yaml:"db_role_identity"`        // seen_users upsert during login
-	DBRoleAuditRO        string `yaml:"db_role_audit_ro"`        // access/session/kernel audit reads
-	DBRoleAuditWrite     string `yaml:"db_role_audit_write"`     // append-only SSH access records
-	DBRoleAuditIngest    string `yaml:"db_role_audit_ingest"`    // host collector/session lifecycle
-	DBRoleAuditPrune     string `yaml:"db_role_audit_prune"`     // retention job: audit deletes only
-	DBRoleOpenStackPrune string `yaml:"db_role_openstack_prune"` // deleted-VM history retention only
-	DBRoleReconcile      string `yaml:"db_role_reconcile"`       // farm membership + VM snapshot writes only
-	DBRoleStatus         string `yaml:"db_role_status"`          // database/creds/<status> for node-agent status updates
-	DBRoleMigrate        string `yaml:"db_role_migrate"`         // database/creds/<migrator> for schema changes
-	DBMigrationOwner     string `yaml:"db_migration_owner"`      // stable owner role for migration objects
-	LocalDBDSN           string `yaml:"-"`                       // dev/test only; env-only loopback DSN
+	DBHost                string `yaml:"db_host"`
+	DBServerName          string `yaml:"db_server_name"` // TLS SNI override; defaults to DBHost. Use for port-forward/proxy where dial host != cert name.
+	DBPort                int    `yaml:"db_port"`
+	DBName                string `yaml:"db_name"`
+	DBRoleRO              string `yaml:"db_role_ro"`                // database/creds/<ro> for read paths
+	DBRoleRW              string `yaml:"db_role_rw"`                // database/creds/<rw> for sync/admin paths
+	DBRoleIdentity        string `yaml:"db_role_identity"`          // seen_users upsert during login
+	DBRoleAuditRO         string `yaml:"db_role_audit_ro"`          // access/session/kernel audit reads
+	DBRoleAuditWrite      string `yaml:"db_role_audit_write"`       // append-only SSH access records
+	DBRoleAuditIngest     string `yaml:"db_role_audit_ingest"`      // host collector/session lifecycle
+	DBRoleAuditPrune      string `yaml:"db_role_audit_prune"`       // retention job: audit deletes only
+	DBRoleOpenStackPrune  string `yaml:"db_role_openstack_prune"`   // deleted-VM history retention only
+	DBRoleReconcile       string `yaml:"db_role_reconcile"`         // farm membership + VM snapshot writes only
+	DBRoleStatus          string `yaml:"db_role_status"`            // database/creds/<status> for node-agent status updates
+	DBRoleNodeAccessAudit string `yaml:"db_role_node_access_audit"` // append-only node access audit
+	DBRoleMigrate         string `yaml:"db_role_migrate"`           // database/creds/<migrator> for schema changes
+	DBMigrationOwner      string `yaml:"db_migration_owner"`        // stable owner role for migration objects
+	LocalDBDSN            string `yaml:"-"`                         // dev/test only; env-only loopback DSN
 
 	// Kernel-audit retention. Raw kernel_event rows are high-volume; sessions are
 	// small metadata kept much longer as the dataset index. Deletion is delegated
@@ -216,7 +218,8 @@ func envIntPair(dst *int, suffix string) {
 
 func (c *Config) applyEnv() {
 	envStr(&c.DNSServer, "VCTL_DNS_SERVER")
-	envStr(&c.VaultAddr, "VAULT_ADDR") // standard Vault var (no prefix)
+	envStr(&c.VaultAddr, "VAULT_ADDR")              // standard Vault var (no prefix)
+	envStr(&c.AccessGateway, "VCTL_ACCESS_GATEWAY") // VCTL-only
 	envStrPair(&c.VaultAddr, "VAULT_ADDR")
 	envStrPair(&c.AuthMethod, "AUTH_METHOD")
 	envStrPair(&c.DBHost, "DB_HOST")
@@ -231,7 +234,8 @@ func (c *Config) applyEnv() {
 	envStr(&c.DBRoleAuditIngest, "VCTL_DB_ROLE_AUDIT_INGEST")
 	envStr(&c.DBRoleAuditPrune, "VCTL_DB_ROLE_AUDIT_PRUNE")
 	envStr(&c.DBRoleOpenStackPrune, "VCTL_DB_ROLE_OPENSTACK_PRUNE")
-	envStr(&c.DBRoleStatus, "VCTL_DB_ROLE_STATUS") // VCTL-only
+	envStr(&c.DBRoleStatus, "VCTL_DB_ROLE_STATUS")                     // VCTL-only
+	envStr(&c.DBRoleNodeAccessAudit, "VCTL_DB_ROLE_NODE_ACCESS_AUDIT") // VCTL-only
 	envStrPair(&c.DBRoleMigrate, "DB_ROLE_MIGRATE")
 	envStrPair(&c.DBMigrationOwner, "DB_MIGRATION_OWNER")
 	envStr(&c.LocalDBDSN, "VCTL_LOCAL_DB_DSN")

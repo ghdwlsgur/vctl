@@ -1,13 +1,146 @@
 package vaultc
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	vault "github.com/hashicorp/vault/api"
 )
+
+var nodeAccessHostRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+var novaInstanceUUIDRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// SignVMAgentCSR issues only the requested VM's public key. Unlike issuing a
+// certificate with a server-generated key, this keeps every VM private key on
+// that VM and makes renewal possible without a long-lived guest Vault secret.
+func (c *Client) SignVMAgentCSR(ctx context.Context, instanceUUID, csrPEM string) ([]byte, error) {
+	if !novaInstanceUUIDRE.MatchString(instanceUUID) {
+		return nil, fmt.Errorf("invalid Nova instance UUID %q", instanceUUID)
+	}
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+		return nil, fmt.Errorf("invalid VM certificate signing request")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse VM certificate signing request: %w", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("verify VM certificate signing request: %w", err)
+	}
+	commonName := instanceUUID + ".vm.sre.local"
+	uriSAN := "spiffe://vctl.local/vm/" + instanceUUID
+	issued, err := c.writePath(ctx, "pki_sre_int/sign/vctl-vm-agent", map[string]interface{}{
+		"csr": csrPEM, "common_name": commonName, "uri_sans": uriSAN, "ttl": "720h", "format": "pem",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sign VM node-access certificate: %w", err)
+	}
+	certificate, _ := issued.Data["certificate"].(string)
+	if certificate == "" {
+		return nil, fmt.Errorf("PKI returned an incomplete VM node-access certificate")
+	}
+	chain, _ := issued.Data["ca_chain"].([]interface{})
+	certPEM := []byte(certificate + "\n")
+	for _, item := range chain {
+		if ca, ok := item.(string); ok {
+			certPEM = append(certPEM, []byte(ca+"\n")...)
+		}
+	}
+	leafBlock, _ := pem.Decode(certPEM)
+	if leafBlock == nil || leafBlock.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("PKI returned an invalid VM certificate")
+	}
+	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
+	if err != nil || leaf.Subject.CommonName != commonName || len(leaf.URIs) != 1 || leaf.URIs[0].String() != uriSAN {
+		return nil, fmt.Errorf("PKI returned a certificate with the wrong VM identity")
+	}
+	if !bytes.Equal(csr.RawSubjectPublicKeyInfo, leaf.RawSubjectPublicKeyInfo) {
+		return nil, fmt.Errorf("PKI returned a certificate for a different public key")
+	}
+	return certPEM, nil
+}
+
+// NodeAccessIdentity contains one node's scoped renewal credential and the
+// first short-lived mTLS identity. The private key is returned only to the
+// enrolling operator process and is never stored in Vault.
+type NodeAccessIdentity struct {
+	RoleID, SecretID string
+	CertificatePEM   []byte
+	PrivateKeyPEM    []byte
+}
+
+// EnsureNodeAccessIdentity creates the isolated PKI role and AppRole needed by
+// one host, then issues its initial certificate. Calling it again is safe; a
+// fresh secret-id and certificate are generated each time.
+func (c *Client) EnsureNodeAccessIdentity(ctx context.Context, hostname, approleMount string) (NodeAccessIdentity, error) {
+	if !nodeAccessHostRE.MatchString(hostname) {
+		return NodeAccessIdentity{}, fmt.Errorf("invalid node-access inventory hostname %q", hostname)
+	}
+	if approleMount == "" {
+		return NodeAccessIdentity{}, fmt.Errorf("AppRole mount is required")
+	}
+	role := "vctl-node-access-" + hostname
+	policy := fmt.Sprintf("path \"pki_sre_int/issue/%s\" { capabilities = [\"update\"] }", role)
+	if err := c.api.Sys().PutPolicyWithContext(ctx, role, policy); err != nil {
+		return NodeAccessIdentity{}, fmt.Errorf("write node-access policy: %w", err)
+	}
+	_, err := c.api.Logical().WriteWithContext(ctx, "pki_sre_int/roles/"+role, map[string]interface{}{
+		"allowed_domains": []string{hostname + ".sre.local"}, "allowed_uri_sans": []string{"spiffe://vctl.local/node/" + hostname},
+		"allow_bare_domains": true, "allow_subdomains": false, "allow_glob_domains": false,
+		"allow_any_name": false, "allow_ip_sans": false, "allow_localhost": false,
+		"allow_wildcard_certificates": false, "client_flag": true, "server_flag": false,
+		"key_type": "ec", "key_bits": 256, "ext_key_usage": []string{"ClientAuth"}, "ttl": "720h", "max_ttl": "720h",
+	})
+	if err != nil {
+		return NodeAccessIdentity{}, fmt.Errorf("write node-access PKI role: %w", err)
+	}
+	_, err = c.api.Logical().WriteWithContext(ctx, "auth/"+approleMount+"/role/"+role, map[string]interface{}{
+		"token_policies": []string{role}, "token_ttl": 3600, "token_max_ttl": 3600,
+		"token_type": "service", "secret_id_ttl": 0, "secret_id_num_uses": 0,
+	})
+	if err != nil {
+		return NodeAccessIdentity{}, fmt.Errorf("write node-access AppRole: %w", err)
+	}
+	roleID, err := c.AppRoleRoleID(ctx, approleMount, role)
+	if err != nil {
+		return NodeAccessIdentity{}, fmt.Errorf("read node-access AppRole id: %w", err)
+	}
+	secretID, _, err := c.GenerateSecretIDWithAccessor(ctx, approleMount, role)
+	if err != nil {
+		return NodeAccessIdentity{}, fmt.Errorf("generate node-access AppRole secret: %w", err)
+	}
+	issued, err := c.writePath(ctx, "pki_sre_int/issue/"+role, map[string]interface{}{
+		"common_name": hostname + ".sre.local", "uri_sans": "spiffe://vctl.local/node/" + hostname, "ttl": "720h", "format": "pem",
+	})
+	if err != nil {
+		return NodeAccessIdentity{}, fmt.Errorf("issue node-access certificate: %w", err)
+	}
+	certificate, _ := issued.Data["certificate"].(string)
+	privateKey, _ := issued.Data["private_key"].(string)
+	if certificate == "" || privateKey == "" {
+		return NodeAccessIdentity{}, fmt.Errorf("PKI returned an incomplete node-access certificate")
+	}
+	chain, _ := issued.Data["ca_chain"].([]interface{})
+	var certPEM []byte
+	certPEM = append(certPEM, []byte(certificate+"\n")...)
+	for _, item := range chain {
+		if ca, ok := item.(string); ok {
+			certPEM = append(certPEM, []byte(ca+"\n")...)
+		}
+	}
+	if _, err := tls.X509KeyPair(certPEM, []byte(privateKey)); err != nil {
+		return NodeAccessIdentity{}, fmt.Errorf("validate node-access certificate: %w", err)
+	}
+	return NodeAccessIdentity{RoleID: roleID, SecretID: secretID, CertificatePEM: certPEM, PrivateKeyPEM: []byte(privateKey)}, nil
+}
 
 // readPath/writePath wrap Logical().Read/Write with uniform handling: a
 // path-prefixed transport error and an "empty response" guard, so callers skip
