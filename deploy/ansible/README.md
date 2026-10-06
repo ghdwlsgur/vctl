@@ -17,8 +17,26 @@ The access gateway is deployed at `https://node-access.sre.local`. This play
 stages a `cloud-init` DynamicJSON target in the Kolla Nova config for each farm.
 Nova authenticates to that farm's Keystone as its existing `nova` service user;
 the play reads `nova_keystone_password` from the farm's `/etc/kolla/passwords.yml`
-and writes the rendered overrides as root-only files. Secret-bearing tasks hide
-their output and diffs.
+and sets its keys in `nova/nova-api.conf` and `nova/nova-metadata.conf` under
+`node_custom_config`. Secret-bearing tasks hide their output and diffs, so
+`--check --diff` reports which files would change but not the lines.
+
+- **Ownership.** Kolla's `merge_configs` runs as the `kolla` user and skips an
+  override it cannot read while still ending `failed=0`. The files carry the
+  Nova service password, so they are `kolla:kolla 0600` (override with
+  `vendordata_kolla_user` / `vendordata_kolla_group`), never `root:root 0600`.
+- **Existing settings.** The play edits one key at a time with
+  `community.general.ini_file`; everything else in those files is left alone.
+  It stops if `vendordata_providers` is set to anything other than
+  `StaticJSON` (Nova's default) or the play's own value, or if
+  `vendordata_dynamic_targets` points elsewhere. Override only after checking
+  what depends on it: `-e vendordata_force=true`.
+- **Rollback.** `-e state=absent` removes only the play's `[api]` keys and the
+  `[vendordata_dynamic_auth]` section, and deletes an override file only when
+  nothing else is left in it.
+
+Install the collection on the controller first:
+`ansible-galaxy collection install -r requirements.yml`.
 
 The inventory variable `openstack_deployment_id` must exactly match the Keystone
 ID shown by `vctl openstack farm list` (for example, `172.16.0.245:5000`). It is

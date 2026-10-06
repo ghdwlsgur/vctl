@@ -2,6 +2,22 @@
 # Stage Nova DynamicJSON configuration for VM-scoped vctl agent enrollment.
 # This updates Kolla's source-of-truth config only. Review the generated Nova
 # config and run kolla-ansible genconfig/reconfigure explicitly per farm.
+#
+# Two things this play is careful about, both learned on these farms:
+#
+#   Ownership. kolla's merge_configs runs as the kolla user. An override it
+#   cannot read is skipped and the run still ends failed=0, so the setting
+#   silently never reaches Nova. These overrides carry the Nova service
+#   password, so they cannot be 0644 like vendordata.json either: they are
+#   owned by the kolla user and 0600.
+#
+#   Other people's settings. nova/nova-api.conf and nova/nova-metadata.conf are
+#   shared override files; a farm may already carry unrelated Nova settings in
+#   them. The play edits only its own keys, refuses to replace a vendordata
+#   value someone else set, and rollback removes only what it added.
+#
+# Requires community.general (ini_file) on the controller:
+#   ansible-galaxy collection install -r requirements.yml
 
 - name: Stage VM agent enrollment in Nova metadata services
   hosts: openstack_deploy
@@ -13,9 +29,20 @@
     vendordata_gateway_url: https://node-access.sre.local
     vendordata_kolla_passwords_file: /etc/kolla/passwords.yml
     vendordata_node_custom_config: /etc/kolla/config
+    vendordata_kolla_user: kolla
+    vendordata_kolla_group: kolla
     vendordata_nova_user: nova
     vendordata_nova_project: service
     vendordata_domain: Default
+    # Replace a vendordata_providers / vendordata_dynamic_targets value that
+    # this play did not write. Only after reading what is there and why.
+    vendordata_force: false
+    vendordata_override_files:
+      - "{{ vendordata_node_custom_config }}/nova/nova-api.conf"
+      - "{{ vendordata_node_custom_config }}/nova/nova-metadata.conf"
+    vendordata_providers: StaticJSON,DynamicJSON
+    vendordata_target: >-
+      cloud-init@{{ vendordata_gateway_url | regex_replace('/$', '') }}/v1/vendordata?farm={{ openstack_deployment_id | urlencode }}
   pre_tasks:
     - name: Validate the deployment identity and endpoint
       ansible.builtin.assert:
@@ -29,8 +56,16 @@
           `vctl openstack farm list` (never the Horizon URL), and use an HTTPS
           gateway origin.
 
+    - name: Require the kolla user that merge_configs runs as
+      when: state == 'present'
+      ansible.builtin.command:
+        argv: [id, -u, "{{ vendordata_kolla_user }}"]
+      changed_when: false
+      check_mode: false
+
     - name: Verify the gateway is reachable with a valid TLS certificate
       when: state == 'present'
+      tags: [preflight]
       ansible.builtin.uri:
         url: "{{ vendordata_gateway_url | regex_replace('/$', '') }}/healthz"
         method: GET
@@ -38,9 +73,11 @@
         validate_certs: true
         return_content: false
       changed_when: false
+      check_mode: false
 
     - name: Read Kolla service credentials without displaying them
       when: state == 'present'
+      tags: [preflight]
       ansible.builtin.slurp:
         src: "{{ vendordata_kolla_passwords_file }}"
       register: vendordata_kolla_passwords_raw
@@ -48,6 +85,7 @@
 
     - name: Extract the Nova service password
       when: state == 'present'
+      tags: [preflight]
       ansible.builtin.set_fact:
         vendordata_nova_password: >-
           {{ (vendordata_kolla_passwords_raw.content | b64decode | from_yaml)
@@ -56,6 +94,7 @@
 
     - name: Require a Nova service password
       when: state == 'present'
+      tags: [preflight]
       ansible.builtin.assert:
         that:
           - vendordata_nova_password | length >= 1
@@ -72,6 +111,7 @@
 
     - name: Verify Nova can obtain a scoped Keystone service token
       when: state == 'present'
+      tags: [preflight]
       ansible.builtin.uri:
         url: "{{ vendordata_keystone_auth_url | regex_replace('/$', '') }}/auth/tokens"
         method: POST
@@ -95,10 +135,12 @@
         validate_certs: true
         return_content: false
       register: vendordata_nova_auth
+      check_mode: false
       no_log: true
 
     - name: Validate the issued Nova service token against gateway policy
       when: state == 'present'
+      tags: [preflight]
       ansible.builtin.uri:
         url: "{{ vendordata_keystone_auth_url | regex_replace('/$', '') }}/auth/tokens"
         method: GET
@@ -109,10 +151,12 @@
         validate_certs: true
         return_content: true
       register: vendordata_nova_token_validation
+      check_mode: false
       no_log: true
 
     - name: Require the service token identity the gateway accepts
       when: state == 'present'
+      tags: [preflight]
       ansible.builtin.assert:
         that:
           - vendordata_nova_token_validation.json.token.user.name == vendordata_nova_user
@@ -126,50 +170,169 @@
           gateway's Nova-token verifier.
       no_log: true
 
+    - name: Look for existing Nova override files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ vendordata_override_files }}"
+      register: vendordata_existing_stat
+
+    - name: Read existing Nova override files
+      # Not no_log on purpose: a password only appears here if the file already
+      # holds one, and the content is only compared, never printed.
+      when: item.stat.exists
+      ansible.builtin.slurp:
+        src: "{{ item.item }}"
+      loop: "{{ vendordata_existing_stat.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      register: vendordata_existing_raw
+      no_log: true
+
+    - name: Refuse to replace vendordata settings this play did not write
+      # The option names are unique to Nova's [api] section, so a line match is
+      # enough to find them. StaticJSON alone is Nova's default and what the
+      # existing static vendordata play relies on; DynamicJSON is added to it.
+      when:
+        - state == 'present'
+        - item.content is defined
+        - not (vendordata_force | bool)
+      vars:
+        vendordata_text: "{{ item.content | b64decode }}"
+        vendordata_found_providers: >-
+          {{ vendordata_text | regex_findall('(?m)^[ \t]*vendordata_providers[ \t]*=[ \t]*(.*?)[ \t]*$') }}
+        vendordata_found_targets: >-
+          {{ vendordata_text | regex_findall('(?m)^[ \t]*vendordata_dynamic_targets[ \t]*=[ \t]*(.*?)[ \t]*$') }}
+      ansible.builtin.assert:
+        that:
+          - >-
+            vendordata_found_providers
+            | reject('in', ['StaticJSON', vendordata_providers]) | list | length == 0
+          - >-
+            vendordata_found_targets
+            | reject('equalto', vendordata_target) | list | length == 0
+        fail_msg: >-
+          {{ item.item.item }} already sets vendordata_providers
+          {{ vendordata_found_providers }} or vendordata_dynamic_targets
+          {{ vendordata_found_targets }} to something this play did not write.
+          Find out what relies on it before re-running with -e vendordata_force=true.
+      loop: "{{ vendordata_existing_raw.results }}"
+      loop_control:
+        label: "{{ item.item.item }}"
+
   tasks:
     - name: Ensure the Kolla Nova config override directory exists
+      # No owner or mode: on most farms it already exists for vendordata.json,
+      # and re-owning a shared directory is not this play's call.
       when: state == 'present'
-      ansible.builtin.file:
+      ansible.builtin.file:  # noqa: risky-file-permissions
         path: "{{ vendordata_node_custom_config }}/nova"
         state: directory
-        owner: root
-        group: root
-        mode: "0750"
 
-    - name: Configure nova-api DynamicJSON enrollment
+    - name: Set the DynamicJSON options in each Nova override
+      # One key at a time so everything else in the file stays as it was.
+      # Owner and mode also apply to a file that already existed: a root-only
+      # file there was already being skipped by merge_configs.
       when: state == 'present'
-      ansible.builtin.template:
-        src: templates/vm-agent-vendordata-nova.conf.j2
-        dest: "{{ vendordata_node_custom_config }}/nova/nova-api.conf"
-        owner: root
-        group: root
+      community.general.ini_file:
+        path: "{{ item.0 }}"
+        section: "{{ item.1.section }}"
+        option: "{{ item.1.option }}"
+        value: "{{ item.1.value }}"
+        create: true
+        owner: "{{ vendordata_kolla_user }}"
+        group: "{{ vendordata_kolla_group }}"
         mode: "0600"
+      loop: "{{ vendordata_override_files | product(vendordata_settings) | list }}"
+      loop_control:
+        label: "{{ item.0 | basename }} [{{ item.1.section }}] {{ item.1.option }}"
       vars:
-        vendordata_nova_service_password: "{{ vendordata_nova_password }}"
+        vendordata_settings: >-
+          {{ [
+            {'section': 'api', 'option': 'vendordata_providers', 'value': vendordata_providers},
+            {'section': 'api', 'option': 'vendordata_dynamic_targets', 'value': vendordata_target},
+            {'section': 'api', 'option': 'vendordata_dynamic_failure_fatal', 'value': 'false'},
+            {'section': 'vendordata_dynamic_auth', 'option': 'auth_type', 'value': 'password'},
+            {'section': 'vendordata_dynamic_auth', 'option': 'auth_url', 'value': vendordata_keystone_auth_url},
+            {'section': 'vendordata_dynamic_auth', 'option': 'username', 'value': vendordata_nova_user},
+            {'section': 'vendordata_dynamic_auth', 'option': 'password', 'value': vendordata_nova_password},
+            {'section': 'vendordata_dynamic_auth', 'option': 'project_name', 'value': vendordata_nova_project},
+            {'section': 'vendordata_dynamic_auth', 'option': 'project_domain_name',
+             'value': vendordata_nova_project_domain | default(vendordata_domain)},
+            {'section': 'vendordata_dynamic_auth', 'option': 'user_domain_name',
+             'value': vendordata_nova_user_domain | default(vendordata_domain)},
+          ] + ([
+            {'section': 'api', 'option': 'vendordata_dynamic_ssl_certfile',
+             'value': vendordata_dynamic_ssl_certfile},
+          ] if (vendordata_dynamic_ssl_certfile | default('') | length > 0) else []) }}
+      register: vendordata_staged
       no_log: true
-      diff: false
 
-    - name: Configure nova-metadata DynamicJSON enrollment
+    - name: Report which overrides changed
       when: state == 'present'
-      ansible.builtin.template:
-        src: templates/vm-agent-vendordata-nova.conf.j2
-        dest: "{{ vendordata_node_custom_config }}/nova/nova-metadata.conf"
-        owner: root
-        group: root
-        mode: "0600"
-      vars:
-        vendordata_nova_service_password: "{{ vendordata_nova_password }}"
-      no_log: true
-      diff: false
+      ansible.builtin.debug:
+        msg: >-
+          Changed: {{ vendordata_staged.results | selectattr('changed')
+                      | map(attribute='item') | map('first') | unique | list }}
 
-    - name: Remove the VM agent Nova overrides (rollback staging)
-      when: state == 'absent'
-      ansible.builtin.file:
-        path: "{{ item }}"
+    # --- rollback ---
+    - name: Remove the DynamicJSON options (rollback)
+      # The conflict check guarantees a farm's own providers value was at most
+      # StaticJSON, Nova's default, so dropping the key restores it.
+      when:
+        - state == 'absent'
+        - item.0.stat.exists
+      community.general.ini_file:
+        path: "{{ item.0.item }}"
+        section: api
+        option: "{{ item.1 }}"
         state: absent
-      loop:
-        - "{{ vendordata_node_custom_config }}/nova/nova-api.conf"
-        - "{{ vendordata_node_custom_config }}/nova/nova-metadata.conf"
+        create: false
+      loop: >-
+        {{ vendordata_existing_stat.results | product([
+             'vendordata_providers', 'vendordata_dynamic_targets',
+             'vendordata_dynamic_failure_fatal', 'vendordata_dynamic_ssl_certfile']) | list }}
+      loop_control:
+        label: "{{ item.0.item | basename }} [api] {{ item.1 }}"
+
+    - name: Remove the DynamicJSON auth section (rollback)
+      when:
+        - state == 'absent'
+        - item.stat.exists
+      community.general.ini_file:
+        path: "{{ item.item }}"
+        section: vendordata_dynamic_auth
+        state: absent
+        create: false
+      loop: "{{ vendordata_existing_stat.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Read the overrides after rollback
+      when:
+        - state == 'absent'
+        - item.stat.exists
+      ansible.builtin.slurp:
+        src: "{{ item.item }}"
+      loop: "{{ vendordata_existing_stat.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      register: vendordata_after_rollback
+      no_log: true
+
+    - name: Delete overrides that held only this play's settings (rollback)
+      # An [api] header with nothing under it is all that can remain.
+      when:
+        - state == 'absent'
+        - item.content is defined
+        - >-
+          (item.content | b64decode | regex_replace('(?m)^[ \t]*(#.*|;.*|\[api\])?[ \t]*$', '')
+           | trim | length) == 0
+      ansible.builtin.file:
+        path: "{{ item.item.item }}"
+        state: absent
+      loop: "{{ vendordata_after_rollback.results }}"
+      loop_control:
+        label: "{{ item.item.item }}"
 
   post_tasks:
     - name: Report the next Kolla steps
