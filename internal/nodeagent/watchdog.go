@@ -16,6 +16,10 @@ import (
 // reason. Pinging only after a successful report would restart the agent every
 // time Vault or Postgres blinked, which is the opposite of that.
 //
+// One exception, by duration rather than by count: once every report has failed
+// for withholdWatchdogAfter, the ping stops and systemd restarts the agent. See
+// failureStreak.
+//
 // What it catches is the loop not going round at all. Measured on one host: a
 // container runtime leaked 16,383 mounts, /proc/self/mountinfo reached 2.8MB,
 // and something in the process re-read it forever. The agent stayed
@@ -111,4 +115,49 @@ func warnTooSlow(w *watchdog, interval time.Duration, warnf func(string, ...any)
 			interval, w.Interval(),
 			fmt.Sprintf("Raise WatchdogSec above %s or lower --interval.", interval))
 	}
+}
+
+// withholdWatchdogAfter is how long reports may fail in a row before the agent
+// stops telling systemd it is fine.
+//
+// The loop going round is not the same as the agent working. On 2026-10-15 two
+// agents had grown past their cgroup MemoryHigh after 43 days; with no swap the
+// kernel could not reclaim the heap and throttled the process instead, so every
+// report ran out its fifteen seconds. The loop still went round, still pinged,
+// and both hosts read "stale" for two days while systemd saw nothing wrong. A
+// fresh process reported in 0.3s.
+//
+// An hour is twelve heartbeats: long past a Vault or Postgres blink, and short
+// enough that a wedged agent is restarted the same morning. During a real
+// outage the cost is one restart per hour and twenty minutes, which is cheap —
+// the agent holds nothing a restart loses.
+const withholdWatchdogAfter = time.Hour
+
+// failureStreak decides whether a report's outcome still earns a ping.
+//
+// It measures time since the first failure rather than counting failures, so
+// changing --interval does not change how long the agent waits.
+type failureStreak struct {
+	since    time.Time // first failure of the current streak; zero while healthy
+	withheld bool
+}
+
+// observe records one report and says whether to ping, and whether this is the
+// report that stopped the pings — the caller says so once.
+func (s *failureStreak) observe(err error, now time.Time) (ping, justWithheld bool) {
+	if err == nil {
+		*s = failureStreak{}
+		return true, false
+	}
+	if s.since.IsZero() {
+		s.since = now
+	}
+	if now.Sub(s.since) < withholdWatchdogAfter {
+		return true, false
+	}
+	if s.withheld {
+		return false, false
+	}
+	s.withheld = true
+	return false, true
 }

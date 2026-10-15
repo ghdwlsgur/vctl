@@ -1,10 +1,14 @@
 package nodeagent
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -149,5 +153,109 @@ func TestWatchdogSurvivesADeadSocketAndWarnsOnce(t *testing.T) {
 	}
 	if n > 1 {
 		t.Errorf("warned %d times, want at most 1", n)
+	}
+}
+
+// A failed report is still the loop going round, until the failures have gone
+// on long enough that a restart is the cheaper explanation to test. A Vault or
+// Postgres blink must not restart the agent; a process that has failed every
+// report for an hour is worth starting fresh.
+func TestFailureStreakWithholdsThePingOnlyAfterAnHourOfFailures(t *testing.T) {
+	var s failureStreak
+	t0 := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	failed := errors.New("postgres ping: context deadline exceeded")
+
+	for _, at := range []time.Duration{0, 5 * time.Minute, 59 * time.Minute} {
+		if ping, _ := s.observe(failed, t0.Add(at)); !ping {
+			t.Fatalf("failing for %s withheld the ping; a short outage must not restart the agent", at)
+		}
+	}
+	ping, first := s.observe(failed, t0.Add(time.Hour))
+	if ping || !first {
+		t.Fatalf("after an hour of failures: ping=%v first=%v, want the ping withheld and the transition reported", ping, first)
+	}
+	if ping, first := s.observe(failed, t0.Add(65*time.Minute)); ping || first {
+		t.Errorf("still failing: ping=%v first=%v, want it withheld and reported only once", ping, first)
+	}
+}
+
+// One success ends the streak, so the next outage gets its full hour again.
+func TestFailureStreakResetsOnSuccess(t *testing.T) {
+	var s failureStreak
+	t0 := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	failed := errors.New("write failed")
+
+	s.observe(failed, t0)
+	s.observe(failed, t0.Add(time.Hour)) // withheld
+	if ping, _ := s.observe(nil, t0.Add(61*time.Minute)); !ping {
+		t.Fatal("a successful report withheld the ping")
+	}
+	if ping, _ := s.observe(failed, t0.Add(62*time.Minute)); !ping {
+		t.Error("the first failure after a success was treated as part of the old streak")
+	}
+}
+
+// The loop itself stops answering systemd once reports have failed for an
+// hour. This is the 2026-10-15 failure: two agents stuck over their cgroup
+// MemoryHigh failed every report for two days, still went round, still pinged,
+// and systemd never restarted them.
+func TestTheHeartbeatStopsPingingAfterAnHourOfFailedReports(t *testing.T) {
+	srv := listen(t, "1200000000", "") // 20m
+
+	t0 := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	ticks := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var warnings []string
+	a := &Agent{
+		Hostname: "host-01", Version: "test", Interval: time.Millisecond,
+		OpenSink: func(context.Context) (Sink, error) { return &fakeStatusSink{err: errors.New("write failed")}, nil },
+		Warnf: func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			warnings = append(warnings, fmt.Sprintf(format, args...))
+		},
+		Infof: func(string, ...any) {},
+		// Twenty minutes a report: the first three fall inside the hour.
+		now: func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			at := t0.Add(time.Duration(ticks) * 20 * time.Minute)
+			ticks++
+			if ticks > 6 {
+				cancel()
+			}
+			return at
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- a.heartbeatLoop(ctx, &conn{open: a.OpenSink, log: a}) }()
+	if err := <-done; err != nil {
+		t.Fatalf("heartbeat loop: %v", err)
+	}
+
+	pings := 0
+	buf := make([]byte, 64)
+	for {
+		srv.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		if _, err := srv.Read(buf); err != nil {
+			break
+		}
+		pings++
+	}
+	if pings != 3 {
+		t.Errorf("systemd got %d pings, want 3 (reports at 0, 20 and 40 minutes) and none after the hour", pings)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	withheld := 0
+	for _, w := range warnings {
+		if strings.Contains(w, "withholding the systemd watchdog") {
+			withheld++
+		}
+	}
+	if withheld != 1 {
+		t.Errorf("the withheld ping was announced %d times, want once: %q", withheld, warnings)
 	}
 }

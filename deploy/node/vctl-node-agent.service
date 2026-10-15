@@ -27,6 +27,24 @@ Environment=HOME=/var/lib/vctl
 # here — and builds a thread pool for a share of CPU it will never get. Two is
 # already generous against CPUQuota=2%.
 Environment=GOMAXPROCS=2
+# Tell the Go runtime about MemoryHigh below, which it cannot see on its own.
+#
+# Without it the heap grows on the runtime's own schedule (GOGC=100 doubles the
+# live heap before collecting) with no idea a cgroup ceiling exists. On
+# 2026-10-15 two agents running for 43 days had reached 37-40MiB of anonymous
+# memory against MemoryHigh=32M. There is no swap here, so the kernel cannot
+# reclaim anon pages and throttles the process instead — measured: a thread
+# parked in mem_cgroup_handle_over_high, ~3 million memory.high events, every
+# report running out its fifteen seconds and logged as a Postgres timeout. It
+# never reaches MemoryMax, so nothing is OOM-killed and the unit looks healthy.
+# A fresh agent on the same host sat at 10MiB.
+#
+# 24MiB leaves room under MemoryHigh for what the cgroup also charges outside
+# the Go heap — kernel slab and stacks were 6-7MiB on those hosts. If the live
+# heap ever genuinely exceeds this, the GC runs harder against CPUQuota and the
+# reports slow down; the heartbeat then withholds its watchdog ping after an
+# hour of failures and systemd restarts the agent (see watchdog.go).
+Environment=GOMEMLIMIT=24MiB
 ExecStart=/usr/local/bin/vctl-agent node-agent --interval 5m
 Restart=always
 RestartSec=30
@@ -48,6 +66,10 @@ RestartSec=30
 # handshake does not restart a working agent. Raising --interval without raising
 # this turns the agent into a restart loop; it warns at startup when the two
 # cross, because they live in different files.
+#
+# The loop also stops pinging once every report has failed for an hour, so a
+# process that keeps going round without ever succeeding is restarted too
+# (withholdWatchdogAfter in watchdog.go).
 #
 # NotifyAccess is required: it defaults to none for a non-notify service, and
 # without it systemd discards the ping and kills the agent every 20 minutes.

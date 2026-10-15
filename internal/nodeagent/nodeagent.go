@@ -93,6 +93,10 @@ type Agent struct {
 	// attempt bounds one trip to the database; zero means statusAttempt. Set in
 	// tests, which cannot wait fifteen seconds to prove a hang is bounded.
 	attempt time.Duration
+
+	// now is the clock the failure streak reads; nil means time.Now. Set in
+	// tests, which cannot wait an hour to prove the ping is withheld.
+	now func() time.Time
 }
 
 const defaultInterval = 5 * time.Minute
@@ -171,11 +175,26 @@ func (a *Agent) heartbeatLoop(ctx context.Context, c *conn) error {
 	defer wd.close()
 	warnTooSlow(wd, interval, a.warnf)
 
-	if err := report(); err != nil {
-		a.warnf("status report failed: %v", err)
+	var streak failureStreak
+	beat := func() {
+		err := report()
+		if err != nil {
+			a.warnf("status report failed: %v", err)
+		}
+		// After the report, success or not. A failed report is the loop
+		// working; an absent ping is the loop not running — or, after an hour
+		// of nothing but failures, a process worth starting fresh.
+		ping, justWithheld := streak.observe(err, a.clock())
+		if justWithheld && wd != nil {
+			a.warnf("every status report has failed since %s; withholding the systemd watchdog ping so this agent is restarted",
+				streak.since.Format(time.RFC3339))
+		}
+		if ping {
+			wd.ping(a.warnf)
+		}
 	}
-	wd.ping(a.warnf)
 
+	beat()
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -183,14 +202,16 @@ func (a *Agent) heartbeatLoop(ctx context.Context, c *conn) error {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			if err := report(); err != nil {
-				a.warnf("status report failed: %v", err)
-			}
-			// After the report, success or not. A failed report is the loop
-			// working; an absent ping is the loop not running.
-			wd.ping(a.warnf)
+			beat()
 		}
 	}
+}
+
+func (a *Agent) clock() time.Time {
+	if a.now != nil {
+		return a.now()
+	}
+	return time.Now()
 }
 
 // capabilityLoop runs the expensive half on its own, slower clock.
