@@ -11,7 +11,6 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 
 	"golang.org/x/net/websocket"
 	"golang.org/x/term"
@@ -100,7 +99,9 @@ func ConnectShell(ctx context.Context, gateway, token, target string, stdin, std
 		}
 	}()
 	winsize := make(chan os.Signal, 1)
-	signal.Notify(winsize, syscall.SIGWINCH)
+	if sigs := resizeSignals(); len(sigs) > 0 {
+		signal.Notify(winsize, sigs...)
+	}
 	defer func() { signal.Stop(winsize); close(winsize) }()
 	go func() {
 		for range winsize {
