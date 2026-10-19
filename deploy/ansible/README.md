@@ -10,6 +10,32 @@ truth — no duplicated copies here) plus the SSH CA trust.
 | `site.yml` | Install node-agent (runtime status) by default. The collector + watch-sessions audit stack, `vctl-host` AppRole, and Tetragon are explicit opt-ins via `vctl_host_audit_stack=true`. |
 | `openstack-vendordata.yml` | Install the same CA trust into an OpenStack farm's Nova vendordata, so a **new VM** trusts vctl certificates from first boot. See below. |
 | `openstack-vm-agent-vendordata.yml` | Stage per-farm Nova DynamicJSON settings so new Linux VMs fetch a short-lived, VM UUID-bound enrollment grant from the access gateway. |
+| `kolla-nova-mount-propagation.yml` | Stop kolla's nova mounts from doubling on every nova container start (docker compute hosts), and optionally collapse layers that already stacked. See below. |
+
+## Kolla nova mount propagation
+
+On docker compute hosts, kolla starts nova_compute, nova_libvirt and nova_ssh
+with the `nova_compute` volume at `/var/lib/nova` and a
+`/var/lib/nova/mnt:/var/lib/nova/mnt:shared` bind inside it. Because the
+volume sits in `/`'s shared peer group, that bind propagates back to the host
+and every later container start copies it again: `/var/lib/nova/mnt` doubles
+per start until a reboot, and any NFS share os-brick mounts there is copied
+onto every layer. On 2026-10-19 the worst host had 1023 layers and 4217 mounts,
+and node-agent could no longer start. The playbook header has the mechanism.
+
+The playbook binds the `nova_compute` volume onto itself as a private mount
+(a systemd mount unit ordered before `docker.service`, found under docker's
+data root, which is not always `/var/lib/docker`). Run it on new compute hosts
+before the kolla deploy. Hosts already stacked also need the layers collapsed,
+which is opt-in and leaves running VMs alone (`kolla/nova-mnt-collapse.sh`):
+
+```bash
+ansible-playbook kolla-nova-mount-propagation.yml -l <host> --check --diff
+ansible-playbook kolla-nova-mount-propagation.yml -l <host> -e nova_mnt_collapse=true
+```
+
+Hosts without a docker `nova_compute` volume (podman, no nova) are skipped. The
+unit is started, never restarted, so re-running is safe on live hosts.
 
 ## Nova DynamicJSON VM enrollment
 
