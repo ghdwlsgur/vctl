@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -86,6 +87,10 @@ func (g *Gateway) serveVMAgentVendordata(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := g.NovaAuth.AuthenticateNova(r.Context(), farm, token); err != nil {
+		// The caller gets the generic answer; the reason stays in the log.
+		// Without it, the first DynamicJSON rollout could only see a 401 and
+		// had no way to tell an unreachable Keystone from a rejected token.
+		log.Printf("vendordata: farm %s: Nova service token validation failed: %v", farm, err)
 		writeError(w, http.StatusUnauthorized, fmt.Errorf("Nova service token validation failed"))
 		return
 	}
