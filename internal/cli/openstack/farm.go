@@ -2,7 +2,9 @@ package openstack
 
 import (
 	"context"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/app"
 	"github.com/ghdwlsgur/vctl/internal/cli/internal/cmdkit"
+	"github.com/ghdwlsgur/vctl/internal/nodeaccess"
 	"github.com/ghdwlsgur/vctl/internal/openstack/fleet"
 	"github.com/ghdwlsgur/vctl/internal/store"
 	"github.com/ghdwlsgur/vctl/internal/timing"
@@ -39,10 +42,79 @@ func openstackFarmCmd(env cmdkit.Env) *cobra.Command {
 	// apply.
 	cmd.AddCommand(cmdkit.Gate(openstackFarmNameCmd(env), "openstack-farm"))
 	cmd.AddCommand(cmdkit.Gate(openstackFarmHorizonCmd(env), "openstack-farm"))
+	cmd.AddCommand(cmdkit.Gate(openstackFarmKeystoneCACmd(env), "openstack-farm"))
 	cmd.AddCommand(openstackFarmDoctorCmd(env))
 	cmd.AddCommand(openstackFarmListCmd(env))
 	cmd.AddCommand(openstackFarmShowCmd(env))
 	cmd.AddCommand(cmdkit.Gate(openstackFarmStateCmd(env), "openstack-farm"))
+	return cmd
+}
+
+// openstackFarmKeystoneCACmd registers the CA a farm's Keystone certificate is
+// issued from. The access gateway sends Nova's service token to the farm's
+// Keystone only over HTTPS it can verify, and kolla-generated CAs are in
+// neither the system pool nor the SRE root.
+func openstackFarmKeystoneCACmd(env cmdkit.Env) *cobra.Command {
+	var clear bool
+	cmd := &cobra.Command{
+		Use:   "keystone-ca <deployment> [ca.pem|-]",
+		Short: "Register the CA that issues a farm's Keystone certificate",
+		Long: `Register the CA that issues a farm's Keystone certificate, so the access
+gateway can verify that Keystone before it sends a Nova service token to it.
+
+Only CA certificates are accepted. On a kolla farm with internal TLS the CA is
+usually /etc/kolla/certificates/ca/root.crt on the deploy host.
+
+  vctl openstack farm keystone-ca 172.16.0.245:5000 root.crt
+  vctl openstack farm keystone-ca 172.16.0.245:5000 --clear`,
+		Args:              cobra.RangeArgs(1, 2),
+		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var caPEM string
+			switch {
+			case clear && len(args) == 1:
+			case !clear && len(args) == 2:
+				var data []byte
+				var err error
+				if args[1] == "-" {
+					data, err = io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+				} else {
+					data, err = os.ReadFile(args[1])
+				}
+				if err != nil {
+					return err
+				}
+				certs, err := nodeaccess.ParseKeystoneCA(data)
+				if err != nil {
+					return err
+				}
+				var b strings.Builder
+				for _, c := range certs {
+					b.Write(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}))
+				}
+				caPEM = b.String()
+			default:
+				return fmt.Errorf("give a CA file to register, or --clear alone to remove it")
+			}
+			return env.WithStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
+				id, err := ResolveFarmID(cmd.Context(), a, st, args[0])
+				if err != nil {
+					return err
+				}
+				if err := st.SetDeploymentKeystoneCA(cmd.Context(), id, caPEM); err != nil {
+					return err
+				}
+				forgetReadings(cmd.Context(), a, st)
+				if clear {
+					ui.Successf(os.Stdout, "%s Keystone CA removed", id)
+				} else {
+					ui.Successf(os.Stdout, "%s Keystone CA registered", id)
+				}
+				return nil
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&clear, "clear", false, "remove the registered CA")
 	return cmd
 }
 

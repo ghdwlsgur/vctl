@@ -3,7 +3,6 @@ package nodeaccess
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -48,9 +47,11 @@ func (a VCTLAdapters) AuthenticateNova(ctx context.Context, deploymentID, servic
 		return fmt.Errorf("list registered OpenStack farms: %w", err)
 	}
 	known := false
+	var farmCA []byte
 	for _, deployment := range deployments {
 		if deployment.ID == deploymentID && deployment.State == "active" {
 			known = true
+			farmCA = []byte(deployment.KeystoneCAPEM)
 			break
 		}
 	}
@@ -63,12 +64,9 @@ func (a VCTLAdapters) AuthenticateNova(ctx context.Context, deploymentID, servic
 	if err != nil || endpoint.Host != deploymentID || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 		return fmt.Errorf("registered farm has an invalid Keystone endpoint")
 	}
-	roots, err := x509.SystemCertPool()
-	if err != nil || roots == nil {
-		roots = x509.NewCertPool()
-	}
-	if !roots.AppendCertsFromPEM(config.SRERootCA) && len(config.SRERootCA) > 0 {
-		return fmt.Errorf("embedded SRE certificate authority is invalid")
+	roots, err := keystoneRoots(farmCA)
+	if err != nil {
+		return err
 	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}, Proxy: nil}
 	client := &http.Client{

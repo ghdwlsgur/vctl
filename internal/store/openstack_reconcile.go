@@ -133,6 +133,10 @@ type Deployment struct {
 	Region      string
 	KeystoneURL string
 	HorizonURL  string
+	// KeystoneCAPEM is the CA the farm's Keystone certificate is issued from,
+	// when it is not one the system or the SRE root already covers. The
+	// access gateway verifies the farm against it before sending a token.
+	KeystoneCAPEM string
 
 	// State is what an operator declared about it, in the same words hosts use.
 	// Observation cannot tell a farm that is broken from one being rebuilt.
@@ -210,6 +214,25 @@ func (s *Store) SetDeploymentHorizonURL(ctx context.Context, id, horizonURL stri
 	return err
 }
 
+// SetDeploymentKeystoneCA stores (or, given "", removes) the PEM of the CA a
+// farm's Keystone is issued from. Validation is the caller's: the CLI and the
+// gateway share nodeaccess.ParseKeystoneCA.
+func (s *Store) SetDeploymentKeystoneCA(ctx context.Context, id, caPEM string) error {
+	if caPEM == "" {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE openstack_deployments SET metadata = metadata - 'keystone_ca_pem', updated_at=now()
+			WHERE id=$1`, id)
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO openstack_deployments (id, metadata, updated_at)
+		VALUES ($1, jsonb_build_object('keystone_ca_pem', $2::text), now())
+		ON CONFLICT (id) DO UPDATE SET
+			metadata = jsonb_set(openstack_deployments.metadata, '{keystone_ca_pem}', to_jsonb($2::text), true),
+			updated_at=now()`, id, caPEM)
+	return err
+}
+
 // Deployments lists the farms the inventory knows by name.
 func (s *Store) Deployments(ctx context.Context) ([]Deployment, error) {
 	return deploymentsOn(ctx, s.pool)
@@ -218,12 +241,13 @@ func (s *Store) Deployments(ctx context.Context) ([]Deployment, error) {
 func deploymentsOn(ctx context.Context, db rowQuerier) ([]Deployment, error) {
 	return queryAndCollect(ctx, db, `
 		SELECT id, display_name, region, keystone_url, coalesce(metadata->>'horizon_url',''),
+		       coalesce(metadata->>'keystone_ca_pem',''),
 		       coalesce(state,'active'), state_note, state_changed_at
 		FROM openstack_deployments ORDER BY id`, nil,
 		func(r pgx.Rows) (Deployment, error) {
 			var d Deployment
 			err := r.Scan(&d.ID, &d.DisplayName, &d.Region, &d.KeystoneURL, &d.HorizonURL,
-				&d.State, &d.StateNote, &d.StateChangedAt)
+				&d.KeystoneCAPEM, &d.State, &d.StateNote, &d.StateChangedAt)
 			return d, err
 		})
 }
