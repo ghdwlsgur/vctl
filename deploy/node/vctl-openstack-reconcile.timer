@@ -1,13 +1,20 @@
-# 여섯 시간마다 팜 소속을 다시 확인한다.
+# 한 시간마다 팜 소속과 VM 목록을 다시 확인한다.
 #
-# 호스트가 배포를 옮기는 일은 배포 주기로 일어나지 probe 주기로 일어나지 않는다.
-# 더 자주 돌면 컨트롤 플레인에 의미 없는 인증 부하만 준다.
+# 처음에는 여섯 시간이었다. 호스트가 배포를 옮기는 일은 드물어서 소속만 보면
+# 그걸로 충분했다. 그런데 access gateway 가 이 결과의 VM 목록을 VM 에이전트
+# 허가 기준으로 쓴다: 관측된 지 3시간이 넘은 VM 은 거부한다(vctl_adapters.go).
+# 6시간 주기에서는 매 주기 뒤쪽 3시간 동안 모든 VM 에이전트가 403 을 받았고
+# (2026-10-19, 게이트웨이 요청의 약 27%), 새 VM 은 최대 6시간 연결되지 않았다.
+# 한 시간이면 지연(아래 15분 포함)이 기준 안에 들어온다. 팜당 Keystone 인증이
+# 하루 4번에서 24번이 되는 정도라 컨트롤 플레인에는 부담이 없다.
+#
+# 주기를 3시간 가까이로 다시 늘리려면 게이트웨이 기준부터 같이 봐야 한다.
 [Unit]
-Description=Run the vctl OpenStack membership reconciler every 6h
+Description=Run the vctl OpenStack membership reconciler every hour
 
 [Timer]
 OnBootSec=10min
-OnUnitActiveSec=6h
+OnUnitActiveSec=1h
 # 팜마다 컨트롤러가 동시에 자기 Keystone 을 두드리는 것을 흩는다. 같은 팜에 여러
 # 대를 설치하는 경우가 아니어도, 여덟 배포가 정각에 함께 깨어날 이유는 없다.
 RandomizedDelaySec=15min

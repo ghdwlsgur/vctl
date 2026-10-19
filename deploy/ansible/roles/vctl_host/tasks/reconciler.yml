@@ -80,6 +80,7 @@
     - vctl-openstack-reconcile.service
     - vctl-openstack-reconcile.timer
   notify: Reload systemd
+  register: vctl_host_reconciler_units
 
 - name: Ensure the reconciler drop-in dir
   ansible.builtin.file:
@@ -108,4 +109,15 @@
     name: vctl-openstack-reconcile.timer
     enabled: true
     state: started
+    daemon_reload: true
+
+# A changed schedule has to reach a timer that is already running. Restarting
+# the timer re-arms it from now; it does not run the reconciler.
+- name: Re-arm the reconciler timer when its schedule changed
+  when:
+    - vctl_host_enable_services | bool
+    - vctl_host_reconciler_units.results | selectattr('item', 'equalto', 'vctl-openstack-reconcile.timer') | selectattr('changed') | list | length > 0
+  ansible.builtin.systemd:
+    name: vctl-openstack-reconcile.timer
+    state: restarted
     daemon_reload: true
