@@ -4,6 +4,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/ghdwlsgur/vctl/internal/config"
 )
@@ -65,4 +67,29 @@ func keystoneRoots(farmCA []byte) (*x509.CertPool, error) {
 		}
 	}
 	return roots, nil
+}
+
+// KeystoneTokensURL is where the gateway validates a farm's Nova service
+// token. By default that is the farm's registered Keystone host:port, but the
+// gateway runs outside every farm and often has no route to the address a farm
+// is registered under — infra-3x5-epoxy is 172.16.0.245:5000 on its internal
+// API network, and the first DynamicJSON call from sre-core timed out there.
+// An operator-registered verify URL, the same Keystone's external endpoint,
+// takes its place. A service token with the admin role is about to be sent, so
+// only an https origin with no credentials, query or fragment is accepted.
+func KeystoneTokensURL(deploymentID, verifyURL string) (string, error) {
+	base := "https://" + deploymentID
+	if verifyURL != "" {
+		base = verifyURL
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return "", fmt.Errorf("keystone endpoint %q must be an https origin without credentials, query or fragment", base)
+	}
+	if verifyURL == "" && u.Host != deploymentID {
+		return "", fmt.Errorf("registered farm has an invalid Keystone endpoint")
+	}
+	path := strings.TrimSuffix(strings.TrimSuffix(u.Path, "/"), "/v3")
+	u.Path = path + "/v3/auth/tokens"
+	return u.String(), nil
 }

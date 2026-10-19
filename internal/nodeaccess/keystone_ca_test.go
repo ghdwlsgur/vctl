@@ -70,3 +70,43 @@ func TestParseKeystoneCAAcceptsOnlyCACertificates(t *testing.T) {
 		}
 	}
 }
+
+// The gateway runs outside every farm, so it often cannot reach the Keystone
+// address a farm is registered under: infra-3x5-epoxy is 172.16.0.245:5000 on
+// its internal API network, which the sre-core cluster has no route to (the
+// first DynamicJSON call timed out there). A registered verify URL — the same
+// Keystone's external endpoint — is used instead.
+func TestKeystoneTokensURLPrefersTheRegisteredEndpoint(t *testing.T) {
+	for _, tc := range []struct{ id, verify, want string }{
+		{"172.16.0.245:5000", "", "https://172.16.0.245:5000/v3/auth/tokens"},
+		{"172.16.0.245:5000", "https://192.168.201.245:5000", "https://192.168.201.245:5000/v3/auth/tokens"},
+		{"172.16.0.245:5000", "https://192.168.201.245:5000/", "https://192.168.201.245:5000/v3/auth/tokens"},
+		{"172.16.0.245:5000", "https://192.168.201.245:5000/v3", "https://192.168.201.245:5000/v3/auth/tokens"},
+		{"172.16.0.245:5000", "https://keystone.example:5000/identity/v3/", "https://keystone.example:5000/identity/v3/auth/tokens"},
+	} {
+		got, err := KeystoneTokensURL(tc.id, tc.verify)
+		if err != nil || got != tc.want {
+			t.Errorf("KeystoneTokensURL(%q, %q) = %q, %v; want %q", tc.id, tc.verify, got, err, tc.want)
+		}
+	}
+}
+
+// A service token with the admin role is about to be sent there, so only an
+// operator-registered HTTPS origin is accepted.
+func TestKeystoneTokensURLRefusesUnsafeEndpoints(t *testing.T) {
+	for _, verify := range []string{
+		"http://192.168.201.245:5000",
+		"https://user:pw@192.168.201.245:5000",
+		"https://192.168.201.245:5000?x=1",
+		"https://192.168.201.245:5000#frag",
+		"https:///v3",
+		"192.168.201.245:5000",
+	} {
+		if got, err := KeystoneTokensURL("172.16.0.245:5000", verify); err == nil {
+			t.Errorf("accepted %q as %q", verify, got)
+		}
+	}
+	if _, err := KeystoneTokensURL("172.16.0.245:5000/evil", ""); err == nil {
+		t.Error("accepted a deployment id that is not host:port")
+	}
+}

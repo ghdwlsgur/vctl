@@ -137,6 +137,10 @@ type Deployment struct {
 	// when it is not one the system or the SRE root already covers. The
 	// access gateway verifies the farm against it before sending a token.
 	KeystoneCAPEM string
+	// KeystoneVerifyURL is where the gateway can actually reach this farm's
+	// Keystone, when the registered host:port is on a network it cannot route
+	// to (an internal API VIP). Usually the same Keystone's external endpoint.
+	KeystoneVerifyURL string
 
 	// State is what an operator declared about it, in the same words hosts use.
 	// Observation cannot tell a farm that is broken from one being rebuilt.
@@ -233,6 +237,25 @@ func (s *Store) SetDeploymentKeystoneCA(ctx context.Context, id, caPEM string) e
 	return err
 }
 
+// SetDeploymentKeystoneVerifyURL stores (or, given "", removes) the Keystone
+// URL the access gateway validates this farm's Nova tokens against. Validation
+// is the caller's: nodeaccess.KeystoneTokensURL.
+func (s *Store) SetDeploymentKeystoneVerifyURL(ctx context.Context, id, verifyURL string) error {
+	if verifyURL == "" {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE openstack_deployments SET metadata = metadata - 'keystone_verify_url', updated_at=now()
+			WHERE id=$1`, id)
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO openstack_deployments (id, metadata, updated_at)
+		VALUES ($1, jsonb_build_object('keystone_verify_url', $2::text), now())
+		ON CONFLICT (id) DO UPDATE SET
+			metadata = jsonb_set(openstack_deployments.metadata, '{keystone_verify_url}', to_jsonb($2::text), true),
+			updated_at=now()`, id, verifyURL)
+	return err
+}
+
 // Deployments lists the farms the inventory knows by name.
 func (s *Store) Deployments(ctx context.Context) ([]Deployment, error) {
 	return deploymentsOn(ctx, s.pool)
@@ -241,13 +264,13 @@ func (s *Store) Deployments(ctx context.Context) ([]Deployment, error) {
 func deploymentsOn(ctx context.Context, db rowQuerier) ([]Deployment, error) {
 	return queryAndCollect(ctx, db, `
 		SELECT id, display_name, region, keystone_url, coalesce(metadata->>'horizon_url',''),
-		       coalesce(metadata->>'keystone_ca_pem',''),
+		       coalesce(metadata->>'keystone_ca_pem',''), coalesce(metadata->>'keystone_verify_url',''),
 		       coalesce(state,'active'), state_note, state_changed_at
 		FROM openstack_deployments ORDER BY id`, nil,
 		func(r pgx.Rows) (Deployment, error) {
 			var d Deployment
 			err := r.Scan(&d.ID, &d.DisplayName, &d.Region, &d.KeystoneURL, &d.HorizonURL,
-				&d.KeystoneCAPEM, &d.State, &d.StateNote, &d.StateChangedAt)
+				&d.KeystoneCAPEM, &d.KeystoneVerifyURL, &d.State, &d.StateNote, &d.StateChangedAt)
 			return d, err
 		})
 }

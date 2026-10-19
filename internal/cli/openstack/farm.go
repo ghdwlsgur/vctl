@@ -43,6 +43,7 @@ func openstackFarmCmd(env cmdkit.Env) *cobra.Command {
 	cmd.AddCommand(cmdkit.Gate(openstackFarmNameCmd(env), "openstack-farm"))
 	cmd.AddCommand(cmdkit.Gate(openstackFarmHorizonCmd(env), "openstack-farm"))
 	cmd.AddCommand(cmdkit.Gate(openstackFarmKeystoneCACmd(env), "openstack-farm"))
+	cmd.AddCommand(cmdkit.Gate(openstackFarmKeystoneURLCmd(env), "openstack-farm"))
 	cmd.AddCommand(openstackFarmDoctorCmd(env))
 	cmd.AddCommand(openstackFarmListCmd(env))
 	cmd.AddCommand(openstackFarmShowCmd(env))
@@ -115,6 +116,56 @@ usually /etc/kolla/certificates/ca/root.crt on the deploy host.
 		},
 	}
 	cmd.Flags().BoolVar(&clear, "clear", false, "remove the registered CA")
+	return cmd
+}
+
+// openstackFarmKeystoneURLCmd registers where the access gateway can reach a
+// farm's Keystone. The registered host:port is often an internal API VIP the
+// sre-core cluster has no route to; the same Keystone's external endpoint is.
+func openstackFarmKeystoneURLCmd(env cmdkit.Env) *cobra.Command {
+	var clear bool
+	cmd := &cobra.Command{
+		Use:   "keystone-url <deployment> [https://host:port]",
+		Short: "Set the Keystone URL the access gateway verifies a farm's Nova tokens against",
+		Long: `Set the Keystone URL the access gateway verifies a farm's Nova service tokens
+against, when the gateway cannot route to the address the farm is registered
+under. Use the same Keystone's external endpoint; https only.
+
+  vctl openstack farm keystone-url 172.16.0.245:5000 https://192.168.201.245:5000
+  vctl openstack farm keystone-url 172.16.0.245:5000 --clear`,
+		Args:              cobra.RangeArgs(1, 2),
+		ValidArgsFunction: cmdkit.ByPosition(CompleteFarm(env)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var verifyURL string
+			switch {
+			case clear && len(args) == 1:
+			case !clear && len(args) == 2:
+				if _, err := nodeaccess.KeystoneTokensURL(args[0], args[1]); err != nil {
+					return err
+				}
+				verifyURL = strings.TrimSuffix(args[1], "/")
+			default:
+				return fmt.Errorf("give an https URL to register, or --clear alone to remove it")
+			}
+			return env.WithStore(cmd.Context(), true, func(a *app.App, st *store.Store) error {
+				id, err := ResolveFarmID(cmd.Context(), a, st, args[0])
+				if err != nil {
+					return err
+				}
+				if err := st.SetDeploymentKeystoneVerifyURL(cmd.Context(), id, verifyURL); err != nil {
+					return err
+				}
+				forgetReadings(cmd.Context(), a, st)
+				if clear {
+					ui.Successf(os.Stdout, "%s Keystone verify URL removed", id)
+				} else {
+					ui.Successf(os.Stdout, "%s Keystone verify URL set to %s", id, verifyURL)
+				}
+				return nil
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&clear, "clear", false, "remove the registered URL")
 	return cmd
 }
 

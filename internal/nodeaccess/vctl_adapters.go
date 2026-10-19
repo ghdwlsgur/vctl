@@ -48,10 +48,12 @@ func (a VCTLAdapters) AuthenticateNova(ctx context.Context, deploymentID, servic
 	}
 	known := false
 	var farmCA []byte
+	var verifyURL string
 	for _, deployment := range deployments {
 		if deployment.ID == deploymentID && deployment.State == "active" {
 			known = true
 			farmCA = []byte(deployment.KeystoneCAPEM)
+			verifyURL = deployment.KeystoneVerifyURL
 			break
 		}
 	}
@@ -59,9 +61,14 @@ func (a VCTLAdapters) AuthenticateNova(ctx context.Context, deploymentID, servic
 		return fmt.Errorf("farm is not registered and active")
 	}
 	// Farm IDs are normalized Keystone host:port values from inventory, not
-	// caller-supplied URLs. Send service tokens only over verified HTTPS.
-	endpoint, err := url.Parse("https://" + deploymentID + "/v3/auth/tokens")
-	if err != nil || endpoint.Host != deploymentID || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+	// caller-supplied URLs, and so is the verify URL. Send service tokens only
+	// over verified HTTPS.
+	tokensURL, err := KeystoneTokensURL(deploymentID, verifyURL)
+	if err != nil {
+		return err
+	}
+	endpoint, err := url.Parse(tokensURL)
+	if err != nil {
 		return fmt.Errorf("registered farm has an invalid Keystone endpoint")
 	}
 	roots, err := keystoneRoots(farmCA)
