@@ -34,6 +34,17 @@
     vendordata_nova_user: nova
     vendordata_nova_project: service
     vendordata_domain: Default
+    # When Keystone's certificate comes from a CA the deploy host does not
+    # trust (kolla's own CA for internal TLS, e.g. CN=InnogridCA), name that CA
+    # file on the deploy host so the preflight can still verify it.
+    vendordata_keystone_ca_path: ""
+    # Nova's HTTP clients use the certifi bundle in its venv, not the system
+    # trust store, so a private CA has to be named explicitly — for the gateway
+    # (vendordata_dynamic_ssl_certfile) and for Keystone
+    # (vendordata_dynamic_auth_cafile). Both are paths inside the Nova
+    # containers, e.g. /etc/pki/tls/certs/ca-bundle.crt on Rocky images once
+    # kolla_copy_ca_into_containers has put the CA there.
+    vendordata_dynamic_auth_cafile: ""
     # Replace a vendordata_providers / vendordata_dynamic_targets value that
     # this play did not write. Only after reading what is there and why.
     vendordata_force: false
@@ -133,6 +144,7 @@
                   name: "{{ vendordata_nova_project_domain | default(vendordata_domain) }}"
         status_code: 201
         validate_certs: true
+        ca_path: "{{ vendordata_keystone_ca_path if vendordata_keystone_ca_path | length > 0 else omit }}"
         return_content: false
       register: vendordata_nova_auth
       check_mode: false
@@ -149,6 +161,7 @@
           X-Subject-Token: "{{ vendordata_nova_auth.x_subject_token }}"
         status_code: 200
         validate_certs: true
+        ca_path: "{{ vendordata_keystone_ca_path if vendordata_keystone_ca_path | length > 0 else omit }}"
         return_content: true
       register: vendordata_nova_token_validation
       check_mode: false
@@ -263,7 +276,11 @@
           ] + ([
             {'section': 'api', 'option': 'vendordata_dynamic_ssl_certfile',
              'value': vendordata_dynamic_ssl_certfile},
-          ] if (vendordata_dynamic_ssl_certfile | default('') | length > 0) else []) }}
+          ] if (vendordata_dynamic_ssl_certfile | default('') | length > 0) else [])
+          + ([
+            {'section': 'vendordata_dynamic_auth', 'option': 'cafile',
+             'value': vendordata_dynamic_auth_cafile},
+          ] if (vendordata_dynamic_auth_cafile | default('') | length > 0) else []) }}
       register: vendordata_staged
       no_log: true
 
