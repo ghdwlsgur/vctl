@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -103,7 +104,7 @@ func (g *Gateway) serveVMAgentVendordata(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("create VM enrollment grant"))
 		return
 	}
-	cloudConfig, err := renderVMAgentCloudConfig(g.GatewayURL, input.InstanceID, bootstrap)
+	cloudConfig, err := renderVMAgentCloudConfig(g.GatewayURL, g.GatewayAddress, input.InstanceID, bootstrap)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("render VM enrollment configuration"))
 		return
@@ -160,12 +161,39 @@ func (g *Gateway) serveAgentBinary(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, g.AgentBinaryPath)
 }
 
-func renderVMAgentCloudConfig(gatewayURL, instanceID, enrollmentToken string) (string, error) {
+// renderVMAgentCloudConfig builds the cloud-config a new guest gets.
+//
+// gatewayAddress, when set, is the gateway's IP. A guest on a tenant network
+// usually resolves through a public resolver (8.8.8.8 on the infra farms) and
+// cannot find the gateway's private name, so the agent download and the
+// enrollment both fail — during the 2026-10 pilot /etc/hosts was edited by
+// hand on every VM. The guest pins the name when it does not resolve, before
+// the download and again on every agent start, because some images rewrite
+// /etc/hosts at boot. A name that resolves is left alone.
+func renderVMAgentCloudConfig(gatewayURL, gatewayAddress, instanceID, enrollmentToken string) (string, error) {
 	parsed, err := url.Parse(gatewayURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("gateway URL must be an HTTPS origin")
 	}
 	gatewayURL = strings.TrimRight(gatewayURL, "/")
+	pin := ""
+	if gatewayAddress != "" {
+		ip := net.ParseIP(gatewayAddress)
+		if ip == nil {
+			return "", fmt.Errorf("gateway address %q is not an IP address", gatewayAddress)
+		}
+		host := parsed.Hostname()
+		if net.ParseIP(host) == nil {
+			pin = "#!/bin/sh\n" +
+				"# Pin the vctl access gateway when the guest cannot resolve it.\n" +
+				"getent hosts '" + host + "' >/dev/null 2>&1 && exit 0\n" +
+				"printf '%s\\n' '" + ip.String() + " " + host + "' >> /etc/hosts\n"
+		}
+	}
+	execPre := ""
+	if pin != "" {
+		execPre = "ExecStartPre=+/usr/local/sbin/vctl-vm-agent-hosts\n"
+	}
 	service := `[Unit]
 Description=vctl outbound OpenStack VM access agent
 After=network-online.target
@@ -176,7 +204,7 @@ StartLimitIntervalSec=0
 Type=simple
 Environment=GOMAXPROCS=2
 Environment=VCTL_ACCESS_GATEWAY=` + gatewayURL + `
-ExecStart=/usr/local/bin/vctl-agent session-agent --gateway ` + gatewayURL + ` --ca /etc/vctl/session-agent/gateway-ca.crt --cert /var/lib/vctl-session-agent/node.crt --key /var/lib/vctl-session-agent/node.key --renew-gateway ` + gatewayURL + `
+` + execPre + `ExecStart=/usr/local/bin/vctl-agent session-agent --gateway ` + gatewayURL + ` --ca /etc/vctl/session-agent/gateway-ca.crt --cert /var/lib/vctl-session-agent/node.crt --key /var/lib/vctl-session-agent/node.key --renew-gateway ` + gatewayURL + `
 Restart=always
 RestartSec=15
 User=root
@@ -203,8 +231,12 @@ LimitCORE=0
 [Install]
 WantedBy=multi-user.target
 `
+	pinStep := ""
+	if pin != "" {
+		pinStep = "/usr/local/sbin/vctl-vm-agent-hosts\n"
+	}
 	script := `set -eu
-install -d -m 0700 /var/lib/vctl-session-agent /etc/vctl/session-agent
+` + pinStep + `install -d -m 0700 /var/lib/vctl-session-agent /etc/vctl/session-agent
 if command -v curl >/dev/null 2>&1; then
   curl --fail --silent --show-error --location --cacert /etc/vctl/session-agent/gateway-ca.crt ` + gatewayURL + `/v1/agent/binary -o /usr/local/bin/vctl-agent
 elif command -v wget >/dev/null 2>&1; then
@@ -227,6 +259,10 @@ systemctl enable --now vctl-vm-session-agent.service
 			{Path: "/usr/local/sbin/vctl-vm-agent-bootstrap", Owner: "root:root", Permissions: "0700", Content: script},
 		},
 		Runcmd: [][]string{{"/usr/local/sbin/vctl-vm-agent-bootstrap"}},
+	}
+	if pin != "" {
+		cloudCfg.WriteFiles = append(cloudCfg.WriteFiles,
+			cloudFile{Path: "/usr/local/sbin/vctl-vm-agent-hosts", Owner: "root:root", Permissions: "0700", Content: pin})
 	}
 	data, err := yaml.Marshal(cloudCfg)
 	if err != nil {

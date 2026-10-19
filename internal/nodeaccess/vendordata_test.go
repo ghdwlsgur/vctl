@@ -65,7 +65,7 @@ func TestVendordataReturnsUUIDBoundCloudConfigOnlyForAuthenticatedNova(t *testin
 	if !strings.HasPrefix(cloudConfig, "#cloud-config\n") {
 		t.Fatalf("response is not cloud-config: %q", cloudConfig[:min(len(cloudConfig), 80)])
 	}
-	config, err := renderVMAgentCloudConfig("https://node-access.sre.local", instanceID, "placeholder")
+	config, err := renderVMAgentCloudConfig("https://node-access.sre.local", "", instanceID, "placeholder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,5 +108,69 @@ func TestBootstrapTokenRejectsTamperingAndExpiredClaims(t *testing.T) {
 	}
 	if _, err := verifyBootstrapToken(key, token+"x", time.Now().Add(-3*time.Hour)); err == nil {
 		t.Fatal("tampered bootstrap token was accepted")
+	}
+}
+
+func cloudConfigFiles(t *testing.T, rendered string) map[string]string {
+	t.Helper()
+	var doc vmVendordataCloudConfig
+	if err := yaml.Unmarshal([]byte(strings.TrimPrefix(rendered, "#cloud-config\n")), &doc); err != nil {
+		t.Fatalf("decode cloud-config: %v", err)
+	}
+	files := map[string]string{}
+	for _, f := range doc.WriteFiles {
+		files[f.Path] = f.Content
+	}
+	return files
+}
+
+// A guest on a tenant network usually resolves through a public resolver
+// (8.8.8.8 on the infra farms) and cannot find node-access.sre.local, so the
+// download and the enrollment both fail — the 2026-10 pilot had to edit
+// /etc/hosts by hand on every VM. With the gateway's address configured, the
+// guest pins the name when it does not resolve, before the download and again
+// on every agent start, because some images rewrite /etc/hosts at boot.
+func TestCloudConfigPinsTheGatewayWhenItsNameDoesNotResolve(t *testing.T) {
+	const id = "1f63afab-48ca-45c5-8a84-28469770f3bc"
+	rendered, err := renderVMAgentCloudConfig("https://node-access.sre.local", "192.168.201.12", id, "grant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := cloudConfigFiles(t, rendered)
+	pin, ok := files["/usr/local/sbin/vctl-vm-agent-hosts"]
+	if !ok {
+		t.Fatal("no hosts pin script")
+	}
+	for _, want := range []string{"getent hosts 'node-access.sre.local'", "192.168.201.12 node-access.sre.local", ">> /etc/hosts"} {
+		if !strings.Contains(pin, want) {
+			t.Errorf("pin script missing %q:\n%s", want, pin)
+		}
+	}
+	boot := files["/usr/local/sbin/vctl-vm-agent-bootstrap"]
+	if i, j := strings.Index(boot, "/usr/local/sbin/vctl-vm-agent-hosts"), strings.Index(boot, "/v1/agent/binary"); i < 0 || j < 0 || i > j {
+		t.Error("bootstrap does not pin the gateway before downloading the agent")
+	}
+	if !strings.Contains(files["/etc/systemd/system/vctl-vm-session-agent.service"], "ExecStartPre=+/usr/local/sbin/vctl-vm-agent-hosts") {
+		t.Error("the agent unit does not re-pin the gateway on start")
+	}
+}
+
+func TestCloudConfigLeavesHostsAloneWithoutAnAddress(t *testing.T) {
+	rendered, err := renderVMAgentCloudConfig("https://node-access.sre.local", "", "1f63afab-48ca-45c5-8a84-28469770f3bc", "grant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := cloudConfigFiles(t, rendered)
+	if _, ok := files["/usr/local/sbin/vctl-vm-agent-hosts"]; ok || strings.Contains(rendered, "/etc/hosts") {
+		t.Error("touched /etc/hosts with no gateway address configured")
+	}
+}
+
+// The address lands in a root shell script on every guest.
+func TestCloudConfigRefusesAGatewayAddressThatIsNotAnIP(t *testing.T) {
+	for _, addr := range []string{"node-access", "192.168.201.12; rm -rf /", "192.168.201.12\n10.0.0.1 evil"} {
+		if _, err := renderVMAgentCloudConfig("https://node-access.sre.local", addr, "1f63afab-48ca-45c5-8a84-28469770f3bc", "grant"); err == nil {
+			t.Errorf("accepted %q", addr)
+		}
 	}
 }

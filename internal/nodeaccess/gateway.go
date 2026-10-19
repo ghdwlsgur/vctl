@@ -74,14 +74,18 @@ type AuditEvent struct {
 }
 
 type Gateway struct {
-	Operators       OperatorAuthorizer
-	Nodes           NodeAuthorizer
-	Audit           AuditRecorder
-	NodeRoots       *x509.CertPool // optional CA for a verified ingress-forwarded client certificate
-	VMIssuer        VMAgentCertificateIssuer
-	NovaAuth        NovaDynamicAuthenticator
-	EnrollmentKey   []byte
-	GatewayURL      string
+	Operators     OperatorAuthorizer
+	Nodes         NodeAuthorizer
+	Audit         AuditRecorder
+	NodeRoots     *x509.CertPool // optional CA for a verified ingress-forwarded client certificate
+	VMIssuer      VMAgentCertificateIssuer
+	NovaAuth      NovaDynamicAuthenticator
+	EnrollmentKey []byte
+	GatewayURL    string
+	// GatewayAddress, when set, is pinned in a guest's /etc/hosts for the
+	// GatewayURL host if the guest cannot resolve it. See
+	// renderVMAgentCloudConfig.
+	GatewayAddress  string
 	AgentBinaryPath string
 
 	mu      sync.Mutex

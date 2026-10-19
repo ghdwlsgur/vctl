@@ -66,6 +66,7 @@ func run() error {
 	gateway.NovaAuth = adapters
 	gateway.EnrollmentKey = enrollmentKey
 	gateway.GatewayURL = envOr("VCTL_ACCESS_PUBLIC_URL", "https://node-access.sre.local")
+	gateway.GatewayAddress = strings.TrimSpace(os.Getenv("VCTL_ACCESS_PUBLIC_ADDRESS"))
 	gateway.AgentBinaryPath = envOr("VCTL_ACCESS_AGENT_BINARY_FILE", "/usr/local/bin/vctl-agent")
 	defer gateway.Close()
 	server := &http.Server{
