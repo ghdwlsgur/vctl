@@ -59,7 +59,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gateway
-          image: harbor.sre.local/sre/vctl-access-gateway:node-access-keystone-ca-20261019-amd64@sha256:173f4be2fb1e6ae295796a84c377466abd86039aea50922d98e426dafc829464
+          image: harbor.sre.local/sre/vctl-access-gateway:node-access-hosts-pin-20261019-amd64@sha256:5b6e16351cd754116ad2b5ebb1d683791c642de686c07726a645e48ba7a5f9ce
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -85,6 +85,10 @@ spec:
               value: /etc/vctl-access/enrollment/key
             - name: VCTL_ACCESS_PUBLIC_URL
               value: https://node-access.sre.local
+            # Pinned in a new guest's /etc/hosts when it cannot resolve the
+            # URL's name (tenant networks resolve through 8.8.8.8).
+            - name: VCTL_ACCESS_PUBLIC_ADDRESS
+              value: 192.168.201.12
           volumeMounts:
             - name: state
               mountPath: /tmp
