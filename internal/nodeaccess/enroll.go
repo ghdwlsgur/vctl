@@ -108,15 +108,41 @@ func EnrollVM(ctx context.Context, gatewayURL, tokenFile, instanceUUID, caFile, 
 	if err != nil {
 		return fmt.Errorf("validate VM certificate and private key: %w", err)
 	}
+	if err := validateVMCertificate([]byte(result.Certificate), instanceUUID, nil); err != nil {
+		return err
+	}
+	if err := verifyIssuedVMChain(pair, roots); err != nil {
+		return err
+	}
+	return writeIdentity(certFile, keyFile, &pair)
+}
+
+// verifyIssuedVMChain checks the certificate the gateway issued against the
+// configured root, through the intermediates that came with it. Vault signs
+// VM certificates from pki_sre_int, an intermediate under the SRE root, and
+// returns it after the leaf; checking the leaf against the root alone failed
+// every DynamicJSON enrollment with "certificate signed by unknown authority".
+func verifyIssuedVMChain(pair tls.Certificate, roots *x509.CertPool) error {
+	if len(pair.Certificate) == 0 {
+		return fmt.Errorf("verify VM certificate chain: no certificate")
+	}
 	leaf, err := x509.ParseCertificate(pair.Certificate[0])
 	if err != nil {
 		return fmt.Errorf("parse VM certificate: %w", err)
 	}
-	if err := validateVMCertificate([]byte(result.Certificate), instanceUUID, nil); err != nil {
-		return err
+	intermediates := x509.NewCertPool()
+	for _, der := range pair.Certificate[1:] {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return fmt.Errorf("parse VM certificate chain: %w", err)
+		}
+		intermediates.AddCert(cert)
 	}
-	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots: roots, Intermediates: intermediates,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
 		return fmt.Errorf("verify VM certificate chain: %w", err)
 	}
-	return writeIdentity(certFile, keyFile, &pair)
+	return nil
 }
