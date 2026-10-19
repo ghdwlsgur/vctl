@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -136,13 +137,61 @@ func runInstall(cmd *cobra.Command, env cmdkit.Env, arg string, opts installOpti
 		return fmt.Errorf("binary push: %w", err)
 	}
 
+	// Read what the host holds now, before the script overwrites it: the
+	// secret_id being replaced is still valid and has to be destroyed once the
+	// agent is up on the new one. A failed read only means nothing to revoke.
+	prev, _ := conn.Execute(ctx, req, previousCredsCmd, 0)
+
 	ui.Infof(os.Stderr, "installing credentials and systemd units")
 	script := installScript(roleID, secretID, accessor, sv.Hostname, opts.motd, controlPlanePins(a))
 	if err := execStep(conn.ExecuteWithInput(ctx, req, "sh", 0, strings.NewReader(script))); err != nil {
 		return fmt.Errorf("remote install: %w (check journalctl -u vctl-node-agent on the host)", err)
 	}
+
+	// Only after the agent came up on the new credential. Failing to revoke
+	// does not undo a working install; it is said so the old one can be
+	// destroyed by hand.
+	if role, old, ok := staleAccessor(prev.Stdout, accessor); ok {
+		if err := a.Vault.DestroySecretIDAccessor(ctx, a.Cfg.AppRoleMount, role, old); err != nil {
+			ui.Warnf(os.Stderr, "the previous secret_id (%s accessor %s) is still valid; destroy it: vault write auth/%s/role/%s/secret-id-accessor/destroy secret_id_accessor=%s (%v)",
+				role, old, a.Cfg.AppRoleMount, role, old, err)
+		} else {
+			ui.Infof(os.Stderr, "revoked the previous secret_id (%s accessor %s…)", role, old[:8])
+		}
+	}
 	ui.Successf(os.Stderr, "node-agent running on %s — the heartbeat lands in vctl list within ~5m", sv.Hostname)
 	return nil
+}
+
+// previousCredsCmd prints the role marker and the accessor the host holds, one
+// per line. Missing files print as empty lines rather than failing.
+const previousCredsCmd = "cat /etc/vctl/approle 2>/dev/null; echo; cat /etc/vctl/secret-id-accessor 2>/dev/null; echo"
+
+// replaceableRoles are the roles a node's /etc/vctl may name. Anything else is
+// not this command's to revoke, whatever the host claims.
+var replaceableRoles = map[string]bool{"vctl-node": true, "vctl-host": true}
+
+var accessorRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// staleAccessor reads previousCredsCmd's output and returns the credential the
+// new install replaced, if it is one this command may destroy. Like the ansible
+// role, it does nothing without the role marker: an accessor alone does not say
+// which role it belongs to.
+func staleAccessor(out, newAccessor string) (role, accessor string, ok bool) {
+	var fields []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			fields = append(fields, line)
+		}
+	}
+	if len(fields) != 2 {
+		return "", "", false
+	}
+	role, accessor = fields[0], fields[1]
+	if !replaceableRoles[role] || !accessorRE.MatchString(accessor) || accessor == newAccessor {
+		return "", "", false
+	}
+	return role, accessor, true
 }
 
 // nodeAppRole is the AppRole the node-agent authenticates as: status reporting

@@ -305,4 +305,29 @@ func (c *Client) GenerateSecretIDWithAccessor(ctx context.Context, mount, role s
 	return secretID, accessor, nil
 }
 
+var (
+	appRoleNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	secretIDAccRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+)
+
+// DestroySecretIDAccessor revokes one secret_id by its accessor. The secret_ids
+// minted for hosts have no TTL and no use limit, so one that has been replaced
+// stays a working credential until somebody destroys it. Role and accessor are
+// often read back from a host, so both are checked before they reach the path.
+func (c *Client) DestroySecretIDAccessor(ctx context.Context, mount, role, accessor string) error {
+	if !appRoleNameRE.MatchString(role) {
+		return fmt.Errorf("invalid AppRole name %q", role)
+	}
+	if !secretIDAccRE.MatchString(accessor) {
+		return fmt.Errorf("invalid secret_id accessor %q", accessor)
+	}
+	// Not writePath: destroy answers 204 with no body, which writePath reads as
+	// a failure even though the credential is gone.
+	p := fmt.Sprintf("auth/%s/role/%s/secret-id-accessor/destroy", mount, role)
+	if _, err := c.api.Logical().WriteWithContext(ctx, p, map[string]any{"secret_id_accessor": accessor}); err != nil {
+		return fmt.Errorf("%s: %w", p, err)
+	}
+	return nil
+}
+
 // KV reads and listing live in kv.go.

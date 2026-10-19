@@ -209,3 +209,41 @@ func TestURLHostname(t *testing.T) {
 		}
 	}
 }
+
+// A reinstall replaces the host's secret_id. The one it replaces has no TTL and
+// no use limit, so unless it is destroyed it stays a valid credential forever:
+// 23 such orphans had accumulated for vctl-node by 2026-10-19, each from an
+// install that wrote a new credential over an old one and walked away.
+func TestStaleAccessorIsTheOneTheHostHeldBefore(t *testing.T) {
+	const prev = "93d7f2c6-1111-2222-3333-444455556666"
+	const next = "9e091d23-aaaa-bbbb-cccc-ddddeeeeffff"
+	out := "vctl-node\n" + prev + "\n"
+	role, acc, ok := staleAccessor(out, next)
+	if !ok || role != "vctl-node" || acc != prev {
+		t.Fatalf("staleAccessor = %q %q %v, want vctl-node %s true", role, acc, ok, prev)
+	}
+	// The ansible role writes the same files with a trailing newline.
+	if _, acc, ok := staleAccessor("vctl-host\n\n"+prev+"\n", next); !ok || acc != prev {
+		t.Errorf("a vctl-host marker was not honoured: %q %v", acc, ok)
+	}
+}
+
+// What comes back from the host is not trusted to name an arbitrary credential.
+// Only the two node roles, only an accessor-shaped value, never the new one,
+// and nothing at all without the role marker — the same rule the ansible role
+// applies before it destroys anything.
+func TestStaleAccessorRefusesAnythingItCannotVouchFor(t *testing.T) {
+	const prev = "93d7f2c6-1111-2222-3333-444455556666"
+	for name, out := range map[string]string{
+		"first install":       "\n\n",
+		"no role marker":      "\n" + prev + "\n",
+		"another role":        "sre-batch\n" + prev + "\n",
+		"not an accessor":     "vctl-node\n../../sys/policy/root\n",
+		"same as the new one": "vctl-node\n" + "9e091d23-aaaa-bbbb-cccc-ddddeeeeffff" + "\n",
+		"extra fields":        "vctl-node " + prev + "\n" + prev + "\n",
+	} {
+		if role, acc, ok := staleAccessor(out, "9e091d23-aaaa-bbbb-cccc-ddddeeeeffff"); ok {
+			t.Errorf("%s: would destroy %s/%s", name, role, acc)
+		}
+	}
+}
