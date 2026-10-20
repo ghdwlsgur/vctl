@@ -10,7 +10,7 @@ truth — no duplicated copies here) plus the SSH CA trust.
 | `site.yml` | Install node-agent (runtime status) by default. The collector + watch-sessions audit stack, `vctl-host` AppRole, and Tetragon are explicit opt-ins via `vctl_host_audit_stack=true`. |
 | `openstack-vendordata.yml` | Install the same CA trust into an OpenStack farm's Nova vendordata, so a **new VM** trusts vctl certificates from first boot. See below. |
 | `openstack-vm-agent-vendordata.yml` | Stage per-farm Nova DynamicJSON settings so new Linux VMs fetch a short-lived, VM UUID-bound enrollment grant from the access gateway. |
-| `kolla-nova-mount-propagation.yml` | Keep kolla's nova `/var/lib/nova/mnt` bind from doubling on every container start, without hiding any NFS: enables a boot-time unit (never started live). Optionally collapses layers that already stacked. See below. |
+| `kolla-nova-mount-propagation.yml` | Keep kolla's nova `/var/lib/nova/mnt` bind from doubling on every container start, without hiding any NFS: enables a boot-time unit. Opt-in, collapses layers that already stacked and applies the fix live with every VM running. See below. |
 
 ## Kolla nova mount propagation
 
@@ -24,9 +24,15 @@ The playbook installs `nova-mnt-private.service`, which at boot, before docker,
 makes only `<docker root>/volumes/nova_compute/_data/mnt` a private self-bind.
 The instances NFS under `_data/instances` and the cinder shares under
 `/var/lib/nova/mnt` keep reaching the host and every nova container, including
-when they are remounted later. It is enabled, **never started**: applied while
-containers run it hides the cinder shares inside them, and the script refuses
-whenever a container is running. It takes effect at the next reboot.
+when they are remounted later.
+
+A **new** mount there while containers run hides the cinder shares inside them,
+so on a running host the script never makes one. With `-e nova_mnt_collapse=true`
+the playbook first collapses the stacked layers (`kolla/nova-mnt-collapse.sh`,
+VMs keep running), which leaves exactly one mount at `_data/mnt`, then runs the
+unit once: it only changes that mount's propagation to private. With more than
+one layer there it refuses. Without the flag the fix takes effect at the next
+reboot.
 
 **2026-10-20 incident.** The first version made the whole volume a
 non-recursive private bind, live. It propagated over `/var/lib/nova` inside the
@@ -38,7 +44,7 @@ counting `mountinfo` lines — which is how that version passed.
 ```bash
 ansible-playbook kolla-nova-mount-propagation.yml -l <host> --check --diff
 ansible-playbook kolla-nova-mount-propagation.yml -l <host>
-ansible-playbook kolla-nova-mount-propagation.yml -l <host> -e nova_mnt_collapse=true   # collapse existing layers
+ansible-playbook kolla-nova-mount-propagation.yml -l <host> -e nova_mnt_collapse=true   # collapse, then apply now
 ```
 
 ## Nova DynamicJSON VM enrollment

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Boot-time only: make <docker root>/volumes/nova_compute/_data/mnt a private
-# self-bind before any nova container starts, so kolla's
-# /var/lib/nova/mnt:/var/lib/nova/mnt:shared bind no longer propagates back to
-# the host and doubles on every container start.
+# Make <docker root>/volumes/nova_compute/_data/mnt a private mount, so
+# kolla's /var/lib/nova/mnt:/var/lib/nova/mnt:shared bind no longer propagates
+# back to the host and doubles on every nova container start.
 #
 # Only _data/mnt is touched. The instances NFS under _data/instances and the
 # cinder shares under /var/lib/nova/mnt keep propagating to the host and every
@@ -10,12 +9,12 @@
 # SRE compute hosts (container restarts, libvirt restart, a new share mounted
 # by nova_compute, the instances NFS and a cinder share remounted on the host).
 #
-# NEVER while containers run: applied live, the new mount propagates over
-# /var/lib/nova/mnt inside the running containers and hides the cinder shares
-# (the same class of failure as the 2026-10-20 incident). So this refuses
-# whenever a container using the nova_compute volume runs; it is meant to run
-# from nova-mnt-private.service, ordered before docker.service at boot, or by
-# hand on a host whose nova containers are stopped.
+# A NEW mount here while nova containers run hides the cinder shares inside
+# them (the same class of failure as the 2026-10-20 incident). So the fresh
+# bind is made only with no nova container running: from
+# nova-mnt-private.service, ordered before docker.service at boot. On a running
+# host it only changes the propagation of the single mount
+# kolla/nova-mnt-collapse.sh leaves, and refuses anything else.
 set -u
 root=$(sed -n 's/.*"data-root" *: *"\([^"]*\)".*/\1/p' /etc/docker/daemon.json 2>/dev/null | head -1)
 # Resolve symlinks: sre-srv-0047 has /var/lib/docker -> /home/docker, and
