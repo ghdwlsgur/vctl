@@ -13,11 +13,15 @@
 # NEVER while containers run: applied live, the new mount propagates over
 # /var/lib/nova/mnt inside the running containers and hides the cinder shares
 # (the same class of failure as the 2026-10-20 incident). So this refuses
-# whenever docker has a running container; it is meant to run from
-# nova-mnt-private.service, ordered before docker.service at boot.
+# whenever a container using the nova_compute volume runs; it is meant to run
+# from nova-mnt-private.service, ordered before docker.service at boot, or by
+# hand on a host whose nova containers are stopped.
 set -u
-if command -v docker >/dev/null 2>&1 && [ -n "$(docker ps -q 2>/dev/null)" ]; then
-  echo "nova-mnt-private: refused, containers are running; this only applies at boot" >&2
+# Only containers that mount the nova_compute volume can be covered; others
+# (keystone, haproxy, ...) may keep running. At boot docker is not up yet and
+# this finds nothing.
+if command -v docker >/dev/null 2>&1 && [ -n "$(docker ps -q --filter volume=nova_compute 2>/dev/null)" ]; then
+  echo "nova-mnt-private: refused, containers using the nova_compute volume are running (stop nova_compute, nova_libvirt and nova_ssh first, or let it run at boot)" >&2
   exit 1
 fi
 root=$(sed -n 's/.*"data-root" *: *"\([^"]*\)".*/\1/p' /etc/docker/daemon.json 2>/dev/null | head -1)
@@ -25,9 +29,18 @@ root=$(sed -n 's/.*"data-root" *: *"\([^"]*\)".*/\1/p' /etc/docker/daemon.json 2
 # mountinfo records the resolved path.
 V="$(readlink -f "${root:-/var/lib/docker}")/volumes/nova_compute/_data"
 [ -d "$V" ] || { echo "nova-mnt-private: no nova_compute volume at $V; nothing to do"; exit 0; }
-if awk -v p="$V/mnt" '$5==p' /proc/self/mountinfo | grep -q .; then
-  echo "nova-mnt-private: $V/mnt is already a mount; leaving it"; exit 0
+layers() { awk -v p="$V/mnt" '$5==p' /proc/self/mountinfo | wc -l; }
+if [ "$(layers)" -eq 1 ] && awk -v p="$V/mnt" '$5==p {print $7}' /proc/self/mountinfo | grep -qx -- '-'; then
+  echo "nova-mnt-private: $V/mnt is already a private bind; leaving it"; exit 0
 fi
+# Anything else mounted here is what earlier container starts propagated back
+# (the stack this exists to stop). With no nova container running it holds
+# nothing in use; clear it so the private bind is the only layer. Skipping it
+# instead — "already a mount" — left the shared copy on top and the stack kept
+# doubling (sre-srv-0041/0042, 2026-10-20).
+n=0
+while [ "$(layers)" -gt 0 ] && [ $n -lt 4096 ]; do umount -l "$V/mnt" || break; n=$((n+1)); done
+[ $n -gt 0 ] && echo "nova-mnt-private: cleared $n leftover layer(s) at $V/mnt"
 mkdir -p "$V/mnt"
 mount --bind "$V/mnt" "$V/mnt"
 mount --make-private "$V/mnt"
