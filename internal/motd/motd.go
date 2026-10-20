@@ -35,6 +35,9 @@ type Banner struct {
 	// Color wraps the masthead and the topology markers in ANSI colour. Off
 	// yields the exact bytes the plain banner always produced.
 	Color bool
+	// Hardware is the machine's accelerator lines (see Accelerators), printed
+	// under the fixed lines on every host, in a farm or not.
+	Hardware []string
 }
 
 // ANSI colour, used only when Banner.Color is set. These are raw escape bytes;
@@ -113,6 +116,7 @@ func Render(b Banner, farms []store.FarmTopology) string {
 			out.WriteString(b.ManagedBy)
 			out.WriteString("\n")
 		}
+		writeHardware(&out, b.Hardware)
 		return out.String()
 	}
 
@@ -143,6 +147,7 @@ func Render(b Banner, farms []store.FarmTopology) string {
 			break
 		}
 	}
+	writeHardware(&out, b.Hardware)
 	for _, s := range sections {
 		out.WriteString("\n")
 		out.WriteString(s)
@@ -154,6 +159,18 @@ func Render(b Banner, farms []store.FarmTopology) string {
 		fmt.Fprintf(&out, "\nLast synced: %s\n", synced.UTC().Format("2006-01-02 15:04:05 UTC"))
 	}
 	return out.String()
+}
+
+// writeHardware prints the accelerator lines as their own block.
+func writeHardware(out *strings.Builder, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	out.WriteString("\n")
+	for _, ln := range lines {
+		out.WriteString(ln)
+		out.WriteString("\n")
+	}
 }
 
 // row is one line of the topology table, already classified.

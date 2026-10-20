@@ -44,6 +44,8 @@ func (a *Agent) motdPass(ctx context.Context, c *conn) {
 	if a.MOTDPath == "" {
 		return
 	}
+	// Read before the database trip, so a slow sysfs never holds the handle.
+	hw := motd.Accelerators(motd.SysPCIDevices, motd.PCIIDs)
 	var content string
 	err := c.withSink(ctx, keepOnFailure, func(ctx context.Context, st Sink) error {
 		farms, err := st.FarmTopologies(ctx, a.Hostname)
@@ -55,6 +57,7 @@ func (a *Agent) motdPass(ctx context.Context, c *conn) {
 			ManagedBy: a.MOTDManagedBy,
 			Self:      a.Hostname,
 			Color:     a.MOTDColor,
+			Hardware:  hw,
 		}, farms)
 		return nil
 	})
