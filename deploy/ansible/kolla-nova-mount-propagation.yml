@@ -49,6 +49,23 @@
   vars:
     nova_mnt_collapse: false
   tasks:
+    - name: Refuse to run — this private bind broke running nova containers
+      # 2026-10-20: a live bind of the nova_compute volume propagated over
+      # /var/lib/nova inside the running nova containers, and because it was
+      # not recursive it hid every submount there: the instances NFS
+      # (fstab, <volume>/_data/instances) and the cinder shares under
+      # /var/lib/nova/mnt. Running VMs kept their open disks, but the host and
+      # nova_compute/nova_libvirt saw the root volume instead. Undone on all
+      # ten hosts. A replacement must keep the NFS usable and be validated by
+      # path walk (stat), not by counting mountinfo lines — that is how this
+      # one passed. Kept here only so the history and the collapse script stay
+      # together.
+      ansible.builtin.fail:
+        msg: >-
+          kolla-nova-mount-propagation.yml is disabled: its private bind hid
+          the instances NFS and the cinder shares from running nova containers
+          (2026-10-20). Do not run it until it is replaced.
+
     - name: Find docker's data root
       ansible.builtin.command:
         argv: [docker, info, -f, "{{ '{{' }}.DockerRootDir{{ '}}' }}"]

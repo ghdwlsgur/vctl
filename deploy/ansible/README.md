@@ -10,9 +10,15 @@ truth — no duplicated copies here) plus the SSH CA trust.
 | `site.yml` | Install node-agent (runtime status) by default. The collector + watch-sessions audit stack, `vctl-host` AppRole, and Tetragon are explicit opt-ins via `vctl_host_audit_stack=true`. |
 | `openstack-vendordata.yml` | Install the same CA trust into an OpenStack farm's Nova vendordata, so a **new VM** trusts vctl certificates from first boot. See below. |
 | `openstack-vm-agent-vendordata.yml` | Stage per-farm Nova DynamicJSON settings so new Linux VMs fetch a short-lived, VM UUID-bound enrollment grant from the access gateway. |
-| `kolla-nova-mount-propagation.yml` | Stop kolla's nova mounts from doubling on every nova container start (docker compute hosts), and optionally collapse layers that already stacked. See below. |
+| `kolla-nova-mount-propagation.yml` | **Disabled (2026-10-20).** Its private bind hid the instances NFS and cinder shares from running nova containers. See below. |
 
 ## Kolla nova mount propagation
+
+> **Disabled on 2026-10-20.** The private bind below propagated over
+> `/var/lib/nova` inside the running nova containers and, not being recursive,
+> hid every submount there: the instances NFS and the cinder shares. It was
+> undone on all ten hosts. The playbook now fails on purpose. What follows is
+> the original description, kept for the record.
 
 On docker compute hosts, kolla starts nova_compute, nova_libvirt and nova_ssh
 with the `nova_compute` volume at `/var/lib/nova` and a
