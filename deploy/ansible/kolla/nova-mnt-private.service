@@ -1,0 +1,16 @@
+# Installed by deploy/ansible/kolla-nova-mount-propagation.yml. Enabled, never
+# started by hand: it applies before docker at boot and refuses otherwise.
+[Unit]
+Description=Keep kolla's nova /var/lib/nova/mnt bind from stacking (boot only)
+DefaultDependencies=no
+After=local-fs.target
+Before=docker.service
+ConditionPathExists=/usr/local/sbin/nova-mnt-private
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/nova-mnt-private
+
+[Install]
+WantedBy=docker.service

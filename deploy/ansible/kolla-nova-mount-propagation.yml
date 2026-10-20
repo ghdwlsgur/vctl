@@ -1,46 +1,47 @@
 ---
-# Stop kolla's nova mounts from doubling on every nova container start.
+# Stop kolla's nova mounts from doubling on every nova container start,
+# without hiding any NFS from nova.
 #
-# What happens without this
-# -------------------------
-# systemd puts / in one shared peer group. The nova_compute docker volume
-# lives under docker's data root, inside that group, and kolla starts
-# nova_compute, nova_libvirt and nova_ssh with
+# Why they double
+# ---------------
+# systemd puts / in one shared peer group. kolla starts nova_compute,
+# nova_libvirt and nova_ssh with
 #     -v nova_compute:/var/lib/nova  -v /var/lib/nova/mnt:/var/lib/nova/mnt:shared
-# The second mount lands inside the first, so it propagates back out to the
-# host's copy of the volume. The next container start copies the volume with
-# all of its submounts (rbind) and adds one more :shared bind, which lands on
-# every copy: the stack doubles. Nothing ever unmounts the copies that reached
-# the host, so only a reboot resets it. Any share os-brick mounts under
-# /var/lib/nova/mnt is copied onto every layer.
+# The second mount lands inside the first, which is a peer of the host's copy
+# of the volume, so it propagates back to <volume>/_data/mnt on the host, and
+# the next container start copies it again: /var/lib/nova/mnt doubles per
+# start until a reboot (1023 layers on sre-srv-0035 after 94 days, 2026-10-19).
 #
-# Measured 2026-10-19: 1023 layers and 4217 host mounts on sre-srv-0035 after
-# 94 days of uptime, 255 on sre-srv-0036, and the same shape on eight more
-# docker compute hosts. node-agent, which reads the mount table from a sandbox
-# namespace that doubles it again (8429) under CPUQuota=2%, could no longer
-# start. Reproduced in docker:dind: 4 -> 8 -> 16 -> 32 over three restarts.
-# podman compute hosts did not show it.
+# The fix, and why it is boot-only
+# --------------------------------
+# Make only <volume>/_data/mnt a private self-bind, before docker starts. The
+# :shared bind then has a private parent and stops propagating back, while
+#   - the instances NFS under <volume>/_data/instances (fstab) and
+#   - the cinder shares under /var/lib/nova/mnt (os-brick)
+# keep reaching the host and every nova container. Verified by path walk in a
+# docker:dind reproduction: layers stay at 2 through compute/ssh/libvirt
+# restarts, a share mounted by nova_compute reaches libvirt and ssh, and the
+# instances NFS and a cinder share remounted on the host reach running
+# containers.
 #
-# The fix
-# -------
-# Bind the nova_compute volume onto itself as a *private* mount, so nothing
-# mounted inside a container's /var/lib/nova propagates back to the host. The
-# share still reaches every nova container through the explicit
-# /var/lib/nova/mnt:shared bind. Reproduced: 1 -> 1 -> 1 -> 1, share visible in
-# compute, libvirt, ssh and the host. A systemd mount unit ordered before
-# docker.service keeps it across reboots; on a new compute host, run this
-# before the kolla deploy.
+# Applied while nova containers run, the same bind propagates over
+# /var/lib/nova/mnt inside them and hides the cinder shares — reproduced, and
+# the same class of failure as the 2026-10-20 incident, when a non-recursive
+# private bind of the whole volume hid the instances NFS. So this play only
+# installs and enables nova-mnt-private.service (ordered before docker.service);
+# it never starts it, and the script refuses while any container runs. It takes
+# effect at the host's next reboot.
 #
-# Hosts that are already stacked need the layers collapsed once. That is
-# opt-in, because it unmounts the shares the VMs use (lazily; open disks keep
-# working, validated with every VM running on ten hosts):
+# Layers that already stacked can be collapsed now, with every VM left running
+# (kolla/nova-mnt-collapse.sh, opt-in):
 #
-#   ansible-playbook kolla-nova-mount-propagation.yml -l sre-srv-0036
-#   ansible-playbook kolla-nova-mount-propagation.yml -l sre-srv-0036 -e nova_mnt_collapse=true
+#   ansible-playbook kolla-nova-mount-propagation.yml -l <host> --check --diff
+#   ansible-playbook kolla-nova-mount-propagation.yml -l <host>
+#   ansible-playbook kolla-nova-mount-propagation.yml -l <host> -e nova_mnt_collapse=true
 #
 # Hosts without a docker nova_compute volume (podman, no nova) are skipped.
 
-- name: Keep the nova_compute volume out of the shared mount group
+- name: Keep kolla's nova /var/lib/nova/mnt bind from stacking
   hosts: "{{ target | default('all') }}"
   become: true
   gather_facts: false
@@ -49,23 +50,6 @@
   vars:
     nova_mnt_collapse: false
   tasks:
-    - name: Refuse to run — this private bind broke running nova containers
-      # 2026-10-20: a live bind of the nova_compute volume propagated over
-      # /var/lib/nova inside the running nova containers, and because it was
-      # not recursive it hid every submount there: the instances NFS
-      # (fstab, <volume>/_data/instances) and the cinder shares under
-      # /var/lib/nova/mnt. Running VMs kept their open disks, but the host and
-      # nova_compute/nova_libvirt saw the root volume instead. Undone on all
-      # ten hosts. A replacement must keep the NFS usable and be validated by
-      # path walk (stat), not by counting mountinfo lines — that is how this
-      # one passed. Kept here only so the history and the collapse script stay
-      # together.
-      ansible.builtin.fail:
-        msg: >-
-          kolla-nova-mount-propagation.yml is disabled: its private bind hid
-          the instances NFS and the cinder shares from running nova containers
-          (2026-10-20). Do not run it until it is replaced.
-
     - name: Find docker's data root
       ansible.builtin.command:
         argv: [docker, info, -f, "{{ '{{' }}.DockerRootDir{{ '}}' }}"]
@@ -84,12 +68,18 @@
       when: nova_docker_root.rc != 0 or not (nova_volume.stat.isdir | default(false))
       ansible.builtin.meta: end_host
 
-    - name: Name the mount unit after the volume path
+    - name: Find the 2026-10-19 private bind unit, which must not come back
       ansible.builtin.command:
         argv: [systemd-escape, -p, --suffix=mount, "{{ nova_volume.stat.path }}"]
-      register: nova_mount_unit
+      register: nova_old_unit
       changed_when: false
       check_mode: false
+
+    - name: Remove that unit if it is still installed
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ nova_old_unit.stdout }}"
+        state: absent
+      register: nova_old_unit_removed
 
     - name: Count /var/lib/nova/mnt layers in the host namespace
       ansible.builtin.shell: |
@@ -113,55 +103,33 @@
       ansible.builtin.debug:
         var: nova_collapse.stdout_lines
 
-    - name: Say that stacked layers were left in place
-      when:
-        - nova_layers.stdout | int > 1
-        - not (nova_mnt_collapse | bool)
-      ansible.builtin.debug:
-        msg: >-
-          {{ inventory_hostname }} has {{ nova_layers.stdout }} stacked
-          /var/lib/nova/mnt layers. The unit below stops further growth but does
-          not remove them; re-run with -e nova_mnt_collapse=true to collapse.
-
-    - name: Install the private bind unit
+    - name: Install the boot-time script
       ansible.builtin.copy:
-        dest: "/etc/systemd/system/{{ nova_mount_unit.stdout }}"
+        src: kolla/nova-mnt-private.sh
+        dest: /usr/local/sbin/nova-mnt-private
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the boot-time unit
+      ansible.builtin.copy:
+        src: kolla/nova-mnt-private.service
+        dest: /etc/systemd/system/nova-mnt-private.service
         owner: root
         group: root
         mode: "0644"
-        content: |
-          # Managed by vctl deploy/ansible/kolla-nova-mount-propagation.yml.
-          # Keeps kolla's nova mount propagation from doubling /var/lib/nova/mnt
-          # on every nova container start.
-          [Unit]
-          Description=Private bind of the nova_compute docker volume
-          Before=docker.service
 
-          [Mount]
-          What={{ nova_volume.stat.path }}
-          Where={{ nova_volume.stat.path }}
-          Type=none
-          Options=bind,private
-
-          [Install]
-          WantedBy=docker.service
-
-    - name: Enable and start the private bind
-      # started, never restarted: stopping a live bind under running
-      # containers is not something to do as a side effect.
+    - name: Enable it for the next boot (never started here)
+      when: not ansible_check_mode
       ansible.builtin.systemd:
-        daemon_reload: true
-        name: "{{ nova_mount_unit.stdout }}"
+        name: nova-mnt-private.service
         enabled: true
-        state: started
+        daemon_reload: true
 
-    - name: Verify the volume is a private mount
-      ansible.builtin.shell: |
-        set -o pipefail
-        awk -v p='{{ nova_volume.stat.path }}' '$5==p {print $7}' /proc/self/mountinfo | tail -1
-      args:
-        executable: /bin/bash
-      register: nova_volume_propagation
-      changed_when: false
-      check_mode: false
-      failed_when: nova_volume_propagation.stdout != '-' and not ansible_check_mode
+    - name: Say when it takes effect
+      ansible.builtin.debug:
+        msg: >-
+          nova-mnt-private.service is enabled on {{ inventory_hostname }} and
+          applies at the next reboot, before docker starts. Until then
+          /var/lib/nova/mnt still grows by one doubling per nova container
+          start ({{ nova_layers.stdout }} layer(s) on the host now).
