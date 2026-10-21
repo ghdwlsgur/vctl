@@ -43,6 +43,8 @@ PG_KUBE_CONTEXT="${PG_KUBE_CONTEXT:-}"
 #        (control_hosts 는 027 에서 openstack_ghost_hosts 로 개명 — grant 승계)
 #   023  access_log                           -> vctl_pruner(SELECT,DELETE)
 #   024  openstack_instances                  -> vctl_openstack_pruner(SELECT,DELETE)
+#   034  server_specs                         -> vctl_ro(R), vctl_status(RW), vctl_rw(RW)
+#        server_assets                        -> vctl_ro(R), vctl_rw(RW)  (collectors never)
 #   025  ALL TABLES/SEQUENCES (+defaults)     -> vctl_backup(R)
 # Auditing "what can role X reach" means reading BOTH places. Ownership rule of
 # thumb: a migration grants on tables it creates; this script owns bootstrap

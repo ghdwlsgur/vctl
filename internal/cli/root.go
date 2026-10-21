@@ -30,6 +30,17 @@ type Dependencies struct {
 	NewApp func() (*app.App, error)
 }
 
+// Env is the command environment, exported so a binary can build subtrees
+// this package must not import (see Extensions).
+type Env = cmdkit.Env
+
+// Extensions are subtrees a binary adds to the operator root from its own
+// main. They exist for dependencies too heavy for package cli: the node-agent
+// binary imports this package on every host in the fleet, and anything wired
+// in here is linked into it. `vctl vsphere` (govmomi, ~11MB) is added this way
+// by cmd/vctl alone. Each lands in the automation group.
+var Extensions []func(Env) *cobra.Command
+
 func (d Dependencies) withDefaults() Dependencies {
 	if d.NewApp == nil {
 		d.NewApp = app.New
@@ -137,7 +148,7 @@ Start here:
 		cmdkit.Gate(injectCmd(env), "inject"), cmdkit.Gate(installCmd(env), "install"), caCmd(env), sessionCmd(env),
 	)
 	addCommandGroup(root, "infrastructure",
-		lsCmd(env), ipCmd(env), wgCmd(env), openstack.Cmd(env), statusCmd(env), logCmd(env),
+		lsCmd(env), specCmd(env), ipCmd(env), wgCmd(env), openstack.Cmd(env), statusCmd(env), logCmd(env),
 		// dns gates its own leaves — the listing is read-only, add/rm mutate.
 		dnsCmd(env), k8sCmd(env),
 	)
@@ -151,6 +162,9 @@ Start here:
 		agentCmd(env), sessionStartCmd(env), collectCmd(env), pruneCmd(env),
 		openstack.PruneCmd(env), watchSessionsCmd(env), nodeAgentCmd(env), mcpCmd(env),
 	)
+	for _, ext := range Extensions {
+		addCommandGroup(root, "automation", ext(env))
+	}
 	root.SetHelpCommandGroupID("automation")
 	root.SetCompletionCommandGroupID("automation")
 	return root

@@ -19,6 +19,10 @@ type farmSink struct {
 	farmErr error
 }
 
+func (f *farmSink) UpsertServerSpec(context.Context, store.ServerSpec) (bool, error) {
+	return true, nil
+}
+
 func (f *farmSink) FarmTopologies(context.Context, string) ([]store.FarmTopology, error) {
 	return f.farms, f.farmErr
 }

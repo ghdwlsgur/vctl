@@ -28,6 +28,7 @@ import (
 
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
 	"github.com/ghdwlsgur/vctl/internal/hoststatus/probes"
+	"github.com/ghdwlsgur/vctl/internal/hwspec"
 	"github.com/ghdwlsgur/vctl/internal/sdlog"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
@@ -44,6 +45,7 @@ type Sink interface {
 	ReplaceCapabilities(ctx context.Context, hostname, kind string, caps []store.Capability) (bool, error)
 	RecordCapabilityError(ctx context.Context, hostname, kind, message string) error
 	FarmTopologies(ctx context.Context, hostname string) ([]store.FarmTopology, error)
+	UpsertServerSpec(ctx context.Context, sp store.ServerSpec) (bool, error)
 	Close()
 }
 
@@ -76,6 +78,11 @@ type Agent struct {
 	MOTDHeader    string
 	MOTDManagedBy string
 	MOTDColor     bool
+
+	// CollectSpec reads this machine's hardware for the spec pass; nil means
+	// the real collector. SpecDisabled turns the pass off.
+	CollectSpec  func() (hwspec.Spec, error)
+	SpecDisabled bool
 
 	// OpenSink dials the database. Called again whenever a failure drops the
 	// handle, so it must run the whole path — credential included.
@@ -131,6 +138,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.MOTDPath != "" && !a.Once {
 		go a.motdLoop(ctx, c)
 	}
+	if !a.SpecDisabled && !a.Once {
+		go a.specLoop(ctx, c)
+	}
 
 	// Spread the fleet's first heartbeat. Every agent is installed and
 	// restarted in the same pass, so without this they all reach Vault in the
@@ -150,6 +160,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	// runs inline exactly once, so the smoke test exercises the whole agent.
 	if a.MOTDPath != "" && a.Once {
 		a.motdPass(ctx, c)
+	}
+	if !a.SpecDisabled && a.Once {
+		a.specPass(ctx, c)
 	}
 	return err
 }

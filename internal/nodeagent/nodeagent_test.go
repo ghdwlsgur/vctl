@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ghdwlsgur/vctl/internal/hoststatus"
+	"github.com/ghdwlsgur/vctl/internal/hwspec"
 	"github.com/ghdwlsgur/vctl/internal/store"
 )
 
@@ -21,6 +22,7 @@ type fakeStatusSink struct {
 
 	caps      []store.Capability
 	capErrors []string
+	specs     []store.ServerSpec
 }
 
 func (f *fakeStatusSink) UpsertServerStatus(context.Context, store.ServerStatus) (bool, error) {
@@ -48,6 +50,14 @@ func (f *fakeStatusSink) RecordCapabilityError(_ context.Context, _, kind, msg s
 
 func (f *fakeStatusSink) FarmTopologies(context.Context, string) ([]store.FarmTopology, error) {
 	return nil, f.err
+}
+
+func (f *fakeStatusSink) UpsertServerSpec(_ context.Context, sp store.ServerSpec) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	f.specs = append(f.specs, sp)
+	return true, nil
 }
 
 func (f *fakeStatusSink) Close() { f.closed = true }
@@ -197,6 +207,10 @@ func (u *unregisteredSink) RecordCapabilityError(context.Context, string, string
 }
 
 // An unregistered host is in no farm either.
+func (u *unregisteredSink) UpsertServerSpec(context.Context, store.ServerSpec) (bool, error) {
+	return true, nil
+}
+
 func (u *unregisteredSink) FarmTopologies(context.Context, string) ([]store.FarmTopology, error) {
 	return nil, nil
 }
@@ -502,6 +516,10 @@ func (h *hangingSink) RecordCapabilityError(ctx context.Context, _, _, _ string)
 	return h.block(ctx, "caperror")
 }
 
+func (h *hangingSink) UpsertServerSpec(context.Context, store.ServerSpec) (bool, error) {
+	return true, nil
+}
+
 func (h *hangingSink) FarmTopologies(ctx context.Context, _ string) ([]store.FarmTopology, error) {
 	return nil, h.block(ctx, "motd")
 }
@@ -614,6 +632,8 @@ func (s *runSink) RecordCapabilityError(_ context.Context, _, _, _ string) error
 	return nil
 }
 
+func (s *runSink) UpsertServerSpec(context.Context, store.ServerSpec) (bool, error) { return true, nil }
+
 func (s *runSink) FarmTopologies(context.Context, string) ([]store.FarmTopology, error) {
 	return nil, nil
 }
@@ -723,5 +743,28 @@ func TestRunRefusesWithoutAHostnameOrASink(t *testing.T) {
 	}
 	if err := (&Agent{Hostname: "h"}).Run(context.Background()); err == nil {
 		t.Error("ran with no way to reach the database")
+	}
+}
+
+// The spec pass writes what the collector read, and says nothing for a guest.
+func TestSpecPassWritesBareMetalAndSkipsGuests(t *testing.T) {
+	sink := &fakeStatusSink{}
+	c := &conn{open: func(context.Context) (Sink, error) { return sink, nil }}
+	var warned []string
+	a := &Agent{Hostname: "sre-srv-0060", Version: "v-test",
+		Warnf: func(f string, args ...any) { warned = append(warned, fmt.Sprintf(f, args...)) },
+		CollectSpec: func() (hwspec.Spec, error) {
+			return hwspec.Spec{System: hwspec.System{Vendor: "HP", Serial: "SGH610V58C"}}, nil
+		}}
+	a.specPass(context.Background(), c)
+	if len(sink.specs) != 1 || sink.specs[0].Spec.System.Serial != "SGH610V58C" ||
+		sink.specs[0].Source != store.SpecSourceAgent || sink.specs[0].Collector != "v-test" {
+		t.Fatalf("specs = %+v", sink.specs)
+	}
+
+	a.CollectSpec = func() (hwspec.Spec, error) { return hwspec.Spec{}, hwspec.ErrVirtual }
+	a.specPass(context.Background(), c)
+	if len(sink.specs) != 1 || len(warned) != 0 {
+		t.Fatalf("guest: specs=%d warned=%v, want nothing written and nothing said", len(sink.specs), warned)
 	}
 }

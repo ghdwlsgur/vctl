@@ -67,6 +67,9 @@ var gated = map[string]Class{
 	// what separates reading the failover view (class "wg") from driving it.
 	"wg-failover":    ClassMutate,
 	"openstack-farm": ClassMutate,
+	// The operator half of the bare-metal asset sheet (`vctl spec set`);
+	// reading the sheet is ungated.
+	"spec": ClassMutate,
 	// The rbac surface itself: reads are default-allowed, mutations are
 	// admin-only — a grant must not be able to mint further grants.
 	"users":  ClassRead,
