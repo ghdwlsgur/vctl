@@ -242,8 +242,9 @@ agent would have: a heartbeat (`vctl list` shows them up or stale), a
    passes `--insecure`).
 2. Inventory: the ESXi hosts must be in `servers` (`vctl add`). On the poller
    host set `vsphere_poll_hosts="sre-srv-0028,sre-srv-0046"`.
-3. Stage the **operator** binary as `files/vctl` (linux/amd64). govmomi is
-   ~11MB the linker cannot drop, so `vctl-agent` does not carry the poller.
+3. Stage the **operator** binary as `files/vctl` (linux/amd64) and pass its
+   sha256 as `vsphere_bin_sha256`. It is installed as `/usr/local/bin/vctl-vsphere`.
+   govmomi is ~11MB the linker cannot drop, so `vctl-agent` does not carry the poller.
 
 ```bash
 ansible-playbook site.yml -l <poller host>

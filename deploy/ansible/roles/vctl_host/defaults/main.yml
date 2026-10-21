@@ -144,6 +144,8 @@ vctl_host_vsphere_poll_hosts: >-
      else (vsphere_poll_hosts.split(',') | map('trim') | select | list) }}
 vctl_host_vsphere_approle: "{{ vsphere_approle | default('vctl-vsphere-poller') }}"
 vctl_host_vsphere_bin_src: "{{ vsphere_bin_src | default(playbook_dir + '/files/vctl') }}"
-vctl_host_vsphere_bin_dest: "{{ vsphere_bin_dest | default('/usr/local/bin/vctl') }}"
+# /usr/local/bin/vctl 이 아니다: present.yml 이 단일 바이너리 시절의 운영자 CLI 로
+# 보고 매번 지운다. 이 사본은 폴러 전용이라 이름도 그렇게 둔다.
+vctl_host_vsphere_bin_dest: "{{ vsphere_bin_dest | default('/usr/local/bin/vctl-vsphere') }}"
 vctl_host_vsphere_bin_sha256: "{{ vsphere_bin_sha256 | default('') }}"
 vctl_host_vsphere_insecure: "{{ vsphere_insecure | default(true) }}"

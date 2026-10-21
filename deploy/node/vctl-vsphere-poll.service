@@ -3,7 +3,9 @@
 # capability and hardware spec (`vctl vsphere poll --help`).
 #
 # The operator binary, not vctl-agent: govmomi is ~11MB of types the linker
-# cannot drop, and vctl-agent runs on every host. Only this host carries it.
+# cannot drop, and vctl-agent runs on every host. Only this host carries it,
+# installed as /usr/local/bin/vctl-vsphere (the role removes a plain
+# /usr/local/bin/vctl as a mono-binary leftover).
 #
 # Its own AppRole (vctl-vsphere-poller): the heartbeat database role plus read
 # on kv/teams/sre/vctl-esxi-*. The fleet's shared vctl-node AppRole must not

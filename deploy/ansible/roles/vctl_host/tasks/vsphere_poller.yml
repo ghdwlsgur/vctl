@@ -16,7 +16,22 @@
     owner: root
     group: root
     mode: "0755"
-    checksum: "{{ vctl_host_vsphere_bin_sha256 | default(omit, true) }}"
+
+# The fleet binary's rule: a compromised staging file must not quietly become
+# what runs as root here.
+- name: Verify the vSphere poller binary checksum
+  when: vctl_host_require_binary_checksum | bool
+  ansible.builtin.stat:
+    path: "{{ vctl_host_vsphere_bin_dest }}"
+    checksum_algorithm: sha256
+  register: vctl_host_vsphere_installed
+
+- name: Require the expected vSphere poller binary checksum
+  when: vctl_host_require_binary_checksum | bool
+  ansible.builtin.assert:
+    that:
+      - vctl_host_vsphere_installed.stat.checksum == vctl_host_vsphere_bin_sha256
+    fail_msg: "Installed vctl-vsphere checksum does not match vsphere_bin_sha256 (the release checksum)"
 
 - name: Fetch vSphere poller role_id (control node Vault)
   delegate_to: localhost
