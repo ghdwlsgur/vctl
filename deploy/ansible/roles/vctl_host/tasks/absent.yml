@@ -45,6 +45,10 @@
 - name: Remove the reconciler
   ansible.builtin.include_tasks: reconciler_absent.yml
 
+# ESXi 폴러였던 호스트라면 그것도 (아니었다면 no-op).
+- name: Remove the ESXi poller
+  ansible.builtin.include_tasks: vsphere_poller_absent.yml
+
 - name: Remove installed files
   ansible.builtin.file:
     path: "{{ item }}"

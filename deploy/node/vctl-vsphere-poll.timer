@@ -1,0 +1,13 @@
+# Every five minutes: `vctl list` calls a heartbeat older than ten minutes
+# stale, so the poll has to land twice inside that window to survive one miss.
+[Unit]
+Description=Poll the ESXi hosts every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

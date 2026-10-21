@@ -414,6 +414,24 @@
     - vctl_host_reconciler_leftover.stat.exists
   ansible.builtin.include_tasks: reconciler_absent.yml
 
+# ESXi 폴러 — opt-in, vsphere_poll_hosts 가 있는 호스트 한 대. 플래그가 사라진
+# 호스트의 잔재는 reconciler 와 같은 방식으로 걷는다.
+- name: Install the ESXi poller
+  when: vctl_host_vsphere_poll_hosts | length > 0
+  ansible.builtin.include_tasks: vsphere_poller.yml
+
+- name: Check for a leftover ESXi poller
+  when: vctl_host_vsphere_poll_hosts | length == 0
+  ansible.builtin.stat:
+    path: /etc/systemd/system/vctl-vsphere-poll.timer
+  register: vctl_host_vsphere_leftover
+
+- name: Remove the ESXi poller this host no longer runs
+  when:
+    - vctl_host_vsphere_poll_hosts | length == 0
+    - vctl_host_vsphere_leftover.stat.exists
+  ansible.builtin.include_tasks: vsphere_poller_absent.yml
+
 - name: Enable services (only with secret_id present)
   when: vctl_host_enable_services | bool and (vctl_host_secret_id.stat.exists | default(false))
   ansible.builtin.systemd:

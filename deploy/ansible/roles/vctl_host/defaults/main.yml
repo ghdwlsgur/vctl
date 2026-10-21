@@ -131,3 +131,19 @@ vctl_host_services: >-
 # 호스트가 그 능력을 갖는다.
 vctl_host_openstack_reconciler: "{{ openstack_reconciler | default(false) }}"
 vctl_host_reconciler_approle: "{{ reconciler_approle | default('vctl-reconciler') }}"
+
+# ESXi 폴러 — 인벤토리 호스트 변수 vsphere_poll_hosts(인벤토리 hostname 목록)가
+# 비어 있지 않은 호스트 한 대에서 vctl-vsphere-poll.timer 가 5분마다 돈다.
+# 운영자 바이너리(files/vctl, linux/amd64)를 쓴다: govmomi 때문에 vctl-agent 에는
+# 폴러가 없다. 로그인은 Vault kv/teams/sre/vctl-esxi-<host> (username, password,
+# 선택 url·thumbprint). thumbprint 를 넣지 않은 호스트는 vsphere_insecure 로만 붙는다.
+# hosts.ini 에서는 쉼표 문자열("sre-srv-0028,sre-srv-0046")로 써도 된다.
+vctl_host_vsphere_poll_hosts: >-
+  {{ (vsphere_poll_hosts | default([]))
+     if (vsphere_poll_hosts | default([])) is not string
+     else (vsphere_poll_hosts.split(',') | map('trim') | select | list) }}
+vctl_host_vsphere_approle: "{{ vsphere_approle | default('vctl-vsphere-poller') }}"
+vctl_host_vsphere_bin_src: "{{ vsphere_bin_src | default(playbook_dir + '/files/vctl') }}"
+vctl_host_vsphere_bin_dest: "{{ vsphere_bin_dest | default('/usr/local/bin/vctl') }}"
+vctl_host_vsphere_bin_sha256: "{{ vsphere_bin_sha256 | default('') }}"
+vctl_host_vsphere_insecure: "{{ vsphere_insecure | default(true) }}"

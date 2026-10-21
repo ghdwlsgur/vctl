@@ -1,0 +1,46 @@
+---
+# vSphere poller teardown (reconciler_absent.yml 과 같은 두 호출처, 같은 멱등성).
+
+- name: Read vSphere poller secret_id accessor for revocation
+  ansible.builtin.slurp:
+    src: /etc/vctl/vsphere-secret-id-accessor
+  register: vctl_host_vsphere_absent_accessor
+  failed_when: false
+  changed_when: false
+
+- name: Revoke the vSphere poller secret_id
+  when: (vctl_host_vsphere_absent_accessor.content | default('') | length) > 0
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    argv:
+      - vault
+      - write
+      - -f
+      - "auth/approle/role/{{ vctl_host_vsphere_approle }}/secret-id-accessor/destroy"
+      - "secret_id_accessor={{ vctl_host_vsphere_absent_accessor.content | b64decode | trim }}"
+  changed_when: true
+  failed_when: false
+
+- name: Stop and disable the vSphere poller timer
+  ansible.builtin.systemd:
+    name: vctl-vsphere-poll.timer
+    enabled: false
+    state: stopped
+  failed_when: false
+
+# The operator binary stays only if something else put it there; this role
+# installs it for the poller alone.
+- name: Remove vSphere poller units, credentials and binary
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/vctl-vsphere-poll.timer
+    - /etc/systemd/system/vctl-vsphere-poll.service
+    - /etc/systemd/system/vctl-vsphere-poll.service.d
+    - /etc/vctl/vsphere-role-id
+    - /etc/vctl/vsphere-secret-id
+    - /etc/vctl/vsphere-secret-id-accessor
+    - "{{ vctl_host_vsphere_bin_dest }}"
+  notify: Reload systemd

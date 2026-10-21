@@ -1,0 +1,4 @@
+# Managed by Ansible (vctl_host role, vsphere_poll_hosts).
+[Service]
+ExecStart=
+ExecStart={{ vctl_host_vsphere_bin_dest }} vsphere poll{% for h in vctl_host_vsphere_poll_hosts %} --host '{{ h }}'{% endfor %}{{ ' --insecure' if vctl_host_vsphere_insecure | bool else '' }}

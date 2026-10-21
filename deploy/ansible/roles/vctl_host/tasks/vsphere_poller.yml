@@ -1,0 +1,123 @@
+---
+# ESXi 폴러 — 인벤토리에서 vsphere_poll_hosts 가 비어 있지 않은 호스트 한 대에만.
+#
+# ESXi 에는 node-agent 를 깔 수 없다(systemd 없음, 루트가 램디스크). 이 호스트가
+# vSphere API 로 대신 물어 heartbeat·capability·하드웨어 스펙을 써 준다.
+#
+# 운영자 바이너리(vctl)를 쓴다. govmomi 가 ~11MB 라 함대 전체에 깔리는
+# vctl-agent 에는 넣지 않았다. 자격도 reconciler 와 같은 이유로 따로 둔다:
+# vctl-node 는 함대 공유 AppRole 이라 거기에 ESXi 로그인 읽기를 얹으면 모든
+# 호스트가 그 능력을 갖는다.
+
+- name: Install the vctl operator binary (vSphere poller)
+  ansible.builtin.copy:
+    src: "{{ vctl_host_vsphere_bin_src }}"
+    dest: "{{ vctl_host_vsphere_bin_dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+    checksum: "{{ vctl_host_vsphere_bin_sha256 | default(omit, true) }}"
+
+- name: Fetch vSphere poller role_id (control node Vault)
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command: "vault read -field=role_id auth/approle/role/{{ vctl_host_vsphere_approle }}/role-id"
+  register: vctl_host_vsphere_roleid
+  changed_when: false
+
+- name: Install vSphere poller role_id (not secret)
+  ansible.builtin.copy:
+    content: "{{ vctl_host_vsphere_roleid.stdout }}"
+    dest: /etc/vctl/vsphere-role-id
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Check whether the vSphere poller secret_id is present
+  ansible.builtin.stat:
+    path: /etc/vctl/vsphere-secret-id
+  register: vctl_host_vsphere_secret_id
+
+# reconciler.yml 과 같은 패턴: 호스트마다 새로 발급하고 accessor 를 남겨 철거 때
+# revoke 한다.
+- name: Mint a vSphere poller secret_id
+  when: not vctl_host_vsphere_secret_id.stat.exists
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    argv:
+      - vault
+      - write
+      - -format=json
+      - -force
+      - "auth/approle/role/{{ vctl_host_vsphere_approle }}/secret-id"
+  register: vctl_host_vsphere_new_secret
+  changed_when: true
+  no_log: true
+
+- name: Install the vSphere poller secret_id
+  when: not vctl_host_vsphere_secret_id.stat.exists
+  ansible.builtin.copy:
+    content: "{{ (vctl_host_vsphere_new_secret.stdout | from_json).data.secret_id }}"
+    dest: /etc/vctl/vsphere-secret-id
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the vSphere poller secret_id accessor (for teardown revocation)
+  when: not vctl_host_vsphere_secret_id.stat.exists
+  ansible.builtin.copy:
+    content: "{{ (vctl_host_vsphere_new_secret.stdout | from_json).data.secret_id_accessor }}"
+    dest: /etc/vctl/vsphere-secret-id-accessor
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the vSphere poller unit and timer
+  ansible.builtin.copy:
+    src: "{{ vctl_host_node_src }}/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - vctl-vsphere-poll.service
+    - vctl-vsphere-poll.timer
+  notify: Reload systemd
+  register: vctl_host_vsphere_units
+
+- name: Ensure the vSphere poller drop-in dir
+  ansible.builtin.file:
+    path: /etc/systemd/system/vctl-vsphere-poll.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: List the ESXi hosts to poll (drop-in)
+  ansible.builtin.template:
+    src: vsphere-hosts.conf.j2
+    dest: /etc/systemd/system/vctl-vsphere-poll.service.d/10-hosts.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable the vSphere poller timer
+  when: vctl_host_enable_services | bool
+  ansible.builtin.systemd:
+    name: vctl-vsphere-poll.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Re-arm the vSphere poller timer when its schedule changed
+  when:
+    - vctl_host_enable_services | bool
+    - vctl_host_vsphere_units.results | selectattr('item', 'equalto', 'vctl-vsphere-poll.timer') | selectattr('changed') | list | length > 0
+  ansible.builtin.systemd:
+    name: vctl-vsphere-poll.timer
+    state: restarted
+    daemon_reload: true

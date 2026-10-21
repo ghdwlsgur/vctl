@@ -10,6 +10,7 @@ truth — no duplicated copies here) plus the SSH CA trust.
 | `site.yml` | Install node-agent (runtime status) by default. The collector + watch-sessions audit stack, `vctl-host` AppRole, and Tetragon are explicit opt-ins via `vctl_host_audit_stack=true`. |
 | `openstack-vendordata.yml` | Install the same CA trust into an OpenStack farm's Nova vendordata, so a **new VM** trusts vctl certificates from first boot. See below. |
 | `openstack-vm-agent-vendordata.yml` | Stage per-farm Nova DynamicJSON settings so new Linux VMs fetch a short-lived, VM UUID-bound enrollment grant from the access gateway. |
+| `site.yml` + `vsphere_poll_hosts` | On one host: poll standalone ESXi hosts for heartbeat, capability and hardware spec. See below. |
 | `kolla-nova-mount-propagation.yml` | Keep kolla's nova `/var/lib/nova/mnt` bind from doubling on every container start, without hiding any NFS: enables a boot-time unit. Opt-in, collapses layers that already stacked and applies the fix live with every VM running. See below. |
 
 ## Kolla nova mount propagation
@@ -226,6 +227,33 @@ One thing to expect at step 2 on a farm that has drifted: `genconfig` regenerate
 *everything* for the services it touches, not just the vendordata. If a service's
 config is months old, that whole diff lands at once. Back up the service
 directory and read the diff before restarting anything.
+
+## ESXi poller and the bare-metal spec sheet
+
+ESXi hosts cannot run the node-agent. One fleet host polls them through the
+vSphere API every five minutes (`vctl-vsphere-poll.timer`) and writes what the
+agent would have: a heartbeat (`vctl list` shows them up or stale), a
+`vmware/esxi` capability row, and the hardware spec. Guest VMs are not collected.
+
+1. Vault: apply vault-iac's `vctl-vsphere-poll` policy and `vctl-vsphere-poller`
+   AppRole. Store each host's login at `kv/teams/sre/vctl-esxi-<inventory host>`:
+   `username`, `password`, optional `url` (default `https://<inventory ip>/sdk`)
+   and `thumbprint` (pins the self-signed certificate; without it the drop-in
+   passes `--insecure`).
+2. Inventory: the ESXi hosts must be in `servers` (`vctl add`). On the poller
+   host set `vsphere_poll_hosts="sre-srv-0028,sre-srv-0046"`.
+3. Stage the **operator** binary as `files/vctl` (linux/amd64). govmomi is
+   ~11MB the linker cannot drop, so `vctl-agent` does not carry the poller.
+
+```bash
+ansible-playbook site.yml -l <poller host>
+vctl vsphere poll --host sre-srv-0028 --insecure --dry-run   # by hand
+```
+
+The node-agent collects the same spec on Linux bare metal once a day (SMBIOS,
+sysfs, ethtool; VMs skip it). `vctl spec` shows the sheet, `vctl spec <host>`
+one machine, and `vctl spec set <host> --idc ... --rack ...` records what only
+people know (IDC, rack, labels, usage, purpose, department, RAID layout).
 
 ## Prerequisites
 

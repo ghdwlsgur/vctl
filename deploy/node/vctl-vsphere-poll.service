@@ -1,0 +1,50 @@
+# vctl ESXi poller — one fleet host polls the standalone ESXi hosts that
+# cannot run the node-agent, and writes their heartbeat, vmware/esxi
+# capability and hardware spec (`vctl vsphere poll --help`).
+#
+# The operator binary, not vctl-agent: govmomi is ~11MB of types the linker
+# cannot drop, and vctl-agent runs on every host. Only this host carries it.
+#
+# Its own AppRole (vctl-vsphere-poller): the heartbeat database role plus read
+# on kv/teams/sre/vctl-esxi-*. The fleet's shared vctl-node AppRole must not
+# be able to read ESXi logins.
+#
+# The hosts are listed in the 10-hosts.conf drop-in, from the inventory
+# (vsphere_poll_hosts). The unit itself polls nothing.
+[Unit]
+Description=vctl ESXi poller (heartbeat, capability, hardware spec)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+Environment=VCTL_AUTH_METHOD=approle
+Environment=VCTL_ROLE_ID_FILE=/etc/vctl/vsphere-role-id
+Environment=VCTL_SECRET_ID_FILE=/etc/vctl/vsphere-secret-id
+Environment=HOME=/var/lib/vctl-vsphere
+Environment=GOMAXPROCS=2
+ExecStart=/bin/false
+User=root
+StateDirectory=vctl-vsphere
+StateDirectoryMode=0700
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/vctl
+ReadWritePaths=/var/lib/vctl-vsphere
+
+CPUQuota=10%
+MemoryHigh=96M
+MemoryMax=128M
+TasksMax=24
+IOWeight=25
+Nice=10
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
