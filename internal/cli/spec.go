@@ -152,7 +152,7 @@ func renderSpecSheet(rows []store.SpecRow, skipped int) error {
 		cells = append(cells, []string{
 			r.Hostname,
 			orDash(strings.TrimSpace(sp.System.Vendor + " " + sp.System.Model)),
-			orDash(sp.System.Serial),
+			orDash(serialCell(sp.System)),
 			orDash(cpuCell(sp.CPU)),
 			orDash(memoryCell(sp.Memory)),
 			orDash(diskCell(sp.Disks)),
@@ -192,7 +192,7 @@ func renderSpecHost(r store.SpecRow) {
 		kv("IDC", a.IDC), kv("Rack", a.Rack), kv("Label", a.Label), kv("Legacy label", a.LegacyLabel),
 		kv("Unit", a.RackUnits), kv("Usage", a.Usage), kv("Purpose", a.Purpose),
 		kv("Solution", a.Solution), kv("Department", a.Department),
-		kv("Vendor", sp.System.Vendor), kv("Model", sp.System.Model), kv("Serial", sp.System.Serial),
+		kv("Vendor", sp.System.Vendor), kv("Model", sp.System.Model), kv("Serial", serialCell(sp.System)),
 		kv("Hostname", r.Hostname), kv("OS", sp.OS),
 	})
 
@@ -363,12 +363,24 @@ func locationCell(a store.Asset) string {
 	return strings.Join(parts, " ")
 }
 
+// serialCell is the machine's serial, marked when it is the board's because
+// the system has none programmed.
+func serialCell(s hwspec.System) string {
+	serial, board := s.IdentSerial()
+	if board {
+		return serial + " (board)"
+	}
+	return serial
+}
+
+// fraction renders used/total, or used alone when the total is unknown — ESXi
+// reports the CPUs installed but not how many sockets the board has.
 func fraction(used, total int) string {
 	switch {
 	case used == 0 && total == 0:
 		return ""
 	case total == 0:
-		return fmt.Sprintf("%d/?", used)
+		return fmt.Sprint(used)
 	}
 	return fmt.Sprintf("%d/%d", used, total)
 }

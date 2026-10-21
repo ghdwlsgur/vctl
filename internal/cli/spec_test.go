@@ -42,8 +42,14 @@ func TestSpecCellsReadLikeTheSheet(t *testing.T) {
 // What a collector could not see stays visibly unknown, never a zero that
 // reads as a measurement.
 func TestSpecCellsUnknown(t *testing.T) {
-	if got := fraction(2, 0); got != "2/?" {
-		t.Errorf("fraction(2,0) = %q, want 2/? (ESXi reports no socket total)", got)
+	if got := fraction(2, 0); got != "2" {
+		t.Errorf("fraction(2,0) = %q, want 2 (ESXi reports no socket total)", got)
+	}
+	if got := cpuCell(hwspec.CPU{Sockets: 2, CoresPerSocket: 10, Cores: 20}); got != "2×10C" {
+		t.Errorf("esxi cpu = %q", got)
+	}
+	if got := serialCell(hwspec.System{BoardSerial: "BZUB20801704"}); got != "BZUB20801704 (board)" {
+		t.Errorf("board serial = %q", got)
 	}
 	if got := cpuCell(hwspec.CPU{}); got != "" {
 		t.Errorf("empty cpu = %q", got)

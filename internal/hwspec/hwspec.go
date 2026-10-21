@@ -27,6 +27,19 @@ type System struct {
 	Vendor string `json:"vendor,omitempty"`
 	Model  string `json:"model,omitempty"`
 	Serial string `json:"serial,omitempty"`
+	// BoardSerial is the baseboard's (SMBIOS type 2). Some boards never had a
+	// system serial programmed — Intel S5520UR ships "............" there —
+	// and the board's is then the only identifier the machine carries.
+	BoardSerial string `json:"board_serial,omitempty"`
+}
+
+// IdentSerial is the serial to show for the machine: the system's, or the
+// board's when the system has none. board reports which one it is.
+func (s System) IdentSerial() (serial string, board bool) {
+	if s.Serial != "" {
+		return s.Serial, false
+	}
+	return s.BoardSerial, s.BoardSerial != ""
 }
 
 // CPU is the processors, summed over sockets.

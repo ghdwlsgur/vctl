@@ -62,7 +62,7 @@ func TestSMBIOSFoldsIntoTheSheetRow(t *testing.T) {
 
 	var sp Spec
 	ParseSMBIOS(table).Apply(&sp)
-	if sp.System != (System{"HP", "ProLiant DL560 Gen9", "SGH610V58C"}) {
+	if sp.System != (System{Vendor: "HP", Model: "ProLiant DL560 Gen9", Serial: "SGH610V58C"}) {
 		t.Errorf("system = %+v", sp.System)
 	}
 	c := sp.CPU
@@ -207,5 +207,32 @@ func TestCollectReadsAFakeHost(t *testing.T) {
 func TestCollectRefusesGuests(t *testing.T) {
 	if _, err := fakeHost(t, "sse hypervisor").Collect(); !errors.Is(err, ErrVirtual) {
 		t.Fatalf("err = %v, want ErrVirtual", err)
+	}
+}
+
+// Intel S5520UR: "............" as the system serial, the real one on the
+// board. The placeholder is dropped and the board's kept.
+func TestSMBIOSBoardSerialWhenTheSystemHasNone(t *testing.T) {
+	sys := make([]byte, 0x08-4)
+	sys[0x04-4], sys[0x05-4], sys[0x07-4] = 1, 2, 3
+	board := make([]byte, 0x08-4)
+	board[0x07-4] = 1
+	table := append(structure(1, sys, "Intel Corporation", "S5520UR", "............"),
+		structure(2, board, "BZUB20801704")...)
+	var sp Spec
+	ParseSMBIOS(table).Apply(&sp)
+	if sp.System.Serial != "" || sp.System.BoardSerial != "BZUB20801704" || sp.System.Model != "S5520UR" {
+		t.Fatalf("system = %+v", sp.System)
+	}
+	if s, board := sp.System.IdentSerial(); s != "BZUB20801704" || !board {
+		t.Fatalf("IdentSerial = %q board=%v", s, board)
+	}
+	for _, junk := range []string{"..................", "0123456789", "To be filled by O.E.M.", "  ...  "} {
+		if clean(junk) != "" {
+			t.Errorf("clean(%q) kept a placeholder", junk)
+		}
+	}
+	if clean(".248WPD4.CNIVC0057T0109.") == "" {
+		t.Error("a Dell board serial with dots was dropped")
 	}
 }

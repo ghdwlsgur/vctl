@@ -49,9 +49,10 @@ func (c Collector) Collect() (Spec, error) {
 	// The world-readable DMI files first, so a host whose table cannot be read
 	// still names its vendor and model.
 	sp.System = System{
-		Vendor: clean(c.read("sys/class/dmi/id/sys_vendor")),
-		Model:  clean(c.read("sys/class/dmi/id/product_name")),
-		Serial: clean(c.read("sys/class/dmi/id/product_serial")),
+		Vendor:      clean(c.read("sys/class/dmi/id/sys_vendor")),
+		Model:       clean(c.read("sys/class/dmi/id/product_name")),
+		Serial:      clean(c.read("sys/class/dmi/id/product_serial")),
+		BoardSerial: clean(c.read("sys/class/dmi/id/board_serial")),
 	}
 	if raw, err := os.ReadFile(c.path("sys/firmware/dmi/tables/DMI")); err == nil {
 		ParseSMBIOS(raw).Apply(&sp)

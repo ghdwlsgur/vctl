@@ -92,7 +92,10 @@ func ParseSMBIOS(b []byte) SMBIOS {
 
 		switch typ {
 		case 1:
-			out.System = System{Vendor: str(0x04), Model: str(0x05), Serial: str(0x07)}
+			board := out.System.BoardSerial
+			out.System = System{Vendor: str(0x04), Model: str(0x05), Serial: str(0x07), BoardSerial: board}
+		case 2:
+			out.System.BoardSerial = str(0x07)
 		case 4:
 			p := Processor{
 				Socket:    str(0x04),
@@ -137,11 +140,17 @@ func splitStrings(b []byte) []string {
 	return strings.Split(string(b), "\x00")
 }
 
-// clean drops the placeholders vendors fill unused strings with.
+// clean drops the placeholders vendors fill unused strings with: the words
+// ("To be filled by O.E.M.", "Default string"), a run of dots (Intel S5520UR
+// and S2600 chassis), and the digits 0123456789 some boards ship as a serial.
 func clean(s string) string {
 	s = strings.TrimSpace(s)
 	switch strings.ToLower(s) {
-	case "", "not specified", "to be filled by o.e.m.", "default string", "none", "n/a", "unknown":
+	case "", "not specified", "to be filled by o.e.m.", "default string", "none", "n/a", "unknown",
+		"0123456789", "system serial number", "chassis serial number", "base board serial number":
+		return ""
+	}
+	if strings.Trim(s, ". 0") == "" {
 		return ""
 	}
 	return s
@@ -176,8 +185,19 @@ func memoryType(v int) string {
 
 // Apply folds what the firmware says into a spec.
 func (s SMBIOS) Apply(sp *Spec) {
-	if s.System != (System{}) {
-		sp.System = s.System
+	// Field by field: the table may name the board but not the system, and
+	// what sysfs already said must not be blanked by what the table lacks.
+	if s.System.Vendor != "" {
+		sp.System.Vendor = s.System.Vendor
+	}
+	if s.System.Model != "" {
+		sp.System.Model = s.System.Model
+	}
+	if s.System.Serial != "" {
+		sp.System.Serial = s.System.Serial
+	}
+	if s.System.BoardSerial != "" {
+		sp.System.BoardSerial = s.System.BoardSerial
 	}
 	if len(s.Processors) > 0 {
 		sp.CPU.SocketsTotal = len(s.Processors)
