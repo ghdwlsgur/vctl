@@ -145,8 +145,8 @@ func link(t *testing.T, root, target, name string) {
 	}
 }
 
-// A fake host: one RAID volume behind hpsa, one NVMe drive, a loop device and
-// a bridge that must not count, one physical NIC and one SR-IOV VF that must
+// A fake host: one RAID volume behind hpsa, one NVMe drive, and a loop device,
+// an iSCSI LUN and a bridge that must not count, one physical NIC and one SR-IOV VF that must
 // not either.
 func fakeHost(t *testing.T, flags string) Collector {
 	root := t.TempDir()
@@ -165,6 +165,9 @@ func fakeHost(t *testing.T, flags string) Collector {
 	write(t, root, "sys/block/nvme0n1/size", "1953525168\n")
 	write(t, root, "sys/block/nvme0n1/queue/rotational", "0\n")
 	write(t, root, "sys/block/loop0/size", "100\n")
+	link(t, root, "sys/devices/platform/host3/session1/target3:0:0/3:0:0:1", "sys/block/sdb/device")
+	write(t, root, "sys/block/sdb/size", "62914560\n")
+	write(t, root, "sys/class/scsi_host/host3/proc_name", "iscsi_tcp\n")
 
 	link(t, root, "sys/devices/pci0000:00/0000:00:03.0", "sys/class/net/eno1/device")
 	write(t, root, "sys/class/net/eno1/address", "28:80:23:b0:07:54\n")
@@ -185,7 +188,7 @@ func TestCollectReadsAFakeHost(t *testing.T) {
 		t.Errorf("identity = %q %+v %q", sp.OS, sp.System, sp.CPU.Model)
 	}
 	if len(sp.Disks) != 2 {
-		t.Fatalf("disks = %+v, want sda and nvme0n1 only", sp.Disks)
+		t.Fatalf("disks = %+v, want sda and nvme0n1 only (no loop, no iSCSI LUN)", sp.Disks)
 	}
 	if d := sp.Disks[1]; d.Name != "sda" || d.Interface != "RAID hpsa" || d.Media != "HDD" || d.Model != "LOGICAL VOLUME" || d.SizeBytes != 585871964*512 {
 		t.Errorf("sda = %+v", d)

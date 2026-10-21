@@ -191,6 +191,12 @@ func (c Collector) disks() []Disk {
 			d.Media = "SSD"
 		}
 		d.Interface = c.diskInterface(name, base)
+		// A LUN reached over the network is storage the host borrows, not a
+		// drive in its chassis: incheon-aio01's iSCSI boot volume is a Cinder
+		// volume, and listing it would put another system's disk on this sheet.
+		if d.Interface == "iSCSI" {
+			continue
+		}
 		out = append(out, d)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -230,6 +236,8 @@ func (c Collector) diskInterface(name, base string) string {
 		return "RAID " + drv
 	case drv == "virtio_scsi":
 		return "virtio"
+	case drv == "iscsi_tcp" || drv == "iser" || drv == "bnx2i" || drv == "qedi" || drv == "cxgb4i":
+		return "iSCSI"
 	}
 	return drv
 }
